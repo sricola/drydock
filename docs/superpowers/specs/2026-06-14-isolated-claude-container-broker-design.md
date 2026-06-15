@@ -115,6 +115,14 @@ malicious broker code (broker is the TCB), compromised Anthropic endpoint.
 back to the host is a diff (data, not commands), and the only thing injected inward is a
 scoped token + the task.
 
+> **Critical implementation rule (found via review during MVP build):** the VM-mounted work
+> dir must **never** contain `.git`. Mounting the clone's `.git` into the untrusted VM and then
+> running host-side `git` against it lets the agent plant `.git/hooks/*` or poison `.git/config`
+> (`core.fsmonitor`/`core.sshCommand`) → arbitrary code execution on the host TCB on the next
+> push — and exposes clone-URL credentials in `.git/config` to the VM. The broker stages a clone,
+> **separates `.git` to a host-only path**, mounts only the work tree, and runs host git with
+> `--git-dir`/`--work-tree` separated and `core.hooksPath=/dev/null`.
+
 ---
 
 ## 5. Variants & recommendation

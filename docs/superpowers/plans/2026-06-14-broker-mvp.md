@@ -12,6 +12,15 @@
 
 ---
 
+## Execution amendments
+
+Changes made during implementation that supersede the task text below (committed code is the source of truth):
+
+1. **`.task` diff exclusion (Task 4).** `CaptureDiff` excludes the `.task/` control dir so the prompt + compiled allowlist never leak into the diff/PR. `git add -A -- . ':(exclude).task'`.
+2. **`.git` kept host-only — trust-boundary fix (Task 4 + Task 6).** An independent review found a BLOCKER: mounting the whole clone (incl. `.git`) into the untrusted VM and then running host-side `git` against it allowed VM-planted hooks/config to execute on the host (TCB RCE) and exposed clone-URL creds to the VM. The `stage` package was reworked from free functions into a `Stage` type that **separates the VM-mounted work tree from a host-only git dir** (`Prepare` clones then moves `.git` outside the mount). Host git runs with `--git-dir`/`--work-tree` separated and `core.hooksPath=/dev/null`/`core.fsmonitor=false`. The broker mounts `st.WorkDir` only, `defer st.Cleanup()`s the scratch dir, force-deletes the VM on timeout/error, and caps the commit subject (`firstLine`). Regression test `TestHostCommit_IgnoresPlantedHook` proves a work-tree-planted hook does not run on the host. New `stage` API: `Prepare(root, repoRef) (*Stage, error)`, `(*Stage).WriteTaskFiles`, `.CaptureDiff`, `.Push(branch, msg)`, `.Cleanup`.
+
+---
+
 ## File Structure
 
 ```
