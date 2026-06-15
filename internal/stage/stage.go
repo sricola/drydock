@@ -73,8 +73,9 @@ func (s *Stage) WriteTaskFiles(prompt, allowlist string) error {
 	return os.WriteFile(filepath.Join(dir, "allowlist.txt"), []byte(allowlist), 0o644)
 }
 
-// stageAll stages every change except the control dir and any .git the VM may
-// have planted in the work tree.
+// stageAll stages every change except the control dir and a top-level .git. (A
+// nested work-tree .git is a gitlink boundary git already refuses to recurse
+// into, so its contents and hooks never enter the diff/commit either way.)
 func (s *Stage) stageAll() error {
 	_, err := s.git("add", "-A", "--", ".", ":(exclude).task", ":(exclude).git")
 	return err
@@ -105,7 +106,15 @@ func (s *Stage) Push(branch, message string) error {
 	}
 	cmd := exec.Command("gh", "pr", "create", "--head", branch, "--fill")
 	cmd.Dir = s.WorkDir
-	cmd.Env = append(os.Environ(), "GIT_DIR="+s.gitDir, "GIT_WORK_TREE="+s.WorkDir)
+	// Point gh's git at the host-only dir and, defense-in-depth, neutralize hooks
+	// and fsmonitor for any git gh spawns (in case a work-tree .git is present).
+	cmd.Env = append(os.Environ(),
+		"GIT_DIR="+s.gitDir,
+		"GIT_WORK_TREE="+s.WorkDir,
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
+		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("gh pr create: %w\n%s", err, out)
