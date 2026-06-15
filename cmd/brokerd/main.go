@@ -6,13 +6,16 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"macagent/internal/broker"
 	"macagent/internal/creds"
 	"macagent/internal/egress"
 	"macagent/internal/gateway"
+	"macagent/internal/netfw"
 )
 
 func main() {
@@ -38,12 +41,40 @@ func main() {
 	// expose the credential gateway on the host's LAN/wifi).
 	startAnchor(network, imageRef)
 
+	gwAddr := net.JoinHostPort(gwIP, strconv.Itoa(gwPort))
+	proxyAddr := net.JoinHostPort(gwIP, strconv.Itoa(proxyPort))
+
+	// Userspace squid for registry (npm/pip) egress: hostname allowlist, no TLS
+	// interception. Bound to the vmnet gateway IP (wait until the anchor brings
+	// the interface up). Optional: if squid isn't installed, registry egress is
+	// simply unavailable — the model API still works via the gateway.
+	var squid *netfw.Squid
+	if bin, ferr := netfw.FindSquid(); ferr != nil {
+		log.Printf("WARNING: %v — registry (npm/pip) egress disabled", ferr)
+	} else {
+		waitBindable(proxyAddr)
+		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(cfg), env("SQUID_RUN_DIR", "/tmp/broker/squid"))
+		if err != nil {
+			log.Fatalf("squid: %v", err)
+		}
+		log.Printf("squid listening on %s", proxyAddr)
+	}
+
+	// Graceful shutdown: stop squid and remove the anchor.
+	cleanup := func() {
+		_ = squid.Stop()
+		_ = exec.Command("container", "rm", "-f", "macagent-anchor").Run()
+	}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() { <-sigCh; cleanup(); os.Exit(0) }()
+
 	// Credential gateway: real key host-only; the VM gets a bearer token.
 	gw, err := gateway.New(apiKey, "https://api.anthropic.com", gateway.DefaultPrices())
 	if err != nil {
+		cleanup()
 		log.Fatalf("gateway: %v", err)
 	}
-	gwAddr := net.JoinHostPort(gwIP, strconv.Itoa(gwPort))
 	go func() {
 		l := listenWhenReady(gwAddr)
 		log.Printf("gateway listening on %s", gwAddr)
@@ -75,8 +106,21 @@ func main() {
 	mux.HandleFunc("POST /tasks", b.HandleTask)
 
 	addr := env("BROKER_ADDR", "127.0.0.1:8765")
-	log.Printf("brokerd listening on %s (gateway %s; squid expected on %s:%d)", addr, gwAddr, gwIP, proxyPort)
+	log.Printf("brokerd listening on %s (gateway %s, squid %s)", addr, gwAddr, proxyAddr)
 	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+// waitBindable blocks until addr can be bound (the anchor brings the vmnet
+// interface up asynchronously), then releases it for the real listener.
+func waitBindable(addr string) {
+	for i := 0; i < 60; i++ {
+		if l, err := net.Listen("tcp", addr); err == nil {
+			l.Close()
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	log.Fatalf("%s never became bindable (anchor up?)", addr)
 }
 
 // startAnchor keeps the network's vmnet gateway interface up. Idempotent: any

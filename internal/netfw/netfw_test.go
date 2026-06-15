@@ -27,6 +27,20 @@ func TestCompileSquidAllowlist_ExcludesModelAPI(t *testing.T) {
 	}
 }
 
+func TestCompileSquidConf(t *testing.T) {
+	out := CompileSquidConf("192.168.66.1:3128", "/run/allow.txt", "/run")
+	for _, want := range []string{
+		"http_port 192.168.66.1:3128",
+		`acl allowed dstdomain "/run/allow.txt"`,
+		"http_access deny CONNECT !allowed",
+		"http_access deny all",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("squid.conf missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestGatewayIP(t *testing.T) {
 	got, err := GatewayIP("192.168.64.0/24")
 	if err != nil || got != "192.168.64.1" {
