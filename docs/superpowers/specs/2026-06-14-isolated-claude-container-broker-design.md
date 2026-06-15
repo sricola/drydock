@@ -453,7 +453,7 @@ func handleTask(w http.ResponseWriter, r *http.Request) {
     defer cancel()
     if err := runCtx(ctx, cmd); err != nil { http.Error(w, "task failed", 500); return }
 
-    diff := captureDiff(stage)                                     // data crosses the boundary
+    diff := captureDiff(stage)                                     // data crosses the boundary; excludes .task/ control dir
     if !approvalGate("push diff", diff) { writeJSON(w, map[string]any{"diff": diff, "pushed": false}); return }
 
     branch := "agent/" + taskID

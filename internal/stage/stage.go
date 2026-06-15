@@ -37,8 +37,11 @@ func WriteTaskFiles(dest, prompt, allowlist string) error {
 }
 
 // CaptureDiff stages all changes and returns the unified diff (without committing).
+// The .task/ control dir (prompt + compiled allowlist, written by WriteTaskFiles
+// into the repo root so the in-VM entrypoint can read them) is excluded so it
+// never leaks into the diff, the approval gate, or the pushed PR.
 func CaptureDiff(dir string) (string, error) {
-	if _, err := git(dir, "add", "-A"); err != nil {
+	if _, err := git(dir, "add", "-A", "--", ".", ":(exclude).task"); err != nil {
 		return "", err
 	}
 	return git(dir, "diff", "--cached")

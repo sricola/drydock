@@ -76,3 +76,27 @@ func TestCaptureDiff_SeesChange(t *testing.T) {
 		t.Errorf("diff missing +world:\n%s", diff)
 	}
 }
+
+// The .task control dir must never leak into the diff (it holds the agent prompt
+// and the compiled egress allowlist, which would otherwise be pushed into the PR).
+func TestCaptureDiff_ExcludesTaskDir(t *testing.T) {
+	origin := makeOriginRepo(t)
+	dest := filepath.Join(t.TempDir(), "stage")
+	if err := Clone(origin, dest); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	if err := WriteTaskFiles(dest, "secret prompt", "api.anthropic.com 443\n"); err != nil {
+		t.Fatalf("WriteTaskFiles: %v", err)
+	}
+	os.WriteFile(filepath.Join(dest, "README.md"), []byte("hello\nworld\n"), 0o644)
+	diff, err := CaptureDiff(dest)
+	if err != nil {
+		t.Fatalf("CaptureDiff: %v", err)
+	}
+	if !strings.Contains(diff, "+world") {
+		t.Errorf("diff should contain the real change:\n%s", diff)
+	}
+	if strings.Contains(diff, ".task") || strings.Contains(diff, "secret prompt") {
+		t.Errorf("diff leaked .task control files:\n%s", diff)
+	}
+}
