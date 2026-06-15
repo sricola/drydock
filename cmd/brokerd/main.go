@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,7 +20,17 @@ import (
 	"drydock/internal/netfw"
 )
 
+// supportedContainerMajor is the major version of Apple's `container` CLI
+// drydock has been integration-tested against. Bumping this should be paired
+// with re-running the smoke test in the README — `container`'s surface has
+// already changed flag semantics inside 1.0.x (--user, readonly=).
+const supportedContainerMajor = "1"
+
+var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
+
 func main() {
+	checkContainerVersion()
+
 	cfg, err := egress.Load(env("EGRESS_CONFIG", "config/egress.yaml"))
 	if err != nil {
 		log.Fatalf("load egress config: %v", err)
@@ -104,10 +116,34 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)
+	mux.HandleFunc("POST /admin/approve/{id}", b.HandleApprove)
+	mux.HandleFunc("POST /admin/deny/{id}", b.HandleDeny)
+	mux.HandleFunc("GET /admin/pending", b.HandlePending)
 
-	addr := env("BROKER_ADDR", "127.0.0.1:8765")
-	log.Printf("brokerd listening on %s (gateway %s, squid %s)", addr, gwAddr, proxyAddr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	serve(mux, gwAddr, proxyAddr)
+}
+
+// serve listens on a Unix socket by default (file mode 0600, so only the
+// invoking user can talk to brokerd). Setting BROKER_ADDR=host:port opts
+// into TCP with a loud startup banner — any process that can reach the
+// port can ship a PR, so this is for operator awareness, not security.
+func serve(mux *http.ServeMux, gwAddr, proxyAddr string) {
+	if tcpAddr := os.Getenv("BROKER_ADDR"); tcpAddr != "" {
+		log.Printf("WARNING: BROKER_ADDR=%s — listening on TCP. Any process that can reach this port can submit/approve tasks.", tcpAddr)
+		log.Printf("brokerd listening on %s (gateway %s, squid %s)", tcpAddr, gwAddr, proxyAddr)
+		log.Fatal(http.ListenAndServe(tcpAddr, mux))
+	}
+	sock := env("BROKER_SOCKET", "/tmp/drydock.sock")
+	_ = os.Remove(sock) // stale socket from a previous crash
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		log.Fatalf("listen %s: %v", sock, err)
+	}
+	if err := os.Chmod(sock, 0o600); err != nil {
+		log.Fatalf("chmod %s: %v", sock, err)
+	}
+	log.Printf("brokerd listening on unix://%s (gateway %s, squid %s)", sock, gwAddr, proxyAddr)
+	log.Fatal(http.Serve(l, mux))
 }
 
 // waitBindable blocks until addr can be bound (the anchor brings the vmnet
@@ -121,6 +157,28 @@ func waitBindable(addr string) {
 		time.Sleep(time.Second)
 	}
 	log.Fatalf("%s never became bindable (anchor up?)", addr)
+}
+
+// checkContainerVersion fails closed if the `container` CLI isn't present, and
+// warns (without exiting) when the major version doesn't match what drydock
+// was tested against. We choose warn-don't-fail so a verified user can bypass
+// after re-running the smoke test against a newer release.
+func checkContainerVersion() {
+	out, err := exec.Command("container", "--version").CombinedOutput()
+	if err != nil {
+		log.Fatalf("container CLI not runnable (apple/container required): %v\n%s", err, out)
+	}
+	m := containerVersionRE.FindStringSubmatch(strings.TrimSpace(string(out)))
+	if m == nil {
+		log.Printf("WARNING: could not parse container --version output (%q); proceeding", strings.TrimSpace(string(out)))
+		return
+	}
+	if m[1] != supportedContainerMajor {
+		log.Printf("WARNING: container CLI v%s.%s.%s — drydock is tested against v%s.x. Re-run the README smoke test before relying on this.",
+			m[1], m[2], m[3], supportedContainerMajor)
+		return
+	}
+	log.Printf("container CLI v%s.%s.%s (supported)", m[1], m[2], m[3])
 }
 
 // startAnchor keeps the network's vmnet gateway interface up. Idempotent: any

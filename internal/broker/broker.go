@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"drydock/internal/creds"
@@ -36,9 +38,14 @@ type Task struct {
 	Instruction string          `json:"instruction"`
 	EgressExtra []egress.Domain `json:"egress_extra"`
 	Sensitive   bool            `json:"sensitive"`
+	// AutoApprove skips the diff-push gate. Off by default — the central
+	// security claim depends on a human (or trusted process) signing off on
+	// the diff. Callers who really want a headless run must say so explicitly.
+	AutoApprove bool `json:"auto_approve"`
 }
 
-// ApprovalFn returns true to allow the action. MVP default may auto-approve.
+// ApprovalFn gates the egress-widening step. The diff-push step now has
+// its own explicit gate driven by Task.AutoApprove + the admin endpoints.
 type ApprovalFn func(kind string, payload any) bool
 
 type Broker struct {
@@ -53,6 +60,9 @@ type Broker struct {
 	GatewayIP  string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
 	ProxyPort  int     // squid port (e.g. 3128)
 	TaskBudget float64 // USD budget per task
+
+	pendingMu sync.Mutex
+	pending   map[string]chan bool // task_id -> approval channel
 }
 
 func newID() string {
@@ -155,7 +165,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"task_id": taskID, "diff": "", "pushed": false})
 		return
 	}
-	if !b.Approve("push diff", diff) {
+	if !b.gatePush(r.Context(), taskID, diff, t.AutoApprove) {
 		writeJSON(w, map[string]any{"task_id": taskID, "diff": diff, "pushed": false})
 		return
 	}
@@ -166,6 +176,78 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"task_id": taskID, "branch": branch, "pushed": true})
+}
+
+// gatePush blocks until POST /admin/approve/{id} or /admin/deny/{id} (or the
+// HTTP client disconnects). Returning false aborts the push and the diff is
+// returned to the caller without ever touching origin. When auto is true the
+// gate is bypassed — callers must opt in explicitly via Task.AutoApprove.
+func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) bool {
+	if auto {
+		log.Printf("task %s: auto-approve push (caller opted in)", taskID)
+		return true
+	}
+	ch := make(chan bool, 1)
+	b.pendingMu.Lock()
+	if b.pending == nil {
+		b.pending = make(map[string]chan bool)
+	}
+	b.pending[taskID] = ch
+	b.pendingMu.Unlock()
+	defer func() {
+		b.pendingMu.Lock()
+		delete(b.pending, taskID)
+		b.pendingMu.Unlock()
+	}()
+
+	// Persist the diff for the human reviewing it.
+	diffPath := filepath.Join(b.AuditRoot, taskID+".diff")
+	_ = os.WriteFile(diffPath, []byte(diff), 0o600)
+	log.Printf("task %s awaiting approval (%d bytes, diff at %s) — run: drydock approve %s | drydock deny %s",
+		taskID, len(diff), diffPath, taskID, taskID)
+
+	select {
+	case ok := <-ch:
+		return ok
+	case <-ctx.Done():
+		log.Printf("task %s: client disconnected before approval; aborting push", taskID)
+		return false
+	}
+}
+
+// HandleApprove signals the pending task's channel with true. Wire as
+// POST /admin/approve/{id}.
+func (b *Broker) HandleApprove(w http.ResponseWriter, r *http.Request) { b.signal(w, r, true) }
+
+// HandleDeny signals false. Wire as POST /admin/deny/{id}.
+func (b *Broker) HandleDeny(w http.ResponseWriter, r *http.Request) { b.signal(w, r, false) }
+
+// HandlePending returns the set of task IDs currently awaiting approval.
+func (b *Broker) HandlePending(w http.ResponseWriter, r *http.Request) {
+	b.pendingMu.Lock()
+	ids := make([]string, 0, len(b.pending))
+	for k := range b.pending {
+		ids = append(ids, k)
+	}
+	b.pendingMu.Unlock()
+	writeJSON(w, ids)
+}
+
+func (b *Broker) signal(w http.ResponseWriter, r *http.Request, ok bool) {
+	id := r.PathValue("id")
+	b.pendingMu.Lock()
+	ch, exists := b.pending[id]
+	b.pendingMu.Unlock()
+	if !exists {
+		http.Error(w, "no such pending task", http.StatusNotFound)
+		return
+	}
+	select {
+	case ch <- ok:
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "already signaled", http.StatusConflict)
+	}
 }
 
 // firstLine returns the first line of s, capped, for a sane commit subject from
