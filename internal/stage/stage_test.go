@@ -9,10 +9,14 @@ import (
 )
 
 // makeOriginRepo creates a bare repo with one commit and returns its path.
+// `-b main` is set on both init calls so the test isn't fragile against the
+// host's init.defaultBranch — on Ubuntu (CI) without that config, the bare's
+// HEAD would stay at refs/heads/master while we push to main, and `git clone`
+// then produces an empty work tree (warning, exit 0) and the test fails.
 func makeOriginRepo(t *testing.T) string {
 	t.Helper()
 	work := t.TempDir()
-	gitRun(t, work, "init", "-q")
+	gitRun(t, work, "init", "-q", "-b", "main")
 	gitRun(t, work, "config", "user.email", "t@example.com")
 	gitRun(t, work, "config", "user.name", "t")
 	os.WriteFile(filepath.Join(work, "README.md"), []byte("hello\n"), 0o644)
@@ -20,7 +24,7 @@ func makeOriginRepo(t *testing.T) string {
 	gitRun(t, work, "commit", "-q", "-m", "init")
 
 	bare := t.TempDir()
-	gitRun(t, bare, "init", "-q", "--bare")
+	gitRun(t, bare, "init", "-q", "-b", "main", "--bare")
 	gitRun(t, work, "remote", "add", "origin", bare)
 	gitRun(t, work, "push", "-q", "origin", "HEAD:refs/heads/main")
 	return bare
