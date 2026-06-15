@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +21,14 @@ import (
 	"macagent/internal/egress"
 	"macagent/internal/runner"
 	"macagent/internal/stage"
+)
+
+// githubRepoRef matches the three RepoRef forms whose `origin` lets the
+// host-side `gh pr create` find a GitHub host. Local paths are rejected
+// because the staging clone would inherit a filesystem origin and the push
+// flow can't open a PR against it.
+var githubRepoRef = regexp.MustCompile(
+	`^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?(?:\.git)?/?$`,
 )
 
 type Task struct {
@@ -56,6 +65,10 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	var t Task
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if !githubRepoRef.MatchString(t.RepoRef) {
+		http.Error(w, "repo_ref must be a github.com URL (https://, git@, or ssh://)", http.StatusBadRequest)
 		return
 	}
 	if len(t.EgressExtra) > 0 && b.Cfg.PerTaskWidening.RequiresApproval {
@@ -103,7 +116,9 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	env = append(env,
 		fmt.Sprintf("HTTPS_PROXY=http://%s:%d", b.GatewayIP, b.ProxyPort),
 		fmt.Sprintf("HTTP_PROXY=http://%s:%d", b.GatewayIP, b.ProxyPort),
-		"NO_PROXY=127.0.0.1,localhost",
+		// Bypass squid for the credential gateway itself — squid's allowlist
+		// is hostname-based and would deny a CONNECT to the gateway IP.
+		"NO_PROXY=127.0.0.1,localhost,"+b.GatewayIP,
 		"MACAGENT_GW_IP="+b.GatewayIP,
 	)
 

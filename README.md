@@ -165,12 +165,17 @@ returns either a captured diff or a pushed branch.
 curl -sS http://127.0.0.1:8765/tasks \
   -H 'content-type: application/json' \
   -d '{
-        "repo_ref":    "/Users/you/code/your-repo",
+        "repo_ref":    "git@github.com:your-org/your-repo",
         "instruction": "Add a one-line comment to README.md explaining the project.",
         "egress_extra": [],
         "sensitive":   false
       }'
 ```
+
+`repo_ref` must be a `github.com` URL (`https://github.com/…`,
+`git@github.com:…`, or `ssh://git@github.com/…`). Local paths are
+rejected up front because the staging clone would inherit a filesystem
+`origin` and the host-side `gh pr create` can't open a PR against it.
 
 Response shape:
 
