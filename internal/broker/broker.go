@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -32,13 +33,17 @@ type Task struct {
 type ApprovalFn func(kind string, payload any) bool
 
 type Broker struct {
-	Cfg       egress.Config
-	Creds     creds.Provider
-	Approve   ApprovalFn
-	ImageRef  string
-	StageRoot string
-	AuditRoot string
-	Timeout   time.Duration
+	Cfg        egress.Config
+	Creds      creds.Provider
+	Approve    ApprovalFn
+	ImageRef   string
+	StageRoot  string
+	AuditRoot  string
+	Timeout    time.Duration
+	Network    string  // stable egress network name (e.g. macagent-egress)
+	GatewayIP  string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
+	ProxyPort  int     // squid port (e.g. 3128)
+	TaskBudget float64 // USD budget per task
 }
 
 func newID() string {
@@ -76,37 +81,42 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, err := b.Creds.Mint(15 * time.Minute)
+	grant, err := b.Creds.Mint(b.TaskBudget)
 	if err != nil {
 		http.Error(w, "credential mint failed", http.StatusInternalServerError)
 		return
 	}
-	defer b.Creds.Revoke(tok)
+	defer grant.Revoke()
 
 	if err := os.MkdirAll(b.AuditRoot, 0o755); err != nil {
 		http.Error(w, "audit dir failed", http.StatusInternalServerError)
 		return
 	}
-	auditPath := filepath.Join(b.AuditRoot, taskID+".jsonl")
-	logf, err := os.Create(auditPath)
+	logf, err := os.Create(filepath.Join(b.AuditRoot, taskID+".jsonl"))
 	if err != nil {
 		http.Error(w, "audit file failed", http.StatusInternalServerError)
 		return
 	}
 	defer logf.Close()
 
+	env := append([]string{}, grant.EnvVars()...)
+	env = append(env,
+		fmt.Sprintf("HTTPS_PROXY=http://%s:%d", b.GatewayIP, b.ProxyPort),
+		fmt.Sprintf("HTTP_PROXY=http://%s:%d", b.GatewayIP, b.ProxyPort),
+		"NO_PROXY=127.0.0.1,localhost",
+		"MACAGENT_GW_IP="+b.GatewayIP,
+	)
+
 	args := runner.BuildRunArgs(runner.Spec{
 		TaskID:     taskID,
-		Network:    "", // MVP: default per-VM network; v2 sets a named egress net
+		Network:    b.Network,
 		ImageRef:   b.ImageRef,
-		APIKey:     tok.Value,
-		StageDir:   st.WorkDir, // mount ONLY the work tree, never the host-only .git
+		Env:        env,
+		StageDir:   st.WorkDir,
 		PromptFile: "/work/.task/prompt.txt",
 		MemoryGB:   4,
 		CPUs:       4,
 	})
-	// MVP runs on the default network; drop the empty --network pair.
-	args = dropEmptyNetwork(args)
 
 	ctx, cancel := context.WithTimeout(r.Context(), b.Timeout)
 	defer cancel()
@@ -153,18 +163,6 @@ func firstLine(s string) string {
 		s = s[:72]
 	}
 	return s
-}
-
-func dropEmptyNetwork(args []string) []string {
-	out := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--network" && i+1 < len(args) && args[i+1] == "" {
-			i++ // skip flag and its empty value
-			continue
-		}
-		out = append(out, args[i])
-	}
-	return out
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

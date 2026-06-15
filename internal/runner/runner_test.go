@@ -8,9 +8,9 @@ import (
 func TestBuildRunArgs_Contains(t *testing.T) {
 	args := BuildRunArgs(Spec{
 		TaskID:     "abc123",
-		Network:    "egress-abc123",
+		Network:    "macagent-egress",
 		ImageRef:   "claude-sandbox:latest",
-		APIKey:     "sk-test",
+		Env:        []string{"ANTHROPIC_BASE_URL=http://gw:8088", "MACAGENT_GW_IP=192.168.64.1"},
 		StageDir:   "/tmp/broker/stage/abc123",
 		PromptFile: "/work/.task/prompt.txt",
 		MemoryGB:   4,
@@ -24,8 +24,9 @@ func TestBuildRunArgs_Contains(t *testing.T) {
 		{"--cap-add", "CAP_NET_ADMIN"},
 		{"--memory", "4G"},
 		{"--cpus", "4"},
-		{"--network", "egress-abc123"},
-		{"--env", "ANTHROPIC_API_KEY=sk-test"},
+		{"--network", "macagent-egress"},
+		{"--env", "ANTHROPIC_BASE_URL=http://gw:8088"},
+		{"--env", "MACAGENT_GW_IP=192.168.64.1"},
 		{"--env", "TASK_PROMPT_FILE=/work/.task/prompt.txt"},
 		{"--mount", "type=bind,source=/tmp/broker/stage/abc123,target=/work,readonly=false"},
 	} {
