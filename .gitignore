@@ -1,0 +1,10 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+/brokerd
+
+# Per-task scratch (default STAGE_ROOT / AUDIT_ROOT / SQUID_RUN_DIR)
+/tmp/broker/
