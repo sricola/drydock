@@ -264,6 +264,7 @@ func TestBuildRunArgs_Contains(t *testing.T) {
 		{"run", "--rm"},
 		{"--name", "task-abc123"},
 		{"--user", "agent"},
+		{"--cap-add", "CAP_NET_ADMIN"},
 		{"--memory", "4G"},
 		{"--cpus", "4"},
 		{"--network", "egress-abc123"},
@@ -324,6 +325,7 @@ func BuildRunArgs(s Spec) []string {
 		"run", "--rm",
 		"--name", "task-" + s.TaskID,
 		"--user", "agent",
+		"--cap-add", "CAP_NET_ADMIN", // nft egress firewall needs it (verified on container 1.0.0)
 		"--memory", fmt.Sprintf("%dG", s.MemoryGB),
 		"--cpus", fmt.Sprintf("%d", s.CPUs),
 		"--network", s.Network,

@@ -20,6 +20,10 @@ func BuildRunArgs(s Spec) []string {
 		"run", "--rm",
 		"--name", "task-" + s.TaskID,
 		"--user", "agent",
+		// The entrypoint installs an nft egress firewall as root before dropping
+		// to the agent; nft requires CAP_NET_ADMIN. Without it the firewall fails
+		// to install and (under entrypoint's set -e) the task aborts fail-closed.
+		"--cap-add", "CAP_NET_ADMIN",
 		"--memory", fmt.Sprintf("%dG", s.MemoryGB),
 		"--cpus", fmt.Sprintf("%d", s.CPUs),
 		"--network", s.Network,

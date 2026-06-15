@@ -296,6 +296,7 @@ In-VM prompts are off, so gates move to the broker:
 container run --rm \
   --name "task-${TASK_ID}" \
   --user agent \
+  --cap-add CAP_NET_ADMIN \            # nft egress firewall needs it (verified on container 1.0.0)
   --memory 4G --cpus 4 \
   --network "egress-${VM_ID}" \
   --env ANTHROPIC_API_KEY="${SCOPED_KEY}" \
