@@ -19,8 +19,8 @@ func BuildRunArgs(s Spec) []string {
 	args := []string{
 		"run", "--rm",
 		"--name", "task-" + s.TaskID,
-		"--user", "agent",
-		// nft egress firewall installs as root in the entrypoint; needs CAP_NET_ADMIN.
+		// entrypoint.sh starts as root to install the nft pin, then drops to
+		// the agent user via gosu. Don't pass --user here, or nft can't flush.
 		"--cap-add", "CAP_NET_ADMIN",
 		"--memory", fmt.Sprintf("%dG", s.MemoryGB),
 		"--cpus", fmt.Sprintf("%d", s.CPUs),
@@ -31,7 +31,9 @@ func BuildRunArgs(s Spec) []string {
 	}
 	args = append(args,
 		"--env", "TASK_PROMPT_FILE="+s.PromptFile,
-		"--mount", fmt.Sprintf("type=bind,source=%s,target=/work,readonly=false", s.StageDir),
+		// Apple container treats "readonly" as a presence flag; setting
+		// readonly=false still mounts read-only. Omit it entirely for rw.
+		"--mount", fmt.Sprintf("type=bind,source=%s,target=/work", s.StageDir),
 		s.ImageRef,
 		"/usr/local/bin/entrypoint.sh",
 	)
