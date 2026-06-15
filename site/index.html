@@ -107,7 +107,20 @@ h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);lett
 .tbl td{padding:14px 16px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--mut);font-size:14.5px}
 .tbl tr:last-child td{border-bottom:0}
 .tbl tr:hover td{background:rgba(20,25,30,.025)}
-@media(max-width:680px){.tbl{font-size:13px}.tbl th,.tbl td{padding:10px 12px}}
+/* On mobile, stack each row as a card: a 3-col table can't fit ~390px. */
+@media(max-width:680px){
+  .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%}
+  .tbl{border:0}
+  .tbl thead{display:none}
+  .tbl tr{border:1px solid var(--line2);border-radius:4px;background:var(--panel);margin-bottom:12px;padding:6px 14px}
+  .tbl tr:hover td{background:transparent}
+  .tbl td{border-bottom:1px solid var(--line);padding:10px 0;font-size:14px}
+  .tbl tr td:last-child{border-bottom:0}
+  .tbl td::before{content:attr(data-l);display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+  .tbl td:first-child::before{color:var(--ink)}
+  .tbl td:first-child{font-weight:600;color:var(--ink)}
+  .tbl .tag{white-space:normal;display:inline-block}
+}
 .tag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:2px;white-space:nowrap}
 .tag.host{color:var(--grn);background:var(--grn-dim);border:1px solid var(--grn-line)}
 .tag.vm{color:var(--red);background:var(--red-dim);border:1px solid var(--red-line)}
@@ -224,12 +237,12 @@ footer .sq{display:inline-block;width:8px;height:8px;background:var(--red);margi
   <table class="tbl reveal">
     <thead><tr><th>Threat</th><th>Primary control</th><th>Backstop</th></tr></thead>
     <tbody>
-      <tr><td>Read host filesystem / secrets</td><td>Nothing host-side is mounted; no <span class="ic">~/.ssh</span>, no cloud creds</td><td><span class="tag host">per-VM HW isolation</span></td></tr>
-      <tr><td>Exfiltrate the API key</td><td>Real key never enters the VM — gateway holds it host-side</td><td><span class="tag host">egress deny-by-default</span></td></tr>
-      <tr><td>Steal git push credentials</td><td>Push runs on the host; <span class="ic">.git</span> is never mounted</td><td><span class="tag host">human approves the diff</span></td></tr>
-      <tr><td>Runaway tokens / cost</td><td>Per-task USD budget metered at the gateway</td><td><span class="tag host">wall-clock timeout</span></td></tr>
-      <tr><td>Persist across tasks</td><td>Ephemeral per-task VM, torn down after</td><td><span class="tag host">git diff is the only output</span></td></tr>
-      <tr><td>VM / hypervisor escape</td><td>Apple's per-container lightweight VM</td><td><span class="tag oos">out of scope</span></td></tr>
+      <tr><td data-l="Threat">Read host filesystem / secrets</td><td data-l="Primary control">Nothing host-side is mounted; no <span class="ic">~/.ssh</span>, no cloud creds</td><td data-l="Backstop"><span class="tag host">per-VM HW isolation</span></td></tr>
+      <tr><td data-l="Threat">Exfiltrate the API key</td><td data-l="Primary control">Real key never enters the VM — gateway holds it host-side</td><td data-l="Backstop"><span class="tag host">egress deny-by-default</span></td></tr>
+      <tr><td data-l="Threat">Steal git push credentials</td><td data-l="Primary control">Push runs on the host; <span class="ic">.git</span> is never mounted</td><td data-l="Backstop"><span class="tag host">human approves the diff</span></td></tr>
+      <tr><td data-l="Threat">Runaway tokens / cost</td><td data-l="Primary control">Per-task USD budget metered at the gateway</td><td data-l="Backstop"><span class="tag host">wall-clock timeout</span></td></tr>
+      <tr><td data-l="Threat">Persist across tasks</td><td data-l="Primary control">Ephemeral per-task VM, torn down after</td><td data-l="Backstop"><span class="tag host">git diff is the only output</span></td></tr>
+      <tr><td data-l="Threat">VM / hypervisor escape</td><td data-l="Primary control">Apple's per-container lightweight VM</td><td data-l="Backstop"><span class="tag oos">out of scope</span></td></tr>
     </tbody>
   </table>
 </section>
