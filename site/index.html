@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>macagent — untrusted agents, hardware-isolated</title>
+<meta name="description" content="How macagent runs Claude Code as an autonomous coding agent inside per-task hardware-isolated VMs on macOS: credential gateway, deny-by-default egress, host-side push.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0c0f;
+  --bg2:#0d1014;
+  --panel:#11161c;
+  --panel2:#141a21;
+  --ink:#e9e7df;
+  --mut:#8a939e;
+  --faint:#5b6470;
+  --line:rgba(233,231,223,.10);
+  --line2:rgba(233,231,223,.16);
+  --red:#ff5b5b;
+  --red-dim:rgba(255,91,91,.12);
+  --red-line:rgba(255,91,91,.32);
+  --grn:#3fe0a2;
+  --grn-dim:rgba(63,224,162,.10);
+  --grn-line:rgba(63,224,162,.30);
+  --amber:#f0b13c;
+  --blue:#6ea8ff;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  --serif:"Newsreader",Georgia,serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font-family:var(--serif);font-size:18px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  background-image:
+    linear-gradient(var(--line) 1px,transparent 1px),
+    linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:44px 44px;
+  background-position:center top;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(120% 80% at 50% -10%,rgba(63,224,162,.06),transparent 60%),
+    radial-gradient(100% 60% at 100% 110%,rgba(255,91,91,.05),transparent 55%),
+    radial-gradient(80% 60% at 0% 100%,rgba(110,168,255,.04),transparent 60%);
+}
+body::after{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.5;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
+}
+.wrap{position:relative;z-index:1;max-width:1080px;margin:0 auto;padding:0 28px}
+a{color:inherit}
+.mono{font-family:var(--mono)}
+
+/* ---- top bar ---- */
+.topbar{position:relative;z-index:2;border-bottom:1px solid var(--line);background:rgba(10,12,15,.7);backdrop-filter:blur(8px)}
+.topbar .wrap{display:flex;align-items:center;justify-content:space-between;height:56px}
+.brand{font-family:var(--mono);font-weight:700;letter-spacing:.02em;font-size:15px}
+.brand .sq{display:inline-block;width:9px;height:9px;background:var(--grn);margin-right:9px;vertical-align:1px;box-shadow:0 0 12px var(--grn)}
+.nav{font-family:var(--mono);font-size:12.5px;color:var(--mut);display:flex;gap:22px}
+.nav a{text-decoration:none;transition:color .2s}
+.nav a:hover{color:var(--grn)}
+@media(max-width:680px){.nav{display:none}}
+
+/* ---- hero ---- */
+.hero{padding:104px 0 72px;position:relative}
+.kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.28em;text-transform:uppercase;color:var(--grn);margin-bottom:30px}
+.kicker .bar{display:inline-block;width:40px;height:1px;background:var(--grn-line);vertical-align:4px;margin-right:14px}
+h1{
+  font-family:var(--mono);font-weight:700;
+  font-size:clamp(40px,7.2vw,78px);line-height:1.02;letter-spacing:-.02em;
+  margin:0 0 28px;
+}
+h1 .u{color:var(--red);position:relative}
+h1 .t{color:var(--grn)}
+.lede{font-size:clamp(19px,2.4vw,23px);line-height:1.5;max-width:42ch;color:#cfcdc4}
+.lede b{font-weight:600;color:var(--ink)}
+.chips{display:flex;flex-wrap:wrap;gap:10px;margin-top:38px}
+.chip{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;color:var(--mut);
+  border:1px solid var(--line2);border-radius:2px;padding:7px 11px;background:var(--panel)}
+.chip b{color:var(--ink);font-weight:600}
+
+/* reveal */
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
+.reveal.in{opacity:1;transform:none}
+
+/* ---- sections ---- */
+section{padding:64px 0;border-top:1px solid var(--line)}
+.seclabel{font-family:var(--mono);font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);margin-bottom:18px;display:flex;align-items:baseline;gap:14px}
+.seclabel .n{color:var(--grn)}
+h2{font-family:var(--mono);font-weight:600;font-size:clamp(24px,3.4vw,34px);letter-spacing:-.01em;margin:0 0 22px;line-height:1.12}
+.prose{max-width:64ch;color:#d6d4cb}
+.prose p{margin:0 0 18px}
+.prose b{color:var(--ink);font-weight:600}
+.prose code,.ic{font-family:var(--mono);font-size:.86em;background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:1px 6px;color:#cdd6df}
+
+/* ---- threat table ---- */
+.tbl{width:100%;border-collapse:collapse;font-size:14.5px;margin-top:26px;border:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-weight:500;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);text-align:left;padding:13px 16px;border-bottom:1px solid var(--line2);background:var(--panel)}
+.tbl td{padding:14px 16px;border-bottom:1px solid var(--line);vertical-align:top;color:#cbc9c0;font-size:15px}
+.tbl tr:last-child td{border-bottom:0}
+.tbl tr:hover td{background:rgba(255,255,255,.012)}
+.tag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:2px;white-space:nowrap}
+.tag.host{color:var(--grn);background:var(--grn-dim);border:1px solid var(--grn-line)}
+.tag.vm{color:var(--red);background:var(--red-dim);border:1px solid var(--red-line)}
+.tag.oos{color:var(--faint);border:1px solid var(--line2)}
+
+/* ---- architecture diagram ---- */
+.diagram{margin-top:10px;border:1px solid var(--line2);background:linear-gradient(180deg,var(--bg2),var(--bg));border-radius:4px;overflow:hidden}
+.diagram .head{display:flex;border-bottom:1px solid var(--line)}
+.zone-h{flex:1;padding:11px 18px;font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase}
+.zone-h.vm{color:var(--red);background:var(--red-dim);text-align:left}
+.zone-h.host{color:var(--grn);background:var(--grn-dim);text-align:right}
+.grid2{display:grid;grid-template-columns:1fr 1px 1.15fr;align-items:stretch}
+.seam{background:repeating-linear-gradient(180deg,var(--line2) 0 7px,transparent 7px 14px)}
+.col{padding:22px 20px;display:flex;flex-direction:column;gap:12px}
+.col.vm{background:linear-gradient(180deg,rgba(255,91,91,.04),transparent)}
+.col.host{background:linear-gradient(180deg,rgba(63,224,162,.04),transparent)}
+.node{border:1px solid var(--line2);background:var(--panel);border-radius:3px;padding:12px 14px}
+.node .nt{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink);margin-bottom:4px}
+.node .nd{font-size:13px;color:var(--mut);font-family:var(--serif)}
+.node.danger{border-color:var(--red-line)}
+.node.danger .nt{color:var(--red)}
+.node.safe{border-color:var(--grn-line)}
+.node.safe .nt{color:var(--grn)}
+.node.key{border-color:var(--grn-line);background:linear-gradient(180deg,var(--grn-dim),var(--panel))}
+.flowrow{border-top:1px solid var(--line);padding:14px 20px;display:grid;grid-template-columns:130px 1fr;gap:16px;align-items:baseline}
+.flowrow .fl{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.flowrow .fd{font-family:var(--mono);font-size:13px;color:#c7d0da;line-height:1.7}
+.flowrow .ar{color:var(--grn)}
+.flowrow .arr{color:var(--red)}
+.flowrow .tok{color:var(--red)}
+.flowrow .real{color:var(--grn)}
+@media(max-width:680px){
+  .grid2{grid-template-columns:1fr}
+  .seam{display:none}
+  .col.host{border-top:1px dashed var(--grn-line)}
+  .zone-h.host{text-align:left}
+  .flowrow{grid-template-columns:1fr;gap:6px}
+}
+
+/* ---- guarantee cards ---- */
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:8px}
+@media(max-width:780px){.cards{grid-template-columns:1fr}}
+.card{border:1px solid var(--line2);background:var(--panel);border-radius:4px;padding:22px 20px;position:relative;transition:transform .3s cubic-bezier(.2,.7,.2,1),border-color .3s}
+.card:hover{transform:translateY(-4px);border-color:var(--grn-line)}
+.card .idx{font-family:var(--mono);font-size:12px;color:var(--grn);letter-spacing:.1em}
+.card h3{font-family:var(--mono);font-size:17px;font-weight:600;margin:14px 0 10px;line-height:1.25}
+.card p{font-size:14.5px;color:var(--mut);margin:0;line-height:1.55}
+.card p b{color:#d6d4cb;font-weight:600}
+
+/* ---- terminal block ---- */
+.term{margin-top:24px;border:1px solid var(--line2);border-radius:5px;background:#08090b;overflow:hidden;box-shadow:0 24px 60px -30px rgba(0,0,0,.8)}
+.term .bar{display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.term .dot{width:10px;height:10px;border-radius:50%}
+.term .dot.r{background:#ff5f57}.term .dot.y{background:#febc2e}.term .dot.g{background:#28c840}
+.term .ttl{margin-left:8px;font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+.term pre{margin:0;padding:18px 18px;font-family:var(--mono);font-size:13px;line-height:1.75;color:#cdd6df;overflow-x:auto}
+.term .c{color:var(--faint)}
+.term .g{color:var(--grn)}
+.term .r{color:var(--red)}
+.term .a{color:var(--amber)}
+.term .k{color:var(--blue)}
+
+/* ---- enforcement map ---- */
+.map{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px}
+@media(max-width:780px){.map{grid-template-columns:1fr}}
+.mcol{border:1px solid var(--line2);border-radius:4px;overflow:hidden}
+.mcol .mh{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;padding:12px 16px;border-bottom:1px solid var(--line2)}
+.mcol.vm .mh{color:var(--red);background:var(--red-dim)}
+.mcol.host .mh{color:var(--grn);background:var(--grn-dim)}
+.mrow{padding:13px 16px;border-bottom:1px solid var(--line);font-size:14px;color:#cbc9c0}
+.mrow:last-child{border-bottom:0}
+.mrow .mt{font-family:var(--mono);font-size:12.5px;color:var(--ink);display:block;margin-bottom:3px}
+.mrow .ms{color:var(--mut);font-size:13.5px}
+
+/* ---- footprint ---- */
+.pkgs{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.pkg{font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:2px;padding:8px 12px;color:var(--mut);background:var(--panel)}
+.pkg b{color:var(--grn);font-weight:600}
+.status{margin-top:26px;border-left:2px solid var(--grn-line);padding:4px 0 4px 20px;color:var(--mut);font-size:15px}
+.status b{color:var(--ink);font-weight:600}
+
+/* ---- footer ---- */
+footer{border-top:1px solid var(--line);padding:40px 0 64px;color:var(--faint);font-family:var(--mono);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px}
+footer .sq{display:inline-block;width:8px;height:8px;background:var(--red);margin-right:8px;vertical-align:0px}
+
+::selection{background:var(--grn);color:#04140d}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wrap">
+    <div class="brand"><span class="sq"></span>macagent</div>
+    <nav class="nav">
+      <a href="#threat">threat</a>
+      <a href="#boundary">boundary</a>
+      <a href="#arch">architecture</a>
+      <a href="#flows">flows</a>
+      <a href="#map">enforcement</a>
+    </nav>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="kicker reveal"><span class="bar"></span>Systems dossier · containment design</div>
+    <h1 class="reveal">Untrusted agents,<br><span class="t">hardware-isolated.</span></h1>
+    <p class="lede reveal">macagent runs Claude Code as an autonomous coding agent inside a <b>per-task Linux VM</b> on Apple silicon. The model key never enters the sandbox, egress is <b>deny-by-default</b>, and <b>git push happens on the host</b> — so <span class="ic">--dangerously-skip-permissions</span> is safe to run unattended.</p>
+    <div class="chips reveal">
+      <span class="chip">macOS&nbsp;<b>26+</b></span>
+      <span class="chip">apple/container&nbsp;<b>1.0</b></span>
+      <span class="chip">per-VM&nbsp;<b>vmnet</b></span>
+      <span class="chip">Go&nbsp;<b>broker</b></span>
+      <span class="chip"><b>hardware</b>&nbsp;isolation</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<section id="threat">
+  <div class="seclabel reveal"><span class="n">01</span> The adversary</div>
+  <h2 class="reveal">Assume the VM is already hostile.</h2>
+  <div class="prose reveal">
+    <p>The agent runs in bypass mode: every tool call — file writes, shell commands, web fetches, subagent spawns — executes with <b>no confirmation</b>. So the threat isn't the agent misbehaving; it's the <b>code it runs</b>: a malicious dependency, a poisoned repository, a prompt-injection that turns a fetched web page into a shell command.</p>
+    <p>macagent treats the sandbox as compromised by default and contains the blast radius with the VM boundary plus a tightly-scoped egress allowlist. The in-VM permission prompts become redundant friction once that containment is real — which is exactly what makes unattended, headless runs tractable.</p>
+  </div>
+  <table class="tbl reveal">
+    <thead><tr><th>Threat</th><th>Primary control</th><th>Backstop</th></tr></thead>
+    <tbody>
+      <tr><td>Read host filesystem / secrets</td><td>Nothing host-side is mounted; no <span class="ic">~/.ssh</span>, no cloud creds</td><td><span class="tag host">per-VM HW isolation</span></td></tr>
+      <tr><td>Exfiltrate the API key</td><td>Real key never enters the VM — gateway holds it host-side</td><td><span class="tag host">egress deny-by-default</span></td></tr>
+      <tr><td>Steal git push credentials</td><td>Push runs on the host; <span class="ic">.git</span> is never mounted</td><td><span class="tag host">VM has no git egress</span></td></tr>
+      <tr><td>Runaway tokens / cost</td><td>Per-task USD budget metered at the gateway</td><td><span class="tag host">wall-clock timeout</span></td></tr>
+      <tr><td>Persist across tasks</td><td>Ephemeral per-task VM, torn down after</td><td><span class="tag host">git diff is the only output</span></td></tr>
+      <tr><td>VM / hypervisor escape</td><td>Apple's per-container lightweight VM</td><td><span class="tag oos">out of scope</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="boundary">
+  <div class="seclabel reveal"><span class="n">02</span> The trust boundary</div>
+  <h2 class="reveal">Commands never cross. Only data.</h2>
+  <div class="prose reveal">
+    <p>Two zones. Inside the VM: <b style="color:var(--red)">untrusted code</b>. On the host: the <b style="color:var(--grn)">trusted computing base</b> — the broker, the credential gateway, the egress proxy, and the real git/model credentials. Exactly one thing crosses <em>inward</em> (a per-task token plus the task instruction), and exactly one thing crosses <em>outward</em> (a git diff).</p>
+    <p>That asymmetry is the whole design. The agent produces a <b>diff</b> — inert data the host inspects and applies — never a command the host executes on its behalf.</p>
+  </div>
+</section>
+
+<section id="arch">
+  <div class="seclabel reveal"><span class="n">03</span> Architecture</div>
+  <h2 class="reveal">One broker, two host proxies, a sealed VM.</h2>
+
+  <div class="diagram reveal">
+    <div class="head">
+      <div class="zone-h vm">◀ Sandbox VM · untrusted</div>
+      <div class="zone-h host">Host · trusted computing base ▶</div>
+    </div>
+    <div class="grid2">
+      <div class="col vm">
+        <div class="node danger">
+          <div class="nt">claude --bare -p</div>
+          <div class="nd">--dangerously-skip-permissions, output stream-json</div>
+        </div>
+        <div class="node">
+          <div class="nt">nft pin (root, pre-priv-drop)</div>
+          <div class="nd">egress allowed only → :8088 and → :3128. DNS dropped. Agent runs non-root; can't flush it.</div>
+        </div>
+        <div class="node">
+          <div class="nt">env (injected by broker)</div>
+          <div class="nd">ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, HTTPS_PROXY — <b style="color:var(--red)">no real key</b></div>
+        </div>
+        <div class="node">
+          <div class="nt">/work (bind mount)</div>
+          <div class="nd">work tree only — <b style="color:var(--red)">never</b> .git</div>
+        </div>
+      </div>
+      <div class="seam"></div>
+      <div class="col host">
+        <div class="node safe">
+          <div class="nt">brokerd</div>
+          <div class="nd">leases the VM, stages the repo, streams the audit log, gates the push</div>
+        </div>
+        <div class="node key">
+          <div class="nt">credential gateway · :8088</div>
+          <div class="nd">validates the bearer token, swaps in the real X-Api-Key, meters USD budget, revokes on task end</div>
+        </div>
+        <div class="node safe">
+          <div class="nt">squid · :3128</div>
+          <div class="nd">CONNECT allowlist by hostname (npm / pypi), no TLS interception</div>
+        </div>
+        <div class="node">
+          <div class="nt">anchor + host git</div>
+          <div class="nd">keeps the vmnet gateway up; pushes from a host-only .git with hooks disabled</div>
+        </div>
+      </div>
+    </div>
+    <div class="flowrow">
+      <div class="fl">model api</div>
+      <div class="fd"><span class="tok">Bearer tok</span> → gateway:8088 &nbsp;<span class="ar">⟶</span>&nbsp; swap to <span class="real">X-Api-Key: REAL</span> → <span class="ar">HTTPS</span> api.anthropic.com</div>
+    </div>
+    <div class="flowrow">
+      <div class="fl">packages</div>
+      <div class="fd">npm / pip → <span class="ar">CONNECT host</span> → squid:3128 &nbsp;<span class="ar">⟶</span>&nbsp; allowlisted → registry &nbsp;·&nbsp; <span class="arr">everything else: DROP</span></div>
+    </div>
+    <div class="flowrow">
+      <div class="fl">result</div>
+      <div class="fd">VM writes /work &nbsp;<span class="ar">⟶</span>&nbsp; broker captures <span class="real">git diff</span> &nbsp;<span class="ar">⟶</span>&nbsp; host push / PR (credentials the VM never saw)</div>
+    </div>
+  </div>
+</section>
+
+<section id="guarantees">
+  <div class="seclabel reveal"><span class="n">04</span> Three guarantees</div>
+  <h2 class="reveal">What the containment actually buys.</h2>
+  <div class="cards">
+    <div class="card reveal">
+      <div class="idx">/ 01</div>
+      <h3>The key is never in the VM</h3>
+      <p>The sandbox holds only a per-task <b>bearer token</b>. An in-broker reverse proxy validates it, strips <span style="font-family:var(--mono);font-size:.85em">Authorization</span>, and injects the real <b>X-Api-Key</b> on the way out. Leak the token and it works <b>only through your gateway</b>, capped by budget, revoked the instant the task ends.</p>
+    </div>
+    <div class="card reveal">
+      <div class="idx">/ 02</div>
+      <h3>Egress is deny-by-default</h3>
+      <p>An in-VM <b>nft pin</b> allows traffic to exactly two host ports — gateway and proxy — and <b>drops DNS</b>. A host-side squid resolves names and allows registries <b>by hostname</b>. The allowlist lives in the trusted host, not in the territory the attacker controls.</p>
+    </div>
+    <div class="card reveal">
+      <div class="idx">/ 03</div>
+      <h3>Push happens host-side</h3>
+      <p>The broker clones on the host and keeps <span style="font-family:var(--mono);font-size:.85em">.git</span> <b>host-only</b> — only the work tree is mounted. So a VM that plants <span style="font-family:var(--mono);font-size:.85em">.git/hooks</span> can't execute code on the host at push time, and clone-URL credentials never reach the sandbox.</p>
+    </div>
+  </div>
+</section>
+
+<section id="flows">
+  <div class="seclabel reveal"><span class="n">05</span> The credential path</div>
+  <h2 class="reveal">A token goes in. A real key never comes back.</h2>
+  <div class="prose reveal">
+    <p>Claude Code is pointed at the gateway with <span class="ic">ANTHROPIC_BASE_URL</span> and authenticates with a bearer token in <span class="ic">ANTHROPIC_AUTH_TOKEN</span>. The gateway is the only component that ever holds the real key — it validates the token against an in-memory lease, swaps the credential, forwards over TLS, and meters the response usage against a per-task dollar budget. Revocation is a single map delete; a broker crash invalidates every token for free.</p>
+  </div>
+  <div class="term reveal">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">gateway — request path</span></div>
+<pre><span class="c"># inside the VM — all it ever holds</span>
+ANTHROPIC_BASE_URL = <span class="k">http://192.168.66.1:8088</span>
+ANTHROPIC_AUTH_TOKEN = <span class="r">tok_9f3c…a17b</span>   <span class="c"># per-task, revocable</span>
+
+<span class="c"># at the gateway (host TCB) — never logged, never returned to the VM</span>
+<span class="a">validate</span>(tok) → lease{ budget: <span class="g">$2.00</span>, spent: <span class="g">$0.41</span> }
+strip  <span class="r">Authorization: Bearer tok_…</span>
+set    <span class="g">X-Api-Key: sk-ant-…REAL</span>
+<span class="a">forward</span> → <span class="g">https://api.anthropic.com</span>   <span class="c"># real TLS, host→Anthropic</span>
+meter  usage → spent += cost(model, in, out)
+<span class="c"># task ends → Revoke(tok) → 401 forever after</span></pre>
+  </div>
+</section>
+
+<section id="git">
+  <div class="seclabel reveal"><span class="n">06</span> The git boundary</div>
+  <h2 class="reveal">A diff is data. <span style="color:var(--mut)">.git is a weapon.</span></h2>
+  <div class="prose reveal">
+    <p>The subtle vector: if you mount a normal clone into the VM and then run <span class="ic">git commit</span>/<span class="ic">push</span> on the host against that same repo, a malicious agent can drop a <span class="ic">.git/hooks/pre-commit</span> or poison <span class="ic">.git/config</span> — and those execute <b>on the host</b>, with the host's credentials. That's remote code execution straight through the trust boundary.</p>
+    <p>macagent separates the two: clone on the host, move <span class="ic">.git</span> out of the mounted path, mount <b>only the work tree</b>, and run host git with <span class="ic">core.hooksPath=/dev/null</span> and fsmonitor off. The diff — and nothing else — crosses back. <span style="color:var(--grn)">This was caught by an adversarial review and is regression-tested.</span></p>
+  </div>
+</section>
+
+<section id="map">
+  <div class="seclabel reveal"><span class="n">07</span> Enforcement map</div>
+  <h2 class="reveal">Where each control lives.</h2>
+  <div class="map">
+    <div class="mcol vm reveal">
+      <div class="mh">◀ in the VM (set, can't be undone)</div>
+      <div class="mrow"><span class="mt">nft egress pin</span><span class="ms">Default-deny output; allow only the gateway + proxy ports; DNS dropped. Installed as root before priv-drop.</span></div>
+      <div class="mrow"><span class="mt">non-root agent</span><span class="ms">Bypass mode refuses root; the agent can't flush nft or escalate.</span></div>
+      <div class="mrow"><span class="mt">no host mounts</span><span class="ms">Only the scratch work tree. No secrets, no .git, no host filesystem.</span></div>
+    </div>
+    <div class="mcol host reveal">
+      <div class="mh">Host · trusted computing base ▶</div>
+      <div class="mrow"><span class="mt">credential gateway</span><span class="ms">Holds the real key; token validation, budget metering, revocation.</span></div>
+      <div class="mrow"><span class="mt">squid allowlist</span><span class="ms">Hostname-based CONNECT allow; resolves DNS host-side; no interception.</span></div>
+      <div class="mrow"><span class="mt">host-only git</span><span class="ms">Separated .git, hooks disabled, push with credentials the VM never sees.</span></div>
+      <div class="mrow"><span class="mt">approval gates</span><span class="ms">Broker pauses before push and before any egress-allowlist widening.</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="footprint">
+  <div class="seclabel reveal"><span class="n">08</span> Footprint</div>
+  <h2 class="reveal">A small, inspectable Go broker.</h2>
+  <div class="prose reveal">
+    <p>No heavy framework — a single daemon orchestrating Apple's <span class="ic">container</span> CLI, with focused packages you can hold in your head.</p>
+  </div>
+  <div class="pkgs reveal">
+    <span class="pkg"><b>gateway</b> · token proxy + budget</span>
+    <span class="pkg"><b>netfw</b> · squid allowlist + vmnet</span>
+    <span class="pkg"><b>creds</b> · grant / revoke seam</span>
+    <span class="pkg"><b>stage</b> · clone-in / diff-out</span>
+    <span class="pkg"><b>runner</b> · container argv</span>
+    <span class="pkg"><b>broker</b> · the orchestration loop</span>
+  </div>
+  <p class="status reveal"><b>Verified on hardware.</b> VM boot, the nft pin (direct internet + DNS fail closed), the gateway (VM → 401 on an invalid token), and squid (pypi allowed → 200, example denied → 403) are all confirmed on <span class="ic">apple/container 1.0</span>. The credential gateway passed an independent adversarial review with no blocking findings.</p>
+</section>
+
+</div>
+
+<footer class="wrap">
+  <div><span class="sq"></span>macagent — containment for autonomous coding agents</div>
+  <div>per-VM isolation · deny-by-default egress · host-side push</div>
+</footer>
+
+<script>
+(function(){
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  },{threshold:.12,rootMargin:"0px 0px -8% 0px"});
+  document.querySelectorAll('.reveal').forEach(function(el,i){
+    // gentle stagger for hero cluster
+    if(el.closest('.hero')) el.style.transitionDelay=(i*0.08)+'s';
+    io.observe(el);
+  });
+  // ensure hero shows even if observer misses on instant load
+  window.addEventListener('load',function(){
+    document.querySelectorAll('.hero .reveal').forEach(function(el){el.classList.add('in');});
+  });
+})();
+</script>
+</body>
+</html>
