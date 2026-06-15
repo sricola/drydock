@@ -1,27 +1,26 @@
 package creds
 
 import (
+	"slices"
 	"testing"
-	"time"
 )
 
-func TestStaticProvider_MintReturnsKey(t *testing.T) {
+func TestStaticProvider_GrantEnvAndRevoke(t *testing.T) {
 	var p Provider = StaticProvider{Key: "sk-static"}
-	tok, err := p.Mint(15 * time.Minute)
+	g, err := p.Mint(5.0)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	if tok.Value != "sk-static" {
-		t.Errorf("Value = %q, want sk-static", tok.Value)
+	if !slices.Contains(g.EnvVars(), "ANTHROPIC_API_KEY=sk-static") {
+		t.Errorf("EnvVars = %v", g.EnvVars())
 	}
-	if err := p.Revoke(tok); err != nil {
+	if err := g.Revoke(); err != nil {
 		t.Errorf("Revoke: %v", err)
 	}
 }
 
 func TestStaticProvider_EmptyKeyErrors(t *testing.T) {
-	p := StaticProvider{Key: ""}
-	if _, err := p.Mint(time.Minute); err == nil {
-		t.Errorf("Mint with empty key: want error, got nil")
+	if _, err := (StaticProvider{Key: ""}).Mint(1.0); err == nil {
+		t.Errorf("want error for empty key")
 	}
 }

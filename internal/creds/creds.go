@@ -1,31 +1,32 @@
-// Package creds issues credentials for a task. MVP: a static key read from
-// the broker host. The Provider interface lets a gateway-backed, per-task
-// token provider replace it later without changing callers.
+// Package creds issues a credential Grant per task. A Grant exposes the env vars
+// to inject into the sandbox and a Revoke hook. This lets a gateway-backed,
+// per-task-token provider replace the static-key provider without changing callers.
 package creds
 
-import (
-	"errors"
-	"time"
-)
+import "errors"
 
-type Token struct {
-	Value string
+type Grant interface {
+	EnvVars() []string
+	Revoke() error
 }
 
 type Provider interface {
-	Mint(ttl time.Duration) (Token, error)
-	Revoke(Token) error
+	// Mint issues a grant; budgetUSD is advisory for providers that meter spend.
+	Mint(budgetUSD float64) (Grant, error)
 }
 
 type StaticProvider struct {
 	Key string
 }
 
-func (p StaticProvider) Mint(time.Duration) (Token, error) {
+type staticGrant struct{ key string }
+
+func (p StaticProvider) Mint(float64) (Grant, error) {
 	if p.Key == "" {
-		return Token{}, errors.New("creds: empty static key")
+		return nil, errors.New("creds: empty static key")
 	}
-	return Token{Value: p.Key}, nil
+	return staticGrant{p.Key}, nil
 }
 
-func (StaticProvider) Revoke(Token) error { return nil }
+func (g staticGrant) EnvVars() []string { return []string{"ANTHROPIC_API_KEY=" + g.key} }
+func (g staticGrant) Revoke() error     { return nil }
