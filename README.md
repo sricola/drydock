@@ -1,4 +1,4 @@
-# macagent
+# drydock
 
 Run Claude Code as an autonomous coding agent on macOS, inside a per-task
 hardware-isolated VM with deny-by-default egress and a host-side credential
@@ -50,7 +50,7 @@ exfiltrate the real API key.
                   │  └─────────────────┘  │
                   │   bound to vmnet GW   │
                   └───────────────────────┼─┘
-                                          │  vmnet (macagent-egress, 192.168.66.0/24)
+                                          │  vmnet (drydock-egress, 192.168.66.0/24)
                             ┌─────────────┴────────────┐
                             │  sandbox VM (per task)   │
                             │  192.168.66.x            │
@@ -89,7 +89,7 @@ brew install squid
 brew install go
 
 # Create the stable egress network with the .1 gateway brokerd expects
-container network create --subnet 192.168.66.0/24 macagent-egress
+container network create --subnet 192.168.66.0/24 drydock-egress
 
 # Build the sandbox image
 container build -t claude-sandbox:latest image/
@@ -98,8 +98,8 @@ container build -t claude-sandbox:latest image/
 ### Sanity-check the network
 
 ```bash
-container network inspect macagent-egress | jq .[].status
-# ipv4Gateway must be 192.168.66.1 (matches MACAGENT_GW_IP default)
+container network inspect drydock-egress | jq .[].status
+# ipv4Gateway must be 192.168.66.1 (matches DRYDOCK_GW_IP default)
 ```
 
 If the npm step of the image build fails with `ETIMEDOUT` against
@@ -119,19 +119,19 @@ path is live without spending tokens.
 # 1. Build and run brokerd
 go build -o /tmp/brokerd ./cmd/brokerd
 ANTHROPIC_API_KEY=sk-ant-fake \
-MACAGENT_NETWORK=macagent-egress \
-MACAGENT_GW_IP=192.168.66.1 \
+DRYDOCK_NETWORK=drydock-egress \
+DRYDOCK_GW_IP=192.168.66.1 \
 SANDBOX_IMAGE=claude-sandbox:latest \
   /tmp/brokerd &
 
 # Expected log lines:
-#   network anchor up on macagent-egress
+#   network anchor up on drydock-egress
 #   squid listening on 192.168.66.1:3128
 #   gateway listening on 192.168.66.1:8088
 #   brokerd listening on 127.0.0.1:8765 (gateway …, squid …)
 
-# 2. From a throwaway VM on macagent-egress, install the firewall pin and probe
-container run --rm --network macagent-egress --cap-add CAP_NET_ADMIN \
+# 2. From a throwaway VM on drydock-egress, install the firewall pin and probe
+container run --rm --network drydock-egress --cap-add CAP_NET_ADMIN \
   --entrypoint /bin/bash claude-sandbox:latest -c '
     /usr/local/bin/init-firewall.sh 192.168.66.1 8088 3128
     curl -sS --max-time 5 -o /dev/null -w "gateway:    %{http_code}\n" http://192.168.66.1:8088/
@@ -147,7 +147,7 @@ container run --rm --network macagent-egress --cap-add CAP_NET_ADMIN \
 
 # 3. Shut down
 kill %1
-container ls -a | grep macagent       # macagent-anchor should be gone
+container ls -a | grep drydock       # drydock-anchor should be gone
 ```
 
 If those three lines match, every plumbing surface — anchor, gateway,
@@ -190,7 +190,7 @@ Response shape:
 ```
 
 Each task spends real Anthropic tokens against `ANTHROPIC_API_KEY`, capped
-at `MACAGENT_TASK_BUDGET_USD` (default $2.00) and `30m` wall-clock by
+at `DRYDOCK_TASK_BUDGET_USD` (default $2.00) and `30m` wall-clock by
 default. The credential gateway rejects model calls once the budget is hit.
 
 ### Widening egress per task
@@ -249,9 +249,9 @@ All knobs are environment variables on the brokerd process.
 | `ANTHROPIC_API_KEY` | *(required)* | Real key, lives only on the host; never reaches the VM |
 | `EGRESS_CONFIG` | `config/egress.yaml` | Path to the YAML above |
 | `SANDBOX_IMAGE` | `claude-sandbox:latest` | Image used for the anchor and every task VM |
-| `MACAGENT_NETWORK` | `macagent-egress` | vmnet network name (must already exist) |
-| `MACAGENT_GW_IP` | `192.168.66.1` | The `.1` of the network's subnet; gateway + squid bind here |
-| `MACAGENT_TASK_BUDGET_USD` | `2.0` | Hard ceiling per task; gateway rejects once exhausted |
+| `DRYDOCK_NETWORK` | `drydock-egress` | vmnet network name (must already exist) |
+| `DRYDOCK_GW_IP` | `192.168.66.1` | The `.1` of the network's subnet; gateway + squid bind here |
+| `DRYDOCK_TASK_BUDGET_USD` | `2.0` | Hard ceiling per task; gateway rejects once exhausted |
 | `STAGE_ROOT` | `/tmp/broker/stage` | Per-task work tree (wiped on completion) |
 | `AUDIT_ROOT` | `/tmp/broker/audit` | Per-task `<id>.jsonl` log of the VM's stream-json output |
 | `SQUID_RUN_DIR` | `/tmp/broker/squid` | squid pid/conf/cache.log + compiled allowlist |
@@ -270,9 +270,9 @@ The squid and gateway port numbers (`3128`, `8088`) are hard-coded in
 The vmnet gateway IP only exists while a container is attached to the
 network. brokerd therefore:
 
-1. Removes any stale `macagent-anchor` container.
-2. Starts a fresh `macagent-anchor` (the sandbox image running
-   `sleep infinity`) on `macagent-egress`. The vmnet plugin brings up
+1. Removes any stale `drydock-anchor` container.
+2. Starts a fresh `drydock-anchor` (the sandbox image running
+   `sleep infinity`) on `drydock-egress`. The vmnet plugin brings up
    `192.168.66.1` on the host.
 3. Polls `net.Listen` on `:3128` and `:8088` until they're bindable
    (interface up).
@@ -282,7 +282,7 @@ network. brokerd therefore:
 
 If brokerd exits non-cleanly (`SIGKILL`, panic), the anchor container can
 survive. The next start removes it; you can also clean up manually with
-`container rm -f macagent-anchor`.
+`container rm -f drydock-anchor`.
 
 ### Cleanup on SIGTERM
 
@@ -296,11 +296,11 @@ context times out.
 | Symptom | First place to look |
 |---------|---------------------|
 | brokerd exits at startup with `ANTHROPIC_API_KEY must be set` | `env \| grep ANTHROPIC` |
-| `192.168.66.1 never became bindable` | `container ls -a` — anchor running? `container network inspect macagent-egress` — gateway IP correct? |
+| `192.168.66.1 never became bindable` | `container ls -a` — anchor running? `container network inspect drydock-egress` — gateway IP correct? |
 | Image build fails on `npm install` | Transient registry timeout; rerun `container build` |
 | Gateway returns 401 | Check `ANTHROPIC_API_KEY`; the placeholder `sk-ant-fake` is *expected* to 401 |
 | Squid CONNECT 403 to a host you expected to work | `cat /tmp/broker/squid/squid-allow.txt`; not on the list → add to `config/egress.yaml` or pass via `egress_extra` |
-| VM can reach a host it shouldn't | `container run --network macagent-egress … nft list ruleset` — confirm `init-firewall.sh` actually ran (only happens with the default entrypoint, not when you override with `/bin/sh`) |
+| VM can reach a host it shouldn't | `container run --network drydock-egress … nft list ruleset` — confirm `init-firewall.sh` actually ran (only happens with the default entrypoint, not when you override with `/bin/sh`) |
 | `container system start` hangs on a Y/n prompt | Re-run with `--enable-kernel-install` |
 
 Per-task audit logs land in `$AUDIT_ROOT/<task_id>.jsonl` and contain the

@@ -11,14 +11,14 @@ func TestGithubRepoRef(t *testing.T) {
 		valid bool
 	}{
 		// Accept the three github.com forms gh can resolve.
-		{"https://github.com/sricola/macagent", true},
-		{"https://github.com/sricola/macagent.git", true},
-		{"git@github.com:sricola/macagent", true},
-		{"git@github.com:sricola/macagent.git", true},
-		{"ssh://git@github.com/sricola/macagent.git", true},
+		{"https://github.com/sricola/drydock", true},
+		{"https://github.com/sricola/drydock.git", true},
+		{"git@github.com:sricola/drydock", true},
+		{"git@github.com:sricola/drydock.git", true},
+		{"ssh://git@github.com/sricola/drydock.git", true},
 		// Reject local paths (the bug we just hit: gh pr create fails on these).
-		{"/Users/sray/gits/macagent", false},
-		{"./macagent", false},
+		{"/Users/sray/gits/drydock", false},
+		{"./drydock", false},
 		// Reject other hosts.
 		{"https://gitlab.com/x/y", false},
 		{"git@gitlab.com:x/y", false},

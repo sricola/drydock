@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"macagent/internal/creds"
+	"drydock/internal/creds"
 )
 
 func TestProvider_GrantCarriesBaseURLAndToken(t *testing.T) {

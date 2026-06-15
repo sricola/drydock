@@ -11,11 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	"macagent/internal/broker"
-	"macagent/internal/creds"
-	"macagent/internal/egress"
-	"macagent/internal/gateway"
-	"macagent/internal/netfw"
+	"drydock/internal/broker"
+	"drydock/internal/creds"
+	"drydock/internal/egress"
+	"drydock/internal/gateway"
+	"drydock/internal/netfw"
 )
 
 func main() {
@@ -29,10 +29,10 @@ func main() {
 	}
 
 	imageRef := env("SANDBOX_IMAGE", "claude-sandbox:latest")
-	network := env("MACAGENT_NETWORK", "macagent-egress")
-	gwIP := env("MACAGENT_GW_IP", "192.168.66.1")
+	network := env("DRYDOCK_NETWORK", "drydock-egress")
+	gwIP := env("DRYDOCK_GW_IP", "192.168.66.1")
 	gwPort, proxyPort := 8088, 3128
-	budget := envFloat("MACAGENT_TASK_BUDGET_USD", 2.0)
+	budget := envFloat("DRYDOCK_TASK_BUDGET_USD", 2.0)
 	taskTimeout := 30 * time.Minute
 
 	// The vmnet gateway IP only exists while a container is attached to the
@@ -63,7 +63,7 @@ func main() {
 	// Graceful shutdown: stop squid and remove the anchor.
 	cleanup := func() {
 		_ = squid.Stop()
-		_ = exec.Command("container", "rm", "-f", "macagent-anchor").Run()
+		_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
 	}
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -126,8 +126,8 @@ func waitBindable(addr string) {
 // startAnchor keeps the network's vmnet gateway interface up. Idempotent: any
 // stale anchor is removed first.
 func startAnchor(network, image string) {
-	_ = exec.Command("container", "rm", "-f", "macagent-anchor").Run()
-	cmd := exec.Command("container", "run", "-d", "--name", "macagent-anchor",
+	_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
+	cmd := exec.Command("container", "run", "-d", "--name", "drydock-anchor",
 		"--network", network, "--entrypoint", "/bin/sh", image, "-c", "sleep infinity")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		log.Fatalf("start network anchor: %v\n%s", err, out)

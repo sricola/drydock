@@ -17,10 +17,10 @@ import (
 	"strings"
 	"time"
 
-	"macagent/internal/creds"
-	"macagent/internal/egress"
-	"macagent/internal/runner"
-	"macagent/internal/stage"
+	"drydock/internal/creds"
+	"drydock/internal/egress"
+	"drydock/internal/runner"
+	"drydock/internal/stage"
 )
 
 // githubRepoRef matches the three RepoRef forms whose `origin` lets the
@@ -49,7 +49,7 @@ type Broker struct {
 	StageRoot  string
 	AuditRoot  string
 	Timeout    time.Duration
-	Network    string  // stable egress network name (e.g. macagent-egress)
+	Network    string  // stable egress network name (e.g. drydock-egress)
 	GatewayIP  string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
 	ProxyPort  int     // squid port (e.g. 3128)
 	TaskBudget float64 // USD budget per task
@@ -119,7 +119,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		// Bypass squid for the credential gateway itself — squid's allowlist
 		// is hostname-based and would deny a CONNECT to the gateway IP.
 		"NO_PROXY=127.0.0.1,localhost,"+b.GatewayIP,
-		"MACAGENT_GW_IP="+b.GatewayIP,
+		"DRYDOCK_GW_IP="+b.GatewayIP,
 	)
 
 	args := runner.BuildRunArgs(runner.Spec{

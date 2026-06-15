@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>macagent — untrusted agents, hardware-isolated</title>
-<meta name="description" content="How macagent runs Claude Code as an autonomous coding agent inside per-task hardware-isolated VMs on macOS: credential gateway, deny-by-default egress, host-side push.">
+<title>drydock — untrusted agents, hardware-isolated</title>
+<meta name="description" content="How drydock runs Claude Code as an autonomous coding agent inside per-task hardware-isolated VMs on macOS: credential gateway, deny-by-default egress, host-side push.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
@@ -197,7 +197,7 @@ footer .sq{display:inline-block;width:8px;height:8px;background:var(--red);margi
 
 <div class="topbar">
   <div class="wrap">
-    <div class="brand"><span class="sq"></span>macagent</div>
+    <div class="brand"><span class="sq"></span>drydock</div>
     <nav class="nav">
       <a href="#threat">threat</a>
       <a href="#boundary">boundary</a>
@@ -212,7 +212,7 @@ footer .sq{display:inline-block;width:8px;height:8px;background:var(--red);margi
   <div class="wrap">
     <div class="kicker reveal"><span class="bar"></span>Systems dossier · containment design</div>
     <h1 class="reveal">Untrusted agents,<br><span class="t">hardware-isolated.</span></h1>
-    <p class="lede reveal">macagent runs Claude Code as an autonomous coding agent inside a <b>per-task Linux VM</b> on Apple silicon. The model key never enters the sandbox, egress is <b>deny-by-default</b>, and <b>git push happens on the host</b> — so <span class="ic">--dangerously-skip-permissions</span> is safe to run unattended.</p>
+    <p class="lede reveal">drydock runs Claude Code as an autonomous coding agent inside a <b>per-task Linux VM</b> on Apple silicon. The model key never enters the sandbox, egress is <b>deny-by-default</b>, and <b>git push happens on the host</b> — so <span class="ic">--dangerously-skip-permissions</span> is safe to run unattended.</p>
     <div class="chips reveal">
       <span class="chip">macOS&nbsp;<b>26+</b></span>
       <span class="chip">apple/container&nbsp;<b>1.0</b></span>
@@ -230,7 +230,7 @@ footer .sq{display:inline-block;width:8px;height:8px;background:var(--red);margi
   <h2 class="reveal">Assume the VM is already hostile.</h2>
   <div class="prose reveal">
     <p>The agent runs in bypass mode: every tool call — file writes, shell commands, web fetches, subagent spawns — executes with <b>no confirmation</b>. So the threat isn't the agent misbehaving; it's the <b>code it runs</b>: a malicious dependency, a poisoned repository, a prompt-injection that turns a fetched web page into a shell command.</p>
-    <p>macagent treats the sandbox as compromised by default and contains the blast radius with the VM boundary plus a tightly-scoped egress allowlist. The in-VM permission prompts become redundant friction once that containment is real — which is exactly what makes unattended, headless runs tractable.</p>
+    <p>drydock treats the sandbox as compromised by default and contains the blast radius with the VM boundary plus a tightly-scoped egress allowlist. The in-VM permission prompts become redundant friction once that containment is real — which is exactly what makes unattended, headless runs tractable.</p>
   </div>
   <table class="tbl reveal">
     <thead><tr><th>Threat</th><th>Primary control</th><th>Backstop</th></tr></thead>
@@ -366,7 +366,7 @@ meter  usage → spent += cost(model, in, out)
   <h2 class="reveal">A diff is data. <span style="color:var(--mut)">.git is a weapon.</span></h2>
   <div class="prose reveal">
     <p>The subtle vector: if you mount a normal clone into the VM and then run <span class="ic">git commit</span>/<span class="ic">push</span> on the host against that same repo, a malicious agent can drop a <span class="ic">.git/hooks/pre-commit</span> or poison <span class="ic">.git/config</span> — and those execute <b>on the host</b>, with the host's credentials. That's remote code execution straight through the trust boundary.</p>
-    <p>macagent separates the two: clone on the host, move <span class="ic">.git</span> out of the mounted path, mount <b>only the work tree</b>, and run host git with <span class="ic">core.hooksPath=/dev/null</span> and fsmonitor off. The diff — and nothing else — crosses back. <span style="color:var(--grn)">This was caught by an adversarial review and is regression-tested.</span></p>
+    <p>drydock separates the two: clone on the host, move <span class="ic">.git</span> out of the mounted path, mount <b>only the work tree</b>, and run host git with <span class="ic">core.hooksPath=/dev/null</span> and fsmonitor off. The diff — and nothing else — crosses back. <span style="color:var(--grn)">This was caught by an adversarial review and is regression-tested.</span></p>
   </div>
 </section>
 
@@ -410,7 +410,7 @@ meter  usage → spent += cost(model, in, out)
 </div>
 
 <footer class="wrap">
-  <div><span class="sq"></span>macagent — containment for autonomous coding agents</div>
+  <div><span class="sq"></span>drydock — containment for autonomous coding agents</div>
   <div>per-VM isolation · deny-by-default egress · host-side push</div>
 </footer>
 

@@ -3,7 +3,7 @@ package gateway
 import (
 	"time"
 
-	"macagent/internal/creds"
+	"drydock/internal/creds"
 )
 
 // Provider issues creds.Grants backed by gateway tokens. The real key never

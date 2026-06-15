@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"macagent/internal/egress"
+	"drydock/internal/egress"
 )
 
 // modelAPIHost is reached via the credential gateway, not squid.

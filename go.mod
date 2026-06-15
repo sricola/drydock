@@ -1,4 +1,4 @@
-module macagent
+module drydock
 
 go 1.26.4
 
