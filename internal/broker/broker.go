@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"macagent/internal/creds"
@@ -62,12 +63,15 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	taskID := newID()
 	stageDir := filepath.Join(b.StageRoot, taskID)
 
-	if err := stage.Clone(t.RepoRef, stageDir); err != nil {
+	st, err := stage.Prepare(stageDir, t.RepoRef)
+	if err != nil {
 		http.Error(w, "clone failed", http.StatusBadGateway)
 		return
 	}
+	defer st.Cleanup() // wipe the host scratch (work tree + host-only git dir)
+
 	allowlist := egress.CompileAllowlist(b.Cfg, t.EgressExtra)
-	if err := stage.WriteTaskFiles(stageDir, t.Instruction, allowlist); err != nil {
+	if err := st.WriteTaskFiles(t.Instruction, allowlist); err != nil {
 		http.Error(w, "stage failed", http.StatusInternalServerError)
 		return
 	}
@@ -96,7 +100,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		Network:    "", // MVP: default per-VM network; v2 sets a named egress net
 		ImageRef:   b.ImageRef,
 		APIKey:     tok.Value,
-		StageDir:   stageDir,
+		StageDir:   st.WorkDir, // mount ONLY the work tree, never the host-only .git
 		PromptFile: "/work/.task/prompt.txt",
 		MemoryGB:   4,
 		CPUs:       4,
@@ -110,11 +114,14 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	cmd.Stdout = io.MultiWriter(logf, os.Stdout)
 	cmd.Stderr = logf
 	if err := cmd.Run(); err != nil {
+		// --rm covers a graceful exit; on timeout/kill the VM may survive, so
+		// force-remove it (best effort) to honor the ephemeral-VM backstop.
+		_ = exec.Command("container", "delete", "--force", "task-"+taskID).Run()
 		http.Error(w, "task failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	diff, err := stage.CaptureDiff(stageDir)
+	diff, err := st.CaptureDiff()
 	if err != nil {
 		http.Error(w, "diff capture failed", http.StatusInternalServerError)
 		return
@@ -129,11 +136,23 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	branch := "agent/" + taskID
-	if err := stage.Push(stageDir, branch, "agent: "+t.Instruction); err != nil {
+	if err := st.Push(branch, "agent: "+firstLine(t.Instruction)); err != nil {
 		http.Error(w, "push failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, map[string]any{"task_id": taskID, "branch": branch, "pushed": true})
+}
+
+// firstLine returns the first line of s, capped, for a sane commit subject from
+// an attacker-influenced instruction.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 72 {
+		s = s[:72]
+	}
+	return s
 }
 
 func dropEmptyNetwork(args []string) []string {
