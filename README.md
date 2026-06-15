@@ -3,10 +3,17 @@
 Run Claude Code as an autonomous coding agent on macOS, inside a per-task
 hardware-isolated VM with deny-by-default egress and a host-side credential
 gateway. The VM never sees your Anthropic key, can only reach an allowlisted
-set of hosts, and the only thing that leaves it is a captured `git diff`.
+set of hosts, and the only thing that leaves it is a captured `git diff`
+that you approve before it touches origin.
 
-The narrative explainer lives at [`site/index.html`](site/index.html). This
+The narrative explainer lives at [`site/index.html`](site/index.html); the
+precise security claims live in [`THREAT_MODEL.md`](THREAT_MODEL.md). This
 README is the operator's manual.
+
+**Status:** working prototype. Tested against `container` v1.0.x on Apple
+silicon. Single-task, single-operator. Production-readiness is honest work
+ahead; the [threat model](THREAT_MODEL.md) is precise about what claims
+hold today.
 
 ---
 
@@ -35,7 +42,7 @@ exfiltrate the real API key.
 ```
                        host (macOS)
                   ┌───────────────────────────┐
-   you ──POST──▶  │  brokerd  127.0.0.1:8765  │
+   you ──POST──▶  │  brokerd  unix sock      │
                   │     │                     │
                   │     ▼ stage repo ──▶ /tmp │
                   │     │                     │
@@ -118,6 +125,7 @@ path is live without spending tokens.
 ```bash
 # 1. Build and run brokerd
 go build -o /tmp/brokerd ./cmd/brokerd
+go build -o /tmp/drydock  ./cmd/drydock
 ANTHROPIC_API_KEY=sk-ant-fake \
 DRYDOCK_NETWORK=drydock-egress \
 DRYDOCK_GW_IP=192.168.66.1 \
@@ -125,10 +133,11 @@ SANDBOX_IMAGE=claude-sandbox:latest \
   /tmp/brokerd &
 
 # Expected log lines:
+#   container CLI v1.x.x (supported)
 #   network anchor up on drydock-egress
 #   squid listening on 192.168.66.1:3128
 #   gateway listening on 192.168.66.1:8088
-#   brokerd listening on 127.0.0.1:8765 (gateway …, squid …)
+#   brokerd listening on unix:///tmp/drydock.sock (gateway …, squid …)
 
 # 2. From a throwaway VM on drydock-egress, install the firewall pin and probe
 container run --rm --network drydock-egress --cap-add CAP_NET_ADMIN \
@@ -157,20 +166,42 @@ squid, in-VM `nft` — is working.
 
 ## Submitting a task
 
-`POST /tasks` to `http://127.0.0.1:8765/tasks`. The broker stages the repo,
-mints a budgeted credential, runs `claude --bare` inside a fresh VM, and
-returns either a captured diff or a pushed branch.
+`POST /tasks` against the brokerd socket. The broker stages the repo, mints
+a budgeted credential, runs `claude --bare` inside a fresh VM, captures the
+diff, **blocks on operator approval**, and pushes a branch on approve.
 
 ```bash
-curl -sS http://127.0.0.1:8765/tasks \
+curl -sS --unix-socket /tmp/drydock.sock http://_/tasks \
   -H 'content-type: application/json' \
   -d '{
         "repo_ref":    "git@github.com:your-org/your-repo",
         "instruction": "Add a one-line comment to README.md explaining the project.",
         "egress_extra": [],
-        "sensitive":   false
+        "sensitive":   false,
+        "auto_approve": false
       }'
 ```
+
+While that request hangs, brokerd logs:
+
+```
+task <id> awaiting approval (N bytes, diff at /tmp/broker/audit/<id>.diff)
+  — run: drydock approve <id> | drydock deny <id>
+```
+
+In another shell, review the diff and decide:
+
+```bash
+drydock pending           # list awaiting tasks
+less /tmp/broker/audit/<id>.diff
+drydock approve <id>      # … or  drydock deny <id>
+```
+
+The original `POST /tasks` request unblocks immediately and returns the
+push outcome. Setting `"auto_approve": true` on the task skips the gate —
+use it for trusted batch runs and know what you're opting out of. The
+[threat model](THREAT_MODEL.md) is explicit about what the gate
+protects against.
 
 `repo_ref` must be a `github.com` URL (`https://github.com/…`,
 `git@github.com:…`, or `ssh://git@github.com/…`). Local paths are
@@ -255,7 +286,8 @@ All knobs are environment variables on the brokerd process.
 | `STAGE_ROOT` | `/tmp/broker/stage` | Per-task work tree (wiped on completion) |
 | `AUDIT_ROOT` | `/tmp/broker/audit` | Per-task `<id>.jsonl` log of the VM's stream-json output |
 | `SQUID_RUN_DIR` | `/tmp/broker/squid` | squid pid/conf/cache.log + compiled allowlist |
-| `BROKER_ADDR` | `127.0.0.1:8765` | Where brokerd listens for `POST /tasks` |
+| `BROKER_SOCKET` | `/tmp/drydock.sock` | Unix socket brokerd listens on by default (mode 0600) |
+| `BROKER_ADDR` | *(unset)* | Set to `host:port` to expose brokerd over TCP instead. Loud startup warning when used; the threat model treats the TCP listener as an operator-trust boundary |
 
 The squid and gateway port numbers (`3128`, `8088`) are hard-coded in
 `cmd/brokerd/main.go` — change them there and in the entrypoint's
@@ -278,7 +310,7 @@ network. brokerd therefore:
    (interface up).
 4. Launches squid bound to `192.168.66.1:3128`.
 5. Launches the credential gateway on `192.168.66.1:8088`.
-6. Starts the HTTP API on `127.0.0.1:8765`.
+6. Starts the HTTP API on `/tmp/drydock.sock` (or `BROKER_ADDR`).
 
 If brokerd exits non-cleanly (`SIGKILL`, panic), the anchor container can
 survive. The next start removes it; you can also clean up manually with
@@ -312,7 +344,8 @@ behavior and gateway accounting.
 ## Repo layout
 
 ```
-cmd/brokerd/         # the single binary — composes everything below
+cmd/brokerd/         # the broker daemon — composes everything below
+cmd/drydock/         # operator CLI (drydock pending|approve|deny)
 internal/
   broker/            # /tasks handler, approval gates, runner orchestration
   creds/             # Grant / Provider interfaces for credential injection
@@ -324,6 +357,7 @@ internal/
 image/               # Dockerfile + entrypoint.sh + init-firewall.sh
 config/egress.yaml   # default allowlist
 site/                # narrative explainer (for engineers)
+THREAT_MODEL.md      # precise security claims (what drydock defends; what it doesn't)
 docs/superpowers/    # design specs and execution plans (historical context)
 ```
 
@@ -334,22 +368,34 @@ docs/superpowers/    # design specs and execution plans (historical context)
 ```bash
 go test ./...                       # all unit tests, no host/network deps
 go build -o brokerd ./cmd/brokerd
+go build -o drydock ./cmd/drydock
 ```
 
 There are no external Go dependencies beyond `gopkg.in/yaml.v3`.
+CI runs `go build`, `go test -race`, and `go vet` on every push/PR
+(see [`.github/workflows/test.yml`](.github/workflows/test.yml));
+integration testing requires Apple's `container` runtime and lives
+outside CI.
 
 ---
 
 ## Limitations and roadmap
 
-- The MVP approval hook auto-approves both egress widening and diff
-  pushes. Wire `Broker.Approve` to your review path before treating any
-  push as trusted.
+- Egress widening (`egress_extra`) still goes through the MVP auto-approve
+  hook (it just logs and returns true). Diff push is now gated by a real
+  human; egress widening should join that flow next.
 - Pricing in `internal/gateway/pricing.go` is point-in-time; update it
   when Anthropic publishes new rates or when you add models. The
   `DefaultPrices()` constructor is the single source.
-- One task at a time per brokerd process. Concurrency would require
-  per-task gateway leases (already there) plus a queue in front of the
-  HTTP handler.
+- One task at a time per brokerd process. Concurrency would require a
+  task queue in front of the HTTP handler and a way to label the
+  approval prompt with task context (per-task gateway leases already
+  exist).
 - Apple's `container` is v1.0 but the surface still moves; flag drift
-  (e.g. `--cap-add`, `network create`) is the most likely breaking source.
+  (e.g. `--cap-add`, `network create`, mount option parsing) is the
+  most likely breaking source. drydock fails closed when `container`
+  isn't installed and warns when the major version drifts from the
+  tested range.
+- No Slack/web approval adapters yet — only the local `drydock` CLI
+  against the Unix socket. Adapters are the obvious next contribution
+  surface.
