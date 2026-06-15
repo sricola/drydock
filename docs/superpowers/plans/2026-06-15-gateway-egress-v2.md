@@ -10,6 +10,18 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-15-tcb-egress-credential-gateway-design.md`
 
+## Execution amendments (from the Task 1 spike, 2026-06-15)
+
+1. **Subnet/IP:** the default network already holds `192.168.64.0/24`, so the egress network uses
+   `--subnet 192.168.66.0/24`; gateway IP = **`192.168.66.1`**. Use these everywhere
+   (`MACAGENT_GW_IP=192.168.66.1`, `MACAGENT_SUBNET=192.168.66.0/24`).
+2. **Network anchor (affects Task 9):** the host gateway IP exists only while a container is on the
+   network, so `brokerd` must start a persistent idle **anchor** container on `macagent-egress` at
+   startup and bind the gateway/squid to `192.168.66.1` **exclusively** (never `0.0.0.0`). The
+   gateway goroutine must retry the bind until the interface is up. The Task 9 `main.go` below is
+   superseded by this: add `startAnchor(network, image)` + a `listenWhenReady(addr)` retry loop and
+   use `http.Serve(listener, gw)` instead of `http.ListenAndServe`.
+
 ---
 
 ## File Structure
@@ -75,9 +87,17 @@ Expected: `reach:200` (or any HTTP code) → the VM can reach a host process on 
 
 - [ ] **Step 3: Record the outcome and decide**
 
-Write the result into the plan's execution notes:
-- **PASS** → proceed; set `MACAGENT_GW_IP=192.168.64.1`, `MACAGENT_SUBNET=192.168.64.0/24` as the defaults used by Tasks 8–10.
-- **FAIL** → stop and escalate: fall back to binding the gateway/squid on a host LAN/loopback IP the VM can reach (still userspace, no pf), and re-run this spike against that address. Do not start Task 8 until a reachable bind address is confirmed.
+**EXECUTED 2026-06-15 — RESULT: PASS, with a caveat that adds an anchor requirement.**
+- The default network already occupies `192.168.64.0/24`, so the egress network was created on
+  `--subnet 192.168.66.0/24` → gateway IP **`192.168.66.1`**. Defaults for Tasks 6/8/9/10:
+  `MACAGENT_GW_IP=192.168.66.1`, `MACAGENT_SUBNET=192.168.66.0/24`.
+- **Caveat:** the host address `192.168.66.1` exists **only while a container is attached** to the
+  network. Binding it with no VM present fails `Can't assign requested address`. With a VM attached,
+  a host listener on `192.168.66.1:8088` is reachable from a second VM (`reach:200`).
+- **Decision → network anchor (NOT 0.0.0.0).** `brokerd` keeps one idle "anchor" container on
+  `macagent-egress` for its lifetime so the gateway interface stays up and the gateway/squid can bind
+  `192.168.66.1` **exclusively**. Binding `0.0.0.0` is rejected: it would expose the credential
+  gateway on every host interface (LAN/wifi). This anchor handling is folded into Task 9.
 
 ---
 

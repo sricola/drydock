@@ -170,9 +170,16 @@ No pf and no per-task network churn. Instead:
   `192.168.<n>.1:8088` / `:3128`.
 - The **only** real unknown is small and no-sudo: *can a host process bind the vmnet gateway IP and
   be reached from inside a VM on that network, and what is that IP* (discover via
-  `container network inspect`). A quick spike on the dev host answers it before building `netfw`. If
-  binding the vmnet gateway IP turns out not to work, the fallback is to bind the gateway/squid on a
-  host loopback/LAN IP the VM can reach and point the env/nft at that — still userspace, no pf.
+  `container network inspect`).
+
+**Spike result (2026-06-15, container 1.0.0):** PASS — a host process bound to the vmnet gateway IP
+is reachable from a VM on the same network (`reach:200`). Two findings baked into the design:
+- The egress network uses `--subnet 192.168.66.0/24` (the default network already holds
+  `192.168.64.0/24`); gateway IP = `192.168.66.1`.
+- **The host gateway IP exists only while a container is attached.** So `brokerd` keeps a persistent
+  idle **anchor** container on the network for its lifetime, and binds the gateway/squid to
+  `192.168.66.1` **exclusively** — never `0.0.0.0`, which would expose the credential gateway on the
+  laptop's LAN/wifi. The gateway listener retries the bind until the interface is up.
 
 ---
 
