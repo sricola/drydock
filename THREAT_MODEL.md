@@ -118,9 +118,17 @@ incoming JSON to skip the gate.
 ### A6. Agent attempts to widen its own egress for the current task
 
 `per_task_widening.requires_approval: true` (the default in
-`config/egress.yaml`) routes `egress_extra` through the approval hook.
-Today that hook auto-approves (MVP); future work is to route this
-through the same `drydock approve` flow as A5.
+`config/egress.yaml`) routes `egress_extra` through the same human-
+driven gate as A5. brokerd writes the requested hosts to
+`AUDIT_ROOT/<id>.widen.json`, the task appears in `drydock pending`
+under gate `egress` with the host list, and `drydock approve <id>` /
+`drydock deny <id>` resolve it. Compilation of the per-task allowlist
+happens **after** approval; a denied or cancelled task never reaches
+squid with the extras. Setting `requires_approval: false` in the YAML
+opts you out of the gate explicitly — the operator-trust-everything
+mode for batch runs.
+
+**Implementation:** `internal/broker/broker.go::gateEgressWiden`.
 
 ### A7. Task state persists between tasks
 
