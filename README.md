@@ -55,18 +55,46 @@ curl -s --unix-socket "$SOCK" http://_/healthz
 
 ## Submit a task
 
-`POST /tasks` against the Unix socket. brokerd stages the repo, runs the
-agent in a fresh VM, captures the diff, and **blocks until you approve**.
+`drydock submit` is the CLI wrapper around `POST /tasks`. brokerd stages
+the repo, runs the agent in a fresh VM, captures the diff, and **blocks
+until you approve**.
+
+```bash
+drydock submit \
+  --repo git@github.com:your-org/your-repo \
+  --instruction "Add a one-line comment to README.md explaining the project."
+```
+
+Or pipe a longer instruction from stdin / a file:
+
+```bash
+echo "Refactor the egress compiler" | drydock submit --repo … -
+drydock submit --repo … --instruction-file ./task.md
+```
+
+Skip the approval gate for trusted batch runs (use sparingly — see the
+threat model):
+
+```bash
+drydock submit --repo … --instruction "…" --auto-approve
+```
+
+Request additional egress for the task (each `--egress-extra` is one
+host with one-or-more ports; goes through the same approval gate):
+
+```bash
+drydock submit --repo … --instruction "…" \
+  --egress-extra internal.example.com:443 \
+  --egress-extra files.example.com:443,8443
+```
+
+If you'd rather hit the HTTP API directly:
 
 ```bash
 SOCK=$TMPDIR/drydock-$(id -u)/drydock.sock
 curl --unix-socket "$SOCK" http://_/tasks \
   -H 'content-type: application/json' \
-  -d '{
-        "repo_ref":     "git@github.com:your-org/your-repo",
-        "instruction":  "Add a one-line comment to README.md explaining the project.",
-        "auto_approve": false
-      }'
+  -d '{ "repo_ref": "git@github.com:o/r", "instruction": "..." }'
 ```
 
 While the request hangs, brokerd logs and fires a macOS notification:

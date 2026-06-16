@@ -16,6 +16,7 @@ Setup:
   drydock status                 brokerd up?, pending count, recent tasks
 
 Tasks:
+  drydock submit <flags>         POST a new task; blocks until approval/completion
   drydock tasks                  list recent runs (id, age, duration, cost, outcome)
   drydock logs    <id> [-f]      print (or follow) the task's stream-json audit log
   drydock review  <id>           open the diff in $PAGER, then prompt y/N
@@ -53,6 +54,8 @@ func main() {
 		runInit()
 	case "start":
 		runStart()
+	case "submit":
+		runSubmit(os.Args[2:])
 	case "status":
 		runStatus()
 	case "tasks":
