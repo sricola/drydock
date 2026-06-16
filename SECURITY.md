@@ -76,10 +76,11 @@ These are known limits we've decided not to engineer around at v0.x.
 They're listed so an operator can decide whether the risk is acceptable
 in their environment, not because they need a CVE.
 
-- **`BROKER_ADDR=host:port` has no authentication.** Setting it exposes
+- **`broker.addr` (or `BROKER_ADDR=host:port`) has no authentication.**
+  Setting it in `~/.drydock/config.yaml` or in the shell exposes
   brokerd's API surface (`POST /tasks`, `POST /admin/approve/{id}`,
   etc.) over TCP. Anyone who can reach the port can submit and approve
-  tasks. Treat the env var as a deliberate trust delegation to whoever
+  tasks. Treat that knob as a deliberate trust delegation to whoever
   controls the network. The Unix socket (the default) has no such
   caveat — mode 0600 on a per-uid parent dir.
 
@@ -98,9 +99,9 @@ in their environment, not because they need a CVE.
   the macOS surface; treat the body as untrusted input if you ever
   route it through a webhook adapter.
 
-- **No structured logging.** `log.Printf` everywhere — no level, no
-  JSON, no correlation IDs. SIEM ingestion is on you.
-
-- **No SBOM and no signed binaries yet.** Released artifacts will be
-  signed when a goreleaser/Homebrew path lands. Until then, build from
-  source and `go mod verify`.
+- **No SBOM and no signed binaries yet.** Released artifacts (now
+  shipping through the `sricola/drydock` Homebrew tap) are MIT-licensed
+  pre-built arm64 binaries verified by the sha256 in the release
+  metadata. A real SBOM + Apple notarization land in a later cycle.
+  Until then, build from source and `go mod verify`, or check the
+  sha256 against the value the formula pins.

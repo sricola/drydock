@@ -33,8 +33,8 @@ brew install drydock
 drydock init
 ```
 
-Pulls a pre-built Apple-silicon binary from the v0.1.0 release; no Go
-toolchain required.
+Pulls a pre-built Apple-silicon binary from the latest tagged release
+(currently `v0.1.2`); no Go toolchain required.
 
 ### Option B — Build from source
 

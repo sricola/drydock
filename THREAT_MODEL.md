@@ -118,7 +118,7 @@ incoming JSON to skip the gate.
 ### A6. Agent attempts to widen its own egress for the current task
 
 `per_task_widening.requires_approval: true` (the default in
-`config/egress.yaml`) routes `egress_extra` through the same human-
+`~/.drydock/egress.yaml`) routes `egress_extra` through the same human-
 driven gate as A5. brokerd writes the requested hosts to
 `AUDIT_ROOT/<id>.widen.json`, the task appears in `drydock pending`
 under gate `egress` with the host list, and `drydock approve <id>` /

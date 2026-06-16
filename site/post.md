@@ -195,35 +195,43 @@ something you'd trust overnight.
 
 ## What's next
 
-Three things are missing today that would make drydock more useful:
+Two things would meaningfully widen drydock's reach:
 
 1. **Slack / web approval adapters.** The CLI is fine for solo work; a
-   real on-call would want the approval prompt to land in Slack with
-   the diff inline.
-2. **Multi-task concurrency.** drydock currently runs one task at a
-   time per brokerd. A queue and per-task gateway labeling would be a
-   small change.
-3. **Egress widening on the same gate.** Today, per-task `egress_extra`
-   widening still goes through an MVP auto-approve hook. It should
-   share the diff-push approval flow.
+   real on-call would want the approval prompt to land in Slack with the
+   diff inline. The same `/admin/approve` endpoint that powers the CLI
+   is the seam.
+2. **Bitbucket PR opening.** Push works through the push-only adapter;
+   PR creation needs a small REST integration since Bitbucket has no
+   widely-adopted shell-CLI to wrap.
 
-None of these are research; they're commit-shaped. If any of them is
-the thing standing between you and using this, the issue tracker is
-where to say so.
+Neither is research; they're commit-shaped. If either is the thing
+standing between you and using this, the issue tracker is where to say
+so.
 
 ## Try it
 
-drydock is open source under [MIT](https://github.com/sricola/drydock/blob/main/LICENSE)
-(if the LICENSE isn't there yet, it will be). The
-[README](https://github.com/sricola/drydock/blob/main/README.md) has the
-full operator manual, including a five-minute smoke test that boots the
-stack and exercises both egress lanes without spending Anthropic tokens.
+```bash
+brew install --cask container
+brew install sricola/drydock/drydock
+export ANTHROPIC_API_KEY=sk-ant-...
+drydock init
+drydock start
+```
 
-The credential-gateway pattern in particular is portable. If you're
+The `drydock init` step creates `~/.drydock/` (config + egress YAML),
+fetches the sandbox + anchor images, and wires up the vmnet network.
+The [README](https://github.com/sricola/drydock/blob/main/README.md)
+walks the full operator surface; the
+[threat model](https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md)
+is the precise contract.
+
+drydock is open source under [MIT](https://github.com/sricola/drydock/blob/main/LICENSE).
+The credential-gateway pattern in particular is portable — if you're
 building any kind of autonomous-agent system and want one well-defined
-boundary that protects your real keys from the agent's worst day, take
-that piece and use it. The rest of drydock is a particular implementation;
-the gateway is the idea.
+boundary between the agent and your real keys, take that piece and use
+it. The rest of drydock is a particular implementation; the gateway is
+the idea.
 
 ---
 
