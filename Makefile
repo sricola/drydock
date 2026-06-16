@@ -40,11 +40,23 @@ uninstall:
 test:
 	go test -race -count=1 ./...
 
+# Integration tests boot brokerd as a subprocess and exercise the HTTP +
+# CLI surface against a real Apple container runtime. Macos-only; requires
+# `make build network image-anchor` first so the binaries and the anchor
+# image exist. Does NOT spend Anthropic tokens (uses a placeholder key).
+test-integration: build
+	go test -tags=integration -count=1 -timeout=2m ./tests/...
+
 vet:
 	go vet ./...
 
-image:
+image: image-sandbox image-anchor
+
+image-sandbox:
 	container build -t claude-sandbox:latest image/
+
+image-anchor:
+	container build -t drydock-anchor:latest image/anchor/
 
 network:
 	@container network ls 2>/dev/null | awk '{print $$1}' | grep -qx drydock-egress \

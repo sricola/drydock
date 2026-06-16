@@ -14,6 +14,8 @@ func TestAdapterFor(t *testing.T) {
 		{"https://github.com/o/r", "none", "push-only"},
 		{"https://github.com/o/r", "push-only", "push-only"},
 		{"", "github", "github"},
+		{"git@gitea.example.com:o/r", "gitea", "gitea"},
+		{"git@gitea.example.com:o/r", "forgejo", "gitea"}, // alias
 
 		// Autodetect by hostname when platform is empty.
 		{"https://github.com/sricola/drydock", "", "github"},
@@ -21,12 +23,17 @@ func TestAdapterFor(t *testing.T) {
 		{"ssh://git@github.com/sricola/drydock", "", "github"},
 		{"https://gitlab.com/group/project", "", "gitlab"},
 		{"git@gitlab.com:group/project.git", "", "gitlab"},
+		{"https://gitea.com/some/project", "", "gitea"},
+		{"https://codeberg.org/forgejo/forgejo", "", "gitea"},
 
 		// Self-hosted, unknown vendor → push-only when no platform.
-		// (Self-hosted GitLab callers must set platform="gitlab".)
+		// (Self-hosted GitLab/Gitea callers must set platform explicitly.)
 		{"git@gitlab.mycorp.com:group/project", "", "push-only"},
+		{"https://gitea.mycorp.com/group/project", "", "push-only"},
 		{"https://git.kernel.org/torvalds/linux", "", "push-only"},
+		// Bitbucket: no CLI to wrap, falls back to push-only.
 		{"git@bitbucket.org:o/r", "", "push-only"},
+		{"https://bitbucket.org/o/r", "", "push-only"},
 
 		// Unknown platform string falls through to autodetect.
 		{"https://github.com/o/r", "huggingface", "github"},

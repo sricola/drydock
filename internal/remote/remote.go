@@ -21,14 +21,20 @@ type Adapter interface {
 }
 
 // AdapterFor selects an adapter. Explicit `platform` wins; otherwise we
-// fall back to host-name inference. Self-hosted GitLab callers MUST set
-// platform="gitlab" since the hostname won't say so.
+// fall back to host-name inference. Self-hosted GitLab/Gitea callers MUST
+// set platform explicitly since the hostname won't say so.
+//
+// Bitbucket has no widely-used CLI that opens PRs from the shell, so
+// drydock falls back to PushOnly there. A future contribution could ship
+// a small REST client; the slot is open.
 func AdapterFor(repoRef, platform string) Adapter {
 	switch strings.ToLower(platform) {
 	case "github":
 		return GitHubAdapter{}
 	case "gitlab":
 		return GitLabAdapter{}
+	case "gitea", "forgejo":
+		return GiteaAdapter{}
 	case "none", "push-only":
 		return PushOnlyAdapter{}
 	case "":
@@ -42,8 +48,11 @@ func AdapterFor(repoRef, platform string) Adapter {
 		return GitHubAdapter{}
 	case strings.Contains(repoRef, "gitlab.com"):
 		return GitLabAdapter{}
+	case strings.Contains(repoRef, "gitea.com"), strings.Contains(repoRef, "codeberg.org"):
+		return GiteaAdapter{}
 	default:
 		// Self-hosted git, no PR/MR vendor — push happens, nothing else.
+		// Bitbucket lands here today.
 		return PushOnlyAdapter{}
 	}
 }

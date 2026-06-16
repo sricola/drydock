@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -406,8 +406,9 @@ func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []eg
 		}
 	}
 	summary := summariseExtras(extras)
-	log.Printf("task %s awaiting egress widening (%s) — run: drydock approve %s | drydock deny %s",
-		taskID, summary, taskID, taskID)
+	slog.Info("task awaiting egress widening",
+		"task_id", taskID, "extras", summary,
+		"hint", "drydock approve "+taskID+" | drydock deny "+taskID)
 	notifyMac("drydock — task wants more egress",
 		fmt.Sprintf("task %s · %s · drydock approve %s", taskID, summary, taskID))
 
@@ -415,7 +416,7 @@ func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []eg
 	case ok := <-ch:
 		return ok
 	case <-ctx.Done():
-		log.Printf("task %s: cancelled before egress widening decision", taskID)
+		slog.Info("task cancelled at egress gate", "task_id", taskID)
 		return false
 	}
 }
@@ -444,7 +445,7 @@ func summariseExtras(extras []egress.Domain) string {
 // gate is bypassed — callers must opt in explicitly via Task.AutoApprove.
 func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) bool {
 	if auto {
-		log.Printf("task %s: auto-approve push (caller opted in)", taskID)
+		slog.Info("task auto-approve push", "task_id", taskID, "reason", "caller opted in")
 		return true
 	}
 	ch := make(chan bool, 1)
@@ -463,8 +464,9 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 	// Persist the diff for the human reviewing it.
 	diffPath := filepath.Join(b.AuditRoot, taskID+".diff")
 	_ = os.WriteFile(diffPath, []byte(diff), 0o600)
-	log.Printf("task %s awaiting approval (%d bytes, diff at %s) — run: drydock approve %s | drydock deny %s",
-		taskID, len(diff), diffPath, taskID, taskID)
+	slog.Info("task awaiting approval",
+		"task_id", taskID, "diff_bytes", len(diff), "diff_path", diffPath,
+		"hint", "drydock approve "+taskID+" | drydock deny "+taskID)
 	notifyMac("drydock — task awaiting approval",
 		fmt.Sprintf("task %s · %d byte diff · drydock approve %s", taskID, len(diff), taskID))
 
@@ -472,7 +474,7 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 	case ok := <-ch:
 		return ok
 	case <-ctx.Done():
-		log.Printf("task %s: client disconnected before approval; aborting push", taskID)
+		slog.Info("task client disconnected before approval; aborting push", "task_id", taskID)
 		return false
 	}
 }

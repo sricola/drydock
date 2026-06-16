@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +22,37 @@ import (
 	"drydock/internal/sockpath"
 )
 
+// initLogging sets the slog default handler. TTY gets a terse text format
+// (no timestamps — the terminal already shows time context); non-TTY (file
+// redirect, launchd, SIEM tail) gets JSON so downstream tools can parse.
+// DRYDOCK_LOG_JSON=1 forces JSON even on a TTY.
+func initLogging() {
+	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
+	if os.Getenv("DRYDOCK_LOG_JSON") != "1" {
+		fi, err := os.Stderr.Stat()
+		isTTY := err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+		if isTTY {
+			opts.ReplaceAttr = func(_ []string, a slog.Attr) slog.Attr {
+				if a.Key == slog.TimeKey {
+					return slog.Attr{}
+				}
+				return a
+			}
+			slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, opts)))
+			return
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, opts)))
+}
+
+// die logs an error attr and exits 1. Replaces log.Fatalf without losing
+// the "die loudly when bootstrap fails" UX. The error is wrapped in attrs
+// so the JSON path produces structured output.
+func die(msg string, attrs ...any) {
+	slog.Error(msg, attrs...)
+	os.Exit(1)
+}
+
 // supportedContainerMajor is the major version of Apple's `container` CLI
 // drydock has been integration-tested against. Bumping this should be paired
 // with re-running the smoke test in the README — `container`'s surface has
@@ -31,19 +62,21 @@ const supportedContainerMajor = "1"
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
 
 func main() {
+	initLogging()
 	checkContainerVersion()
 	pruneOrphanTasks()
 
 	cfg, err := egress.Load(env("EGRESS_CONFIG", "config/egress.yaml"))
 	if err != nil {
-		log.Fatalf("load egress config: %v", err)
+		die("load egress config", "err", err)
 	}
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
-		log.Fatal("ANTHROPIC_API_KEY must be set on the broker host")
+		die("ANTHROPIC_API_KEY must be set on the broker host")
 	}
 
 	imageRef := env("SANDBOX_IMAGE", "claude-sandbox:latest")
+	anchorImage := env("DRYDOCK_ANCHOR_IMAGE", "drydock-anchor:latest")
 	network := env("DRYDOCK_NETWORK", "drydock-egress")
 	gwIP := env("DRYDOCK_GW_IP", "192.168.66.1")
 	gwPort, proxyPort := 8088, 3128
@@ -54,7 +87,7 @@ func main() {
 	// network, so keep a persistent anchor up for the broker's lifetime. The
 	// gateway/squid then bind that IP exclusively (never 0.0.0.0, which would
 	// expose the credential gateway on the host's LAN/wifi).
-	startAnchor(network, imageRef)
+	startAnchor(network, anchorImage)
 
 	gwAddr := net.JoinHostPort(gwIP, strconv.Itoa(gwPort))
 	proxyAddr := net.JoinHostPort(gwIP, strconv.Itoa(proxyPort))
@@ -65,14 +98,14 @@ func main() {
 	// simply unavailable — the model API still works via the gateway.
 	var squid *netfw.Squid
 	if bin, ferr := netfw.FindSquid(); ferr != nil {
-		log.Printf("WARNING: %v — registry (npm/pip) egress disabled", ferr)
+		slog.Warn("registry egress disabled", "err", ferr)
 	} else {
 		waitBindable(proxyAddr)
 		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(cfg), env("SQUID_RUN_DIR", "/tmp/broker/squid"))
 		if err != nil {
-			log.Fatalf("squid: %v", err)
+			die("squid start failed", "err", err)
 		}
-		log.Printf("squid listening on %s", proxyAddr)
+		slog.Info("squid listening", "addr", proxyAddr)
 	}
 
 	// Graceful shutdown: stop squid and remove the anchor.
@@ -88,12 +121,14 @@ func main() {
 	gw, err := gateway.New(apiKey, "https://api.anthropic.com", gateway.DefaultPrices())
 	if err != nil {
 		cleanup()
-		log.Fatalf("gateway: %v", err)
+		die("gateway init failed", "err", err)
 	}
 	go func() {
 		l := listenWhenReady(gwAddr)
-		log.Printf("gateway listening on %s", gwAddr)
-		log.Fatal(http.Serve(l, gw))
+		slog.Info("gateway listening", "addr", gwAddr)
+		if serr := http.Serve(l, gw); serr != nil {
+			die("gateway serve failed", "err", serr)
+		}
 	}()
 
 	var provider creds.Provider = &gateway.Provider{
@@ -104,9 +139,12 @@ func main() {
 	}
 
 	b := &broker.Broker{
-		Cfg:           cfg,
-		Creds:         provider,
-		Approve:       func(kind string, _ any) bool { log.Printf("approval gate: %s -> auto-approve (MVP)", kind); return true },
+		Cfg:   cfg,
+		Creds: provider,
+		Approve: func(kind string, _ any) bool {
+			slog.Info("approval gate auto-approve (MVP)", "kind", kind)
+			return true
+		},
 		ImageRef:      imageRef,
 		StageRoot:     env("STAGE_ROOT", "/tmp/broker/stage"),
 		AuditRoot:     env("AUDIT_ROOT", "/tmp/broker/audit"),
@@ -117,7 +155,7 @@ func main() {
 		TaskBudget:    budget,
 		MaxConcurrent: envInt("DRYDOCK_MAX_CONCURRENT_TASKS", 2),
 	}
-	log.Printf("max concurrent tasks: %d", b.MaxConcurrent)
+	slog.Info("config", "max_concurrent_tasks", b.MaxConcurrent, "task_budget_usd", budget)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)
@@ -139,13 +177,17 @@ func main() {
 // submit and approve tasks, so it's for operator awareness, not security.
 func serve(mux *http.ServeMux, gwAddr, proxyAddr string) {
 	if tcpAddr := os.Getenv("BROKER_ADDR"); tcpAddr != "" {
-		log.Printf("WARNING: BROKER_ADDR=%s — listening on TCP. Any process that can reach this port can submit/approve tasks.", tcpAddr)
-		log.Printf("brokerd listening on %s (gateway %s, squid %s)", tcpAddr, gwAddr, proxyAddr)
-		log.Fatal(http.ListenAndServe(tcpAddr, mux))
+		slog.Warn("listening on TCP — any process that can reach this port can submit and approve tasks",
+			"addr", tcpAddr)
+		slog.Info("brokerd listening", "addr", tcpAddr, "gateway", gwAddr, "squid", proxyAddr)
+		if err := http.ListenAndServe(tcpAddr, mux); err != nil {
+			die("listen and serve failed", "err", err)
+		}
+		return
 	}
 	sock := env("BROKER_SOCKET", sockpath.Default())
 	if err := sockpath.EnsureParent(sock); err != nil {
-		log.Fatalf("mkdir %s parent: %v", sock, err)
+		die("mkdir socket parent failed", "sock", sock, "err", err)
 	}
 	_ = os.Remove(sock) // stale socket from a previous crash
 
@@ -155,14 +197,16 @@ func serve(mux *http.ServeMux, gwAddr, proxyAddr string) {
 	l, err := net.Listen("unix", sock)
 	syscall.Umask(oldMask)
 	if err != nil {
-		log.Fatalf("listen %s: %v", sock, err)
+		die("listen failed", "sock", sock, "err", err)
 	}
 	// Belt and braces: enforce 0600 explicitly even if umask gave us 0640.
 	if err := os.Chmod(sock, 0o600); err != nil {
-		log.Fatalf("chmod %s: %v", sock, err)
+		die("chmod failed", "sock", sock, "err", err)
 	}
-	log.Printf("brokerd listening on unix://%s (gateway %s, squid %s)", sock, gwAddr, proxyAddr)
-	log.Fatal(http.Serve(l, mux))
+	slog.Info("brokerd listening", "addr", "unix://"+sock, "gateway", gwAddr, "squid", proxyAddr)
+	if err := http.Serve(l, mux); err != nil {
+		die("serve failed", "err", err)
+	}
 }
 
 // waitBindable blocks until addr can be bound (the anchor brings the vmnet
@@ -175,7 +219,7 @@ func waitBindable(addr string) {
 		}
 		time.Sleep(time.Second)
 	}
-	log.Fatalf("%s never became bindable (anchor up?)", addr)
+	die("addr never became bindable", "addr", addr, "hint", "is the anchor up?")
 }
 
 // checkContainerVersion fails closed if the `container` CLI isn't present, and
@@ -186,63 +230,72 @@ func waitBindable(addr string) {
 func checkContainerVersion() {
 	out, err := exec.Command("container", "--version").CombinedOutput()
 	if err != nil {
-		log.Fatalf("container CLI not runnable (apple/container required): %v\n%s", err, out)
+		die("container CLI not runnable (apple/container required)", "err", err, "stderr", string(out))
 	}
 	strict := os.Getenv("DRYDOCK_STRICT_CONTAINER_VERSION") == "1"
 	m := containerVersionRE.FindStringSubmatch(strings.TrimSpace(string(out)))
 	if m == nil {
-		msg := fmt.Sprintf("could not parse container --version output (%q)", strings.TrimSpace(string(out)))
 		if strict {
-			log.Fatalf("DRYDOCK_STRICT_CONTAINER_VERSION=1: %s", msg)
+			die("strict mode: could not parse container version", "raw", strings.TrimSpace(string(out)))
 		}
-		log.Printf("WARNING: %s; proceeding", msg)
+		slog.Warn("could not parse container --version output; proceeding",
+			"raw", strings.TrimSpace(string(out)))
 		return
 	}
+	version := fmt.Sprintf("%s.%s.%s", m[1], m[2], m[3])
 	if m[1] != supportedContainerMajor {
 		if strict {
-			log.Fatalf("DRYDOCK_STRICT_CONTAINER_VERSION=1: container CLI v%s.%s.%s — drydock is tested against v%s.x. Refusing to start.",
-				m[1], m[2], m[3], supportedContainerMajor)
+			die("strict mode: container CLI version not supported",
+				"version", version, "tested", supportedContainerMajor+".x")
 		}
-		log.Printf("WARNING: container CLI v%s.%s.%s — drydock is tested against v%s.x. Re-run the README smoke test before relying on this.",
-			m[1], m[2], m[3], supportedContainerMajor)
+		slog.Warn("container CLI version not in tested range — re-run README smoke test",
+			"version", version, "tested", supportedContainerMajor+".x")
 		return
 	}
-	log.Printf("container CLI v%s.%s.%s (supported)", m[1], m[2], m[3])
+	slog.Info("container CLI", "version", version, "supported", true)
 }
 
-// pruneOrphanTasks reaps any task-* containers from a previous brokerd
-// life. Apple `container run --rm` covers the happy path; brokerd crashes
-// (SIGKILL, panic) and timeouts can leave the VM up. Running this at boot
-// closes the easy-orphan window before the new brokerd assigns new task IDs.
+// pruneOrphanTasks reaps any task-* containers and orphan squid processes
+// from a previous brokerd life. Apple `container run --rm` covers the
+// happy path; brokerd crashes (SIGKILL, panic) and timeouts can leave the
+// VM up. Squid is launched via cmd.Start() and lives past brokerd if
+// brokerd doesn't receive a signal cleanly. Running this at boot closes
+// the easy-orphan window before the new brokerd tries to bind 3128 again.
 func pruneOrphanTasks() {
+	// Reap orphan task containers.
 	out, err := exec.Command("container", "ls", "-a", "--format", "json").CombinedOutput()
 	if err != nil {
-		log.Printf("orphan prune: container ls failed: %v\n%s", err, out)
-		return
-	}
-	// Names look like "task-<hex>"; we don't bother parsing the JSON
-	// shape (which moves across container CLI versions). A substring is
-	// enough and won't match drydock-anchor (which we already handled).
-	for _, line := range strings.Split(string(out), "\n") {
-		for _, token := range strings.Fields(strings.ReplaceAll(line, `"`, " ")) {
-			if strings.HasPrefix(token, "task-") && len(token) > 5 {
-				_ = exec.Command("container", "delete", "--force", token).Run()
-				log.Printf("orphan prune: removed %s", token)
+		slog.Warn("orphan prune: container ls failed", "err", err, "stderr", string(out))
+	} else {
+		// Names look like "task-<hex>"; we don't bother parsing the JSON
+		// shape (which moves across container CLI versions). A substring
+		// is enough and won't match drydock-anchor (handled by startAnchor).
+		for _, line := range strings.Split(string(out), "\n") {
+			for _, token := range strings.Fields(strings.ReplaceAll(line, `"`, " ")) {
+				if strings.HasPrefix(token, "task-") && len(token) > 5 {
+					_ = exec.Command("container", "delete", "--force", token).Run()
+					slog.Info("orphan prune: removed container", "name", token)
+				}
 			}
 		}
 	}
+	// Reap orphan squid (very specific argv: "-N -f" only used by drydock).
+	_ = exec.Command("pkill", "-f", "squid -N -f").Run()
 }
 
 // startAnchor keeps the network's vmnet gateway interface up. Idempotent: any
-// stale anchor is removed first.
+// stale anchor is removed first. Uses a dedicated minimal image (drydock-anchor)
+// FROM scratch + a static Go binary that sleeps — sharing the agent image
+// here was a persistent-attack-surface risk if claude-sandbox were ever
+// compromised.
 func startAnchor(network, image string) {
 	_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
 	cmd := exec.Command("container", "run", "-d", "--name", "drydock-anchor",
-		"--network", network, "--entrypoint", "/bin/sh", image, "-c", "sleep infinity")
+		"--network", network, image)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Fatalf("start network anchor: %v\n%s", err, out)
+		die("start network anchor failed", "err", err, "stderr", string(out))
 	}
-	log.Printf("network anchor up on %s", network)
+	slog.Info("network anchor up", "network", network)
 }
 
 // listenWhenReady retries binding addr until the vmnet gateway interface comes
@@ -254,7 +307,7 @@ func listenWhenReady(addr string) net.Listener {
 		}
 		time.Sleep(time.Second)
 	}
-	log.Fatalf("gateway: %s never became bindable (anchor up?)", addr)
+	die("gateway addr never became bindable", "addr", addr)
 	return nil
 }
 
