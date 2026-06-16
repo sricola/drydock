@@ -467,6 +467,109 @@ func TestSummariseExtras(t *testing.T) {
 	}
 }
 
+func TestHandleTask_400OnBadJSON(t *testing.T) {
+	b := &Broker{}
+	req := httptest.NewRequest("POST", "/tasks", strings.NewReader("{not json"))
+	rr := httptest.NewRecorder()
+	b.HandleTask(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("bad JSON should 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleTask_400OnLocalPathRepoRef(t *testing.T) {
+	b := &Broker{}
+	req := httptest.NewRequest("POST", "/tasks", strings.NewReader(
+		`{"repo_ref":"/Users/sray/repo","instruction":"x"}`))
+	rr := httptest.NewRecorder()
+	b.HandleTask(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("local-path repo_ref should 400, got %d body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleApprove_AlreadySignaledIs409(t *testing.T) {
+	// Two approvals to the same task must not race-double-send into the
+	// channel; the second must observe the conflict, not panic.
+	b := &Broker{AuditRoot: t.TempDir()}
+	done := make(chan bool, 1)
+	go func() { done <- b.gatePush(context.Background(), "twice", "diff", false) }()
+	if !waitFor(50*time.Millisecond, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending["twice"]
+		b.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("never registered")
+	}
+
+	// First approve succeeds (204) and the gate returns.
+	req := httptest.NewRequest("POST", "/admin/approve/twice", nil)
+	req.SetPathValue("id", "twice")
+	rr := httptest.NewRecorder()
+	b.HandleApprove(rr, req)
+	if rr.Code != 204 {
+		t.Fatalf("first approve = %d", rr.Code)
+	}
+	<-done // drain so the gate goroutine finishes
+
+	// Wait for gate to actually deregister; otherwise we race the cleanup.
+	if !waitFor(50*time.Millisecond, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending["twice"]
+		b.pendingMu.Unlock()
+		return !ok
+	}) {
+		t.Fatal("gate did not deregister")
+	}
+
+	// A second approval against the now-gone task must return 404, not panic.
+	rr2 := httptest.NewRecorder()
+	b.HandleApprove(rr2, req)
+	if rr2.Code != 404 {
+		t.Errorf("second approve = %d, want 404", rr2.Code)
+	}
+}
+
+func TestHandleTasks_OldestFirst(t *testing.T) {
+	b := &Broker{}
+	b.registerTask("a", "r", "i", nil)
+	time.Sleep(2 * time.Millisecond)
+	b.registerTask("b", "r", "i", nil)
+	time.Sleep(2 * time.Millisecond)
+	b.registerTask("c", "r", "i", nil)
+
+	req := httptest.NewRequest("GET", "/admin/tasks", nil)
+	rr := httptest.NewRecorder()
+	b.HandleTasks(rr, req)
+
+	var got []TaskState
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 tasks, got %d", len(got))
+	}
+	if got[0].ID != "a" || got[1].ID != "b" || got[2].ID != "c" {
+		t.Errorf("not oldest-first: %v %v %v", got[0].ID, got[1].ID, got[2].ID)
+	}
+}
+
+func TestHandlePending_EmptyReturnsEmptyArray(t *testing.T) {
+	// Empty must be `[]`, not `null` — clients shouldn't have to handle both.
+	b := &Broker{}
+	req := httptest.NewRequest("GET", "/admin/pending", nil)
+	rr := httptest.NewRecorder()
+	b.HandlePending(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := strings.TrimSpace(rr.Body.String())
+	if body != "[]" {
+		t.Errorf("empty pending body = %q, want %q", body, "[]")
+	}
+}
+
 func TestHandleHealth_BreakdownByStage(t *testing.T) {
 	b := &Broker{}
 	b.registerTask("a", "r", "i", nil)
