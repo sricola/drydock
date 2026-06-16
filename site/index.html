@@ -132,7 +132,13 @@ h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);lett
 .tag.vm{color:var(--red);background:var(--red-dim);border:1px solid var(--red-line)}
 .tag.oos{color:var(--faint);border:1px solid var(--line2)}
 
-/* ---- architecture diagram ---- */
+/* ---- architecture diagram (SVG-based) ---- */
+.archdiag{margin-top:10px;border:1px solid var(--line2);background:var(--panel);border-radius:4px;padding:14px}
+.archdiag svg{display:block;width:100%;height:auto}
+.archnote{margin-top:18px;color:var(--mut);font-size:15.5px;max-width:78ch}
+.archnote b{color:var(--ink);font-weight:600}
+
+/* legacy node-grid styles (kept in case used elsewhere) */
 .diagram{margin-top:10px;border:1px solid var(--line2);background:var(--panel);border-radius:4px;overflow:hidden}
 .diagram .head{display:flex;border-bottom:1px solid var(--line)}
 .zone-h{flex:1;padding:11px 18px;font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase}
@@ -266,63 +272,194 @@ footer .mk path{stroke:var(--faint)}
   <div class="seclabel reveal"><span class="n">02</span> Architecture</div>
   <h2 class="reveal">One broker, two host proxies, a sealed VM.</h2>
 
-  <div class="diagram reveal">
-    <div class="head">
-      <div class="zone-h vm">◀ Sandbox VM · untrusted</div>
-      <div class="zone-h host">Host · trusted computing base ▶</div>
-    </div>
-    <div class="grid2">
-      <div class="col vm">
-        <div class="node danger">
-          <div class="nt">claude --bare -p</div>
-          <div class="nd">--dangerously-skip-permissions, output stream-json</div>
-        </div>
-        <div class="node">
-          <div class="nt">nft pin (root, pre-priv-drop)</div>
-          <div class="nd">egress allowed only → :8088 and → :3128. DNS dropped. Agent runs non-root; can't flush it.</div>
-        </div>
-        <div class="node">
-          <div class="nt">env (injected by broker)</div>
-          <div class="nd">ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, HTTPS_PROXY — <b style="color:var(--red)">no real key</b></div>
-        </div>
-        <div class="node">
-          <div class="nt">/work (bind mount)</div>
-          <div class="nd">work tree only — <b style="color:var(--red)">never</b> .git</div>
-        </div>
-      </div>
-      <div class="seam"></div>
-      <div class="col host">
-        <div class="node safe">
-          <div class="nt">brokerd</div>
-          <div class="nd">leases the VM, stages the repo, streams the audit log, gates the push</div>
-        </div>
-        <div class="node key">
-          <div class="nt">credential gateway · :8088</div>
-          <div class="nd">validates the bearer token, swaps in the real X-Api-Key, meters USD budget, revokes on task end</div>
-        </div>
-        <div class="node safe">
-          <div class="nt">squid · :3128</div>
-          <div class="nd">CONNECT allowlist by hostname (npm / pypi), no TLS interception</div>
-        </div>
-        <div class="node">
-          <div class="nt">anchor + host git</div>
-          <div class="nd">keeps the vmnet gateway up; pushes from a host-only .git with hooks disabled</div>
-        </div>
-      </div>
-    </div>
-    <div class="flowrow">
-      <div class="fl">model api</div>
-      <div class="fd"><span class="tok">Bearer tok</span> → gateway:8088 &nbsp;<span class="ar">⟶</span>&nbsp; swap to <span class="real">X-Api-Key: REAL</span> → <span class="ar">HTTPS</span> api.anthropic.com</div>
-    </div>
-    <div class="flowrow">
-      <div class="fl">packages</div>
-      <div class="fd">npm / pip → <span class="ar">CONNECT host</span> → squid:3128 &nbsp;<span class="ar">⟶</span>&nbsp; allowlisted → registry &nbsp;·&nbsp; <span class="arr">everything else: DROP</span></div>
-    </div>
-    <div class="flowrow">
-      <div class="fl">result</div>
-      <div class="fd">VM writes /work &nbsp;<span class="ar">⟶</span>&nbsp; broker captures <span class="real">git diff</span> &nbsp;<span class="ar">⟶</span>&nbsp; host push / PR (credentials the VM never saw)</div>
-    </div>
+  <div class="archdiag reveal">
+    <svg viewBox="0 0 1200 540" xmlns="http://www.w3.org/2000/svg"
+         font-family="ui-monospace, Menlo, monospace" aria-labelledby="archtitle">
+      <title id="archtitle">drydock system diagram: VM, trust boundary, host services, and the only flows that cross</title>
+
+      <defs>
+        <!-- arrowheads (matched to stroke colors) -->
+        <marker id="ah-grn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#0d8d5e"/>
+        </marker>
+        <marker id="ah-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#c92c2c"/>
+        </marker>
+        <marker id="ah-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#54606b"/>
+        </marker>
+      </defs>
+
+      <!-- zone tints -->
+      <rect x="0" y="40" width="500" height="500" fill="rgba(201,44,44,.04)"/>
+      <rect x="500" y="40" width="500" height="500" fill="rgba(13,141,94,.04)"/>
+
+      <!-- zone labels -->
+      <text x="20" y="28" font-size="12" letter-spacing="3" fill="#c92c2c" font-weight="600">SANDBOX VM · UNTRUSTED</text>
+      <text x="520" y="28" font-size="12" letter-spacing="3" fill="#0d8d5e" font-weight="600">HOST · TRUSTED COMPUTING BASE</text>
+      <text x="1020" y="28" font-size="12" letter-spacing="3" fill="#54606b" font-weight="600">EXTERNAL</text>
+
+      <!-- the trust boundary: thick dashed vertical line at x=500 -->
+      <line x1="500" y1="40" x2="500" y2="540"
+            stroke="#1a1d22" stroke-width="2" stroke-dasharray="8 6"/>
+      <text x="500" y="555" font-size="11" letter-spacing="3"
+            fill="#1a1d22" text-anchor="middle">TRUST BOUNDARY</text>
+
+      <!-- -- VM SIDE (LEFT) -- -->
+      <!-- claude --bare -->
+      <g transform="translate(40 60)">
+        <rect width="220" height="64" rx="8" fill="#ffffff" stroke="#c92c2c" stroke-width="2"/>
+        <text x="14" y="24" font-size="13" font-weight="600" fill="#c92c2c">claude --bare</text>
+        <text x="14" y="44" font-size="11" fill="#54606b">--dangerously-skip-permissions</text>
+        <text x="14" y="58" font-size="11" fill="#54606b">stream-json output</text>
+      </g>
+
+      <!-- env (injected) -->
+      <g transform="translate(40 150)">
+        <rect width="220" height="68" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">env (injected by broker)</text>
+        <text x="14" y="40" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">ANTHROPIC_BASE_URL=gw:8088</text>
+        <text x="14" y="54" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">ANTHROPIC_AUTH_TOKEN=tok_…</text>
+        <text x="14" y="64" font-size="10" fill="#c92c2c" font-weight="600">NO REAL KEY</text>
+      </g>
+
+      <!-- nft pin -->
+      <g transform="translate(40 240)">
+        <rect width="220" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">nft pin · installed as root</text>
+        <text x="14" y="40" font-size="11" fill="#54606b">allow → gw:8088 + proxy:3128</text>
+        <text x="14" y="54" font-size="11" fill="#54606b">drop DNS, drop everything else</text>
+      </g>
+
+      <!-- /work mount -->
+      <g transform="translate(40 326)">
+        <rect width="220" height="54" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">/work (bind mount)</text>
+        <text x="14" y="40" font-size="11" fill="#54606b">work tree only — never .git</text>
+      </g>
+
+      <!-- -- HOST SIDE (MIDDLE) -- -->
+      <!-- brokerd -->
+      <g transform="translate(540 60)">
+        <rect width="220" height="78" rx="8" fill="#ffffff" stroke="#0d8d5e" stroke-width="2"/>
+        <text x="14" y="24" font-size="13" font-weight="600" fill="#0d8d5e">brokerd</text>
+        <text x="14" y="42" font-size="11" fill="#54606b">stage repo · mint token · run VM</text>
+        <text x="14" y="56" font-size="11" fill="#54606b">capture diff · gate push</text>
+        <text x="14" y="72" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#1a1d22">unix:///…/drydock.sock</text>
+      </g>
+
+      <!-- credential gateway -->
+      <g transform="translate(540 160)">
+        <rect width="220" height="80" rx="8" fill="#ffffff" stroke="#0d8d5e" stroke-width="2"/>
+        <text x="14" y="24" font-size="13" font-weight="600" fill="#0d8d5e">credential gateway :8088</text>
+        <text x="14" y="42" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">strip Authorization: Bearer tok_…</text>
+        <text x="14" y="56" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#0d8d5e">set X-Api-Key: REAL</text>
+        <text x="14" y="72" font-size="11" fill="#54606b">USD budget · TTL · revoke at task end</text>
+      </g>
+
+      <!-- squid -->
+      <g transform="translate(540 262)">
+        <rect width="220" height="62" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">squid :3128</text>
+        <text x="14" y="40" font-size="11" fill="#54606b">CONNECT allowlist by hostname</text>
+        <text x="14" y="54" font-size="11" fill="#54606b">no TLS interception</text>
+      </g>
+
+      <!-- host-only .git + approval -->
+      <g transform="translate(540 346)">
+        <rect width="220" height="78" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">host-only .git + approval gate</text>
+        <text x="14" y="40" font-size="11" fill="#54606b">core.hooksPath=/dev/null</text>
+        <text x="14" y="54" font-size="11" fill="#54606b">drydock approve &lt;id&gt; · gh / glab / tea</text>
+      </g>
+
+      <!-- -- EXTERNAL (RIGHT) -- -->
+      <g transform="translate(800 60)">
+        <rect width="170" height="46" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+        <text x="14" y="20" font-size="11" font-weight="600" fill="#1a1d22">operator</text>
+        <text x="14" y="36" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">drydock submit / approve</text>
+      </g>
+
+      <g transform="translate(1010 168)">
+        <rect width="170" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+        <text x="14" y="22" font-size="11" font-weight="600" fill="#1a1d22">api.anthropic.com</text>
+        <text x="14" y="40" font-size="10" fill="#54606b">HTTPS</text>
+        <text x="14" y="54" font-size="10" fill="#0d8d5e">real key, host-only</text>
+      </g>
+
+      <g transform="translate(1010 268)">
+        <rect width="170" height="62" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+        <text x="14" y="22" font-size="11" font-weight="600" fill="#1a1d22">registries</text>
+        <text x="14" y="40" font-size="10" fill="#54606b">registry.npmjs.org</text>
+        <text x="14" y="54" font-size="10" fill="#54606b">pypi.org · files.pythonhosted.org</text>
+      </g>
+
+      <g transform="translate(1010 360)">
+        <rect width="170" height="46" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+        <text x="14" y="22" font-size="11" font-weight="600" fill="#1a1d22">github / gitlab / gitea</text>
+        <text x="14" y="38" font-size="10" fill="#54606b">push + open PR/MR</text>
+      </g>
+
+      <!-- ARROWS — only the four flows that cross the trust boundary -->
+
+      <!-- A) operator → brokerd: POST /tasks -->
+      <path d="M 800 84 L 760 84" stroke="#54606b" stroke-width="2" fill="none"
+            marker-end="url(#ah-mut)"/>
+      <text x="780" y="76" font-size="10.5" fill="#54606b" text-anchor="middle">POST /tasks</text>
+
+      <!-- B) brokerd → VM: container run + inject token -->
+      <path d="M 540 118 Q 400 130 260 178" stroke="#54606b" stroke-width="2" fill="none"
+            marker-end="url(#ah-mut)" stroke-dasharray="6 4"/>
+      <text x="380" y="120" font-size="10.5" fill="#54606b">container run · inject token</text>
+
+      <!-- C) agent → gateway: bearer token CROSSES boundary -->
+      <path d="M 260 92 L 540 200" stroke="#c92c2c" stroke-width="2.5" fill="none"
+            marker-end="url(#ah-red)"/>
+      <text x="330" y="138" font-size="10.5" fill="#c92c2c" font-weight="600">bearer tok_…</text>
+
+      <!-- D) gateway → anthropic: real key (host side only) -->
+      <path d="M 760 200 L 1010 200" stroke="#0d8d5e" stroke-width="2.5" fill="none"
+            marker-end="url(#ah-grn)"/>
+      <text x="870" y="192" font-size="10.5" fill="#0d8d5e" font-weight="600">X-Api-Key: REAL</text>
+
+      <!-- E) agent → squid: CONNECT host -->
+      <path d="M 260 272 L 540 293" stroke="#c92c2c" stroke-width="2" fill="none"
+            marker-end="url(#ah-red)"/>
+      <text x="365" y="270" font-size="10.5" fill="#c92c2c">CONNECT host</text>
+
+      <!-- F) squid → registries -->
+      <path d="M 760 293 L 1010 299" stroke="#0d8d5e" stroke-width="2" fill="none"
+            marker-end="url(#ah-grn)"/>
+      <text x="870" y="285" font-size="10.5" fill="#0d8d5e">allowlisted</text>
+
+      <!-- G) anything else from VM: DROP -->
+      <text x="60" y="402" font-size="10.5" fill="#c92c2c" font-weight="600">everything else → DROP (nft + no DNS)</text>
+
+      <!-- H) result: diff CROSSES back -->
+      <path d="M 260 360 L 540 380" stroke="#0d8d5e" stroke-width="2.5" fill="none"
+            marker-end="url(#ah-grn)"/>
+      <text x="370" y="355" font-size="10.5" fill="#0d8d5e" font-weight="600">git diff (the only thing back)</text>
+
+      <!-- I) host pushes -->
+      <path d="M 760 385 L 1010 383" stroke="#0d8d5e" stroke-width="2" fill="none"
+            marker-end="url(#ah-grn)"/>
+      <text x="870" y="377" font-size="10.5" fill="#0d8d5e">git push (after approval)</text>
+
+      <!-- J) approval round-trip -->
+      <path d="M 760 100 Q 800 320 660 360" stroke="#54606b" stroke-width="1.5" fill="none"
+            marker-end="url(#ah-mut)" stroke-dasharray="4 4"/>
+      <text x="828" y="280" font-size="10" fill="#54606b">drydock approve &lt;id&gt;</text>
+
+    </svg>
   </div>
+
+  <p class="archnote reveal">Four flows cross the trust boundary, all labeled.
+    The agent gets a bearer token (never the real key); the gateway swaps in
+    <span class="ic">X-Api-Key</span> only on the host side; squid resolves
+    and CONNECTs allowlisted hosts; everything else is dropped by the in-VM
+    <span class="ic">nft</span> pin. The single artifact that crosses back is
+    a captured <span class="ic">git diff</span>, and it doesn't reach origin
+    without your approval.</p>
 </section>
 
 <section id="guarantees">
