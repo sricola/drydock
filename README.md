@@ -57,18 +57,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 drydock start              # foreground; ^C to stop. backgrounds via & or your launchd plist.
 ```
 
-Expected boot lines (text format on a TTY; JSON when redirected):
-
-```
-level=INFO msg="container CLI" version=1.0.0 supported=true
-level=INFO msg="network anchor up" network=drydock-egress
-level=INFO msg="squid listening" addr=192.168.66.1:3128
-level=INFO msg=config max_concurrent_tasks=2 task_budget_usd=2
-level=INFO msg="gateway listening" addr=192.168.66.1:8088
-level=INFO msg="brokerd listening" addr=unix:///var/.../drydock-501/drydock.sock …
-```
-
-Quick liveness (no need to know the socket path):
+Quick liveness:
 
 ```bash
 drydock status
@@ -77,9 +66,6 @@ drydock status
 # tasks       0 total · 0 in last 24h
 # audit dir   /tmp/broker/audit
 ```
-
-The socket itself is at `$TMPDIR/drydock-<uid>/drydock.sock`; the boot
-line shows the exact path, and the CLI discovers it automatically.
 
 ## Submit a task
 
