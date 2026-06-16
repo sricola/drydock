@@ -37,9 +37,8 @@ func runInit() {
 	fmt.Println()
 	fmt.Println("ready. next:")
 	fmt.Println("  1. export ANTHROPIC_API_KEY=sk-ant-...")
-	fmt.Println("  2. drydock start")
-	fmt.Println("  3. in another shell: POST tasks at unix:///tmp/drydock.sock/tasks")
-	fmt.Println("                       drydock pending / drydock approve <id>")
+	fmt.Println("  2. drydock start    (look for `brokerd listening on unix://...` in the boot log for the socket path)")
+	fmt.Println("  3. in another shell: drydock status / drydock pending / drydock approve <id>")
 }
 
 // step prints a one-line status. ok=true → "✓"; ok=false → "✗".
@@ -122,23 +121,29 @@ func ensureNetwork() {
 }
 
 func ensureImage() {
+	ensureNamedImage("claude-sandbox", "image/Dockerfile", "image/", "first build can take a few minutes")
+	ensureNamedImage("drydock-anchor", "image/anchor/Dockerfile", "image/anchor/", "minimal — usually quick")
+}
+
+func ensureNamedImage(name, dockerfile, ctxDir, note string) {
+	label := "image " + name + ":latest"
 	out, _ := exec.Command("container", "image", "list").CombinedOutput()
-	if strings.Contains(string(out), "claude-sandbox") {
-		step("image claude-sandbox:latest", true, "exists")
+	if strings.Contains(string(out), name) {
+		step(label, true, "exists")
 		return
 	}
-	if _, err := os.Stat("image/Dockerfile"); err != nil {
-		step("image claude-sandbox:latest", false, "image/Dockerfile not found; run from the drydock repo root, or build manually")
-		fmt.Println("    → container build -t claude-sandbox:latest <path-to-drydock>/image")
+	if _, err := os.Stat(dockerfile); err != nil {
+		step(label, false, dockerfile+" not found; run from the drydock repo root, or build manually")
+		fmt.Printf("    → container build -t %s:latest <path-to-drydock>/%s\n", name, ctxDir)
 		os.Exit(1)
 	}
-	fmt.Println("  · building claude-sandbox:latest (first build can take a few minutes)…")
-	cmd := exec.Command("container", "build", "-t", "claude-sandbox:latest", "image/")
+	fmt.Printf("  · building %s:latest (%s)…\n", name, note)
+	cmd := exec.Command("container", "build", "-t", name+":latest", ctxDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		step("image claude-sandbox:latest", false, err.Error())
+		step(label, false, err.Error())
 		os.Exit(1)
 	}
-	step("image claude-sandbox:latest", true, "built")
+	step(label, true, "built")
 }
