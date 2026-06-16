@@ -87,6 +87,14 @@ h1 .u{color:var(--red);position:relative}
 h1 .t{color:var(--grn)}
 .lede{font-size:clamp(17px,2.1vw,21px);line-height:1.5;max-width:42ch;color:var(--mut)}
 .lede b{font-weight:600;color:var(--ink)}
+.install{margin-top:36px;max-width:640px}
+.install-label{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);margin-bottom:10px}
+.install-term{margin-top:0}
+.install-term pre{font-size:13px;line-height:1.7;padding:16px 18px}
+.install-foot{margin-top:12px;font-family:var(--mono);font-size:11.5px;color:var(--mut);letter-spacing:.04em}
+.install-foot a{color:var(--grn);text-decoration:none;border-bottom:1px solid var(--grn-line)}
+.install-foot a:hover{border-bottom-color:var(--grn)}
+@media(max-width:680px){.install-term pre{font-size:12px;padding:14px}}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:32px}
 .chip{font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--mut);
   border:1px solid var(--line2);border-radius:2px;padding:6px 10px;background:var(--panel)}
@@ -236,6 +244,31 @@ footer .mk path{stroke:var(--faint)}
     <div class="kicker reveal"><span class="bar"></span>containment for autonomous coding agents</div>
     <h1 class="reveal">Untrusted agents,<br><span class="t">hardware-isolated.</span></h1>
     <p class="lede reveal">drydock is a sandbox for autonomous coding agents on macOS. Each task runs in a <b>per-task hardware-isolated VM</b>; the agent never sees your real Anthropic key — a host-side credential gateway issues short-lived budgeted bearer tokens. Egress is <b>deny-by-default</b>. The only artifact that leaves the sandbox is a captured <span class="ic">git diff</span>, and it doesn't reach origin until you approve it.</p>
+    <div class="install reveal">
+      <div class="install-label">Install · macOS · Apple silicon</div>
+      <div class="term install-term">
+        <div class="bar">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="ttl">~/$&nbsp;</span>
+        </div>
+<pre><span class="c"># prerequisites (skip whichever you already have)</span>
+brew install --cask container
+brew install sricola/drydock/drydock
+
+<span class="c"># bootstrap ~/.drydock and the container image set</span>
+export <span class="a">ANTHROPIC_API_KEY</span>=<span class="r">sk-ant-…</span>
+drydock init
+drydock start</pre>
+      </div>
+      <div class="install-foot">
+        <a href="https://github.com/sricola/drydock#install">install options</a>
+        ·
+        <a href="https://github.com/sricola/drydock/releases/tag/v0.1.2">v0.1.2 release notes</a>
+        ·
+        <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">threat model</a>
+      </div>
+    </div>
+
     <div class="chips reveal">
       <span class="chip">Apple&nbsp;<b>silicon</b></span>
       <span class="chip">apple/container&nbsp;<b>1.0</b></span>
