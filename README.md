@@ -25,29 +25,29 @@ brew install squid
 The PR/MR adapters call `gh`, `glab`, or `tea` — install whichever your
 repos use, and run their respective `auth login` before submitting a task.
 
-### Option A — Pre-built release tarball (no Go toolchain required)
+### Option A — Homebrew (recommended)
 
 ```bash
-gh release download v0.1.0 --repo sricola/drydock --pattern '*.tar.gz*'
-shasum -a 256 -c drydock-v0.1.0-darwin-arm64.tar.gz.sha256
-tar xzf drydock-v0.1.0-darwin-arm64.tar.gz
-cd drydock-v0.1.0-darwin-arm64
-./install.sh /usr/local                  # or any PREFIX you control
+brew tap sricola/drydock
+brew install drydock
 drydock init
 ```
+
+Pulls a pre-built Apple-silicon binary from the v0.1.0 release; no Go
+toolchain required.
 
 ### Option B — Build from source
 
 ```bash
 brew install go
-git clone git@github.com:sricola/drydock && cd drydock
+git clone https://github.com/sricola/drydock && cd drydock
 make install                             # PREFIX=/usr/local by default
 make install PREFIX=$HOME/.local         # …or a user-owned prefix
 drydock init
 ```
 
 Either way, `drydock init` walks the remaining prereqs (container
-service, drydock-egress network, sandbox + anchor images) and reports
+service, `drydock-egress` network, sandbox + anchor images) and reports
 per-step status. Idempotent — re-run any time.
 
 ## Run
