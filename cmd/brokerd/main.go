@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -66,9 +67,13 @@ func main() {
 	checkContainerVersion()
 	pruneOrphanTasks()
 
-	cfg, err := egress.Load(env("EGRESS_CONFIG", "config/egress.yaml"))
+	cfgPath, err := findEgressConfig()
 	if err != nil {
-		die("load egress config", "err", err)
+		die("locate egress config", "err", err)
+	}
+	cfg, err := egress.Load(cfgPath)
+	if err != nil {
+		die("load egress config", "path", cfgPath, "err", err)
 	}
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
@@ -253,6 +258,43 @@ func checkContainerVersion() {
 		return
 	}
 	slog.Info("container CLI", "version", version, "supported", true)
+}
+
+// findEgressConfig locates config/egress.yaml. Mirrors drydock init's image-dir
+// discovery so brokerd works after `brew install` or `make install`, not just
+// when run from a cloned repo. Search order:
+//  1. $EGRESS_CONFIG          (explicit operator override)
+//  2. ./config/egress.yaml    (cloned repo, current behavior)
+//  3. <brokerd>/../share/drydock/config/egress.yaml
+//                             (the brew + make install layout)
+//  4. $HOMEBREW_PREFIX/share/drydock/config/egress.yaml
+//  5. ~/.local/share/drydock/config/egress.yaml
+func findEgressConfig() (string, error) {
+	candidates := []string{}
+	if env := os.Getenv("EGRESS_CONFIG"); env != "" {
+		candidates = append(candidates, env)
+	}
+	candidates = append(candidates, "config/egress.yaml")
+	if self, err := os.Executable(); err == nil {
+		root := filepath.Dir(filepath.Dir(self))
+		candidates = append(candidates,
+			filepath.Join(root, "share", "drydock", "config", "egress.yaml"))
+	}
+	if hb := os.Getenv("HOMEBREW_PREFIX"); hb != "" {
+		candidates = append(candidates,
+			filepath.Join(hb, "share", "drydock", "config", "egress.yaml"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "share", "drydock", "config", "egress.yaml"))
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("egress config not found; tried: %s",
+		strings.Join(candidates, ", "))
 }
 
 // pruneOrphanTasks reaps any task-* containers and orphan squid processes
