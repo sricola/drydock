@@ -101,24 +101,27 @@ func main() {
 	}
 
 	b := &broker.Broker{
-		Cfg:        cfg,
-		Creds:      provider,
-		Approve:    func(kind string, _ any) bool { log.Printf("approval gate: %s -> auto-approve (MVP)", kind); return true },
-		ImageRef:   imageRef,
-		StageRoot:  env("STAGE_ROOT", "/tmp/broker/stage"),
-		AuditRoot:  env("AUDIT_ROOT", "/tmp/broker/audit"),
-		Timeout:    taskTimeout,
-		Network:    network,
-		GatewayIP:  gwIP,
-		ProxyPort:  proxyPort,
-		TaskBudget: budget,
+		Cfg:           cfg,
+		Creds:         provider,
+		Approve:       func(kind string, _ any) bool { log.Printf("approval gate: %s -> auto-approve (MVP)", kind); return true },
+		ImageRef:      imageRef,
+		StageRoot:     env("STAGE_ROOT", "/tmp/broker/stage"),
+		AuditRoot:     env("AUDIT_ROOT", "/tmp/broker/audit"),
+		Timeout:       taskTimeout,
+		Network:       network,
+		GatewayIP:     gwIP,
+		ProxyPort:     proxyPort,
+		TaskBudget:    budget,
+		MaxConcurrent: envInt("DRYDOCK_MAX_CONCURRENT_TASKS", 2),
 	}
+	log.Printf("max concurrent tasks: %d", b.MaxConcurrent)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)
 	mux.HandleFunc("POST /admin/approve/{id}", b.HandleApprove)
 	mux.HandleFunc("POST /admin/deny/{id}", b.HandleDeny)
 	mux.HandleFunc("GET /admin/pending", b.HandlePending)
+	mux.HandleFunc("GET /admin/tasks", b.HandleTasks)
 	mux.HandleFunc("GET /healthz", b.HandleHealth)
 
 	serve(mux, gwAddr, proxyAddr)
@@ -218,6 +221,15 @@ func envFloat(k string, def float64) float64 {
 	if v := os.Getenv(k); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return def
+}
+
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
 		}
 	}
 	return def

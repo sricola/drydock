@@ -126,6 +126,7 @@ contribution surface). Restart brokerd after editing.
 | `DRYDOCK_NETWORK` | `drydock-egress` | vmnet network name |
 | `DRYDOCK_GW_IP` | `192.168.66.1` | gateway + squid bind here |
 | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | per-task USD ceiling |
+| `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | how many tasks may be in flight at once; excess POSTs to `/tasks` get HTTP 503 |
 | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `/tmp/broker/{stage,audit,squid}` | Per-task scratch |
 | `BROKER_SOCKET` | `/tmp/drydock.sock` | Unix socket (mode 0600) |
 | `BROKER_ADDR` | *(unset)* | Set `host:port` to expose over TCP (warns at boot) |

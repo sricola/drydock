@@ -61,14 +61,111 @@ type Broker struct {
 	ProxyPort  int     // squid port (e.g. 3128)
 	TaskBudget float64 // USD budget per task
 
+	// MaxConcurrent caps how many tasks may be in any non-terminal state at
+	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
+	MaxConcurrent int
+
+	// slots is a bounded semaphore guarding MaxConcurrent. Initialized lazily
+	// the first time HandleTask is called (so existing callers that build a
+	// Broker by struct literal keep working).
+	slotsOnce sync.Once
+	slots     chan struct{}
+
 	pendingMu sync.Mutex
-	pending   map[string]chan bool // task_id -> approval channel
+	pending   map[string]chan bool       // task_id -> approval channel
+	tasks     map[string]*TaskState      // task_id -> live state (running + awaiting_approval)
 }
+
+// TaskStage tracks where a task currently is in its lifecycle. Only the
+// non-terminal stages live in Broker.tasks — completed tasks fall out as
+// HandleTask returns.
+type TaskStage string
+
+const (
+	StageRunning  TaskStage = "running"
+	StagePending  TaskStage = "awaiting_approval"
+	StagePushing  TaskStage = "pushing"
+)
+
+// TaskState is the operator-facing snapshot returned by GET /admin/tasks.
+type TaskState struct {
+	ID          string    `json:"id"`
+	Repo        string    `json:"repo"`
+	Instruction string    `json:"instruction"` // truncated for display
+	Stage       TaskStage `json:"stage"`
+	StartedAt   time.Time `json:"started_at"`
+}
+
+const instructionSnippetMax = 140
 
 func newID() string {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// initSlots lazily builds the concurrency semaphore. Capacity comes from
+// MaxConcurrent (or 2 if unset). Called from HandleTask via sync.Once so
+// existing tests/callers that build a Broker by literal don't have to
+// remember to do this.
+func (b *Broker) initSlots() {
+	cap := b.MaxConcurrent
+	if cap <= 0 {
+		cap = 2
+	}
+	b.slots = make(chan struct{}, cap)
+}
+
+// acquireSlot is a non-blocking semaphore-take. Returns false when the cap
+// is hit — the handler returns 503 to the caller.
+func (b *Broker) acquireSlot() bool {
+	b.slotsOnce.Do(b.initSlots)
+	select {
+	case b.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *Broker) releaseSlot() {
+	select {
+	case <-b.slots:
+	default:
+	}
+}
+
+// registerTask records a task in the live-tasks map under StageRunning.
+func (b *Broker) registerTask(id, repo, instruction string) {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	if b.tasks == nil {
+		b.tasks = make(map[string]*TaskState)
+	}
+	if len(instruction) > instructionSnippetMax {
+		instruction = instruction[:instructionSnippetMax] + "…"
+	}
+	b.tasks[id] = &TaskState{
+		ID:          id,
+		Repo:        repo,
+		Instruction: instruction,
+		Stage:       StageRunning,
+		StartedAt:   time.Now(),
+	}
+}
+
+func (b *Broker) setStage(id string, s TaskStage) {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	if t, ok := b.tasks[id]; ok {
+		t.Stage = s
+	}
+}
+
+func (b *Broker) unregisterTask(id string) {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	delete(b.tasks, id)
 }
 
 func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +178,14 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "repo_ref must be a github.com URL (https://, git@, or ssh://)", http.StatusBadRequest)
 		return
 	}
+	if !b.acquireSlot() {
+		http.Error(w,
+			"too many concurrent tasks; raise DRYDOCK_MAX_CONCURRENT_TASKS or wait",
+			http.StatusServiceUnavailable)
+		return
+	}
+	defer b.releaseSlot()
+
 	if len(t.EgressExtra) > 0 && b.Cfg.PerTaskWidening.RequiresApproval {
 		if !b.Approve("widen egress", t.EgressExtra) {
 			http.Error(w, "egress widening denied", http.StatusForbidden)
@@ -89,6 +194,8 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskID := newID()
+	b.registerTask(taskID, t.RepoRef, t.Instruction)
+	defer b.unregisterTask(taskID)
 	stageDir := filepath.Join(b.StageRoot, taskID)
 
 	st, err := stage.Prepare(stageDir, t.RepoRef)
@@ -165,11 +272,13 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"task_id": taskID, "diff": "", "pushed": false})
 		return
 	}
+	b.setStage(taskID, StagePending)
 	if !b.gatePush(r.Context(), taskID, diff, t.AutoApprove) {
 		writeJSON(w, map[string]any{"task_id": taskID, "diff": diff, "pushed": false})
 		return
 	}
 
+	b.setStage(taskID, StagePushing)
 	branch := "agent/" + taskID
 	if err := st.Push(branch, "agent: "+firstLine(t.Instruction)); err != nil {
 		http.Error(w, "push failed: "+err.Error(), http.StatusBadGateway)
@@ -225,6 +334,8 @@ func (b *Broker) HandleApprove(w http.ResponseWriter, r *http.Request) { b.signa
 func (b *Broker) HandleDeny(w http.ResponseWriter, r *http.Request) { b.signal(w, r, false) }
 
 // HandlePending returns the set of task IDs currently awaiting approval.
+// Kept as IDs-only for the existing approve/deny CLI path; richer output
+// lives at /admin/tasks.
 func (b *Broker) HandlePending(w http.ResponseWriter, r *http.Request) {
 	b.pendingMu.Lock()
 	ids := make([]string, 0, len(b.pending))
@@ -233,6 +344,28 @@ func (b *Broker) HandlePending(w http.ResponseWriter, r *http.Request) {
 	}
 	b.pendingMu.Unlock()
 	writeJSON(w, ids)
+}
+
+// HandleTasks returns rich state for every task currently in flight
+// (running, awaiting approval, or pushing). The result is sorted oldest-
+// first so the CLI table is deterministic.
+func (b *Broker) HandleTasks(w http.ResponseWriter, r *http.Request) {
+	b.pendingMu.Lock()
+	out := make([]*TaskState, 0, len(b.tasks))
+	for _, t := range b.tasks {
+		// Copy so the caller can't mutate the live state and we don't hold
+		// the lock during JSON encoding.
+		cp := *t
+		out = append(out, &cp)
+	}
+	b.pendingMu.Unlock()
+	// Stable order: oldest first.
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1].StartedAt.After(out[j].StartedAt); j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	writeJSON(w, out)
 }
 
 // notifyMac fires a macOS notification via osascript. Silent no-op when
@@ -255,14 +388,31 @@ func notifyMac(title, body string) {
 	_ = exec.Command("osascript", "-e", script).Run()
 }
 
-// HandleHealth is a liveness/readiness probe. Returns ok with the current
-// pending count so launchd KeepAlive (or `drydock init`'s smoke probe) can
-// confirm brokerd is up and responsive.
+// HandleHealth is a liveness/readiness probe. Returns ok plus a coarse
+// breakdown so launchd KeepAlive, `drydock status`, and `drydock init`'s
+// eventual smoke probe can all use the same endpoint.
 func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	b.pendingMu.Lock()
-	n := len(b.pending)
+	pending := len(b.pending)
+	var running, pendingApproval, pushing int
+	for _, t := range b.tasks {
+		switch t.Stage {
+		case StageRunning:
+			running++
+		case StagePending:
+			pendingApproval++
+		case StagePushing:
+			pushing++
+		}
+	}
 	b.pendingMu.Unlock()
-	writeJSON(w, map[string]any{"ok": true, "pending": n})
+	writeJSON(w, map[string]any{
+		"ok":               true,
+		"pending":          pending, // legacy field; matches old shape
+		"running":          running,
+		"pending_approval": pendingApproval,
+		"pushing":          pushing,
+	})
 }
 
 func (b *Broker) signal(w http.ResponseWriter, r *http.Request, ok bool) {

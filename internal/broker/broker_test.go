@@ -2,9 +2,11 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -169,4 +171,126 @@ func waitFor(d time.Duration, cond func() bool) bool {
 		time.Sleep(time.Millisecond)
 	}
 	return false
+}
+
+func TestAcquireSlot_DefaultsToTwo(t *testing.T) {
+	b := &Broker{}
+	if !b.acquireSlot() {
+		t.Fatal("first acquire must succeed")
+	}
+	if !b.acquireSlot() {
+		t.Fatal("second acquire must succeed (default cap is 2)")
+	}
+	if b.acquireSlot() {
+		t.Fatal("third acquire must be rejected at default cap")
+	}
+	b.releaseSlot()
+	if !b.acquireSlot() {
+		t.Fatal("after release, a slot must be acquirable")
+	}
+}
+
+func TestAcquireSlot_RespectsMaxConcurrent(t *testing.T) {
+	b := &Broker{MaxConcurrent: 1}
+	if !b.acquireSlot() {
+		t.Fatal("first must succeed")
+	}
+	if b.acquireSlot() {
+		t.Fatal("second must be rejected (cap = 1)")
+	}
+}
+
+func TestAcquireSlot_RaceClean(t *testing.T) {
+	// Race detector should not flag concurrent acquires.
+	b := &Broker{MaxConcurrent: 3}
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if b.acquireSlot() {
+				time.Sleep(2 * time.Millisecond)
+				b.releaseSlot()
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestHandleTask_503WhenSaturated(t *testing.T) {
+	b := &Broker{MaxConcurrent: 1}
+	// Pre-fill the only slot so HandleTask hits the cap on entry.
+	if !b.acquireSlot() {
+		t.Fatal("setup acquire failed")
+	}
+	defer b.releaseSlot()
+
+	req := httptest.NewRequest("POST", "/tasks", strings.NewReader(
+		`{"repo_ref":"git@github.com:o/r","instruction":"x"}`))
+	rr := httptest.NewRecorder()
+	b.HandleTask(rr, req)
+
+	if rr.Code != 503 {
+		t.Fatalf("got %d, want 503; body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "DRYDOCK_MAX_CONCURRENT_TASKS") {
+		t.Errorf("503 body lacks env knob hint: %q", rr.Body.String())
+	}
+}
+
+func TestHandleTasks_ReturnsRegisteredState(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir()}
+	b.registerTask("t-running", "git@github.com:o/r", "do thing 1")
+	b.registerTask("t-pending", "git@github.com:o/r2", "do thing 2")
+	b.setStage("t-pending", StagePending)
+
+	req := httptest.NewRequest("GET", "/admin/tasks", nil)
+	rr := httptest.NewRecorder()
+	b.HandleTasks(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var got []TaskState
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 tasks, got %d: %+v", len(got), got)
+	}
+	stages := map[string]TaskStage{}
+	for _, ts := range got {
+		stages[ts.ID] = ts.Stage
+	}
+	if stages["t-running"] != StageRunning {
+		t.Errorf("t-running stage = %q, want %q", stages["t-running"], StageRunning)
+	}
+	if stages["t-pending"] != StagePending {
+		t.Errorf("t-pending stage = %q, want %q", stages["t-pending"], StagePending)
+	}
+}
+
+func TestHandleHealth_BreakdownByStage(t *testing.T) {
+	b := &Broker{}
+	b.registerTask("a", "r", "i")
+	b.registerTask("b", "r", "i")
+	b.setStage("b", StagePending)
+	b.registerTask("c", "r", "i")
+	b.setStage("c", StagePushing)
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rr := httptest.NewRecorder()
+	b.HandleHealth(rr, req)
+
+	var body struct {
+		Running         int `json:"running"`
+		PendingApproval int `json:"pending_approval"`
+		Pushing         int `json:"pushing"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Running != 1 || body.PendingApproval != 1 || body.Pushing != 1 {
+		t.Errorf("breakdown = %+v, want running=1 pending=1 pushing=1", body)
+	}
 }

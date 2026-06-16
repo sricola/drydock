@@ -10,12 +10,13 @@ import (
 )
 
 // runStatus prints a compact one-screen status. If brokerd is up, healthz
-// answers; if not, we say so. Then we summarise recent runs from AUDIT_ROOT.
+// answers with a stage breakdown; if not, we say so. Then we summarise
+// recent runs from AUDIT_ROOT.
 func runStatus() {
-	if up, pending, err := health(); err == nil {
-		_ = up
+	if h, err := health(); err == nil {
 		fmt.Printf("brokerd     up\n")
-		fmt.Printf("pending     %d\n", pending)
+		fmt.Printf("in flight   %d running · %d awaiting approval · %d pushing\n",
+			h.Running, h.PendingApproval, h.Pushing)
 	} else {
 		fmt.Printf("brokerd     down (%v)\n", err)
 	}
@@ -35,23 +36,28 @@ func runStatus() {
 			last24++
 		}
 	}
-	fmt.Printf("tasks       %d total / %d in last 24h\n", total, last24)
+	fmt.Printf("tasks       %d total · %d in last 24h\n", total, last24)
 	fmt.Printf("audit dir   %s\n", filepath.Clean(dir))
 }
 
-func health() (bool, int, error) {
+type healthBody struct {
+	OK              bool `json:"ok"`
+	Pending         int  `json:"pending"` // legacy; equals PendingApproval
+	Running         int  `json:"running"`
+	PendingApproval int  `json:"pending_approval"`
+	Pushing         int  `json:"pushing"`
+}
+
+func health() (healthBody, error) {
 	c, base := brokerClient()
 	resp, err := c.Get(base + "/healthz")
 	if err != nil {
-		return false, 0, err
+		return healthBody{}, err
 	}
 	defer resp.Body.Close()
-	var body struct {
-		OK      bool `json:"ok"`
-		Pending int  `json:"pending"`
-	}
+	var body healthBody
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return false, 0, fmt.Errorf("parse health: %w", err)
+		return healthBody{}, fmt.Errorf("parse health: %w", err)
 	}
-	return body.OK, body.Pending, nil
+	return body, nil
 }
