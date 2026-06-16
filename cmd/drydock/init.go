@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"drydock/internal/netfw"
@@ -121,23 +122,25 @@ func ensureNetwork() {
 }
 
 func ensureImage() {
-	ensureNamedImage("claude-sandbox", "image/Dockerfile", "image/", "first build can take a few minutes")
-	ensureNamedImage("drydock-anchor", "image/anchor/Dockerfile", "image/anchor/", "minimal — usually quick")
+	ensureNamedImage("claude-sandbox", "image", "first build can take a few minutes")
+	ensureNamedImage("drydock-anchor", "image/anchor", "minimal — usually quick")
 }
 
-func ensureNamedImage(name, dockerfile, ctxDir, note string) {
+func ensureNamedImage(name, subdir, note string) {
 	label := "image " + name + ":latest"
 	out, _ := exec.Command("container", "image", "list").CombinedOutput()
 	if strings.Contains(string(out), name) {
 		step(label, true, "exists")
 		return
 	}
-	if _, err := os.Stat(dockerfile); err != nil {
-		step(label, false, dockerfile+" not found; run from the drydock repo root, or build manually")
-		fmt.Printf("    → container build -t %s:latest <path-to-drydock>/%s\n", name, ctxDir)
+	ctxDir, err := findImageDir(subdir)
+	if err != nil {
+		step(label, false, "Dockerfile not found: "+err.Error())
+		fmt.Printf("    → set DRYDOCK_IMAGE_DIR to drydock's image/ dir, or:\n")
+		fmt.Printf("    → container build -t %s:latest <path-to-drydock>/%s\n", name, subdir)
 		os.Exit(1)
 	}
-	fmt.Printf("  · building %s:latest (%s)…\n", name, note)
+	fmt.Printf("  · building %s:latest from %s (%s)…\n", name, ctxDir, note)
 	cmd := exec.Command("container", "build", "-t", name+":latest", ctxDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -146,4 +149,40 @@ func ensureNamedImage(name, dockerfile, ctxDir, note string) {
 		os.Exit(1)
 	}
 	step(label, true, "built")
+}
+
+// findImageDir locates the Dockerfile build context. Search order:
+//  1. DRYDOCK_IMAGE_DIR/<subdir> (explicit operator override)
+//  2. ./<subdir> (running from drydock repo root)
+//  3. <drydock binary>/../share/drydock/<subdir> (Homebrew & make-install
+//     when PREFIX/share is set up)
+//  4. $HOMEBREW_PREFIX/share/drydock/<subdir>
+//  5. ~/.local/share/drydock/<subdir>
+func findImageDir(subdir string) (string, error) {
+	candidates := []string{}
+	if env := os.Getenv("DRYDOCK_IMAGE_DIR"); env != "" {
+		candidates = append(candidates, filepath.Join(env, strings.TrimPrefix(subdir, "image/")))
+		candidates = append(candidates, filepath.Join(env, subdir))
+	}
+	candidates = append(candidates, subdir)
+	if self, err := os.Executable(); err == nil {
+		// drydock at $PREFIX/bin/drydock -> $PREFIX/share/drydock/<subdir>
+		root := filepath.Dir(filepath.Dir(self))
+		candidates = append(candidates,
+			filepath.Join(root, "share", "drydock", subdir),
+		)
+	}
+	if hb := os.Getenv("HOMEBREW_PREFIX"); hb != "" {
+		candidates = append(candidates, filepath.Join(hb, "share", "drydock", subdir))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".local", "share", "drydock", subdir))
+	}
+
+	for _, c := range candidates {
+		if _, err := os.Stat(filepath.Join(c, "Dockerfile")); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("searched: %s", strings.Join(candidates, ", "))
 }

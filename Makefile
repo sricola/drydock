@@ -1,4 +1,4 @@
-PREFIX ?= /usr/local/bin
+PREFIX ?= /usr/local
 BIN := bin
 SRC := $(shell find . -name '*.go' -not -path './bin/*')
 
@@ -9,8 +9,8 @@ all: build
 help:
 	@echo "Targets:"
 	@echo "  build       compile bin/brokerd and bin/drydock"
-	@echo "  install     install both binaries into \$$PREFIX ($(PREFIX))"
-	@echo "  uninstall   remove installed binaries"
+	@echo "  install     binaries into \$$PREFIX/bin, image+config into \$$PREFIX/share/drydock (PREFIX=$(PREFIX))"
+	@echo "  uninstall   remove installed binaries + share"
 	@echo "  test        go test -race ./..."
 	@echo "  vet         go vet ./..."
 	@echo "  image       container build -t claude-sandbox:latest image/"
@@ -29,13 +29,19 @@ $(BIN)/drydock: $(SRC) go.mod go.sum
 build: $(BIN)/brokerd $(BIN)/drydock
 
 install: build
-	install -d $(PREFIX)
-	install -m 0755 $(BIN)/brokerd $(PREFIX)/brokerd
-	install -m 0755 $(BIN)/drydock $(PREFIX)/drydock
-	@echo "installed: $(PREFIX)/brokerd $(PREFIX)/drydock"
+	install -d $(PREFIX)/bin $(PREFIX)/share/drydock
+	install -m 0755 $(BIN)/brokerd $(PREFIX)/bin/brokerd
+	install -m 0755 $(BIN)/drydock $(PREFIX)/bin/drydock
+	# Copy image build contexts + config so `drydock init` can find them
+	# from anywhere — the binary discovers $PREFIX/share/drydock/image
+	# relative to itself.
+	cp -R image $(PREFIX)/share/drydock/
+	cp -R config $(PREFIX)/share/drydock/
+	@echo "installed: $(PREFIX)/bin/{brokerd,drydock}, $(PREFIX)/share/drydock/"
 
 uninstall:
-	rm -f $(PREFIX)/brokerd $(PREFIX)/drydock
+	rm -f $(PREFIX)/bin/brokerd $(PREFIX)/bin/drydock
+	rm -rf $(PREFIX)/share/drydock
 
 test:
 	go test -race -count=1 ./...
