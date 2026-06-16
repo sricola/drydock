@@ -400,8 +400,8 @@ meter  usage → spent += cost(model, in, out)
 
 <section id="status">
   <div class="seclabel reveal"><span class="n">07</span> Status</div>
-  <h2 class="reveal">Working prototype, end-to-end verified.</h2>
-  <p class="status reveal"><b>Verified on hardware.</b> VM boot, the nft pin (direct egress + DNS fail closed), the gateway (VM → 401 on an invalid token), squid (pypi allowed → 200, example denied → 403), and the full task lifecycle — POST, run, gated diff, approve, push — all confirmed on <span class="ic">apple/container 1.0</span> + Apple silicon. The credential gateway passed an independent adversarial review with no blocking findings. The precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
+  <h2 class="reveal">Audited, race-clean, shipping today.</h2>
+  <p class="status reveal">drydock has been adversarially reviewed (credential gateway, no blocking findings), boots cleanly on <span class="ic">apple/container 1.0</span> + Apple silicon, and runs the full task lifecycle — POST, VM run, gated diff, approve, push — under unit, integration, and <span class="ic">-race</span> tests. Available at <a href="https://github.com/sricola/drydock/releases/tag/v0.1.0" style="color:var(--grn)">v0.1.0</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
 </section>
 
 </div>
