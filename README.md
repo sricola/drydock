@@ -12,22 +12,38 @@ Security claims:[`THREAT_MODEL.md`](THREAT_MODEL.md).
 ## Install
 
 ```bash
-# Prerequisites
+# Prerequisites (anything you don't already have)
 brew install --cask container
-brew install squid go
-
-# drydock
-git clone git@github.com:sricola/drydock && cd drydock
-make install              # bin/brokerd + bin/drydock → /usr/local/bin (sudo if your PREFIX needs it)
-drydock init              # container service, drydock-egress network, sandbox + anchor images — idempotent
+brew install squid
 ```
 
-`drydock init` walks every prerequisite and reports per-step status. Re-runnable.
+The PR/MR adapters call `gh`, `glab`, or `tea` — install whichever your
+repos use, and run their respective `auth login` before submitting a task.
 
-Override the install location with `make install PREFIX=$HOME/.local/bin` if
-you'd rather not touch `/usr/local/bin`. The PR/MR adapters call `gh`,
-`glab`, or `tea` — install whichever your repos use, and run their
-respective `auth login` before submitting a task.
+### Option A — Pre-built release tarball (no Go toolchain required)
+
+```bash
+gh release download v0.1.0 --repo sricola/drydock --pattern '*.tar.gz*'
+shasum -a 256 -c drydock-v0.1.0-darwin-arm64.tar.gz.sha256
+tar xzf drydock-v0.1.0-darwin-arm64.tar.gz
+cd drydock-v0.1.0-darwin-arm64
+./install.sh /usr/local                  # or any PREFIX you control
+drydock init
+```
+
+### Option B — Build from source
+
+```bash
+brew install go
+git clone git@github.com:sricola/drydock && cd drydock
+make install                             # PREFIX=/usr/local by default
+make install PREFIX=$HOME/.local         # …or a user-owned prefix
+drydock init
+```
+
+Either way, `drydock init` walks the remaining prereqs (container
+service, drydock-egress network, sandbox + anchor images) and reports
+per-step status. Idempotent — re-run any time.
 
 ## Run
 
