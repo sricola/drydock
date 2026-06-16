@@ -89,18 +89,22 @@ type Broker struct {
 type TaskStage string
 
 const (
-	StageRunning  TaskStage = "running"
-	StagePending  TaskStage = "awaiting_approval"
-	StagePushing  TaskStage = "pushing"
+	StageAwaitingEgress TaskStage = "awaiting_egress"
+	StageRunning        TaskStage = "running"
+	StagePending        TaskStage = "awaiting_approval"
+	StagePushing        TaskStage = "pushing"
 )
 
 // TaskState is the operator-facing snapshot returned by GET /admin/tasks.
+// EgressExtra is populated only when the task is at the egress gate so
+// the operator can see what's being asked before approving.
 type TaskState struct {
-	ID          string    `json:"id"`
-	Repo        string    `json:"repo"`
-	Instruction string    `json:"instruction"` // truncated for display
-	Stage       TaskStage `json:"stage"`
-	StartedAt   time.Time `json:"started_at"`
+	ID          string          `json:"id"`
+	Repo        string          `json:"repo"`
+	Instruction string          `json:"instruction"` // truncated for display
+	Stage       TaskStage       `json:"stage"`
+	StartedAt   time.Time       `json:"started_at"`
+	EgressExtra []egress.Domain `json:"egress_extra,omitempty"`
 }
 
 const instructionSnippetMax = 140
@@ -176,6 +180,17 @@ func (b *Broker) setStage(id string, s TaskStage) {
 	}
 }
 
+// setEgressExtra populates the requested-widening hosts on the task state so
+// the operator can see exactly what's being asked at the egress gate. Cleared
+// when the gate resolves.
+func (b *Broker) setEgressExtra(id string, extras []egress.Domain) {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	if t, ok := b.tasks[id]; ok {
+		t.EgressExtra = extras
+	}
+}
+
 func (b *Broker) unregisterTask(id string) {
 	b.pendingMu.Lock()
 	defer b.pendingMu.Unlock()
@@ -201,13 +216,6 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 	defer b.releaseSlot()
 
-	if len(t.EgressExtra) > 0 && b.Cfg.PerTaskWidening.RequiresApproval {
-		if !b.Approve("widen egress", t.EgressExtra) {
-			http.Error(w, "egress widening denied", http.StatusForbidden)
-			return
-		}
-	}
-
 	taskID := newID()
 
 	// One context per task. Cancelling it propagates to the container run
@@ -217,6 +225,26 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	b.registerTask(taskID, t.RepoRef, t.Instruction, cancel)
 	defer b.unregisterTask(taskID)
+
+	// Egress widening: block at the same kind of human-driven gate as the
+	// diff push. Without this the requires_approval flag is a lie —
+	// auto-approve would let any task ask for any host.
+	if len(t.EgressExtra) > 0 && b.Cfg.PerTaskWidening.RequiresApproval {
+		b.setStage(taskID, StageAwaitingEgress)
+		b.setEgressExtra(taskID, t.EgressExtra)
+		ok := b.gateEgressWiden(taskCtx, taskID, t.EgressExtra)
+		b.setEgressExtra(taskID, nil)
+		if !ok {
+			if taskCtx.Err() != nil {
+				writeJSON(w, map[string]any{"task_id": taskID, "cancelled": true, "pushed": false})
+				return
+			}
+			http.Error(w, "egress widening denied", http.StatusForbidden)
+			return
+		}
+		b.setStage(taskID, StageRunning)
+	}
+
 	stageDir := filepath.Join(b.StageRoot, taskID)
 
 	st, err := stage.Prepare(stageDir, t.RepoRef)
@@ -318,6 +346,66 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"task_id": taskID, "branch": branch, "platform": adapter.Name(), "pushed": true})
+}
+
+// gateEgressWiden blocks until POST /admin/approve/{id} or /admin/deny/{id}
+// (or the HTTP client disconnects / the task is killed). Returning false
+// aborts the task before any allowlist compilation — the requested hosts
+// never reach squid. Mirrors gatePush so the operator only has to learn one
+// approval flow.
+func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []egress.Domain) bool {
+	ch := make(chan bool, 1)
+	b.pendingMu.Lock()
+	if b.pending == nil {
+		b.pending = make(map[string]chan bool)
+	}
+	b.pending[taskID] = ch
+	b.pendingMu.Unlock()
+	defer func() {
+		b.pendingMu.Lock()
+		delete(b.pending, taskID)
+		b.pendingMu.Unlock()
+	}()
+
+	// Persist the request next to the audit so reviewers have a stable
+	// artifact (the in-flight TaskState would disappear on a brokerd crash).
+	widenPath := filepath.Join(b.AuditRoot, taskID+".widen.json")
+	if err := os.MkdirAll(b.AuditRoot, 0o755); err == nil {
+		if payload, jerr := json.MarshalIndent(extras, "", "  "); jerr == nil {
+			_ = os.WriteFile(widenPath, payload, 0o600)
+		}
+	}
+	summary := summariseExtras(extras)
+	log.Printf("task %s awaiting egress widening (%s) — run: drydock approve %s | drydock deny %s",
+		taskID, summary, taskID, taskID)
+	notifyMac("drydock — task wants more egress",
+		fmt.Sprintf("task %s · %s · drydock approve %s", taskID, summary, taskID))
+
+	select {
+	case ok := <-ch:
+		return ok
+	case <-ctx.Done():
+		log.Printf("task %s: cancelled before egress widening decision", taskID)
+		return false
+	}
+}
+
+func summariseExtras(extras []egress.Domain) string {
+	if len(extras) == 0 {
+		return "no hosts"
+	}
+	parts := make([]string, 0, len(extras))
+	for _, d := range extras {
+		ports := ""
+		for i, p := range d.Ports {
+			if i > 0 {
+				ports += ","
+			}
+			ports += fmt.Sprintf("%d", p)
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s", d.Host, ports))
+	}
+	return strings.Join(parts, " ")
 }
 
 // gatePush blocks until POST /admin/approve/{id} or /admin/deny/{id} (or the
@@ -427,9 +515,11 @@ func notifyMac(title, body string) {
 func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	b.pendingMu.Lock()
 	pending := len(b.pending)
-	var running, pendingApproval, pushing int
+	var awaitingEgress, running, pendingApproval, pushing int
 	for _, t := range b.tasks {
 		switch t.Stage {
+		case StageAwaitingEgress:
+			awaitingEgress++
 		case StageRunning:
 			running++
 		case StagePending:
@@ -442,6 +532,7 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"ok":               true,
 		"pending":          pending, // legacy field; matches old shape
+		"awaiting_egress":  awaitingEgress,
 		"running":          running,
 		"pending_approval": pendingApproval,
 		"pushing":          pushing,

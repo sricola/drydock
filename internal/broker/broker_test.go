@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"drydock/internal/egress"
 )
 
 // HandleTask is exercised by the host-integration end-to-end test (Task 10);
@@ -343,6 +345,125 @@ func TestHandleKill_AlsoUnblocksApprovalGate(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("gatePush did not return after kill")
+	}
+}
+
+func TestGateEgressWiden_Approve(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir()}
+	extras := []egress.Domain{{Host: "internal.example.com", Ports: []int{443}}}
+	done := make(chan bool, 1)
+	go func() { done <- b.gateEgressWiden(context.Background(), "te-1", extras) }()
+
+	if !waitFor(50*time.Millisecond, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending["te-1"]
+		b.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("egress gate never registered")
+	}
+	req := httptest.NewRequest("POST", "/admin/approve/te-1", nil)
+	req.SetPathValue("id", "te-1")
+	rr := httptest.NewRecorder()
+	b.HandleApprove(rr, req)
+	if rr.Code != 204 {
+		t.Fatalf("approve returned %d", rr.Code)
+	}
+	select {
+	case got := <-done:
+		if !got {
+			t.Fatal("gate returned false after approve")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gate did not return after approve")
+	}
+
+	// The widen.json persistence happens for the human reviewer; verify
+	// it exists with the right content.
+	body, err := os.ReadFile(b.AuditRoot + "/te-1.widen.json")
+	if err != nil {
+		t.Fatalf("widen.json missing: %v", err)
+	}
+	if !strings.Contains(string(body), "internal.example.com") {
+		t.Errorf("widen.json missing host: %q", body)
+	}
+}
+
+func TestGateEgressWiden_Deny(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir()}
+	extras := []egress.Domain{{Host: "evil.example.com", Ports: []int{443}}}
+	done := make(chan bool, 1)
+	go func() { done <- b.gateEgressWiden(context.Background(), "te-2", extras) }()
+
+	if !waitFor(50*time.Millisecond, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending["te-2"]
+		b.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("egress gate never registered")
+	}
+	req := httptest.NewRequest("POST", "/admin/deny/te-2", nil)
+	req.SetPathValue("id", "te-2")
+	rr := httptest.NewRecorder()
+	b.HandleDeny(rr, req)
+	if rr.Code != 204 {
+		t.Fatalf("deny returned %d", rr.Code)
+	}
+	select {
+	case got := <-done:
+		if got {
+			t.Fatal("gate returned true after deny — the security claim is broken")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gate did not return after deny")
+	}
+}
+
+func TestGateEgressWiden_CancelAborts(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool, 1)
+	go func() {
+		done <- b.gateEgressWiden(ctx, "te-3",
+			[]egress.Domain{{Host: "x.example.com", Ports: []int{443}}})
+	}()
+
+	if !waitFor(50*time.Millisecond, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending["te-3"]
+		b.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("egress gate never registered")
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if got {
+			t.Fatal("gate returned true after cancel")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gate did not abort after cancel")
+	}
+}
+
+func TestSummariseExtras(t *testing.T) {
+	cases := []struct {
+		in   []egress.Domain
+		want string
+	}{
+		{nil, "no hosts"},
+		{[]egress.Domain{{Host: "a.example.com", Ports: []int{443}}}, "a.example.com:443"},
+		{[]egress.Domain{
+			{Host: "a.example.com", Ports: []int{443, 8443}},
+			{Host: "b.example.com", Ports: []int{80}},
+		}, "a.example.com:443,8443 b.example.com:80"},
+	}
+	for _, tc := range cases {
+		if got := summariseExtras(tc.in); got != tc.want {
+			t.Errorf("summariseExtras(%v) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

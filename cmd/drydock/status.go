@@ -15,8 +15,8 @@ import (
 func runStatus() {
 	if h, err := health(); err == nil {
 		fmt.Printf("brokerd     up\n")
-		fmt.Printf("in flight   %d running · %d awaiting approval · %d pushing\n",
-			h.Running, h.PendingApproval, h.Pushing)
+		fmt.Printf("in flight   %d running · %d awaiting egress · %d awaiting diff · %d pushing\n",
+			h.Running, h.AwaitingEgress, h.PendingApproval, h.Pushing)
 	} else {
 		fmt.Printf("brokerd     down (%v)\n", err)
 	}
@@ -43,6 +43,7 @@ func runStatus() {
 type healthBody struct {
 	OK              bool `json:"ok"`
 	Pending         int  `json:"pending"` // legacy; equals PendingApproval
+	AwaitingEgress  int  `json:"awaiting_egress"`
 	Running         int  `json:"running"`
 	PendingApproval int  `json:"pending_approval"`
 	Pushing         int  `json:"pushing"`

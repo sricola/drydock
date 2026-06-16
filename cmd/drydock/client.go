@@ -19,6 +19,12 @@ type taskState struct {
 	Instruction string    `json:"instruction"`
 	Stage       string    `json:"stage"`
 	StartedAt   time.Time `json:"started_at"`
+	EgressExtra []domain  `json:"egress_extra,omitempty"`
+}
+
+type domain struct {
+	Host  string `json:"host"`
+	Ports []int  `json:"ports"`
 }
 
 func fetchTasks() ([]taskState, error) {
@@ -60,7 +66,7 @@ func listPending() {
 	}
 	var pending []taskState
 	for _, t := range tasks {
-		if t.Stage == "awaiting_approval" {
+		if t.Stage == "awaiting_approval" || t.Stage == "awaiting_egress" {
 			pending = append(pending, t)
 		}
 	}
@@ -68,12 +74,35 @@ func listPending() {
 		fmt.Println("(no pending tasks)")
 		return
 	}
-	fmt.Printf("%-14s  %5s  %-32s  %s\n", "ID", "AGE", "REPO", "INSTRUCTION")
+	fmt.Printf("%-14s  %5s  %-7s  %-28s  %s\n", "ID", "AGE", "GATE", "REPO", "DETAIL")
 	for _, t := range pending {
-		repo := shorten(t.Repo, 32)
-		instr := singleLine(t.Instruction)
-		fmt.Printf("%-14s  %5s  %-32s  %s\n", t.ID, relAge(t.StartedAt), repo, instr)
+		repo := shorten(t.Repo, 28)
+		var gate, detail string
+		switch t.Stage {
+		case "awaiting_egress":
+			gate = "egress"
+			detail = formatExtras(t.EgressExtra)
+		default: // awaiting_approval
+			gate = "diff"
+			detail = singleLine(t.Instruction)
+		}
+		fmt.Printf("%-14s  %5s  %-7s  %-28s  %s\n", t.ID, relAge(t.StartedAt), gate, repo, detail)
 	}
+}
+
+func formatExtras(extras []domain) string {
+	if len(extras) == 0 {
+		return "(no hosts?)"
+	}
+	parts := make([]string, 0, len(extras))
+	for _, d := range extras {
+		ports := make([]string, 0, len(d.Ports))
+		for _, p := range d.Ports {
+			ports = append(ports, fmt.Sprintf("%d", p))
+		}
+		parts = append(parts, d.Host+":"+strings.Join(ports, ","))
+	}
+	return strings.Join(parts, " ")
 }
 
 // shorten trims a repo URL to its tail (owner/repo) for column width.

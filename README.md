@@ -73,7 +73,7 @@ task <id> awaiting approval (N bytes, diff at /tmp/broker/audit/<id>.diff)
 In another shell:
 
 ```bash
-drydock pending               # list awaiting tasks
+drydock pending               # awaiting tasks (egress and diff gates both shown)
 drydock review <id>           # opens the diff in $PAGER, then prompts y/N
                               # ─ or, manually ─
 less /tmp/broker/audit/<id>.diff
@@ -123,8 +123,13 @@ per_task_widening:
 
 `api.anthropic.com` is intentionally excluded from the squid allowlist —
 it routes through the credential gateway, not the proxy. Per-task widening
-via `egress_extra` is gated by an MVP auto-approve hook today (next
-contribution surface). Restart brokerd after editing.
+via `egress_extra` goes through the same human-driven gate as the diff
+push (when `per_task_widening.requires_approval: true`, which is the
+default): brokerd blocks the request, writes the requested hosts to
+`AUDIT_ROOT/<id>.widen.json`, and shows the task in `drydock pending`
+under gate `egress`. Approve with `drydock approve <id>` once you've
+reviewed the request. Restart brokerd after editing the default
+allowlist.
 
 ## Configuration
 
