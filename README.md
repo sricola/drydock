@@ -92,9 +92,19 @@ drydock kill <id>             # tear down the VM and deny if pending
 Notifications opt-out: `DRYDOCK_NO_NOTIFY=1`.
 
 The POST unblocks immediately with the push outcome. `repo_ref` must be a
-`github.com` URL (https/ssh/scp form); local paths are rejected because
-`gh pr create` can't resolve a filesystem origin. `"auto_approve": true`
-skips the gate — see the threat model before using it.
+git URL (`https://`, `git@`, or `ssh://`); local paths are rejected
+because adapters can't operate on filesystem origins. The PR/MR adapter
+is chosen by `platform`:
+
+- `"platform": "github"` → `gh pr create --fill` (needs `gh` authed)
+- `"platform": "gitlab"` → `glab mr create --fill --yes` (needs `glab` authed)
+- `"platform": "none"` → push only; no PR/MR
+- *omitted* → hostname autodetect (`github.com` → github, `gitlab.com` → gitlab, else → none)
+
+Self-hosted GitLab needs an explicit `"platform": "gitlab"`. The push
+response includes `"platform"` so the caller can see which adapter ran.
+`"auto_approve": true` skips the gate — see the threat model before
+using it.
 
 ## Egress policy
 
