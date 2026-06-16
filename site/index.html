@@ -204,7 +204,7 @@ footer .sq{display:inline-block;width:8px;height:8px;background:var(--red);margi
       <a href="#why">why</a>
       <a href="#arch">architecture</a>
       <a href="#guarantees">guarantees</a>
-      <a href="#flow">credential flow</a>
+      <a href="#limits">limits</a>
       <a href="https://github.com/sricola/drydock">github</a>
     </nav>
   </div>
@@ -332,8 +332,28 @@ footer .sq{display:inline-block;width:8px;height:8px;background:var(--red);margi
   </div>
 </section>
 
+<section id="limits">
+  <div class="seclabel reveal"><span class="n">04</span> Limits</div>
+  <h2 class="reveal">What it deliberately doesn't defend.</h2>
+  <div class="prose reveal">
+    <p>Containments fail quietly when they overclaim. The full <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a> is the contract; here are the residuals an operator should know about <em>before</em> installing.</p>
+  </div>
+  <table class="tbl reveal">
+    <thead><tr><th>Out of scope</th><th>Why drydock can't stop it</th></tr></thead>
+    <tbody>
+      <tr><td data-l="Out of scope">Operator approves a malicious diff</td><td data-l="Why">The gate makes review possible, not automatic. A subtle backdoor in 200 lines of plausible code lands if you click through. Diff like you would for an external contributor.</td></tr>
+      <tr><td data-l="Out of scope">Prompt injection from staged repo files</td><td data-l="Why">A hostile <span class="ic">AGENTS.md</span>, <span class="ic">.cursorrules</span>, or docstring inside the cloned repo can steer the agent for that task. drydock doesn't filter staged content — the diff gate is the backstop.</td></tr>
+      <tr><td data-l="Out of scope">Side-channel exfil via the diff itself</td><td data-l="Why">A clever agent can encode bytes in file names, whitespace, or comment text. drydock makes this <em>visible</em> at review; it doesn't detect it programmatically.</td></tr>
+      <tr><td data-l="Out of scope">Host compromise</td><td data-l="Why">Malware on the Mac running brokerd reads keys, mounts sockets, edits binaries. drydock assumes the host is trusted.</td></tr>
+      <tr><td data-l="Out of scope">Guest-to-host escape in Apple <span class="ic">container</span></td><td data-l="Why">A VM-stack 0day defeats every claim above. drydock pins the tested version and warns on drift; the escape itself is upstream.</td></tr>
+      <tr><td data-l="Out of scope">Operator's GitHub/GitLab credentials</td><td data-l="Why">drydock pushes via the host's <span class="ic">gh</span> / <span class="ic">glab</span>. Whoever can run <span class="ic">drydock approve</span> can push to anything those tokens can reach.</td></tr>
+      <tr><td data-l="Out of scope">Cost exhaustion <em>within</em> the budget</td><td data-l="Why">The USD cap stops runaway spend, not runaway uselessness. An agent that burns $2 on no-op calls hits the cap and returns no diff.</td></tr>
+    </tbody>
+  </table>
+</section>
+
 <section id="flow">
-  <div class="seclabel reveal"><span class="n">04</span> The credential path</div>
+  <div class="seclabel reveal"><span class="n">05</span> The credential path</div>
   <h2 class="reveal">A token goes in. A real key never comes back.</h2>
   <div class="prose reveal">
     <p>The gateway is the only component that ever holds the real key. It validates the bearer against an in-memory lease, swaps the credential, forwards over TLS, and meters response usage against the task's USD budget. Revocation is a single map delete; a broker crash invalidates every token for free.</p>
@@ -355,7 +375,7 @@ meter  usage → spent += cost(model, in, out)
 </section>
 
 <section id="git">
-  <div class="seclabel reveal"><span class="n">05</span> The git trap</div>
+  <div class="seclabel reveal"><span class="n">06</span> The git trap</div>
   <h2 class="reveal">A diff is data. <span style="color:var(--mut)">.git is a weapon.</span></h2>
   <div class="prose reveal">
     <p>Mount a normal clone into the VM and then run <span class="ic">git commit</span>/<span class="ic">push</span> on the host against that same repo: a malicious agent can drop <span class="ic">.git/hooks/pre-commit</span> or poison <span class="ic">.git/config</span> — and those execute <b>on the host</b>, with the host's credentials. RCE straight through the trust boundary.</p>
@@ -364,7 +384,7 @@ meter  usage → spent += cost(model, in, out)
 </section>
 
 <section id="status">
-  <div class="seclabel reveal"><span class="n">06</span> Status</div>
+  <div class="seclabel reveal"><span class="n">07</span> Status</div>
   <h2 class="reveal">Working prototype, end-to-end verified.</h2>
   <p class="status reveal"><b>Verified on hardware.</b> VM boot, the nft pin (direct egress + DNS fail closed), the gateway (VM → 401 on an invalid token), squid (pypi allowed → 200, example denied → 403), and the full task lifecycle — POST, run, gated diff, approve, push — all confirmed on <span class="ic">apple/container 1.0</span> + Apple silicon. The credential gateway passed an independent adversarial review with no blocking findings. The precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
 </section>
