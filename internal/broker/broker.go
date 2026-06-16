@@ -71,9 +71,10 @@ type Broker struct {
 	slotsOnce sync.Once
 	slots     chan struct{}
 
-	pendingMu sync.Mutex
-	pending   map[string]chan bool       // task_id -> approval channel
-	tasks     map[string]*TaskState      // task_id -> live state (running + awaiting_approval)
+	pendingMu  sync.Mutex
+	pending    map[string]chan bool          // task_id -> approval channel
+	tasks      map[string]*TaskState         // task_id -> live state (running + awaiting_approval)
+	cancellers map[string]context.CancelFunc // task_id -> cancel hook for in-flight kill
 }
 
 // TaskStage tracks where a task currently is in its lifecycle. Only the
@@ -135,12 +136,16 @@ func (b *Broker) releaseSlot() {
 	}
 }
 
-// registerTask records a task in the live-tasks map under StageRunning.
-func (b *Broker) registerTask(id, repo, instruction string) {
+// registerTask records a task in the live-tasks map under StageRunning,
+// and stashes its cancel hook so POST /admin/kill/{id} can abort it.
+func (b *Broker) registerTask(id, repo, instruction string, cancel context.CancelFunc) {
 	b.pendingMu.Lock()
 	defer b.pendingMu.Unlock()
 	if b.tasks == nil {
 		b.tasks = make(map[string]*TaskState)
+	}
+	if b.cancellers == nil {
+		b.cancellers = make(map[string]context.CancelFunc)
 	}
 	if len(instruction) > instructionSnippetMax {
 		instruction = instruction[:instructionSnippetMax] + "…"
@@ -151,6 +156,9 @@ func (b *Broker) registerTask(id, repo, instruction string) {
 		Instruction: instruction,
 		Stage:       StageRunning,
 		StartedAt:   time.Now(),
+	}
+	if cancel != nil {
+		b.cancellers[id] = cancel
 	}
 }
 
@@ -166,6 +174,7 @@ func (b *Broker) unregisterTask(id string) {
 	b.pendingMu.Lock()
 	defer b.pendingMu.Unlock()
 	delete(b.tasks, id)
+	delete(b.cancellers, id)
 }
 
 func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +203,13 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskID := newID()
-	b.registerTask(taskID, t.RepoRef, t.Instruction)
+
+	// One context per task. Cancelling it propagates to the container run
+	// (via exec.CommandContext below) AND to gatePush's select. /admin/kill
+	// invokes the stored cancel; client disconnect also propagates here.
+	taskCtx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	b.registerTask(taskID, t.RepoRef, t.Instruction, cancel)
 	defer b.unregisterTask(taskID)
 	stageDir := filepath.Join(b.StageRoot, taskID)
 
@@ -250,15 +265,20 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		CPUs:       4,
 	})
 
-	ctx, cancel := context.WithTimeout(r.Context(), b.Timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "container", args...)
+	runCtx, runCancel := context.WithTimeout(taskCtx, b.Timeout)
+	defer runCancel()
+	cmd := exec.CommandContext(runCtx, "container", args...)
 	cmd.Stdout = io.MultiWriter(logf, os.Stdout)
 	cmd.Stderr = logf
 	if err := cmd.Run(); err != nil {
-		// --rm covers a graceful exit; on timeout/kill the VM may survive, so
-		// force-remove it (best effort) to honor the ephemeral-VM backstop.
+		// --rm covers a graceful exit; on timeout/kill the VM may survive,
+		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
 		_ = exec.Command("container", "delete", "--force", "task-"+taskID).Run()
+		if taskCtx.Err() != nil {
+			// Operator killed it, or the client went away. Be explicit.
+			writeJSON(w, map[string]any{"task_id": taskID, "cancelled": true, "pushed": false})
+			return
+		}
 		http.Error(w, "task failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -273,7 +293,13 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b.setStage(taskID, StagePending)
-	if !b.gatePush(r.Context(), taskID, diff, t.AutoApprove) {
+	if !b.gatePush(taskCtx, taskID, diff, t.AutoApprove) {
+		// Distinguish "killed" from "denied" in the response so the operator
+		// (and audit consumers) know what happened.
+		if taskCtx.Err() != nil {
+			writeJSON(w, map[string]any{"task_id": taskID, "diff": diff, "cancelled": true, "pushed": false})
+			return
+		}
 		writeJSON(w, map[string]any{"task_id": taskID, "diff": diff, "pushed": false})
 		return
 	}
@@ -413,6 +439,23 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"pending_approval": pendingApproval,
 		"pushing":          pushing,
 	})
+}
+
+// HandleKill cancels the per-task context, which aborts the container run
+// (if still in flight) and the gatePush wait (if at the approval gate).
+// Returns 204 on success, 404 if no such live task. The corresponding
+// `POST /tasks` request will return a body with "cancelled": true.
+func (b *Broker) HandleKill(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b.pendingMu.Lock()
+	cancel, ok := b.cancellers[id]
+	b.pendingMu.Unlock()
+	if !ok {
+		http.Error(w, "no such task", http.StatusNotFound)
+		return
+	}
+	cancel()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (b *Broker) signal(w http.ResponseWriter, r *http.Request, ok bool) {

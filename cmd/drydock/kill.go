@@ -6,33 +6,40 @@ import (
 	"os/exec"
 )
 
-// runKill makes a best effort to stop a task at any stage: if the VM is
-// running, `container delete --force task-<id>` tears it down; if the
-// task is waiting for approval, we deny it. No brokerd-side endpoint
-// needed today — both moves are visible to the operator's container CLI
-// and the existing /admin/deny.
+// runKill cancels a task. Preferred path is POST /admin/kill, which fires
+// the brokerd-side context cancel — the container exits cleanly, the
+// approval gate (if reached) unblocks with cancelled=true, and the
+// `POST /tasks` request returns a structured cancellation response.
+//
+// Falls back to `container delete --force task-<id>` only when brokerd is
+// unreachable or doesn't know the task — for example, the operator killed
+// brokerd itself and the orphan container is still up.
 func runKill(id string) {
-	// 1) Tear down the VM if it's running.
-	out, err := exec.Command("container", "delete", "--force", "task-"+id).CombinedOutput()
-	switch {
-	case err == nil:
-		fmt.Printf("task %s VM removed\n", id)
-	case isNoSuchContainer(string(out)):
-		// fine — task may have already exited
-	default:
-		fmt.Fprintf(stderr(), "drydock kill: container delete: %v\n%s", err, out)
-	}
-
-	// 2) If the task is sitting at the approval gate, deny it.
 	c, base := brokerClient()
-	resp, err := c.Post(base+"/admin/deny/"+id, "", nil)
-	if err != nil {
-		// brokerd down or unreachable — VM kill above is enough.
-		return
+	resp, err := c.Post(base+"/admin/kill/"+id, "", nil)
+	if err == nil {
+		defer resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusNoContent:
+			fmt.Printf("task %s cancelled\n", id)
+			return
+		case http.StatusNotFound:
+			// brokerd is up but doesn't track this task; try the
+			// container CLI in case it's an orphan.
+		default:
+			fmt.Fprintf(stderr(), "drydock kill: brokerd returned %s\n", resp.Status)
+			return
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNoContent {
-		fmt.Printf("task %s denied at the approval gate\n", id)
+	// Brokerd unreachable or 404 — best-effort VM cleanup.
+	out, ferr := exec.Command("container", "delete", "--force", "task-"+id).CombinedOutput()
+	switch {
+	case ferr == nil:
+		fmt.Printf("task %s VM removed (brokerd didn't know about it)\n", id)
+	case isNoSuchContainer(string(out)):
+		fmt.Fprintf(stderr(), "drydock kill: no such task %s\n", id)
+	default:
+		fmt.Fprintf(stderr(), "drydock kill: container delete: %v\n%s", ferr, out)
 	}
 }
 

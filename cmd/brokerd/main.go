@@ -120,6 +120,7 @@ func main() {
 	mux.HandleFunc("POST /tasks", b.HandleTask)
 	mux.HandleFunc("POST /admin/approve/{id}", b.HandleApprove)
 	mux.HandleFunc("POST /admin/deny/{id}", b.HandleDeny)
+	mux.HandleFunc("POST /admin/kill/{id}", b.HandleKill)
 	mux.HandleFunc("GET /admin/pending", b.HandlePending)
 	mux.HandleFunc("GET /admin/tasks", b.HandleTasks)
 	mux.HandleFunc("GET /healthz", b.HandleHealth)

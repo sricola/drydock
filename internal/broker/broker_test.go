@@ -240,8 +240,8 @@ func TestHandleTask_503WhenSaturated(t *testing.T) {
 
 func TestHandleTasks_ReturnsRegisteredState(t *testing.T) {
 	b := &Broker{AuditRoot: t.TempDir()}
-	b.registerTask("t-running", "git@github.com:o/r", "do thing 1")
-	b.registerTask("t-pending", "git@github.com:o/r2", "do thing 2")
+	b.registerTask("t-running", "git@github.com:o/r", "do thing 1", nil)
+	b.registerTask("t-pending", "git@github.com:o/r2", "do thing 2", nil)
 	b.setStage("t-pending", StagePending)
 
 	req := httptest.NewRequest("GET", "/admin/tasks", nil)
@@ -270,12 +270,82 @@ func TestHandleTasks_ReturnsRegisteredState(t *testing.T) {
 	}
 }
 
+func TestHandleKill_404Unknown(t *testing.T) {
+	b := &Broker{}
+	req := httptest.NewRequest("POST", "/admin/kill/does-not-exist", nil)
+	req.SetPathValue("id", "does-not-exist")
+	rr := httptest.NewRecorder()
+	b.HandleKill(rr, req)
+	if rr.Code != 404 {
+		t.Fatalf("got %d, want 404", rr.Code)
+	}
+}
+
+func TestHandleKill_FiresStoredCancel(t *testing.T) {
+	b := &Broker{}
+	ctx, cancel := context.WithCancel(context.Background())
+	b.registerTask("t-kill", "git@github.com:o/r", "go", cancel)
+
+	req := httptest.NewRequest("POST", "/admin/kill/t-kill", nil)
+	req.SetPathValue("id", "t-kill")
+	rr := httptest.NewRecorder()
+	b.HandleKill(rr, req)
+	if rr.Code != 204 {
+		t.Fatalf("got %d, want 204", rr.Code)
+	}
+	select {
+	case <-ctx.Done():
+		// success
+	case <-time.After(time.Second):
+		t.Fatal("cancel was never fired on the stored context")
+	}
+}
+
+// TestHandleKill_AlsoUnblocksApprovalGate is the integration of the two
+// concerns: a task waiting at the approval gate should be unblocked when
+// /admin/kill cancels its context, returning false from gatePush. This
+// is what makes "drydock kill" useful when a task is sitting at approval.
+func TestHandleKill_AlsoUnblocksApprovalGate(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	b.registerTask("t-gate", "git@github.com:o/r", "go", cancel)
+
+	done := make(chan bool, 1)
+	go func() { done <- b.gatePush(ctx, "t-gate", "diff", false) }()
+
+	if !waitFor(50*time.Millisecond, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending["t-gate"]
+		b.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("gate never registered as pending")
+	}
+
+	req := httptest.NewRequest("POST", "/admin/kill/t-gate", nil)
+	req.SetPathValue("id", "t-gate")
+	rr := httptest.NewRecorder()
+	b.HandleKill(rr, req)
+	if rr.Code != 204 {
+		t.Fatalf("HandleKill returned %d", rr.Code)
+	}
+
+	select {
+	case got := <-done:
+		if got {
+			t.Fatal("gatePush returned true after kill")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gatePush did not return after kill")
+	}
+}
+
 func TestHandleHealth_BreakdownByStage(t *testing.T) {
 	b := &Broker{}
-	b.registerTask("a", "r", "i")
-	b.registerTask("b", "r", "i")
+	b.registerTask("a", "r", "i", nil)
+	b.registerTask("b", "r", "i", nil)
 	b.setStage("b", StagePending)
-	b.registerTask("c", "r", "i")
+	b.registerTask("c", "r", "i", nil)
 	b.setStage("c", StagePushing)
 
 	req := httptest.NewRequest("GET", "/healthz", nil)
