@@ -119,6 +119,7 @@ func main() {
 	mux.HandleFunc("POST /admin/approve/{id}", b.HandleApprove)
 	mux.HandleFunc("POST /admin/deny/{id}", b.HandleDeny)
 	mux.HandleFunc("GET /admin/pending", b.HandlePending)
+	mux.HandleFunc("GET /healthz", b.HandleHealth)
 
 	serve(mux, gwAddr, proxyAddr)
 }

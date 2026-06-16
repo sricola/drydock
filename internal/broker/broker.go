@@ -205,6 +205,8 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 	_ = os.WriteFile(diffPath, []byte(diff), 0o600)
 	log.Printf("task %s awaiting approval (%d bytes, diff at %s) — run: drydock approve %s | drydock deny %s",
 		taskID, len(diff), diffPath, taskID, taskID)
+	notifyMac("drydock — task awaiting approval",
+		fmt.Sprintf("task %s · %d byte diff · drydock approve %s", taskID, len(diff), taskID))
 
 	select {
 	case ok := <-ch:
@@ -231,6 +233,36 @@ func (b *Broker) HandlePending(w http.ResponseWriter, r *http.Request) {
 	}
 	b.pendingMu.Unlock()
 	writeJSON(w, ids)
+}
+
+// notifyMac fires a macOS notification via osascript. Silent no-op when
+// osascript isn't on PATH (i.e. running on Linux for tests/CI) or when the
+// operator opts out with DRYDOCK_NO_NOTIFY=1. We swallow errors: a missing
+// notification must never block the approval gate.
+func notifyMac(title, body string) {
+	if os.Getenv("DRYDOCK_NO_NOTIFY") == "1" {
+		return
+	}
+	if _, err := exec.LookPath("osascript"); err != nil {
+		return
+	}
+	// AppleScript string-escape: backslashes and double quotes both need it.
+	escape := func(s string) string {
+		s = strings.ReplaceAll(s, `\`, `\\`)
+		return strings.ReplaceAll(s, `"`, `\"`)
+	}
+	script := fmt.Sprintf(`display notification "%s" with title "%s"`, escape(body), escape(title))
+	_ = exec.Command("osascript", "-e", script).Run()
+}
+
+// HandleHealth is a liveness/readiness probe. Returns ok with the current
+// pending count so launchd KeepAlive (or `drydock init`'s smoke probe) can
+// confirm brokerd is up and responsive.
+func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	b.pendingMu.Lock()
+	n := len(b.pending)
+	b.pendingMu.Unlock()
+	writeJSON(w, map[string]any{"ok": true, "pending": n})
 }
 
 func (b *Broker) signal(w http.ResponseWriter, r *http.Request, ok bool) {

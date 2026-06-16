@@ -12,21 +12,23 @@ Design narrative: [`site/index.html`](site/index.html). Security claims:
 ## Install
 
 ```bash
-brew install --cask container && container system start --enable-kernel-install
+# Prerequisites
+brew install --cask container
 brew install squid go
 
+# drydock
 git clone git@github.com:sricola/drydock && cd drydock
-container network create --subnet 192.168.66.0/24 drydock-egress
-container build -t claude-sandbox:latest image/
-go build -o ./brokerd ./cmd/brokerd
-go build -o ./drydock ./cmd/drydock
+make install              # builds bin/brokerd and bin/drydock, installs to /usr/local/bin
+drydock init              # container system, drydock-egress network, sandbox image — idempotent
 ```
+
+`drydock init` walks every prerequisite and reports per-step status. Re-runnable.
 
 ## Run
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-./brokerd &
+drydock start              # foreground; ^C to stop. backgrounds via & or your launchd plist.
 ```
 
 Expected boot lines:
@@ -37,6 +39,13 @@ network anchor up on drydock-egress
 squid listening on 192.168.66.1:3128
 gateway listening on 192.168.66.1:8088
 brokerd listening on unix:///tmp/drydock.sock
+```
+
+Quick liveness:
+
+```bash
+curl -s --unix-socket /tmp/drydock.sock http://_/healthz
+# {"ok":true,"pending":0}
 ```
 
 ## Submit a task
@@ -54,7 +63,7 @@ curl --unix-socket /tmp/drydock.sock http://_/tasks \
       }'
 ```
 
-While the request hangs, brokerd logs:
+While the request hangs, brokerd logs and fires a macOS notification:
 
 ```
 task <id> awaiting approval (N bytes, diff at /tmp/broker/audit/<id>.diff)
@@ -64,10 +73,12 @@ task <id> awaiting approval (N bytes, diff at /tmp/broker/audit/<id>.diff)
 In another shell:
 
 ```bash
-./drydock pending             # list awaiting tasks
+drydock pending               # list awaiting tasks
 less /tmp/broker/audit/<id>.diff
-./drydock approve <id>        # … or: ./drydock deny <id>
+drydock approve <id>          # … or: drydock deny <id>
 ```
+
+Notifications opt-out: `DRYDOCK_NO_NOTIFY=1`.
 
 The POST unblocks immediately with the push outcome. `repo_ref` must be a
 `github.com` URL (https/ssh/scp form); local paths are rejected because
@@ -107,6 +118,7 @@ contribution surface). Restart brokerd after editing.
 | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `/tmp/broker/{stage,audit,squid}` | Per-task scratch |
 | `BROKER_SOCKET` | `/tmp/drydock.sock` | Unix socket (mode 0600) |
 | `BROKER_ADDR` | *(unset)* | Set `host:port` to expose over TCP (warns at boot) |
+| `DRYDOCK_NO_NOTIFY` | *(unset)* | Set `1` to suppress macOS notifications on pending approval |
 
 Gateway port `8088` and squid port `3128` are hard-coded in
 `cmd/brokerd/main.go` and `image/entrypoint.sh`; change both together.
@@ -142,19 +154,23 @@ image/            # Dockerfile, entrypoint.sh, init-firewall.sh
 config/           # egress.yaml
 site/             # narrative explainer + launch post
 docs/superpowers/ # historical design specs
+LICENSE           # MIT
+SECURITY.md       # how to report a security bug
 THREAT_MODEL.md   # what drydock defends — and doesn't
+Makefile          # build, install, test, image, network, init, clean
 ```
 
 ## Build, test, CI
 
 ```bash
-go test -race ./...
-go build ./cmd/...
+make build        # bin/brokerd, bin/drydock
+make test         # go test -race ./...
+make image        # container build of the sandbox image
 ```
 
 GitHub Actions runs `go build`, `go test -race`, and `go vet` on every
 push/PR. Integration (real `container` runtime) is macOS-only and lives
-outside CI; the boot sequence above is the manual smoke test.
+outside CI; `drydock init` + the boot sequence is the manual smoke test.
 
 ## Known gaps
 

@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,13 @@ import (
 
 // HandleTask is exercised by the host-integration end-to-end test (Task 10);
 // its pure helpers now live in the gateway and creds packages.
+
+// TestMain silences the operator-facing macOS notification that the approval
+// gate would otherwise pop up on every test run on a developer's Mac.
+func TestMain(m *testing.M) {
+	os.Setenv("DRYDOCK_NO_NOTIFY", "1")
+	os.Exit(m.Run())
+}
 
 func TestGithubRepoRef(t *testing.T) {
 	cases := []struct {
