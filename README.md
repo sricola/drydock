@@ -155,11 +155,12 @@ diff lands in `$AUDIT_ROOT/<id>.diff`.
 cmd/brokerd/      # broker daemon
 cmd/drydock/      # operator CLI (pending|approve|deny)
 internal/
-  broker/         # /tasks + admin handlers, approval gate
+  broker/         # /tasks + admin handlers, approval gate, concurrency, cancel
   creds/          # Grant/Provider interfaces
   egress/         # YAML loader + allowlist compilation
   gateway/        # credential gateway (mint/serve/account/revoke)
   netfw/          # squid conf + allowlist compiler
+  remote/         # PR/MR adapters: github (gh), gitlab (glab), push-only
   runner/         # `container run` argv builder
   stage/          # work tree, host-side commit + push
 image/            # Dockerfile, entrypoint.sh, init-firewall.sh

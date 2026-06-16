@@ -89,9 +89,20 @@ func (s *Stage) CaptureDiff() (string, error) {
 	return s.git("diff", "--cached")
 }
 
-// Push commits the staged changes onto a new branch and pushes it using the
-// host-only git dir, then opens a PR. Called only after the approval gate.
-func (s *Stage) Push(branch, message string) error {
+// RequestOpener opens a PR/MR for a freshly pushed branch. Satisfied by
+// the adapters in internal/remote (GitHub / GitLab / push-only). Kept as
+// an interface here so stage doesn't need to import remote — broker wires
+// the two together. Adapters MUST honor the env vars (they carry GIT_DIR
+// and the hook-neutralization that keeps any vendor CLI on the host-only
+// git dir even if the work tree contains a planted .git).
+type RequestOpener interface {
+	OpenRequest(workDir, branch string, env []string) error
+}
+
+// Push commits the staged changes onto a new branch, pushes it via the
+// host-only git dir, then asks the adapter to open a PR/MR. Called only
+// after the approval gate.
+func (s *Stage) Push(opener RequestOpener, branch, message string) error {
 	if _, err := s.git("checkout", "-b", branch); err != nil {
 		return err
 	}
@@ -104,22 +115,16 @@ func (s *Stage) Push(branch, message string) error {
 	if _, err := s.git("push", "origin", branch); err != nil {
 		return err
 	}
-	cmd := exec.Command("gh", "pr", "create", "--head", branch, "--fill")
-	cmd.Dir = s.WorkDir
-	// Point gh's git at the host-only dir and, defense-in-depth, neutralize hooks
-	// and fsmonitor for any git gh spawns (in case a work-tree .git is present).
-	cmd.Env = append(os.Environ(),
+	// The adapter shells out to gh/glab and must do so against the
+	// host-only git dir with hooks neutralized — never the work-tree .git.
+	env := append(os.Environ(),
 		"GIT_DIR="+s.gitDir,
 		"GIT_WORK_TREE="+s.WorkDir,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
 		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
 	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("gh pr create: %w\n%s", err, out)
-	}
-	return nil
+	return opener.OpenRequest(s.WorkDir, branch, env)
 }
 
 // Cleanup removes the entire host scratch dir (work tree + git dir).

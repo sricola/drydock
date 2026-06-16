@@ -21,16 +21,18 @@ import (
 
 	"drydock/internal/creds"
 	"drydock/internal/egress"
+	"drydock/internal/remote"
 	"drydock/internal/runner"
 	"drydock/internal/stage"
 )
 
-// githubRepoRef matches the three RepoRef forms whose `origin` lets the
-// host-side `gh pr create` find a GitHub host. Local paths are rejected
-// because the staging clone would inherit a filesystem origin and the push
-// flow can't open a PR against it.
-var githubRepoRef = regexp.MustCompile(
-	`^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?(?:\.git)?/?$`,
+// gitURLRef accepts any https://, git@, or ssh:// git URL. Local paths
+// (no scheme, no `:` host) are still rejected because the staging clone
+// would inherit a filesystem origin and adapters can't operate on it.
+// The adapter (GitHub / GitLab / push-only) is selected separately by
+// Task.Platform or hostname autodetect.
+var gitURLRef = regexp.MustCompile(
+	`^(?:https?://[A-Za-z0-9.-]+/|git@[A-Za-z0-9.-]+:|ssh://[A-Za-z0-9._-]+@[A-Za-z0-9.-]+/)[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?(?:\.git)?/?$`,
 )
 
 type Task struct {
@@ -42,6 +44,10 @@ type Task struct {
 	// security claim depends on a human (or trusted process) signing off on
 	// the diff. Callers who really want a headless run must say so explicitly.
 	AutoApprove bool `json:"auto_approve"`
+	// Platform selects the remote adapter ("github" | "gitlab" | "none" |
+	// ""). Empty falls back to hostname autodetect from RepoRef. Self-hosted
+	// GitLab needs platform="gitlab" since the hostname won't say so.
+	Platform string `json:"platform"`
 }
 
 // ApprovalFn gates the egress-widening step. The diff-push step now has
@@ -183,8 +189,8 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if !githubRepoRef.MatchString(t.RepoRef) {
-		http.Error(w, "repo_ref must be a github.com URL (https://, git@, or ssh://)", http.StatusBadRequest)
+	if !gitURLRef.MatchString(t.RepoRef) {
+		http.Error(w, "repo_ref must be an https/git/ssh URL (no local paths)", http.StatusBadRequest)
 		return
 	}
 	if !b.acquireSlot() {
@@ -306,11 +312,12 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	b.setStage(taskID, StagePushing)
 	branch := "agent/" + taskID
-	if err := st.Push(branch, "agent: "+firstLine(t.Instruction)); err != nil {
+	adapter := remote.AdapterFor(t.RepoRef, t.Platform)
+	if err := st.Push(adapter, branch, "agent: "+firstLine(t.Instruction)); err != nil {
 		http.Error(w, "push failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, map[string]any{"task_id": taskID, "branch": branch, "pushed": true})
+	writeJSON(w, map[string]any{"task_id": taskID, "branch": branch, "platform": adapter.Name(), "pushed": true})
 }
 
 // gatePush blocks until POST /admin/approve/{id} or /admin/deny/{id} (or the

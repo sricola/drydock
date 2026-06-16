@@ -21,23 +21,29 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestGithubRepoRef(t *testing.T) {
+func TestGitURLRef(t *testing.T) {
 	cases := []struct {
 		in    string
 		valid bool
 	}{
-		// Accept the three github.com forms gh can resolve.
+		// Accept the four URL shapes for GitHub, GitLab.com, self-hosted
+		// GitLab, and other generic git hosts — adapter selection is now
+		// separate from URL validation.
 		{"https://github.com/sricola/drydock", true},
 		{"https://github.com/sricola/drydock.git", true},
 		{"git@github.com:sricola/drydock", true},
 		{"git@github.com:sricola/drydock.git", true},
 		{"ssh://git@github.com/sricola/drydock.git", true},
-		// Reject local paths (the bug we just hit: gh pr create fails on these).
+		{"https://gitlab.com/group/project", true},
+		{"git@gitlab.com:group/project.git", true},
+		{"git@gitlab.mycorp.com:group/project", true},
+		{"https://gitlab.mycorp.com/group/project", true},
+		{"git@bitbucket.org:owner/repo", true},
+		{"ssh://git@git.kernel.org/torvalds/linux", true},
+		// Reject local paths (gh/glab can't operate on those).
 		{"/Users/sray/gits/drydock", false},
 		{"./drydock", false},
-		// Reject other hosts.
-		{"https://gitlab.com/x/y", false},
-		{"git@gitlab.com:x/y", false},
+		{"file:///Users/sray/gits/drydock", false},
 		// Reject malformed inputs.
 		{"", false},
 		{"https://github.com/", false},
@@ -45,7 +51,7 @@ func TestGithubRepoRef(t *testing.T) {
 		{"github.com/x/y", false},
 	}
 	for _, tc := range cases {
-		got := githubRepoRef.MatchString(tc.in)
+		got := gitURLRef.MatchString(tc.in)
 		if got != tc.valid {
 			t.Errorf("MatchString(%q) = %v, want %v", tc.in, got, tc.valid)
 		}
