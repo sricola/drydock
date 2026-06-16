@@ -1,0 +1,38 @@
+<!-- drydock logomark.
+     Three readings stacked in one mark:
+       1. Hexagon outline   - the containment / security badge
+       2. Open basin inside - the drydock literal (chamber with open top)
+       3. >_ shell prompt   - the developer/agent inside the chamber
+     Monoline, ink-on-paper, scales from 16px favicon to 1200px header. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="drydock" fill="none">
+  <title>drydock</title>
+
+  <!-- Pointy-top hexagon. Vertices at top/bottom and flat upper/lower sides.
+       Coordinates use cy=128, r=104 (vertex distance), so:
+         top    (128, 24)        bottom    (128, 232)
+         u-rt   (218, 76)        u-lt      (38, 76)
+         l-rt   (218, 180)       l-lt      (38, 180) -->
+  <path d="M 128 24 L 218 76 L 218 180 L 128 232 L 38 180 L 38 76 Z"
+        stroke="#1a1d22" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- The basin: rounded "U" open at the top, sitting in the lower middle
+       of the hexagon. Drawn as a single path so its caps roll over cleanly. -->
+  <path d="
+    M 82 152
+    Q 82 188 100 188
+    L 156 188
+    Q 174 188 174 152
+  "
+        stroke="#1a1d22" stroke-width="11" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- The basin floor: a horizontal segment that closes the bottom. -->
+  <path d="M 96 188 L 160 188"
+        stroke="#1a1d22" stroke-width="11" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- The >_ prompt: chevron + underscore, sitting in the upper inside-hex area.
+       Chevron points right (the agent's cursor). -->
+  <path d="M 108 116 L 126 132 L 108 148"
+        stroke="#1a1d22" stroke-width="11" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- The underscore: short horizontal segment to the right of the chevron. -->
+  <path d="M 138 152 L 158 152"
+        stroke="#1a1d22" stroke-width="11" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

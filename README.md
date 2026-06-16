@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="site/logo-512.png" alt="drydock" width="160">
+</p>
+
 # drydock
 
 Run Claude Code unattended on macOS without giving it your Anthropic key.

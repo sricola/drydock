@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>drydock — untrusted agents, hardware-isolated</title>
 <meta name="description" content="Run Claude Code unattended on macOS without giving it your Anthropic key. Per-task isolated VMs, credential gateway, deny-by-default egress, human-gated diff push.">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="alternate icon" href="favicon-32.png">
+<!-- Open Graph / Twitter card -->
+<meta property="og:title" content="drydock — untrusted agents, hardware-isolated">
+<meta property="og:description" content="Run Claude Code unattended on macOS without giving it your Anthropic key.">
+<meta property="og:image" content="https://sricola.github.io/drydock/og-image.png">
+<meta property="og:url" content="https://sricola.github.io/drydock/">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://sricola.github.io/drydock/og-image.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
@@ -60,8 +70,9 @@ a{color:inherit}
 /* ---- top bar (sticky) ---- */
 .topbar{position:sticky;top:0;z-index:10;border-bottom:1px solid var(--line);background:rgba(251,250,246,.85);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
 .topbar .wrap{display:flex;align-items:center;justify-content:space-between;height:54px}
-.brand{font-family:var(--mono);font-weight:700;letter-spacing:.02em;font-size:14.5px}
-.brand .sq{display:inline-block;width:8px;height:8px;background:var(--grn);margin-right:9px;vertical-align:1px;box-shadow:0 0 8px rgba(13,141,94,.4)}
+.brand{font-family:var(--mono);font-weight:700;letter-spacing:.02em;font-size:14.5px;display:flex;align-items:center}
+.brand .mk{display:inline-block;width:22px;height:22px;margin-right:10px;vertical-align:-6px}
+.brand .mk path{stroke:var(--ink)}
 .nav{font-family:var(--mono);font-size:12px;color:var(--mut);display:flex;gap:22px}
 .nav a{text-decoration:none;transition:color .2s}
 .nav a:hover{color:var(--grn)}
@@ -190,7 +201,8 @@ h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);lett
 
 /* ---- footer ---- */
 footer{border-top:1px solid var(--line);padding:36px 0 56px;color:var(--faint);font-family:var(--mono);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px}
-footer .sq{display:inline-block;width:8px;height:8px;background:var(--red);margin-right:8px;vertical-align:0px}
+footer .mk{display:inline-block;width:16px;height:16px;margin-right:8px;vertical-align:-3px}
+footer .mk path{stroke:var(--faint)}
 
 ::selection{background:rgba(13,141,94,.20);color:var(--ink)}
 </style>
@@ -199,7 +211,15 @@ footer .sq{display:inline-block;width:8px;height:8px;background:var(--red);margi
 
 <div class="topbar">
   <div class="wrap">
-    <div class="brand"><span class="sq"></span>drydock</div>
+    <div class="brand">
+      <svg class="mk" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <path d="M 16 3 L 27 9.5 L 27 22.5 L 16 29 L 5 22.5 L 5 9.5 Z" stroke-width="2.4" stroke-linejoin="round"/>
+        <path d="M 10.5 19 Q 10.5 23.5 12.5 23.5 L 19.5 23.5 Q 21.5 23.5 21.5 19" stroke-width="2" stroke-linecap="round"/>
+        <path d="M 12 23.5 L 20 23.5" stroke-width="2" stroke-linecap="round"/>
+        <path d="M 13.5 14 L 16 16 L 13.5 18" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M 17 19 L 20 19" stroke-width="2" stroke-linecap="round"/>
+      </svg>drydock
+    </div>
     <nav class="nav">
       <a href="#why">why</a>
       <a href="#arch">architecture</a>
@@ -392,7 +412,15 @@ meter  usage → spent += cost(model, in, out)
 </div>
 
 <footer class="wrap">
-  <div><span class="sq"></span>drydock — containment for autonomous coding agents</div>
+  <div>
+    <svg class="mk" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <path d="M 16 3 L 27 9.5 L 27 22.5 L 16 29 L 5 22.5 L 5 9.5 Z" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M 10.5 19 Q 10.5 23.5 12.5 23.5 L 19.5 23.5 Q 21.5 23.5 21.5 19" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M 12 23.5 L 20 23.5" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M 13.5 14 L 16 16 L 13.5 18" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 17 19 L 20 19" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>drydock — containment for autonomous coding agents
+  </div>
   <div><a href="https://github.com/sricola/drydock" style="color:var(--mut);text-decoration:none">github</a> · <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--mut);text-decoration:none">threat model</a> · <a href="https://github.com/sricola/drydock/blob/main/README.md" style="color:var(--mut);text-decoration:none">operator manual</a></div>
 </footer>
 

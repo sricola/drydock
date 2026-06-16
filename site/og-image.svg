@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" font-family="ui-monospace, Menlo, monospace">
+  <defs>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M44 0 L0 0 0 44" fill="none" stroke="rgba(20,25,30,.08)" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="#fbfaf6"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <ellipse cx="600" cy="-100" rx="900" ry="500" fill="rgba(13,141,94,.06)"/>
+  <ellipse cx="1300" cy="730" rx="700" ry="400" fill="rgba(201,44,44,.05)"/>
+
+  <!-- mark: the new hexagon + basin + >_ -->
+  <g transform="translate(140 170)" fill="none" stroke="#1a1d22"
+     stroke-linejoin="round" stroke-linecap="round">
+    <path d="M 150 8 L 268 73 L 268 197 L 150 263 L 32 197 L 32 73 Z" stroke-width="16"/>
+    <path d="M 75 178 Q 75 220 100 220 L 200 220 Q 225 220 225 178" stroke-width="13"/>
+    <path d="M 95 220 L 205 220" stroke-width="13"/>
+    <path d="M 110 134 L 138 154 L 110 174" stroke-width="13"/>
+    <path d="M 152 178 L 178 178" stroke-width="13"/>
+  </g>
+
+  <!-- wordmark + lede -->
+  <g transform="translate(490 220)">
+    <text x="0" y="0" font-size="124" font-weight="700"
+          letter-spacing="-2" fill="#1a1d22">drydock</text>
+    <text x="0" y="68" font-size="22" letter-spacing="6"
+          fill="#0d8d5e" font-weight="600">CONTAINMENT FOR AUTONOMOUS AGENTS</text>
+    <text x="0" y="140" font-size="28" font-family="Newsreader, Georgia, serif"
+          fill="#54606b">
+      <tspan>Run Claude Code unattended on macOS</tspan>
+      <tspan x="0" dy="36">without giving it your Anthropic key.</tspan>
+    </text>
+    <text x="0" y="290" font-size="20" fill="#54606b" letter-spacing="2">
+      sricola.github.io/drydock
+    </text>
+  </g>
+</svg>
