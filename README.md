@@ -4,11 +4,12 @@
 
 # drydock
 
-Run Claude Code unattended on macOS without giving it your Anthropic key.
-Each task runs in a per-task hardware-isolated VM with deny-by-default
-egress; the model API is reached via a host-side credential gateway; the
-only thing that leaves the sandbox is a `git diff` you approve before it
-touches origin.
+drydock is a sandbox for autonomous coding agents on macOS. Each task runs
+in a per-task hardware-isolated VM; the agent never sees your real
+Anthropic key — a host-side credential gateway issues short-lived
+budgeted bearer tokens. Egress is deny-by-default. The only artifact
+that leaves the sandbox is a captured `git diff`, and it doesn't reach
+origin until you approve it.
 
 Design narrative: [`site/index.html`](site/index.html). 
 Security claims:[`THREAT_MODEL.md`](THREAT_MODEL.md).

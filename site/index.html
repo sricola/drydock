@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>drydock — untrusted agents, hardware-isolated</title>
-<meta name="description" content="Run Claude Code unattended on macOS without giving it your Anthropic key. Per-task isolated VMs, credential gateway, deny-by-default egress, human-gated diff push.">
+<meta name="description" content="A sandbox for autonomous coding agents on macOS. Per-task hardware-isolated VMs, credential gateway, deny-by-default egress, human-gated diff push.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="alternate icon" href="favicon-32.png">
 <!-- Open Graph / Twitter card -->
 <meta property="og:title" content="drydock — untrusted agents, hardware-isolated">
-<meta property="og:description" content="Run Claude Code unattended on macOS without giving it your Anthropic key.">
+<meta property="og:description" content="A sandbox for autonomous coding agents on macOS. The agent never sees your real Anthropic key.">
 <meta property="og:image" content="https://sricola.github.io/drydock/og-image.png">
 <meta property="og:url" content="https://sricola.github.io/drydock/">
 <meta property="og:type" content="website">
@@ -229,7 +229,7 @@ footer .mk path{stroke:var(--faint)}
   <div class="wrap">
     <div class="kicker reveal"><span class="bar"></span>containment for autonomous coding agents</div>
     <h1 class="reveal">Untrusted agents,<br><span class="t">hardware-isolated.</span></h1>
-    <p class="lede reveal">Run Claude Code unattended on macOS without giving it your Anthropic key. Each task runs in a <b>per-task Linux VM</b>; the model API is reached through a host-side credential gateway; the only thing that leaves the sandbox is a <span class="ic">git diff</span> you approve before it touches origin.</p>
+    <p class="lede reveal">drydock is a sandbox for autonomous coding agents on macOS. Each task runs in a <b>per-task hardware-isolated VM</b>; the agent never sees your real Anthropic key — a host-side credential gateway issues short-lived budgeted bearer tokens. Egress is <b>deny-by-default</b>. The only artifact that leaves the sandbox is a captured <span class="ic">git diff</span>, and it doesn't reach origin until you approve it.</p>
     <div class="chips reveal">
       <span class="chip">Apple&nbsp;<b>silicon</b></span>
       <span class="chip">apple/container&nbsp;<b>1.0</b></span>
