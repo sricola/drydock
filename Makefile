@@ -72,4 +72,30 @@ init: build
 	$(BIN)/drydock init
 
 clean:
-	rm -rf $(BIN)
+	rm -rf $(BIN) dist/
+
+# Build a redistributable tarball that anyone with repo access can fetch
+# via `gh release download` and untar straight into a PREFIX. Contains a
+# stripped binary pair plus the image+config build contexts so the
+# downstream `drydock init` can build images without re-cloning. Set
+# DRYDOCK_VERSION=v… on the command line; defaults to git describe.
+DRYDOCK_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+DRYDOCK_OS := $(shell uname -s | tr A-Z a-z)
+DRYDOCK_ARCH := $(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+DIST_NAME := drydock-$(DRYDOCK_VERSION)-$(DRYDOCK_OS)-$(DRYDOCK_ARCH)
+DIST_DIR := dist/$(DIST_NAME)
+
+dist: clean
+	@mkdir -p $(DIST_DIR)/bin $(DIST_DIR)/share/drydock
+	go build -trimpath -ldflags '-s -w -X main.version=$(DRYDOCK_VERSION)' \
+		-o $(DIST_DIR)/bin/brokerd ./cmd/brokerd
+	go build -trimpath -ldflags '-s -w -X main.version=$(DRYDOCK_VERSION)' \
+		-o $(DIST_DIR)/bin/drydock ./cmd/drydock
+	cp -R image $(DIST_DIR)/share/drydock/
+	cp -R config $(DIST_DIR)/share/drydock/
+	cp README.md LICENSE SECURITY.md THREAT_MODEL.md $(DIST_DIR)/
+	@printf '#!/bin/sh\nset -e\nPREFIX=$${1:-/usr/local}\ninstall -d "$$PREFIX/bin" "$$PREFIX/share/drydock"\ninstall -m 0755 bin/brokerd "$$PREFIX/bin/brokerd"\ninstall -m 0755 bin/drydock "$$PREFIX/bin/drydock"\ncp -R share/drydock/. "$$PREFIX/share/drydock/"\necho "installed: $$PREFIX/bin/{brokerd,drydock}, $$PREFIX/share/drydock/"\n' > $(DIST_DIR)/install.sh
+	@chmod +x $(DIST_DIR)/install.sh
+	tar -C dist -czf dist/$(DIST_NAME).tar.gz $(DIST_NAME)
+	shasum -a 256 dist/$(DIST_NAME).tar.gz | tee dist/$(DIST_NAME).tar.gz.sha256
+	@echo "==> dist/$(DIST_NAME).tar.gz"
