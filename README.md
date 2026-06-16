@@ -18,11 +18,16 @@ brew install squid go
 
 # drydock
 git clone git@github.com:sricola/drydock && cd drydock
-make install              # builds bin/brokerd and bin/drydock, installs to /usr/local/bin
-drydock init              # container system, drydock-egress network, sandbox + anchor images — idempotent
+make install              # bin/brokerd + bin/drydock → /usr/local/bin (sudo if your PREFIX needs it)
+drydock init              # container service, drydock-egress network, sandbox + anchor images — idempotent
 ```
 
 `drydock init` walks every prerequisite and reports per-step status. Re-runnable.
+
+Override the install location with `make install PREFIX=$HOME/.local/bin` if
+you'd rather not touch `/usr/local/bin`. The PR/MR adapters call `gh`,
+`glab`, or `tea` — install whichever your repos use, and run their
+respective `auth login` before submitting a task.
 
 ## Run
 
@@ -42,22 +47,24 @@ level=INFO msg="gateway listening" addr=192.168.66.1:8088
 level=INFO msg="brokerd listening" addr=unix:///var/.../drydock-501/drydock.sock …
 ```
 
-The socket path is per-user (`$TMPDIR/drydock-<uid>/drydock.sock`); take it
-from the boot line or compute it: `SOCK=$(echo $TMPDIR/drydock-$(id -u)/drydock.sock)`.
-
-Quick liveness:
+Quick liveness (no need to know the socket path):
 
 ```bash
-SOCK=$TMPDIR/drydock-$(id -u)/drydock.sock
-curl -s --unix-socket "$SOCK" http://_/healthz
-# {"ok":true,"running":0,"awaiting_egress":0,"pending_approval":0,"pushing":0,"pending":0}
+drydock status
+# brokerd     up
+# in flight   0 running · 0 awaiting egress · 0 awaiting diff · 0 pushing
+# tasks       0 total · 0 in last 24h
+# audit dir   /tmp/broker/audit
 ```
+
+The socket itself is at `$TMPDIR/drydock-<uid>/drydock.sock`; the boot
+line shows the exact path, and the CLI discovers it automatically.
 
 ## Submit a task
 
-`drydock submit` is the CLI wrapper around `POST /tasks`. brokerd stages
-the repo, runs the agent in a fresh VM, captures the diff, and **blocks
-until you approve**.
+In one shell, fire the task. **It blocks until the agent runs and you
+approve the diff** (typical: a few seconds to a few minutes, plus your
+review time):
 
 ```bash
 drydock submit \
@@ -65,27 +72,50 @@ drydock submit \
   --instruction "Add a one-line comment to README.md explaining the project."
 ```
 
-Or pipe a longer instruction from stdin / a file:
+A macOS notification fires when the diff is ready. In another shell:
 
 ```bash
-echo "Refactor the egress compiler" | drydock submit --repo … -
+drydock pending               # awaiting tasks (egress + diff gates both shown)
+drydock review <id>           # diff in $PAGER, then prompt y/N — the one-shot path
+                              # ─ or, step by step ─
+less /tmp/broker/audit/<id>.diff
+drydock approve <id>          # … or: drydock deny <id>
+```
+
+The submit shell unblocks with the push outcome:
+
+```
+task ab12cd34: pushed agent/ab12cd34 (github)
+```
+
+### Operator surface (other shell)
+
+```bash
+drydock status                # brokerd up?, breakdown (running · egress · diff · pushing)
+drydock tasks                 # recent runs: id, age, duration, cost, outcome
+drydock logs <id> [-f]        # stream-json audit (use -f to follow)
+drydock kill <id>             # cancel the in-flight task (VM down + gate unblocked)
+```
+
+### Submit variations
+
+```bash
+# Long prompt from a file
 drydock submit --repo … --instruction-file ./task.md
-```
 
-Skip the approval gate for trusted batch runs (use sparingly — see the
-threat model):
+# Pipe from stdin
+echo "Refactor the egress compiler" | drydock submit --repo … -
 
-```bash
+# Skip the approval gate (trusted batch run; see threat model)
 drydock submit --repo … --instruction "…" --auto-approve
-```
 
-Request additional egress for the task (each `--egress-extra` is one
-host with one-or-more ports; goes through the same approval gate):
-
-```bash
+# Request additional egress (host:port[,port], repeatable; gated)
 drydock submit --repo … --instruction "…" \
   --egress-extra internal.example.com:443 \
   --egress-extra files.example.com:443,8443
+
+# Scripting — emit the raw response shape
+drydock submit --repo … --instruction "…" --json | jq .branch
 ```
 
 If you'd rather hit the HTTP API directly:
@@ -97,39 +127,13 @@ curl --unix-socket "$SOCK" http://_/tasks \
   -d '{ "repo_ref": "git@github.com:o/r", "instruction": "..." }'
 ```
 
-While the request hangs, brokerd logs and fires a macOS notification:
-
-```
-level=INFO msg="task awaiting approval" task_id=<id> diff_bytes=N \
-  diff_path=/tmp/broker/audit/<id>.diff \
-  hint="drydock approve <id> | drydock deny <id>"
-```
-
-In another shell:
-
-```bash
-drydock pending               # awaiting tasks (egress and diff gates both shown)
-drydock review <id>           # opens the diff in $PAGER, then prompts y/N
-                              # ─ or, manually ─
-less /tmp/broker/audit/<id>.diff
-drydock approve <id>          # … or: drydock deny <id>
-```
-
-Other CLI surface:
-
-```bash
-drydock status                # brokerd up?, pending, recent task count
-drydock tasks                 # recent runs: id, age, duration, cost, outcome
-drydock logs <id> [-f]        # stream-json audit (use -f to follow)
-drydock kill <id>             # tear down the VM and deny if pending
-```
-
 Notifications opt-out: `DRYDOCK_NO_NOTIFY=1`.
 
-The POST unblocks immediately with the push outcome. `repo_ref` must be a
-git URL (`https://`, `git@`, or `ssh://`); local paths are rejected
-because adapters can't operate on filesystem origins. The PR/MR adapter
-is chosen by `platform`:
+### Platform selection
+
+`repo_ref` must be a git URL (`https://`, `git@`, or `ssh://`); local
+paths are rejected because adapters can't operate on filesystem origins.
+The PR/MR adapter is chosen by `platform`:
 
 - `"platform": "github"` → `gh pr create --fill` (needs `gh` authed)
 - `"platform": "gitlab"` → `glab mr create --fill --yes` (needs `glab` authed)
@@ -208,7 +212,7 @@ diff lands in `$AUDIT_ROOT/<id>.diff`.
 
 ```
 cmd/brokerd/      # broker daemon
-cmd/drydock/      # operator CLI (init|start|status|tasks|pending|review|approve|deny|kill|logs)
+cmd/drydock/      # operator CLI (init|start|submit|status|tasks|pending|review|approve|deny|kill|logs)
 internal/
   broker/         # /tasks + admin handlers, approval + egress gates, concurrency, cancellation
   creds/          # Grant/Provider interfaces
