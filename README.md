@@ -6,8 +6,8 @@ egress; the model API is reached via a host-side credential gateway; the
 only thing that leaves the sandbox is a `git diff` you approve before it
 touches origin.
 
-Design narrative: [`site/index.html`](site/index.html). Security claims:
-[`THREAT_MODEL.md`](THREAT_MODEL.md).
+Design narrative: [`site/index.html`](site/index.html). 
+Security claims:[`THREAT_MODEL.md`](THREAT_MODEL.md).
 
 ## Install
 
