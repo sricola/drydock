@@ -168,9 +168,25 @@ welcome. The push response includes `"platform"` so the caller can see
 which adapter ran. `"auto_approve": true` skips the gate — see the threat
 model before using it.
 
+## Where config lives
+
+`drydock init` creates `~/.drydock/` at mode `0700` and seeds two files:
+
+| Path | What |
+|---|---|
+| `~/.drydock/config.yaml` | Operator settings (network name, gateway IP, per-task budget + timeout, max concurrent tasks, paths, broker listener, behavior flags) |
+| `~/.drydock/egress.yaml` | Squid + gateway allowlist (hosts and ports the sandbox may reach) |
+
+Both files are seeded from defaults the first time; `drydock init` never
+overwrites them. Env vars still win over file values (e.g.
+`BROKER_ADDR=…` in the shell overrides `broker.addr` in the YAML), so
+existing scripts keep working. `ANTHROPIC_API_KEY` is intentionally
+**not** in either file — by design, it never goes to disk.
+
 ## Egress policy
 
-`config/egress.yaml` is the source of truth. The default:
+`~/.drydock/egress.yaml` is the source of truth (seed template lives at
+`$HOMEBREW_PREFIX/share/drydock/config/egress.yaml`). The default:
 
 ```yaml
 default:
@@ -195,22 +211,27 @@ allowlist.
 
 ## Configuration
 
-| Var | Default | Meaning |
-|-----|---------|---------|
-| `ANTHROPIC_API_KEY` | *(required)* | Real key; host-only |
-| `EGRESS_CONFIG` | `config/egress.yaml` | Allowlist YAML |
-| `SANDBOX_IMAGE` | `claude-sandbox:latest` | Per-task agent VM image |
-| `DRYDOCK_ANCHOR_IMAGE` | `drydock-anchor:latest` | Minimal sleep-forever image holding the vmnet gateway IP |
-| `DRYDOCK_NETWORK` | `drydock-egress` | vmnet network name |
-| `DRYDOCK_GW_IP` | `192.168.66.1` | gateway + squid bind here |
-| `DRYDOCK_TASK_BUDGET_USD` | `2.0` | per-task USD ceiling |
-| `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | how many tasks may be in flight at once; excess POSTs to `/tasks` get HTTP 503 |
-| `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `/tmp/broker/{stage,audit,squid}` | Per-task scratch (modes `0o700` / `0o700` / `0o755`) |
-| `BROKER_SOCKET` | `$TMPDIR/drydock-$UID/drydock.sock` | Unix socket (per-user parent dir at `0o700`, socket at `0o600`) |
-| `BROKER_ADDR` | *(unset)* | Set `host:port` to expose over TCP (warns at boot — see SECURITY.md) |
-| `DRYDOCK_NO_NOTIFY` | *(unset)* | Set `1` to suppress macOS notifications on pending approval |
-| `DRYDOCK_LOG_JSON` | *(unset)* | Force structured JSON logs even on a TTY (default: terse text on TTY, JSON otherwise) |
-| `DRYDOCK_STRICT_CONTAINER_VERSION` | *(unset)* | Set `1` to fail closed when `container` major version drifts from the tested range |
+The canonical location is `~/.drydock/config.yaml` — seeded by `drydock
+init` with the defaults below as a commented template. Edit and re-run
+`drydock start`. Env vars still override file values for ops/scripting:
+
+| Field (`config.yaml`) | Env override | Default | Meaning |
+|---|---|---|---|
+| — | `ANTHROPIC_API_KEY` | *(required)* | Real key; **host-only**, never goes to disk |
+| `network` | `DRYDOCK_NETWORK` | `drydock-egress` | vmnet network name |
+| `gateway_ip` | `DRYDOCK_GW_IP` | `192.168.66.1` | gateway + squid bind here |
+| `sandbox_image` | `SANDBOX_IMAGE` | `claude-sandbox:latest` | per-task agent VM image |
+| `anchor_image` | `DRYDOCK_ANCHOR_IMAGE` | `drydock-anchor:latest` | minimal sleep-forever image holding the vmnet gateway IP |
+| `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | per-task USD ceiling |
+| `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | excess POSTs to `/tasks` get HTTP 503 |
+| `task_timeout` | — | `30m` | wall-clock per task |
+| `stage_root` / `audit_root` / `squid_run_dir` | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `/tmp/broker/{stage,audit,squid}` | per-task scratch (audit dir is `0700`, audit log + diff are `0600`) |
+| `broker.socket` | `BROKER_SOCKET` | `$TMPDIR/drydock-$UID/drydock.sock` | Unix socket (per-user parent dir at `0700`, socket at `0600`) |
+| `broker.addr` | `BROKER_ADDR` | *(empty)* | set `host:port` to expose over TCP (warns at boot — see SECURITY.md) |
+| `notifications` | `DRYDOCK_NO_NOTIFY=1` (off) | `true` | macOS notifications on pending approval |
+| `log_json` | `DRYDOCK_LOG_JSON=1` | `false` | force JSON logs even on a TTY (default: terse text on TTY, JSON otherwise) |
+| `strict_container_version` | `DRYDOCK_STRICT_CONTAINER_VERSION=1` | `false` | fail closed when `container` major drifts from the tested range |
+| — | `EGRESS_CONFIG` | `~/.drydock/egress.yaml` | path override for the egress YAML |
 
 Gateway port `8088` and squid port `3128` are hard-coded in
 `cmd/brokerd/main.go` and `image/entrypoint.sh`; change both together.

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"drydock/internal/config"
 	"drydock/internal/netfw"
 )
 
@@ -34,13 +35,103 @@ func runInit() {
 	ensureContainerSystem()
 	ensureNetwork()
 	ensureImage()
+	ensureUserConfig()
 
 	fmt.Println()
 	fmt.Println("ready. next:")
 	fmt.Println("  1. export ANTHROPIC_API_KEY=sk-ant-...")
-	fmt.Println("  2. drydock start    (look for `brokerd listening on unix://...` in the boot log for the socket path)")
-	fmt.Println("  3. in another shell: drydock status / drydock pending / drydock approve <id>")
+	fmt.Println("  2. edit ~/.drydock/{config,egress}.yaml if you want non-defaults")
+	fmt.Println("  3. drydock start                       (look for `brokerd listening on unix://...`)")
+	fmt.Println("  4. drydock status / pending / approve  (in another shell)")
 }
+
+// ensureUserConfig creates ~/.drydock/ at 0700 if missing and seeds
+// config.yaml and egress.yaml from defaults / the share-dir template. Never
+// overwrites an existing file — operator edits are sacred.
+func ensureUserConfig() {
+	dir := config.Dir()
+	if dir == "" {
+		step("~/.drydock/", false, "could not resolve home directory")
+		return
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		step("~/.drydock/", false, err.Error())
+		return
+	}
+
+	cfgPath := config.DefaultPath()
+	if _, err := os.Stat(cfgPath); err == nil {
+		step("~/.drydock/config.yaml", true, "exists (your edits preserved)")
+	} else {
+		if werr := config.WriteSeed(cfgPath); werr != nil {
+			step("~/.drydock/config.yaml", false, werr.Error())
+		} else {
+			step("~/.drydock/config.yaml", true, "seeded with defaults")
+		}
+	}
+
+	egPath := config.EgressPath()
+	if _, err := os.Stat(egPath); err == nil {
+		step("~/.drydock/egress.yaml", true, "exists (your edits preserved)")
+		return
+	}
+	// Seed from the share-dir template (or a sane default if not present).
+	tmpl, err := findShareEgressTemplate()
+	if err != nil {
+		// Fall back to a minimal default so brokerd can boot even without
+		// the share template.
+		_ = os.WriteFile(egPath, []byte(defaultEgressYAML), 0o644)
+		step("~/.drydock/egress.yaml", true, "seeded with built-in default")
+		return
+	}
+	b, rerr := os.ReadFile(tmpl)
+	if rerr != nil {
+		step("~/.drydock/egress.yaml", false, rerr.Error())
+		return
+	}
+	if werr := os.WriteFile(egPath, b, 0o644); werr != nil {
+		step("~/.drydock/egress.yaml", false, werr.Error())
+		return
+	}
+	step("~/.drydock/egress.yaml", true, "seeded from "+tmpl)
+}
+
+// findShareEgressTemplate locates config/egress.yaml in the share-dir layout
+// (brew, make install) or the cloned-repo dev case. Mirrors findImageDir.
+func findShareEgressTemplate() (string, error) {
+	candidates := []string{}
+	if self, err := os.Executable(); err == nil {
+		root := filepath.Dir(filepath.Dir(self))
+		candidates = append(candidates,
+			filepath.Join(root, "share", "drydock", "config", "egress.yaml"))
+	}
+	if hb := os.Getenv("HOMEBREW_PREFIX"); hb != "" {
+		candidates = append(candidates,
+			filepath.Join(hb, "share", "drydock", "config", "egress.yaml"))
+	}
+	candidates = append(candidates, "config/egress.yaml")
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("share-dir egress.yaml not found")
+}
+
+// defaultEgressYAML is the absolute fallback — used only if the share-dir
+// template is unreachable. Matches config/egress.yaml in the repo.
+const defaultEgressYAML = `version: 1
+default:
+  allow_dns: true
+  domains:
+    - { host: api.anthropic.com,      ports: [443] }
+    - { host: registry.npmjs.org,     ports: [443] }
+    - { host: pypi.org,               ports: [443] }
+    - { host: files.pythonhosted.org, ports: [443] }
+  cidrs: []
+per_task_widening:
+  requires_approval: true
+`
 
 // step prints a one-line status. ok=true → "✓"; ok=false → "✗".
 func step(label string, ok bool, detail string) {

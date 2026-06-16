@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"drydock/internal/broker"
+	"drydock/internal/config"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
 	"drydock/internal/gateway"
@@ -67,35 +68,39 @@ func main() {
 	checkContainerVersion()
 	pruneOrphanTasks()
 
-	cfgPath, err := findEgressConfig()
+	// Main config: ~/.drydock/config.yaml + env-var overrides. Missing file
+	// is fine — defaults kick in.
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		die("load config", "path", config.DefaultPath(), "err", err)
+	}
+
+	// Egress allowlist: ~/.drydock/egress.yaml is preferred; share/drydock
+	// is the seed template; CWD config/egress.yaml is the dev case.
+	egressPath, err := findEgressConfig()
 	if err != nil {
 		die("locate egress config", "err", err)
 	}
-	cfg, err := egress.Load(cfgPath)
+	egCfg, err := egress.Load(egressPath)
 	if err != nil {
-		die("load egress config", "path", cfgPath, "err", err)
+		die("load egress config", "path", egressPath, "err", err)
 	}
+
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		die("ANTHROPIC_API_KEY must be set on the broker host")
 	}
 
-	imageRef := env("SANDBOX_IMAGE", "claude-sandbox:latest")
-	anchorImage := env("DRYDOCK_ANCHOR_IMAGE", "drydock-anchor:latest")
-	network := env("DRYDOCK_NETWORK", "drydock-egress")
-	gwIP := env("DRYDOCK_GW_IP", "192.168.66.1")
 	gwPort, proxyPort := 8088, 3128
-	budget := envFloat("DRYDOCK_TASK_BUDGET_USD", 2.0)
-	taskTimeout := 30 * time.Minute
 
 	// The vmnet gateway IP only exists while a container is attached to the
 	// network, so keep a persistent anchor up for the broker's lifetime. The
 	// gateway/squid then bind that IP exclusively (never 0.0.0.0, which would
 	// expose the credential gateway on the host's LAN/wifi).
-	startAnchor(network, anchorImage)
+	startAnchor(cfg.Network, cfg.AnchorImage)
 
-	gwAddr := net.JoinHostPort(gwIP, strconv.Itoa(gwPort))
-	proxyAddr := net.JoinHostPort(gwIP, strconv.Itoa(proxyPort))
+	gwAddr := net.JoinHostPort(cfg.GatewayIP, strconv.Itoa(gwPort))
+	proxyAddr := net.JoinHostPort(cfg.GatewayIP, strconv.Itoa(proxyPort))
 
 	// Userspace squid for registry (npm/pip) egress: hostname allowlist, no TLS
 	// interception. Bound to the vmnet gateway IP (wait until the anchor brings
@@ -106,7 +111,7 @@ func main() {
 		slog.Warn("registry egress disabled", "err", ferr)
 	} else {
 		waitBindable(proxyAddr)
-		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(cfg), env("SQUID_RUN_DIR", "/tmp/broker/squid"))
+		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(egCfg), cfg.SquidRunDir)
 		if err != nil {
 			die("squid start failed", "err", err)
 		}
@@ -139,28 +144,31 @@ func main() {
 	var provider creds.Provider = &gateway.Provider{
 		GW:      gw,
 		BaseURL: "http://" + gwAddr,
-		Budget:  budget,
-		TTL:     taskTimeout + 5*time.Minute,
+		Budget:  cfg.TaskBudgetUSD,
+		TTL:     cfg.TaskTimeout + 5*time.Minute,
 	}
 
 	b := &broker.Broker{
-		Cfg:   cfg,
+		Cfg:   egCfg,
 		Creds: provider,
 		Approve: func(kind string, _ any) bool {
 			slog.Info("approval gate auto-approve (MVP)", "kind", kind)
 			return true
 		},
-		ImageRef:      imageRef,
-		StageRoot:     env("STAGE_ROOT", "/tmp/broker/stage"),
-		AuditRoot:     env("AUDIT_ROOT", "/tmp/broker/audit"),
-		Timeout:       taskTimeout,
-		Network:       network,
-		GatewayIP:     gwIP,
+		ImageRef:      cfg.SandboxImage,
+		StageRoot:     cfg.StageRoot,
+		AuditRoot:     cfg.AuditRoot,
+		Timeout:       cfg.TaskTimeout,
+		Network:       cfg.Network,
+		GatewayIP:     cfg.GatewayIP,
 		ProxyPort:     proxyPort,
-		TaskBudget:    budget,
-		MaxConcurrent: envInt("DRYDOCK_MAX_CONCURRENT_TASKS", 2),
+		TaskBudget:    cfg.TaskBudgetUSD,
+		MaxConcurrent: cfg.MaxConcurrent,
 	}
-	slog.Info("config", "max_concurrent_tasks", b.MaxConcurrent, "task_budget_usd", budget)
+	slog.Info("config",
+		"network", cfg.Network,
+		"max_concurrent_tasks", cfg.MaxConcurrent,
+		"task_budget_usd", cfg.TaskBudgetUSD)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)
@@ -171,17 +179,17 @@ func main() {
 	mux.HandleFunc("GET /admin/tasks", b.HandleTasks)
 	mux.HandleFunc("GET /healthz", b.HandleHealth)
 
-	serve(mux, gwAddr, proxyAddr)
+	serve(mux, cfg, gwAddr, proxyAddr)
 }
 
 // serve listens on a Unix socket by default. The socket lives inside a
 // per-uid parent dir at 0700; brokerd narrows the umask before listen() so
 // the socket file itself is created at 0600 atomically (no TOCTOU window
-// between bind and chmod). Setting BROKER_ADDR=host:port opts into TCP
-// with a loud startup banner — any process that can reach the port can
-// submit and approve tasks, so it's for operator awareness, not security.
-func serve(mux *http.ServeMux, gwAddr, proxyAddr string) {
-	if tcpAddr := os.Getenv("BROKER_ADDR"); tcpAddr != "" {
+// between bind and chmod). cfg.Broker.Addr ≠ "" opts into TCP with a
+// loud startup banner — any process that can reach the port can submit
+// and approve tasks, so it's for operator awareness, not security.
+func serve(mux *http.ServeMux, cfg *config.Config, gwAddr, proxyAddr string) {
+	if tcpAddr := cfg.Broker.Addr; tcpAddr != "" {
 		slog.Warn("listening on TCP — any process that can reach this port can submit and approve tasks",
 			"addr", tcpAddr)
 		slog.Info("brokerd listening", "addr", tcpAddr, "gateway", gwAddr, "squid", proxyAddr)
@@ -190,7 +198,10 @@ func serve(mux *http.ServeMux, gwAddr, proxyAddr string) {
 		}
 		return
 	}
-	sock := env("BROKER_SOCKET", sockpath.Default())
+	sock := cfg.Broker.Socket
+	if sock == "" {
+		sock = sockpath.Default()
+	}
 	if err := sockpath.EnsureParent(sock); err != nil {
 		die("mkdir socket parent failed", "sock", sock, "err", err)
 	}
@@ -260,19 +271,21 @@ func checkContainerVersion() {
 	slog.Info("container CLI", "version", version, "supported", true)
 }
 
-// findEgressConfig locates config/egress.yaml. Mirrors drydock init's image-dir
-// discovery so brokerd works after `brew install` or `make install`, not just
-// when run from a cloned repo. Search order:
-//  1. $EGRESS_CONFIG          (explicit operator override)
-//  2. ./config/egress.yaml    (cloned repo, current behavior)
-//  3. <brokerd>/../share/drydock/config/egress.yaml
-//                             (the brew + make install layout)
-//  4. $HOMEBREW_PREFIX/share/drydock/config/egress.yaml
-//  5. ~/.local/share/drydock/config/egress.yaml
+// findEgressConfig locates the egress allowlist YAML. ~/.drydock/egress.yaml is
+// the canonical operator-owned file (seeded by `drydock init` from the share/
+// template). Search order:
+//  1. $EGRESS_CONFIG                              (explicit operator override)
+//  2. ~/.drydock/egress.yaml                      (the user-owned file)
+//  3. ./config/egress.yaml                        (dev: cloned repo)
+//  4. <brokerd>/../share/drydock/config/egress.yaml  (brew + make install seed)
+//  5. $HOMEBREW_PREFIX/share/drydock/config/egress.yaml
 func findEgressConfig() (string, error) {
 	candidates := []string{}
 	if env := os.Getenv("EGRESS_CONFIG"); env != "" {
 		candidates = append(candidates, env)
+	}
+	if p := config.EgressPath(); p != "" {
+		candidates = append(candidates, p)
 	}
 	candidates = append(candidates, "config/egress.yaml")
 	if self, err := os.Executable(); err == nil {
@@ -283,10 +296,6 @@ func findEgressConfig() (string, error) {
 	if hb := os.Getenv("HOMEBREW_PREFIX"); hb != "" {
 		candidates = append(candidates,
 			filepath.Join(hb, "share", "drydock", "config", "egress.yaml"))
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, ".local", "share", "drydock", "config", "egress.yaml"))
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {

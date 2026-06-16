@@ -1,0 +1,256 @@
+// Package config is the operator-facing config for drydock. It consolidates
+// the env-var scatter into one YAML at ~/.drydock/config.yaml (companion to
+// ~/.drydock/egress.yaml). Env vars still override file values, so existing
+// scripts that set DRYDOCK_* keep working.
+//
+// Resolution order for every field:
+//   1. The env var (DRYDOCK_NETWORK, DRYDOCK_GW_IP, etc.)
+//   2. ~/.drydock/config.yaml (or the path passed to Load)
+//   3. The struct default (Defaults()).
+//
+// ANTHROPIC_API_KEY is intentionally not in this struct — it never goes
+// to disk by design.
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config is the operator surface. yaml tags match what's written to
+// ~/.drydock/config.yaml; the env-var names are documented in README.
+type Config struct {
+	// Container runtime
+	Network      string `yaml:"network"`
+	GatewayIP    string `yaml:"gateway_ip"`
+	SandboxImage string `yaml:"sandbox_image"`
+	AnchorImage  string `yaml:"anchor_image"`
+
+	// Per-task limits
+	TaskBudgetUSD float64       `yaml:"task_budget_usd"`
+	MaxConcurrent int           `yaml:"max_concurrent_tasks"`
+	TaskTimeout   time.Duration `yaml:"task_timeout"`
+
+	// Where state lives
+	StageRoot   string `yaml:"stage_root"`
+	AuditRoot   string `yaml:"audit_root"`
+	SquidRunDir string `yaml:"squid_run_dir"`
+
+	// Broker listener
+	Broker struct {
+		Socket string `yaml:"socket"`
+		Addr   string `yaml:"addr"`
+	} `yaml:"broker"`
+
+	// Behavior
+	Notifications          bool `yaml:"notifications"`
+	LogJSON                bool `yaml:"log_json"`
+	StrictContainerVersion bool `yaml:"strict_container_version"`
+}
+
+// Defaults returns the same values that the v0.1.0 env-var fallbacks gave.
+// Anyone who never edits config.yaml gets exactly that behavior.
+func Defaults() *Config {
+	c := &Config{
+		Network:                "drydock-egress",
+		GatewayIP:              "192.168.66.1",
+		SandboxImage:           "claude-sandbox:latest",
+		AnchorImage:            "drydock-anchor:latest",
+		TaskBudgetUSD:          2.0,
+		MaxConcurrent:          2,
+		TaskTimeout:            30 * time.Minute,
+		StageRoot:              "/tmp/broker/stage",
+		AuditRoot:              "/tmp/broker/audit",
+		SquidRunDir:            "/tmp/broker/squid",
+		Notifications:          true,
+		LogJSON:                false,
+		StrictContainerVersion: false,
+	}
+	return c
+}
+
+// DefaultPath returns ~/.drydock/config.yaml — where drydock init seeds the
+// file and where brokerd looks for it at boot.
+func DefaultPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".drydock", "config.yaml")
+}
+
+// EgressPath returns ~/.drydock/egress.yaml.
+func EgressPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".drydock", "egress.yaml")
+}
+
+// Dir returns ~/.drydock.
+func Dir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".drydock")
+}
+
+// Load reads `path` (which may not exist) and applies env-var overrides.
+// A missing file is not an error — it just yields defaults + env. Parse
+// errors and obviously-wrong values DO error so the operator sees them.
+func Load(path string) (*Config, error) {
+	cfg := Defaults()
+	if path != "" {
+		b, err := os.ReadFile(path)
+		switch {
+		case err == nil:
+			if err := yaml.Unmarshal(b, cfg); err != nil {
+				return nil, fmt.Errorf("parse %s: %w", path, err)
+			}
+		case os.IsNotExist(err):
+			// fine — fall through, env-only / defaults-only
+		default:
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+	}
+	cfg.applyEnvOverrides()
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func (c *Config) applyEnvOverrides() {
+	// Backwards-compat: every env var documented in README v0.1.x still wins.
+	if v := os.Getenv("DRYDOCK_NETWORK"); v != "" {
+		c.Network = v
+	}
+	if v := os.Getenv("DRYDOCK_GW_IP"); v != "" {
+		c.GatewayIP = v
+	}
+	if v := os.Getenv("SANDBOX_IMAGE"); v != "" {
+		c.SandboxImage = v
+	}
+	if v := os.Getenv("DRYDOCK_ANCHOR_IMAGE"); v != "" {
+		c.AnchorImage = v
+	}
+	if v := os.Getenv("DRYDOCK_TASK_BUDGET_USD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			c.TaskBudgetUSD = f
+		}
+	}
+	if v := os.Getenv("DRYDOCK_MAX_CONCURRENT_TASKS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.MaxConcurrent = n
+		}
+	}
+	if v := os.Getenv("STAGE_ROOT"); v != "" {
+		c.StageRoot = v
+	}
+	if v := os.Getenv("AUDIT_ROOT"); v != "" {
+		c.AuditRoot = v
+	}
+	if v := os.Getenv("SQUID_RUN_DIR"); v != "" {
+		c.SquidRunDir = v
+	}
+	if v := os.Getenv("BROKER_SOCKET"); v != "" {
+		c.Broker.Socket = v
+	}
+	if v := os.Getenv("BROKER_ADDR"); v != "" {
+		c.Broker.Addr = v
+	}
+	if os.Getenv("DRYDOCK_NO_NOTIFY") == "1" {
+		c.Notifications = false
+	}
+	if os.Getenv("DRYDOCK_LOG_JSON") == "1" {
+		c.LogJSON = true
+	}
+	if os.Getenv("DRYDOCK_STRICT_CONTAINER_VERSION") == "1" {
+		c.StrictContainerVersion = true
+	}
+}
+
+func (c *Config) validate() error {
+	if c.Network == "" {
+		return fmt.Errorf("config: network is required")
+	}
+	if c.GatewayIP == "" {
+		return fmt.Errorf("config: gateway_ip is required")
+	}
+	if c.MaxConcurrent < 1 {
+		return fmt.Errorf("config: max_concurrent_tasks must be ≥ 1")
+	}
+	if c.TaskBudgetUSD <= 0 {
+		return fmt.Errorf("config: task_budget_usd must be positive")
+	}
+	if c.TaskTimeout < time.Second {
+		return fmt.Errorf("config: task_timeout must be ≥ 1s")
+	}
+	return nil
+}
+
+// SeedTemplate is the comment-rich YAML written by `drydock init` when
+// ~/.drydock/config.yaml is missing. Values match Defaults() so the file
+// fully documents what the daemon does on boot.
+const SeedTemplate = `# drydock configuration. Re-run ` + "`" + `drydock start` + "`" + ` after editing.
+#
+# Env vars override these values (e.g. setting BROKER_ADDR in the shell
+# wins over broker.addr below). ANTHROPIC_API_KEY is intentionally not in
+# this file — it never goes to disk.
+
+# --- Container runtime ---
+network:        drydock-egress         # vmnet network name (must exist)
+gateway_ip:     192.168.66.1           # gateway + squid bind here
+sandbox_image:  claude-sandbox:latest  # per-task agent VM image
+anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
+
+# --- Per-task limits ---
+task_budget_usd:        2.0            # hard USD ceiling; gateway rejects after exhaustion
+max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
+task_timeout:           30m            # wall-clock per task
+
+# --- Where state lives ---
+stage_root:    /tmp/broker/stage       # per-task work tree (wiped on completion)
+audit_root:    /tmp/broker/audit       # per-task <id>.jsonl + .diff
+squid_run_dir: /tmp/broker/squid       # squid pid/conf/cache.log
+
+# --- Broker listener ---
+broker:
+  socket: ""                           # empty = per-uid default ($TMPDIR/drydock-$UID/drydock.sock)
+  addr: ""                             # set "host:port" to expose over TCP (warns at boot)
+
+# --- Behavior ---
+notifications:              true       # macOS notifications on pending approval
+log_json:                   false      # force JSON logs (default: text on TTY, JSON otherwise)
+strict_container_version:   false      # fail closed when 'container' major drifts from tested range
+`
+
+// WriteSeed writes SeedTemplate to path, creating parents at 0700 and the
+// file at 0644. Used by drydock init. Refuses to overwrite — caller checks.
+func WriteSeed(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(SeedTemplate), 0o644)
+}
+
+// String emits a one-line summary suitable for boot logs (no secrets).
+func (c *Config) String() string {
+	var parts []string
+	parts = append(parts, "network="+c.Network)
+	parts = append(parts, "gw="+c.GatewayIP)
+	parts = append(parts, "budget=$"+strconv.FormatFloat(c.TaskBudgetUSD, 'f', 2, 64))
+	parts = append(parts, "max_concurrent="+strconv.Itoa(c.MaxConcurrent))
+	if c.Broker.Addr != "" {
+		parts = append(parts, "tcp="+c.Broker.Addr)
+	}
+	return strings.Join(parts, " ")
+}
