@@ -74,8 +74,19 @@ In another shell:
 
 ```bash
 drydock pending               # list awaiting tasks
+drydock review <id>           # opens the diff in $PAGER, then prompts y/N
+                              # ─ or, manually ─
 less /tmp/broker/audit/<id>.diff
 drydock approve <id>          # … or: drydock deny <id>
+```
+
+Other CLI surface:
+
+```bash
+drydock status                # brokerd up?, pending, recent task count
+drydock tasks                 # recent runs: id, age, duration, cost, outcome
+drydock logs <id> [-f]        # stream-json audit (use -f to follow)
+drydock kill <id>             # tear down the VM and deny if pending
 ```
 
 Notifications opt-out: `DRYDOCK_NO_NOTIFY=1`.

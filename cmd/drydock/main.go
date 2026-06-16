@@ -13,18 +13,29 @@ func usage() {
 Setup:
   drydock init                   one-time setup: container service, network, image, smoke
   drydock start                  run brokerd in the foreground (expects ANTHROPIC_API_KEY)
+  drydock status                 brokerd up?, pending count, recent tasks
+
+Tasks:
+  drydock tasks                  list recent runs (id, age, duration, cost, outcome)
+  drydock logs    <id> [-f]      print (or follow) the task's stream-json audit log
+  drydock review  <id>           open the diff in $PAGER, then prompt y/N
+  drydock kill    <id>           tear down the VM and deny if pending
 
 Approvals:
   drydock pending                list task IDs awaiting approval
-  drydock approve <task-id>      approve the pending push
-  drydock deny    <task-id>      deny the pending push (diff returned but not pushed)
+  drydock approve <id>           approve the pending push
+  drydock deny    <id>           deny the pending push (diff returned but not pushed)
 
 Other:
   drydock version                print drydock version
   drydock help                   this message
 
-Connection (approvals):
+Connection (approvals & status):
   Defaults to unix:///tmp/drydock.sock. Override with BROKER_ADDR=host:port.
+Environment:
+  AUDIT_ROOT          override audit dir (default /tmp/broker/audit)
+  PAGER               viewer used by 'review' (default 'less -R')
+  DRYDOCK_NO_NOTIFY=1 silence brokerd's macOS notifications
 `)
 }
 
@@ -41,6 +52,20 @@ func main() {
 		runInit()
 	case "start":
 		runStart()
+	case "status":
+		runStatus()
+	case "tasks":
+		runTasks()
+	case "logs":
+		mustArgsRange(2, 3)
+		follow := len(os.Args) == 4 && (os.Args[3] == "-f" || os.Args[3] == "--follow")
+		runLogs(os.Args[2], follow)
+	case "review":
+		mustArgs(2)
+		runReview(os.Args[2])
+	case "kill":
+		mustArgs(2)
+		runKill(os.Args[2])
 	case "pending":
 		listPending()
 	case "approve":
@@ -62,6 +87,14 @@ func main() {
 
 func mustArgs(want int) {
 	if len(os.Args) != want+1 {
+		usage()
+		os.Exit(2)
+	}
+}
+
+func mustArgsRange(min, max int) {
+	n := len(os.Args) - 1
+	if n < min || n > max {
 		usage()
 		os.Exit(2)
 	}
