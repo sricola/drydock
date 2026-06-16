@@ -69,3 +69,38 @@ N1–N7 not).
 drydock is pre-1.0. Only `main` is supported; we'll backport fixes to
 the most recent tagged release if there's user demand. Always upgrade
 to the latest `main` before reporting.
+
+## Documented residuals
+
+These are known limits we've decided not to engineer around at v0.x.
+They're listed so an operator can decide whether the risk is acceptable
+in their environment, not because they need a CVE.
+
+- **`BROKER_ADDR=host:port` has no authentication.** Setting it exposes
+  brokerd's API surface (`POST /tasks`, `POST /admin/approve/{id}`,
+  etc.) over TCP. Anyone who can reach the port can submit and approve
+  tasks. Treat the env var as a deliberate trust delegation to whoever
+  controls the network. The Unix socket (the default) has no such
+  caveat — mode 0600 on a per-uid parent dir.
+
+- **`/healthz` and `/admin/pending` disclose task counts and IDs.**
+  Fine on the per-user Unix socket; on TCP it's recon information for
+  someone preparing a race against `/admin/approve`. Don't expose
+  brokerd to untrusted networks.
+
+- **Audit logs don't rotate.** `AUDIT_ROOT` (default
+  `/tmp/broker/audit`) grows monotonically. On a long-running brokerd
+  this becomes a disk-fill DoS. Prune manually or add a cron.
+
+- **macOS notifications contain attacker-controlled hostnames.**
+  Per-task `egress_extra` hostnames flow into the notification body.
+  macOS native notifications render plain text, so this is benign on
+  the macOS surface; treat the body as untrusted input if you ever
+  route it through a webhook adapter.
+
+- **No structured logging.** `log.Printf` everywhere — no level, no
+  JSON, no correlation IDs. SIEM ingestion is on you.
+
+- **No SBOM and no signed binaries yet.** Released artifacts will be
+  signed when a goreleaser/Homebrew path lands. Until then, build from
+  source and `go mod verify`.

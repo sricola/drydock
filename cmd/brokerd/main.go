@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"drydock/internal/egress"
 	"drydock/internal/gateway"
 	"drydock/internal/netfw"
+	"drydock/internal/sockpath"
 )
 
 // supportedContainerMajor is the major version of Apple's `container` CLI
@@ -30,6 +32,7 @@ var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\
 
 func main() {
 	checkContainerVersion()
+	pruneOrphanTasks()
 
 	cfg, err := egress.Load(env("EGRESS_CONFIG", "config/egress.yaml"))
 	if err != nil {
@@ -128,22 +131,33 @@ func main() {
 	serve(mux, gwAddr, proxyAddr)
 }
 
-// serve listens on a Unix socket by default (file mode 0600, so only the
-// invoking user can talk to brokerd). Setting BROKER_ADDR=host:port opts
-// into TCP with a loud startup banner — any process that can reach the
-// port can ship a PR, so this is for operator awareness, not security.
+// serve listens on a Unix socket by default. The socket lives inside a
+// per-uid parent dir at 0700; brokerd narrows the umask before listen() so
+// the socket file itself is created at 0600 atomically (no TOCTOU window
+// between bind and chmod). Setting BROKER_ADDR=host:port opts into TCP
+// with a loud startup banner — any process that can reach the port can
+// submit and approve tasks, so it's for operator awareness, not security.
 func serve(mux *http.ServeMux, gwAddr, proxyAddr string) {
 	if tcpAddr := os.Getenv("BROKER_ADDR"); tcpAddr != "" {
 		log.Printf("WARNING: BROKER_ADDR=%s — listening on TCP. Any process that can reach this port can submit/approve tasks.", tcpAddr)
 		log.Printf("brokerd listening on %s (gateway %s, squid %s)", tcpAddr, gwAddr, proxyAddr)
 		log.Fatal(http.ListenAndServe(tcpAddr, mux))
 	}
-	sock := env("BROKER_SOCKET", "/tmp/drydock.sock")
+	sock := env("BROKER_SOCKET", sockpath.Default())
+	if err := sockpath.EnsureParent(sock); err != nil {
+		log.Fatalf("mkdir %s parent: %v", sock, err)
+	}
 	_ = os.Remove(sock) // stale socket from a previous crash
+
+	// Atomically create the socket with no group/world bits — closes the
+	// TOCTOU between bind() and the chmod() that used to live below.
+	oldMask := syscall.Umask(0o077)
 	l, err := net.Listen("unix", sock)
+	syscall.Umask(oldMask)
 	if err != nil {
 		log.Fatalf("listen %s: %v", sock, err)
 	}
+	// Belt and braces: enforce 0600 explicitly even if umask gave us 0640.
 	if err := os.Chmod(sock, 0o600); err != nil {
 		log.Fatalf("chmod %s: %v", sock, err)
 	}
@@ -165,25 +179,58 @@ func waitBindable(addr string) {
 }
 
 // checkContainerVersion fails closed if the `container` CLI isn't present, and
-// warns (without exiting) when the major version doesn't match what drydock
-// was tested against. We choose warn-don't-fail so a verified user can bypass
-// after re-running the smoke test against a newer release.
+// either warns or fails (with DRYDOCK_STRICT_CONTAINER_VERSION=1) when the
+// major version doesn't match what drydock was tested against. Strict mode
+// is for production / launchd deployments where silent drift is worse than
+// a refusal to start.
 func checkContainerVersion() {
 	out, err := exec.Command("container", "--version").CombinedOutput()
 	if err != nil {
 		log.Fatalf("container CLI not runnable (apple/container required): %v\n%s", err, out)
 	}
+	strict := os.Getenv("DRYDOCK_STRICT_CONTAINER_VERSION") == "1"
 	m := containerVersionRE.FindStringSubmatch(strings.TrimSpace(string(out)))
 	if m == nil {
-		log.Printf("WARNING: could not parse container --version output (%q); proceeding", strings.TrimSpace(string(out)))
+		msg := fmt.Sprintf("could not parse container --version output (%q)", strings.TrimSpace(string(out)))
+		if strict {
+			log.Fatalf("DRYDOCK_STRICT_CONTAINER_VERSION=1: %s", msg)
+		}
+		log.Printf("WARNING: %s; proceeding", msg)
 		return
 	}
 	if m[1] != supportedContainerMajor {
+		if strict {
+			log.Fatalf("DRYDOCK_STRICT_CONTAINER_VERSION=1: container CLI v%s.%s.%s — drydock is tested against v%s.x. Refusing to start.",
+				m[1], m[2], m[3], supportedContainerMajor)
+		}
 		log.Printf("WARNING: container CLI v%s.%s.%s — drydock is tested against v%s.x. Re-run the README smoke test before relying on this.",
 			m[1], m[2], m[3], supportedContainerMajor)
 		return
 	}
 	log.Printf("container CLI v%s.%s.%s (supported)", m[1], m[2], m[3])
+}
+
+// pruneOrphanTasks reaps any task-* containers from a previous brokerd
+// life. Apple `container run --rm` covers the happy path; brokerd crashes
+// (SIGKILL, panic) and timeouts can leave the VM up. Running this at boot
+// closes the easy-orphan window before the new brokerd assigns new task IDs.
+func pruneOrphanTasks() {
+	out, err := exec.Command("container", "ls", "-a", "--format", "json").CombinedOutput()
+	if err != nil {
+		log.Printf("orphan prune: container ls failed: %v\n%s", err, out)
+		return
+	}
+	// Names look like "task-<hex>"; we don't bother parsing the JSON
+	// shape (which moves across container CLI versions). A substring is
+	// enough and won't match drydock-anchor (which we already handled).
+	for _, line := range strings.Split(string(out), "\n") {
+		for _, token := range strings.Fields(strings.ReplaceAll(line, `"`, " ")) {
+			if strings.HasPrefix(token, "task-") && len(token) > 5 {
+				_ = exec.Command("container", "delete", "--force", token).Run()
+				log.Printf("orphan prune: removed %s", token)
+			}
+		}
+	}
 }
 
 // startAnchor keeps the network's vmnet gateway interface up. Idempotent: any

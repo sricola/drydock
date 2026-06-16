@@ -114,6 +114,30 @@ func TestCaptureDiff_ExcludesTaskDir(t *testing.T) {
 	}
 }
 
+func TestCleanup_RefusesUnsafePaths(t *testing.T) {
+	cases := []string{"", "/", ".", "relative/path"}
+	for _, root := range cases {
+		s := &Stage{Root: root}
+		if err := s.Cleanup(); err == nil {
+			t.Errorf("Cleanup(%q) must refuse but did not", root)
+		}
+	}
+}
+
+func TestCleanup_RemovesAbsoluteTempDir(t *testing.T) {
+	root := t.TempDir() + "/scratch"
+	if err := os.MkdirAll(root+"/sub", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Stage{Root: root}
+	if err := s.Cleanup(); err != nil {
+		t.Errorf("Cleanup: %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Errorf("Cleanup didn't remove root: err=%v", err)
+	}
+}
+
 // fakeOpener captures the args Push would have passed to a real adapter
 // (gh / glab). Stage's contract with the adapter is the env it gets, the
 // work dir, and the branch — verify all three end-to-end.

@@ -99,6 +99,31 @@ type RequestOpener interface {
 	OpenRequest(workDir, branch string, env []string) error
 }
 
+// adapterAllowedEnv is the curated allowlist of host env vars forwarded to
+// gh/glab. The rest of os.Environ() (AWS_*, SLACK_*, cloud creds, every
+// secret you've ever exported) stays out — drastically narrows the blast
+// radius of a future gh plugin or supply-chain compromise.
+var adapterAllowedEnv = []string{
+	"PATH",         // find gh, glab, git
+	"HOME",         // gh/glab read ~/.config/gh, ~/.config/glab
+	"USER",         // some CLIs require it
+	"LOGNAME",      // ditto
+	"LANG",         // utf-8 output
+	"LC_ALL",
+	"LC_CTYPE",
+	"TMPDIR",       // gh writes per-request temp files
+	// Vendor tokens — forwarded only if explicitly present.
+	"GH_TOKEN",
+	"GITHUB_TOKEN",
+	"GH_HOST",
+	"GH_ENTERPRISE_TOKEN",
+	"GLAB_TOKEN",
+	"GITLAB_TOKEN",
+	"GITLAB_HOST",
+	// SSH auth path for git push over ssh (glab/gh push via git).
+	"SSH_AUTH_SOCK",
+}
+
 // Push commits the staged changes onto a new branch, pushes it via the
 // host-only git dir, then asks the adapter to open a PR/MR. Called only
 // after the approval gate.
@@ -117,7 +142,8 @@ func (s *Stage) Push(opener RequestOpener, branch, message string) error {
 	}
 	// The adapter shells out to gh/glab and must do so against the
 	// host-only git dir with hooks neutralized — never the work-tree .git.
-	env := append(os.Environ(),
+	env := curatedEnv()
+	env = append(env,
 		"GIT_DIR="+s.gitDir,
 		"GIT_WORK_TREE="+s.WorkDir,
 		"GIT_CONFIG_COUNT=2",
@@ -127,7 +153,24 @@ func (s *Stage) Push(opener RequestOpener, branch, message string) error {
 	return opener.OpenRequest(s.WorkDir, branch, env)
 }
 
+func curatedEnv() []string {
+	out := make([]string, 0, len(adapterAllowedEnv))
+	for _, key := range adapterAllowedEnv {
+		if v, ok := os.LookupEnv(key); ok {
+			out = append(out, key+"="+v)
+		}
+	}
+	return out
+}
+
 // Cleanup removes the entire host scratch dir (work tree + git dir).
+// Defense in depth: never RemoveAll an empty or root-shaped path so a
+// misconfigured StageRoot ("" or "/") can't catastrophically widen the
+// blast radius. The path must be absolute and not the FS root.
 func (s *Stage) Cleanup() error {
+	clean := filepath.Clean(s.Root)
+	if clean == "" || clean == "/" || clean == "." || !filepath.IsAbs(clean) {
+		return fmt.Errorf("stage: refusing to clean unsafe path %q", s.Root)
+	}
 	return os.RemoveAll(s.Root)
 }

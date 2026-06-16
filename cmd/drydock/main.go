@@ -31,7 +31,8 @@ Other:
   drydock help                   this message
 
 Connection (approvals & status):
-  Defaults to unix:///tmp/drydock.sock. Override with BROKER_ADDR=host:port.
+  Defaults to a per-user Unix socket ($TMPDIR/drydock-$UID/drydock.sock).
+  Override with BROKER_SOCKET=path or BROKER_ADDR=host:port.
 Environment:
   AUDIT_ROOT          override audit dir (default /tmp/broker/audit)
   PAGER               viewer used by 'review' (default 'less -R')

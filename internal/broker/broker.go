@@ -109,8 +109,13 @@ type TaskState struct {
 
 const instructionSnippetMax = 140
 
+// newID returns a hex token with 128 bits of entropy. /admin/approve is
+// directly addressable by ID; with 48 bits a local attacker can race
+// approvals if they can enumerate task IDs (e.g., readdir on an audit
+// dir mode 0755 — fixed elsewhere). 128 bits removes online guessing
+// from the attack tree entirely.
 func newID() string {
-	b := make([]byte, 6)
+	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
@@ -198,7 +203,14 @@ func (b *Broker) unregisterTask(id string) {
 	delete(b.cancellers, id)
 }
 
+// MaxTaskBodyBytes caps the size of POST /tasks bodies. Generous enough for
+// long instructions but small enough that local-DoS via 1GB instruction
+// strings (or TCP-listener attacks when BROKER_ADDR is set) can't burn
+// memory unbounded.
+const MaxTaskBodyBytes = 64 << 10
+
 func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxTaskBodyBytes)
 	var t Task
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -226,6 +238,16 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	b.registerTask(taskID, t.RepoRef, t.Instruction, cancel)
 	defer b.unregisterTask(taskID)
 
+	// Validate widening request before anyone can approve it. Without this
+	// a wildcard or otherwise-malformed host could compile into squid's
+	// dstdomain file and silently widen the allowlist past what the
+	// reviewer thought they were approving.
+	if len(t.EgressExtra) > 0 {
+		if err := egress.ValidateDomains(t.EgressExtra); err != nil {
+			http.Error(w, "egress_extra invalid: "+safeErr(err), http.StatusBadRequest)
+			return
+		}
+	}
 	// Egress widening: block at the same kind of human-driven gate as the
 	// diff push. Without this the requires_approval flag is a lie —
 	// auto-approve would let any task ask for any host.
@@ -267,11 +289,19 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 	defer grant.Revoke()
 
-	if err := os.MkdirAll(b.AuditRoot, 0o755); err != nil {
+	// 0o700 keeps another local process from enumerating task IDs and
+	// racing /admin/approve before the operator. The audit dir contains
+	// the diff, the prompt, and the full stream-json trace — none of it
+	// should be world-readable.
+	if err := os.MkdirAll(b.AuditRoot, 0o700); err != nil {
 		http.Error(w, "audit dir failed", http.StatusInternalServerError)
 		return
 	}
-	logf, err := os.Create(filepath.Join(b.AuditRoot, taskID+".jsonl"))
+	// 0o600 on the audit log: same reasoning. os.Create would create at
+	// 0666 (umask-reduced); be explicit.
+	logf, err := os.OpenFile(
+		filepath.Join(b.AuditRoot, taskID+".jsonl"),
+		os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		http.Error(w, "audit file failed", http.StatusInternalServerError)
 		return
@@ -313,7 +343,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"task_id": taskID, "cancelled": true, "pushed": false})
 			return
 		}
-		http.Error(w, "task failed: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "task failed: "+safeErr(err), http.StatusInternalServerError)
 		return
 	}
 
@@ -342,7 +372,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	branch := "agent/" + taskID
 	adapter := remote.AdapterFor(t.RepoRef, t.Platform)
 	if err := st.Push(adapter, branch, "agent: "+firstLine(t.Instruction)); err != nil {
-		http.Error(w, "push failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "push failed: "+safeErr(err), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, map[string]any{"task_id": taskID, "branch": branch, "platform": adapter.Name(), "pushed": true})
@@ -370,7 +400,7 @@ func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []eg
 	// Persist the request next to the audit so reviewers have a stable
 	// artifact (the in-flight TaskState would disappear on a brokerd crash).
 	widenPath := filepath.Join(b.AuditRoot, taskID+".widen.json")
-	if err := os.MkdirAll(b.AuditRoot, 0o755); err == nil {
+	if err := os.MkdirAll(b.AuditRoot, 0o700); err == nil {
 		if payload, jerr := json.MarshalIndent(extras, "", "  "); jerr == nil {
 			_ = os.WriteFile(widenPath, payload, 0o600)
 		}
@@ -573,16 +603,58 @@ func (b *Broker) signal(w http.ResponseWriter, r *http.Request, ok bool) {
 	}
 }
 
-// firstLine returns the first line of s, capped, for a sane commit subject from
-// an attacker-influenced instruction.
+// firstLine returns the first line of s, sanitized, for a sane commit subject
+// from an attacker-influenced instruction. Strips control characters and
+// ANSI escapes (they'd visually corrupt `git log` and terminal output), and
+// drops a leading '-' so the subject can't be confused for a git option
+// when re-used in some future tool. Capped at 72 chars.
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	if len(s) > 72 {
-		s = s[:72]
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		// Keep printable ASCII + a tolerant unicode range (no controls).
+		if r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		}
 	}
-	return s
+	out := strings.TrimSpace(b.String())
+	for len(out) > 0 && out[0] == '-' {
+		out = strings.TrimSpace(out[1:])
+	}
+	if out == "" {
+		out = "agent task"
+	}
+	if len(out) > 72 {
+		out = out[:72]
+	}
+	return out
+}
+
+// safeErr renders an error for reflection in an HTTP response body. err.Error()
+// can carry attacker-influenced bytes (agent stderr, container-CLI output);
+// reflecting those raw makes upstream SIEM ingestion brittle and lets a clever
+// agent inject ANSI escapes into operator terminals. Strip non-printables and
+// cap.
+func safeErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if len(out) > 200 {
+		out = out[:200] + "…"
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

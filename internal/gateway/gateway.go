@@ -6,6 +6,7 @@ package gateway
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -16,6 +17,11 @@ import (
 )
 
 type Lease struct {
+	// Token is the value Mint returned. Stored so check() can do a
+	// constant-time equality against the bearer the caller presented;
+	// even if Go's map lookup ever changes to a timing-sensitive shape,
+	// the defense-in-depth comparison stops timing-side-channel leakage.
+	Token     string
 	BudgetUSD float64
 	SpentUSD  float64
 	Expiry    time.Time
@@ -52,7 +58,7 @@ func (g *Gateway) Mint(budgetUSD float64, ttl time.Duration) string {
 	rand.Read(b)
 	tok := "tok_" + hex.EncodeToString(b)
 	g.mu.Lock()
-	g.leases[tok] = &Lease{BudgetUSD: budgetUSD, Expiry: time.Now().Add(ttl)}
+	g.leases[tok] = &Lease{Token: tok, BudgetUSD: budgetUSD, Expiry: time.Now().Add(ttl)}
 	g.mu.Unlock()
 	return tok
 }
@@ -73,11 +79,20 @@ func (g *Gateway) spent(token string) float64 {
 }
 
 // check returns (lease, 0) when usable, or (nil, statusCode) to reject.
+// The bearer is compared against the stored token with subtle.ConstantTimeCompare
+// so future changes to the lookup path can't silently introduce a timing
+// side-channel on token validation.
 func (g *Gateway) check(token string) (*Lease, int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	l := g.leases[token]
-	if l == nil || time.Now().After(l.Expiry) {
+	if l == nil {
+		return nil, http.StatusUnauthorized
+	}
+	if subtle.ConstantTimeCompare([]byte(l.Token), []byte(token)) != 1 {
+		return nil, http.StatusUnauthorized
+	}
+	if time.Now().After(l.Expiry) {
 		return nil, http.StatusUnauthorized
 	}
 	if l.SpentUSD >= l.BudgetUSD {

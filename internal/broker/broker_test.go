@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -464,6 +465,48 @@ func TestSummariseExtras(t *testing.T) {
 		if got := summariseExtras(tc.in); got != tc.want {
 			t.Errorf("summariseExtras(%v) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestFirstLine_Sanitization(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"hello", "hello"},
+		{"hello\nworld", "hello"},
+		// Strip ANSI escape (ESC [31m).
+		{"\x1b[31mred\x1b[0m", "[31mred[0m"},
+		// Strip ASCII control characters.
+		{"a\x07b\x08c", "abc"},
+		// Drop a leading hyphen so it can't be confused for a flag.
+		{"--unsafe flag", "unsafe flag"},
+		{"-x", "x"},
+		// Cap at 72 chars.
+		{strings.Repeat("a", 100), strings.Repeat("a", 72)},
+		// All-control + empty becomes placeholder.
+		{"\x01\x02\x03", "agent task"},
+		{"", "agent task"},
+	}
+	for _, tc := range cases {
+		got := firstLine(tc.in)
+		if got != tc.want {
+			t.Errorf("firstLine(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSafeErr_StripsControls(t *testing.T) {
+	if got := safeErr(nil); got != "" {
+		t.Errorf("nil err = %q", got)
+	}
+	got := safeErr(errors.New("bad\x1b[31mthing\x00"))
+	if got != "bad[31mthing" {
+		t.Errorf("safeErr = %q", got)
+	}
+	long := strings.Repeat("x", 500)
+	gotLong := safeErr(errors.New(long))
+	if !strings.HasSuffix(gotLong, "…") || len(gotLong) > 250 {
+		t.Errorf("safeErr did not cap long input: len=%d", len(gotLong))
 	}
 }
 

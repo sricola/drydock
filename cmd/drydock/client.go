@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"drydock/internal/sockpath"
 )
 
 // taskState mirrors broker.TaskState. We don't import the broker package
@@ -41,17 +43,23 @@ func fetchTasks() ([]taskState, error) {
 	return out, nil
 }
 
-const defaultSocket = "/tmp/drydock.sock"
+func socketPath() string {
+	if v := os.Getenv("BROKER_SOCKET"); v != "" {
+		return v
+	}
+	return sockpath.Default()
+}
 
 func brokerClient() (*http.Client, string) {
 	if tcp := os.Getenv("BROKER_ADDR"); tcp != "" {
 		return &http.Client{Timeout: 5 * time.Second}, "http://" + tcp
 	}
+	sock := socketPath()
 	c := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", defaultSocket)
+				return net.Dial("unix", sock)
 			},
 		},
 	}
