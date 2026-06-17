@@ -156,8 +156,10 @@ h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);lett
 .tag.oos{color:var(--faint);border:1px solid var(--line2)}
 
 /* ---- architecture diagram (SVG-based) ---- */
-.archdiag{margin-top:10px;border:1px solid var(--line2);background:var(--panel);border-radius:4px;padding:14px}
-.archdiag svg{display:block;width:100%;height:auto}
+.archdiag{margin-top:14px;background:#fdfcf8;border-radius:14px;padding:8px;position:relative;
+  border:1px solid rgba(20,25,30,.06);
+  box-shadow:0 1px 0 rgba(20,25,30,.04), 0 30px 60px -40px rgba(20,25,30,.12)}
+.archdiag svg{display:block;width:100%;height:auto;border-radius:10px}
 .archnote{margin-top:18px;color:var(--mut);font-size:15.5px;max-width:78ch}
 .archnote b{color:var(--ink);font-weight:600}
 
@@ -332,183 +334,352 @@ drydock start</pre>
   <h2 class="reveal">One broker, two host proxies, a sealed VM.</h2>
 
   <div class="archdiag reveal">
-    <svg viewBox="0 0 1200 540" xmlns="http://www.w3.org/2000/svg"
-         font-family="ui-monospace, Menlo, monospace" aria-labelledby="archtitle">
-      <title id="archtitle">drydock system diagram: VM, trust boundary, host services, and the only flows that cross</title>
+    <svg viewBox="0 0 1520 700" xmlns="http://www.w3.org/2000/svg"
+         font-family="'IBM Plex Mono', ui-monospace, Menlo, monospace" aria-labelledby="archtitle">
+      <title id="archtitle">drydock system architecture: operator on the left drives brokerd; agent data flows left to right through the host trust boundary out to the internet</title>
 
       <defs>
-        <!-- arrowheads (matched to stroke colors) -->
-        <marker id="ah-grn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#0d8d5e"/>
+        <!-- Soft dot grid for technical backdrop -->
+        <pattern id="dotgrid" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.8" fill="rgba(20,25,30,.06)"/>
+        </pattern>
+
+        <!-- Subtle zone tints -->
+        <linearGradient id="vmZone" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="rgba(201,44,44,.06)"/>
+          <stop offset="1" stop-color="rgba(201,44,44,.02)"/>
+        </linearGradient>
+        <linearGradient id="hostZone" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="rgba(13,141,94,.05)"/>
+          <stop offset="1" stop-color="rgba(13,141,94,.015)"/>
+        </linearGradient>
+
+        <!-- Trust boundary: an architectural translucent column with edge highlights -->
+        <linearGradient id="boundary" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0"  stop-color="rgba(20,25,30,.03)"/>
+          <stop offset=".5" stop-color="rgba(20,25,30,.12)"/>
+          <stop offset="1"  stop-color="rgba(20,25,30,.03)"/>
+        </linearGradient>
+
+        <!-- Soft drop shadow for cards (no harsh borders) -->
+        <filter id="cardShadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+          <feOffset dx="0" dy="2"/>
+          <feComponentTransfer><feFuncA type="linear" slope="0.18"/></feComponentTransfer>
+          <feMerge>
+            <feMergeNode/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+
+        <!-- Bigger shadow for the credential gateway (it's the hero element) -->
+        <filter id="heroShadow" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="6"/>
+          <feOffset dx="0" dy="4"/>
+          <feComponentTransfer><feFuncA type="linear" slope="0.22"/></feComponentTransfer>
+          <feMerge>
+            <feMergeNode/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+
+        <!-- Flow line gradients — red on the VM side, green after the credential swap -->
+        <linearGradient id="flow-model" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0"   stop-color="#c92c2c"/>
+          <stop offset=".48" stop-color="#c92c2c"/>
+          <stop offset=".52" stop-color="#0d8d5e"/>
+          <stop offset="1"   stop-color="#0d8d5e"/>
+        </linearGradient>
+        <linearGradient id="flow-deps" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0"   stop-color="#c92c2c"/>
+          <stop offset=".48" stop-color="#c92c2c"/>
+          <stop offset=".52" stop-color="#0d8d5e"/>
+          <stop offset="1"   stop-color="#0d8d5e"/>
+        </linearGradient>
+        <linearGradient id="flow-diff" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#0d8d5e"/>
+          <stop offset="1" stop-color="#0d8d5e"/>
+        </linearGradient>
+
+        <!-- Arrow tips — small + clean -->
+        <marker id="tip-grn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+          <path d="M 0 1 L 9 5 L 0 9 z" fill="#0d8d5e"/>
         </marker>
-        <marker id="ah-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#c92c2c"/>
+        <marker id="tip-red" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+          <path d="M 0 1 L 9 5 L 0 9 z" fill="#c92c2c"/>
         </marker>
-        <marker id="ah-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#54606b"/>
+        <marker id="tip-mut" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto">
+          <path d="M 0 1 L 9 5 L 0 9 z" fill="#7a8590"/>
         </marker>
+
+        <!-- Reusable icon glyphs (16x16) — abstract, mono -->
+        <g id="ic-agent">
+          <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M 5 8 L 7 10 L 11 6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+        <g id="ic-server">
+          <rect x="2" y="3"  width="12" height="3.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+          <rect x="2" y="8.5" width="12" height="3.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+          <circle cx="11.5" cy="4.75" r=".7" fill="currentColor"/>
+          <circle cx="11.5" cy="10.25" r=".7" fill="currentColor"/>
+        </g>
+        <g id="ic-key">
+          <circle cx="5.5" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M 8.7 8 L 14 8 M 12 8 L 12 11 M 14 8 L 14 10.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </g>
+        <g id="ic-filter">
+          <path d="M 2 3 L 14 3 L 9.5 9 L 9.5 13.5 L 6.5 13.5 L 6.5 9 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </g>
+        <g id="ic-shield">
+          <path d="M 8 2 L 13.5 4 L 13.5 8 C 13.5 11.5 11 13.5 8 14 C 5 13.5 2.5 11.5 2.5 8 L 2.5 4 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M 5.5 8 L 7.5 10 L 10.8 6.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+        <g id="ic-folder">
+          <path d="M 2 5 L 6 5 L 7.5 6.5 L 14 6.5 L 14 13 L 2 13 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </g>
+        <g id="ic-gate">
+          <rect x="3" y="4" width="10" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M 6 8.5 L 7.5 10 L 10.5 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+        <g id="ic-cursor">
+          <path d="M 3 2 L 10.5 9 L 7 9.5 L 9 13 L 7 14 L 5 10.5 L 3 12 Z" fill="currentColor"/>
+        </g>
+        <g id="ic-cloud">
+          <path d="M 4 11 C 2 11 2 8 4 8 C 4 5 8 5 9 7 C 12 6 14 9 12 11 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </g>
+        <g id="ic-cube">
+          <path d="M 8 2 L 14 5 L 14 11 L 8 14 L 2 11 L 2 5 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+          <path d="M 2 5 L 8 8 L 14 5 M 8 8 L 8 14" fill="none" stroke="currentColor" stroke-width="1.1"/>
+        </g>
+        <g id="ic-branch">
+          <circle cx="4" cy="3.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <circle cx="4" cy="12.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <circle cx="12" cy="8" r="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M 4 5 L 4 11 M 4 8 C 4 8 6 8 9 8 L 10.5 8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        </g>
       </defs>
 
-      <!-- zone tints -->
-      <rect x="0" y="40" width="500" height="500" fill="rgba(201,44,44,.04)"/>
-      <rect x="500" y="40" width="500" height="500" fill="rgba(13,141,94,.04)"/>
+      <!-- ============ Backdrop ============ -->
+      <rect width="1520" height="700" fill="url(#dotgrid)" opacity="0.55"/>
 
-      <!-- zone labels -->
-      <text x="20" y="28" font-size="12" letter-spacing="3" fill="#c92c2c" font-weight="600">SANDBOX VM · UNTRUSTED</text>
-      <text x="520" y="28" font-size="12" letter-spacing="3" fill="#0d8d5e" font-weight="600">HOST · TRUSTED COMPUTING BASE</text>
-      <text x="1020" y="28" font-size="12" letter-spacing="3" fill="#54606b" font-weight="600">EXTERNAL</text>
+      <!-- OPERATOR lane gradient — a soft blue-gray to read as "control plane" -->
+      <linearGradient id="opZone" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="rgba(45,95,199,.05)"/>
+        <stop offset="1" stop-color="rgba(45,95,199,.015)"/>
+      </linearGradient>
 
-      <!-- the trust boundary: thick dashed vertical line at x=500 -->
-      <line x1="500" y1="40" x2="500" y2="540"
-            stroke="#1a1d22" stroke-width="2" stroke-dasharray="8 6"/>
-      <text x="500" y="555" font-size="11" letter-spacing="3"
-            fill="#1a1d22" text-anchor="middle">TRUST BOUNDARY</text>
+      <!-- Four lanes: OPERATOR | VM | (boundary) | HOST | EXTERNAL.
+           Operator is its own narrow lane on the far left. -->
+      <rect x="20"  y="68" width="200" height="600" fill="url(#opZone)"   rx="14"/>
+      <rect x="240" y="68" width="340" height="600" fill="url(#vmZone)"   rx="14"/>
+      <rect x="700" y="68" width="460" height="600" fill="url(#hostZone)" rx="14"/>
 
-      <!-- -- VM SIDE (LEFT) -- -->
-      <!-- claude --bare -->
-      <g transform="translate(40 60)">
-        <rect width="220" height="64" rx="8" fill="#ffffff" stroke="#c92c2c" stroke-width="2"/>
-        <text x="14" y="24" font-size="13" font-weight="600" fill="#c92c2c">claude --bare</text>
-        <text x="14" y="44" font-size="11" fill="#54606b">--dangerously-skip-permissions</text>
-        <text x="14" y="58" font-size="11" fill="#54606b">stream-json output</text>
+      <!-- Trust boundary column — between VM and HOST -->
+      <rect x="600" y="68" width="80" height="600" fill="url(#boundary)" rx="6"/>
+      <text x="640" y="40" font-size="10" letter-spacing="4" fill="#1a1d22" font-weight="600" text-anchor="middle">TRUST BOUNDARY</text>
+      <line x1="640" y1="50" x2="640" y2="62" stroke="#1a1d22" stroke-width="1.4"/>
+      <line x1="640" y1="678" x2="640" y2="690" stroke="#1a1d22" stroke-width="1.4"/>
+
+      <!-- Zone titles -->
+      <text x="40"   y="50" font-size="10" letter-spacing="4" fill="#2d5fc7" font-weight="600">OPERATOR</text>
+      <text x="260"  y="50" font-size="10" letter-spacing="4" fill="#c92c2c" font-weight="600">SANDBOX VM · UNTRUSTED</text>
+      <text x="720"  y="50" font-size="10" letter-spacing="4" fill="#0d8d5e" font-weight="600">HOST · TRUSTED COMPUTING BASE</text>
+      <text x="1200" y="50" font-size="10" letter-spacing="4" fill="#54606b" font-weight="600">EXTERNAL · INTERNET</text>
+
+      <!-- ============ OPERATOR (far-left lane) ============ -->
+      <g transform="translate(40 190)" filter="url(#cardShadow)">
+        <rect width="160" height="92" rx="10" fill="#ffffff"/>
+        <rect width="3" height="92" rx="1.5" fill="#2d5fc7"/>
+        <g transform="translate(16 18)" color="#2d5fc7">
+          <use href="#ic-cursor" width="16" height="16"/>
+        </g>
+        <text x="40" y="30" font-size="12.5" font-weight="600" fill="#1a1d22">operator</text>
+        <text x="16" y="52" font-size="10" fill="#54606b">drydock submit</text>
+        <text x="16" y="66" font-size="10" fill="#54606b">drydock approve</text>
+        <text x="16" y="80" font-size="9" fill="#8a939e" letter-spacing=".3">unix sock · 0600</text>
       </g>
 
-      <!-- env (injected) -->
-      <g transform="translate(40 150)">
-        <rect width="220" height="68" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">env (injected by broker)</text>
-        <text x="14" y="40" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">ANTHROPIC_BASE_URL=gw:8088</text>
-        <text x="14" y="54" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">ANTHROPIC_AUTH_TOKEN=tok_…</text>
-        <text x="14" y="64" font-size="10" fill="#c92c2c" font-weight="600">NO REAL KEY</text>
+      <!-- operator → brokerd: long L→R curve sweeping ABOVE the VM zone.
+           Single pill on the curve doubles as the control-plane label. -->
+      <path d="M 200 230 C 360 120 520 120 720 218" stroke="#7a8590" stroke-width="1.5"
+            stroke-dasharray="6 4" fill="none" marker-end="url(#tip-mut)"/>
+      <g transform="translate(380 138)">
+        <rect width="180" height="18" rx="9" fill="#ffffff" stroke="rgba(45,95,199,.4)"/>
+        <text x="90" y="12.5" font-size="10" font-weight="600" fill="#2d5fc7" letter-spacing=".3" text-anchor="middle">POST /tasks · approve</text>
       </g>
 
-      <!-- nft pin -->
-      <g transform="translate(40 240)">
-        <rect width="220" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">nft pin · installed as root</text>
-        <text x="14" y="40" font-size="11" fill="#54606b">allow → gw:8088 + proxy:3128</text>
-        <text x="14" y="54" font-size="11" fill="#54606b">drop DNS, drop everything else</text>
+      <!-- ============ BROKERD (host, top of HOST column) ============ -->
+      <g transform="translate(720 190)" filter="url(#cardShadow)">
+        <rect width="420" height="78" rx="10" fill="#ffffff"/>
+        <rect width="3" height="78" rx="1.5" fill="#0d8d5e"/>
+        <g transform="translate(16 18)" color="#0d8d5e">
+          <use href="#ic-server" width="16" height="16"/>
+        </g>
+        <text x="40" y="30" font-size="13" font-weight="600" fill="#0d8d5e">brokerd</text>
+        <rect x="332" y="18" width="74" height="16" rx="8" fill="rgba(13,141,94,.10)"/>
+        <text x="369" y="29" font-size="9" font-weight="500" fill="#0d8d5e" letter-spacing=".5" text-anchor="middle">HOST DAEMON</text>
+        <text x="16" y="52" font-size="10.5" fill="#54606b">stage repo · mint token · run VM</text>
+        <text x="16" y="66" font-size="10.5" fill="#54606b">capture diff · gate push</text>
       </g>
 
-      <!-- /work mount -->
-      <g transform="translate(40 326)">
-        <rect width="220" height="54" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">/work (bind mount)</text>
-        <text x="14" y="40" font-size="11" fill="#54606b">work tree only — never .git</text>
+      <!-- brokerd → VM (container run · inject env) — dashed control arrow -->
+      <path d="M 720 245 C 600 260 520 290 480 320" stroke="#7a8590" stroke-width="1.4"
+            stroke-dasharray="5 4" fill="none" marker-end="url(#tip-mut)"/>
+      <text x="560" y="280" font-size="9" font-weight="500" fill="#54606b" letter-spacing=".3" text-anchor="middle">container run · inject env</text>
+
+      <!-- ============ FLOW 1: model API ============ -->
+      <!-- claude (VM) -->
+      <g transform="translate(260 320)" filter="url(#cardShadow)">
+        <rect width="320" height="86" rx="10" fill="#ffffff"/>
+        <rect width="3" height="86" rx="1.5" fill="#c92c2c"/>
+        <g transform="translate(16 18)" color="#c92c2c">
+          <use href="#ic-agent" width="16" height="16"/>
+        </g>
+        <text x="40" y="30" font-size="13" font-weight="600" fill="#c92c2c">claude --bare</text>
+        <rect x="240" y="18" width="68" height="16" rx="8" fill="rgba(201,44,44,.10)"/>
+        <text x="274" y="29" font-size="9" font-weight="500" fill="#c92c2c" letter-spacing=".5" text-anchor="middle">UNTRUSTED</text>
+        <text x="16" y="52" font-size="10" fill="#54606b">env injected by brokerd:</text>
+        <text x="16" y="65" font-size="10" fill="#1a1d22">ANTHROPIC_BASE_URL=gw:8088</text>
+        <text x="16" y="78" font-size="10" fill="#1a1d22">ANTHROPIC_AUTH_TOKEN=tok_…</text>
       </g>
 
-      <!-- -- HOST SIDE (MIDDLE) -- -->
-      <!-- brokerd -->
-      <g transform="translate(540 60)">
-        <rect width="220" height="78" rx="8" fill="#ffffff" stroke="#0d8d5e" stroke-width="2"/>
-        <text x="14" y="24" font-size="13" font-weight="600" fill="#0d8d5e">brokerd</text>
-        <text x="14" y="42" font-size="11" fill="#54606b">stage repo · mint token · run VM</text>
-        <text x="14" y="56" font-size="11" fill="#54606b">capture diff · gate push</text>
-        <text x="14" y="72" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#1a1d22">unix:///…/drydock.sock</text>
+      <!-- credential gateway (host) — hero element -->
+      <g transform="translate(720 320)" filter="url(#heroShadow)">
+        <rect width="420" height="86" rx="10" fill="#ffffff"/>
+        <rect width="3" height="86" rx="1.5" fill="#0d8d5e"/>
+        <g transform="translate(16 18)" color="#0d8d5e">
+          <use href="#ic-key" width="16" height="16"/>
+        </g>
+        <text x="40" y="30" font-size="13" font-weight="600" fill="#0d8d5e">credential gateway</text>
+        <rect x="348" y="18" width="58" height="16" rx="8" fill="rgba(13,141,94,.12)"/>
+        <text x="377" y="29" font-size="9" font-weight="500" fill="#0d8d5e" letter-spacing=".5" text-anchor="middle">:8088</text>
+        <text x="16" y="52" font-size="10" fill="#1a1d22">strip Bearer tok →  set X-Api-Key: <tspan font-weight="600">REAL</tspan></text>
+        <text x="16" y="66" font-size="10" fill="#54606b">USD budget · revoke at task end</text>
+        <text x="16" y="79" font-size="9.5" fill="#8a939e" letter-spacing=".3">in-broker reverse proxy · TLS upstream</text>
       </g>
 
-      <!-- credential gateway -->
-      <g transform="translate(540 160)">
-        <rect width="220" height="80" rx="8" fill="#ffffff" stroke="#0d8d5e" stroke-width="2"/>
-        <text x="14" y="24" font-size="13" font-weight="600" fill="#0d8d5e">credential gateway :8088</text>
-        <text x="14" y="42" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">strip Authorization: Bearer tok_…</text>
-        <text x="14" y="56" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#0d8d5e">set X-Api-Key: REAL</text>
-        <text x="14" y="72" font-size="11" fill="#54606b">USD budget · TTL · revoke at task end</text>
+      <!-- anthropic (external) -->
+      <g transform="translate(1180 335)" filter="url(#cardShadow)">
+        <rect width="280" height="56" rx="10" fill="#ffffff"/>
+        <g transform="translate(16 16)" color="#0d8d5e">
+          <use href="#ic-cloud" width="16" height="16"/>
+        </g>
+        <text x="40" y="28" font-size="12" font-weight="600" fill="#1a1d22">api.anthropic.com</text>
+        <text x="16" y="46" font-size="9.5" fill="#54606b">real key, host-only</text>
       </g>
 
-      <!-- squid -->
-      <g transform="translate(540 262)">
-        <rect width="220" height="62" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">squid :3128</text>
-        <text x="14" y="40" font-size="11" fill="#54606b">CONNECT allowlist by hostname</text>
-        <text x="14" y="54" font-size="11" fill="#54606b">no TLS interception</text>
+      <!-- FLOW 1 connectors -->
+      <path d="M 580 363 L 720 363" stroke="url(#flow-model)" stroke-width="2.2" fill="none" marker-end="url(#tip-grn)"/>
+      <text x="650" y="354" font-size="9.5" font-weight="600" fill="#c92c2c" letter-spacing=".3" text-anchor="middle">Bearer tok_…</text>
+
+      <path d="M 1140 363 L 1180 363" stroke="#0d8d5e" stroke-width="2.2" fill="none" marker-end="url(#tip-grn)"/>
+      <text x="1160" y="354" font-size="9.5" font-weight="600" fill="#0d8d5e" letter-spacing=".3" text-anchor="middle">X-Api-Key: REAL</text>
+
+      <!-- boundary badge for FLOW 1 -->
+      <g transform="translate(616 355)">
+        <rect width="48" height="16" rx="8" fill="#ffffff" stroke="rgba(13,141,94,.4)"/>
+        <text x="24" y="11.5" font-size="8.5" font-weight="600" fill="#0d8d5e" letter-spacing=".4" text-anchor="middle">TOKEN</text>
       </g>
 
-      <!-- host-only .git + approval -->
-      <g transform="translate(540 346)">
-        <rect width="220" height="78" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">host-only .git + approval gate</text>
-        <text x="14" y="40" font-size="11" fill="#54606b">core.hooksPath=/dev/null</text>
-        <text x="14" y="54" font-size="11" fill="#54606b">drydock approve &lt;id&gt; · gh / glab / tea</text>
+      <!-- ============ FLOW 2: dependencies ============ -->
+      <g transform="translate(260 442)" filter="url(#cardShadow)">
+        <rect width="320" height="68" rx="10" fill="#ffffff"/>
+        <rect width="3" height="68" rx="1.5" fill="#c92c2c"/>
+        <g transform="translate(16 16)" color="#c92c2c">
+          <use href="#ic-cube" width="16" height="16"/>
+        </g>
+        <text x="40" y="28" font-size="12.5" font-weight="600" fill="#1a1d22">npm · pip · go</text>
+        <text x="16" y="48" font-size="10" fill="#54606b">HTTPS_PROXY=gw:3128</text>
+        <text x="16" y="61" font-size="9.5" fill="#8a939e" letter-spacing=".3">in /work — agent runs them</text>
       </g>
 
-      <!-- -- EXTERNAL (RIGHT) -- -->
-      <g transform="translate(800 60)">
-        <rect width="170" height="46" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="20" font-size="11" font-weight="600" fill="#1a1d22">operator</text>
-        <text x="14" y="36" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">drydock submit / approve</text>
+      <g transform="translate(720 442)" filter="url(#cardShadow)">
+        <rect width="420" height="68" rx="10" fill="#ffffff"/>
+        <rect width="3" height="68" rx="1.5" fill="#0d8d5e"/>
+        <g transform="translate(16 16)" color="#0d8d5e">
+          <use href="#ic-filter" width="16" height="16"/>
+        </g>
+        <text x="40" y="28" font-size="12.5" font-weight="600" fill="#0d8d5e">squid</text>
+        <rect x="348" y="14" width="58" height="16" rx="8" fill="rgba(13,141,94,.12)"/>
+        <text x="377" y="25" font-size="9" font-weight="500" fill="#0d8d5e" letter-spacing=".5" text-anchor="middle">:3128</text>
+        <text x="16" y="48" font-size="10" fill="#1a1d22">CONNECT allowlist by hostname</text>
+        <text x="16" y="61" font-size="9.5" fill="#54606b">no TLS interception · resolves host-side</text>
       </g>
 
-      <g transform="translate(1010 168)">
-        <rect width="170" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="11" font-weight="600" fill="#1a1d22">api.anthropic.com</text>
-        <text x="14" y="40" font-size="10" fill="#54606b">HTTPS</text>
-        <text x="14" y="54" font-size="10" fill="#0d8d5e">real key, host-only</text>
+      <g transform="translate(1180 446)" filter="url(#cardShadow)">
+        <rect width="280" height="60" rx="10" fill="#ffffff"/>
+        <g transform="translate(16 14)" color="#54606b">
+          <use href="#ic-cube" width="16" height="16"/>
+        </g>
+        <text x="40" y="26" font-size="12" font-weight="600" fill="#1a1d22">registries</text>
+        <text x="16" y="44" font-size="9.5" fill="#54606b">npmjs · pypi · pythonhosted</text>
+        <text x="16" y="56" font-size="9.5" fill="#54606b">proxy.golang · sum.golang</text>
       </g>
 
-      <g transform="translate(1010 268)">
-        <rect width="170" height="62" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="11" font-weight="600" fill="#1a1d22">registries</text>
-        <text x="14" y="40" font-size="10" fill="#54606b">registry.npmjs.org</text>
-        <text x="14" y="54" font-size="10" fill="#54606b">pypi.org · files.pythonhosted.org</text>
+      <path d="M 580 476 L 720 476" stroke="url(#flow-deps)" stroke-width="2" fill="none" marker-end="url(#tip-grn)"/>
+      <text x="650" y="467" font-size="9.5" font-weight="600" fill="#c92c2c" letter-spacing=".3" text-anchor="middle">CONNECT</text>
+
+      <path d="M 1140 476 L 1180 476" stroke="#0d8d5e" stroke-width="2" fill="none" marker-end="url(#tip-grn)"/>
+      <text x="1160" y="467" font-size="9.5" font-weight="600" fill="#0d8d5e" letter-spacing=".3" text-anchor="middle">allowlisted</text>
+
+      <g transform="translate(616 469)">
+        <rect width="48" height="16" rx="8" fill="#ffffff" stroke="rgba(13,141,94,.4)"/>
+        <text x="24" y="11.5" font-size="8.5" font-weight="600" fill="#0d8d5e" letter-spacing=".4" text-anchor="middle">CONNECT</text>
       </g>
 
-      <g transform="translate(1010 360)">
-        <rect width="170" height="46" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="11" font-weight="600" fill="#1a1d22">github / gitlab / gitea</text>
-        <text x="14" y="38" font-size="10" fill="#54606b">push + open PR/MR</text>
+      <!-- ============ FLOW 3: diff & push ============ -->
+      <g transform="translate(260 546)" filter="url(#cardShadow)">
+        <rect width="320" height="68" rx="10" fill="#ffffff"/>
+        <rect width="3" height="68" rx="1.5" fill="#c92c2c"/>
+        <g transform="translate(16 16)" color="#c92c2c">
+          <use href="#ic-folder" width="16" height="16"/>
+        </g>
+        <text x="40" y="28" font-size="12.5" font-weight="600" fill="#1a1d22">/work (bind mount)</text>
+        <text x="16" y="48" font-size="10" fill="#54606b">agent writes a diff</text>
+        <text x="16" y="61" font-size="10" font-weight="600" fill="#c92c2c">never .git</text>
       </g>
 
-      <!-- ARROWS — only the four flows that cross the trust boundary -->
+      <g transform="translate(720 546)" filter="url(#cardShadow)">
+        <rect width="420" height="68" rx="10" fill="#ffffff"/>
+        <rect width="3" height="68" rx="1.5" fill="#0d8d5e"/>
+        <g transform="translate(16 16)" color="#0d8d5e">
+          <use href="#ic-gate" width="16" height="16"/>
+        </g>
+        <text x="40" y="28" font-size="12.5" font-weight="600" fill="#0d8d5e">approval gate · host .git</text>
+        <text x="16" y="48" font-size="10" fill="#1a1d22">core.hooksPath=/dev/null · fsmonitor off</text>
+        <text x="16" y="61" font-size="9.5" fill="#54606b">push waits on drydock approve &lt;id&gt;</text>
+      </g>
 
-      <!-- A) operator → brokerd: POST /tasks -->
-      <path d="M 800 84 L 760 84" stroke="#54606b" stroke-width="2" fill="none"
-            marker-end="url(#ah-mut)"/>
-      <text x="780" y="76" font-size="10.5" fill="#54606b" text-anchor="middle">POST /tasks</text>
+      <g transform="translate(1180 550)" filter="url(#cardShadow)">
+        <rect width="280" height="60" rx="10" fill="#ffffff"/>
+        <g transform="translate(16 14)" color="#54606b">
+          <use href="#ic-branch" width="16" height="16"/>
+        </g>
+        <text x="40" y="26" font-size="12" font-weight="600" fill="#1a1d22">git remote</text>
+        <text x="16" y="44" font-size="9.5" fill="#54606b">github · gitlab · gitea</text>
+        <text x="16" y="56" font-size="9.5" fill="#54606b">push + open PR/MR</text>
+      </g>
 
-      <!-- B) brokerd → VM: container run + inject token -->
-      <path d="M 540 118 Q 400 130 260 178" stroke="#54606b" stroke-width="2" fill="none"
-            marker-end="url(#ah-mut)" stroke-dasharray="6 4"/>
-      <text x="380" y="120" font-size="10.5" fill="#54606b">container run · inject token</text>
+      <path d="M 580 580 L 720 580" stroke="url(#flow-diff)" stroke-width="2.2" fill="none" marker-end="url(#tip-grn)"/>
+      <text x="650" y="571" font-size="9.5" font-weight="600" fill="#0d8d5e" letter-spacing=".3" text-anchor="middle">git diff</text>
 
-      <!-- C) agent → gateway: bearer token CROSSES boundary -->
-      <path d="M 260 92 L 540 200" stroke="#c92c2c" stroke-width="2.5" fill="none"
-            marker-end="url(#ah-red)"/>
-      <text x="330" y="138" font-size="10.5" fill="#c92c2c" font-weight="600">bearer tok_…</text>
+      <path d="M 1140 580 L 1180 580" stroke="#0d8d5e" stroke-width="2" fill="none" marker-end="url(#tip-grn)"/>
+      <text x="1160" y="571" font-size="9.5" font-weight="600" fill="#0d8d5e" letter-spacing=".3" text-anchor="middle">git push</text>
 
-      <!-- D) gateway → anthropic: real key (host side only) -->
-      <path d="M 760 200 L 1010 200" stroke="#0d8d5e" stroke-width="2.5" fill="none"
-            marker-end="url(#ah-grn)"/>
-      <text x="870" y="192" font-size="10.5" fill="#0d8d5e" font-weight="600">X-Api-Key: REAL</text>
+      <g transform="translate(616 573)">
+        <rect width="48" height="16" rx="8" fill="#ffffff" stroke="rgba(13,141,94,.4)"/>
+        <text x="24" y="11.5" font-size="8.5" font-weight="600" fill="#0d8d5e" letter-spacing=".4" text-anchor="middle">DIFF</text>
+      </g>
 
-      <!-- E) agent → squid: CONNECT host -->
-      <path d="M 260 272 L 540 293" stroke="#c92c2c" stroke-width="2" fill="none"
-            marker-end="url(#ah-red)"/>
-      <text x="365" y="270" font-size="10.5" fill="#c92c2c">CONNECT host</text>
-
-      <!-- F) squid → registries -->
-      <path d="M 760 293 L 1010 299" stroke="#0d8d5e" stroke-width="2" fill="none"
-            marker-end="url(#ah-grn)"/>
-      <text x="870" y="285" font-size="10.5" fill="#0d8d5e">allowlisted</text>
-
-      <!-- G) anything else from VM: DROP -->
-      <text x="60" y="402" font-size="10.5" fill="#c92c2c" font-weight="600">everything else → DROP (nft + no DNS)</text>
-
-      <!-- H) result: diff CROSSES back -->
-      <path d="M 260 360 L 540 380" stroke="#0d8d5e" stroke-width="2.5" fill="none"
-            marker-end="url(#ah-grn)"/>
-      <text x="370" y="355" font-size="10.5" fill="#0d8d5e" font-weight="600">git diff (the only thing back)</text>
-
-      <!-- I) host pushes -->
-      <path d="M 760 385 L 1010 383" stroke="#0d8d5e" stroke-width="2" fill="none"
-            marker-end="url(#ah-grn)"/>
-      <text x="870" y="377" font-size="10.5" fill="#0d8d5e">git push (after approval)</text>
-
-      <!-- J) approval round-trip -->
-      <path d="M 760 100 Q 800 320 660 360" stroke="#54606b" stroke-width="1.5" fill="none"
-            marker-end="url(#ah-mut)" stroke-dasharray="4 4"/>
-      <text x="828" y="280" font-size="10" fill="#54606b">drydock approve &lt;id&gt;</text>
-
+      <!-- ============ Footer: nft pin (what the VM CANNOT do) ============ -->
+      <g transform="translate(260 632)" filter="url(#cardShadow)">
+        <rect width="880" height="44" rx="10" fill="rgba(201,44,44,.05)"/>
+        <g transform="translate(16 14)" color="#c92c2c">
+          <use href="#ic-shield" width="16" height="16"/>
+        </g>
+        <text x="40" y="26" font-size="11.5" font-weight="600" fill="#c92c2c">nft pin · installed as root before priv-drop</text>
+        <text x="40" y="40" font-size="10" fill="#54606b">allow → gw:8088 &amp; gw:3128 only · DNS dropped · everything else <tspan font-weight="600" fill="#c92c2c">DROPPED</tspan></text>
+      </g>
     </svg>
   </div>
 
@@ -597,7 +768,7 @@ meter  usage → spent += cost(model, in, out)
 <section id="status">
   <div class="seclabel reveal"><span class="n">07</span> Status</div>
   <h2 class="reveal">Audited, race-clean, shipping today.</h2>
-  <p class="status reveal">drydock has been adversarially reviewed (credential gateway, no blocking findings), boots cleanly on <span class="ic">apple/container 1.0</span> + Apple silicon, and runs the full task lifecycle — POST, VM run, gated diff, approve, push — under unit, integration, and <span class="ic">-race</span> tests. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.2" style="color:var(--grn)">v0.1.2</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
+  <p class="status reveal">drydock has been adversarially reviewed (credential gateway, no blocking findings), boots cleanly on <span class="ic">apple/container 1.0</span> + Apple silicon, and runs the full task lifecycle — POST, VM run, gated diff, approve, push — under unit, integration, and <span class="ic">-race</span> tests. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.4" style="color:var(--grn)">v0.1.4</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
 </section>
 
 </div>
