@@ -83,6 +83,14 @@ init: build
 clean:
 	rm -rf $(BIN) dist/
 
+# Re-render the architecture diagram from its D2 source. The hand-tuned
+# SVG embedded directly in site/index.html is still the version shipped on
+# the marketing page; this target is for the docs/spec workflow where
+# editing text and re-rendering beats hand-positioning every node.
+# Requires: `brew install d2`.
+site-diagram:
+	d2 site/diagrams/architecture.d2 site/diagrams/architecture.svg
+
 # Build a redistributable tarball that anyone with repo access can fetch
 # via `gh release download` and untar straight into a PREFIX. Contains a
 # stripped binary pair plus the image+config build contexts so the

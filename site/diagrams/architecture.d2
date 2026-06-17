@@ -1,0 +1,261 @@
+# drydock architecture diagram (D2 source).
+# Render: `make site-diagram` (or `d2 architecture.d2 architecture.svg`).
+# Four hand-pinned swim lanes (operator / VM / host / external) so the
+# layout engine doesn't stack them top-to-bottom.
+
+direction: right
+grid-columns: 4
+grid-gap: 70
+
+# ── Lane 0: OPERATOR ──
+operator: {
+  label: ""
+  style.fill: "#f3f6fc"
+  style.stroke: "#dde6f6"
+  style.stroke-width: 1
+  style.border-radius: 14
+  grid-rows: 2
+  grid-columns: 1
+  grid-gap: 16
+
+  title: "OPERATOR" {
+    shape: text
+    style.font-color: "#2d5fc7"
+    style.font-size: 11
+    style.bold: true
+  }
+  control: "operator\ndrydock submit · approve" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#2d5fc7"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+}
+
+# ── Lane 1: SANDBOX VM (untrusted) ──
+vm: {
+  label: ""
+  style.fill: "#fdf1f1"
+  style.stroke: "#f4d4d4"
+  style.stroke-width: 1
+  style.border-radius: 14
+  grid-rows: 4
+  grid-columns: 1
+  grid-gap: 14
+
+  title: "SANDBOX VM · UNTRUSTED" {
+    shape: text
+    style.font-color: "#c92c2c"
+    style.font-size: 11
+    style.bold: true
+  }
+  claude: "claude --bare\nUNTRUSTED\nANTHROPIC_AUTH_TOKEN=tok_…" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#c92c2c"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+  deps: "npm · pip · go\nHTTPS_PROXY=gw:3128" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#c92c2c"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+  work: "/work (bind mount)\nagent writes a diff · never .git" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#c92c2c"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+}
+
+# ── Lane 2: HOST (TCB) — brokerd at top, then the three host services ──
+host: {
+  label: ""
+  style.fill: "#f1f9f5"
+  style.stroke: "#d4ecdd"
+  style.stroke-width: 1
+  style.border-radius: 14
+  grid-rows: 4
+  grid-columns: 1
+  grid-gap: 14
+
+  title: "HOST · TRUSTED COMPUTING BASE" {
+    shape: text
+    style.font-color: "#0d8d5e"
+    style.font-size: 11
+    style.bold: true
+  }
+  brokerd: "brokerd · stage repo · mint token · run VM · capture diff · gate push" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#0d8d5e"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+  gateway: "credential gateway :8088\nstrip Bearer → set X-Api-Key: REAL\nUSD budget · revoke at task end" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#0d8d5e"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+  squid: "squid :3128\nCONNECT allowlist by hostname\nno TLS interception" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#0d8d5e"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+  approval: "approval gate · host .git\ncore.hooksPath=/dev/null\npush waits on drydock approve <id>" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#0d8d5e"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+}
+
+# ── Lane 3: EXTERNAL ──
+external: {
+  label: ""
+  style.fill: "#f8f8f7"
+  style.stroke: "#e7e6e3"
+  style.stroke-width: 1
+  style.border-radius: 14
+  grid-rows: 4
+  grid-columns: 1
+  grid-gap: 14
+
+  title: "EXTERNAL · INTERNET" {
+    shape: text
+    style.font-color: "#54606b"
+    style.font-size: 11
+    style.bold: true
+  }
+  anthropic: "api.anthropic.com\nreal key, host-only" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#8a939e"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+  registries: "registries\nnpmjs · pypi · pythonhosted\nproxy.golang · sum.golang" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#8a939e"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+  git: "git remote\ngithub · gitlab · gitea\npush + open PR/MR" {
+    shape: rectangle
+    style.fill: "#ffffff"
+    style.stroke: "#8a939e"
+    style.shadow: true
+    style.border-radius: 8
+    style.bold: true
+    style.font-size: 13
+  }
+}
+
+# ────────────────────────────────────────────────────────────
+# Flows
+# ────────────────────────────────────────────────────────────
+
+# Control plane
+operator.control -> host.brokerd: "POST /tasks · approve" {
+  style.stroke: "#2d5fc7"
+  style.stroke-dash: 4
+  style.font-color: "#2d5fc7"
+  style.bold: true
+  style.font-size: 11
+}
+host.brokerd -> vm.claude: "container run · inject env" {
+  style.stroke: "#7a8590"
+  style.stroke-dash: 4
+  style.font-color: "#54606b"
+  style.font-size: 11
+}
+
+# Flow 1: model API
+vm.claude -> host.gateway: "Bearer tok_…" {
+  style.stroke: "#c92c2c"
+  style.font-color: "#c92c2c"
+  style.bold: true
+  style.font-size: 11
+  style.stroke-width: 2
+}
+host.gateway -> external.anthropic: "X-Api-Key: REAL · HTTPS" {
+  style.stroke: "#0d8d5e"
+  style.font-color: "#0d8d5e"
+  style.bold: true
+  style.font-size: 11
+  style.stroke-width: 2
+}
+
+# Flow 2: dependencies
+vm.deps -> host.squid: "CONNECT" {
+  style.stroke: "#c92c2c"
+  style.font-color: "#c92c2c"
+  style.bold: true
+  style.font-size: 11
+}
+host.squid -> external.registries: "allowlisted only" {
+  style.stroke: "#0d8d5e"
+  style.font-color: "#0d8d5e"
+  style.bold: true
+  style.font-size: 11
+}
+
+# Flow 3: diff & push
+vm.work -> host.approval: "captured git diff" {
+  style.stroke: "#0d8d5e"
+  style.font-color: "#0d8d5e"
+  style.bold: true
+  style.font-size: 11
+  style.stroke-width: 2
+}
+host.approval -> external.git: "git push · gh / glab / tea" {
+  style.stroke: "#0d8d5e"
+  style.font-color: "#0d8d5e"
+  style.bold: true
+  style.font-size: 11
+}
+
+# ────────────────────────────────────────────────────────────
+# Footer
+# ────────────────────────────────────────────────────────────
+nft: "nft pin · installed as root before priv-drop\nallow → gw:8088 & gw:3128 · DNS dropped · everything else DROPPED" {
+  shape: rectangle
+  style.fill: "#fdf1f1"
+  style.stroke: "#c92c2c"
+  style.stroke-width: 1
+  style.font-color: "#c92c2c"
+  style.font-size: 11
+  style.bold: true
+  style.border-radius: 8
+}
