@@ -5,6 +5,27 @@ operate. This document is precise about what that buys you and what it does
 not. It is the single source of truth for the security claims the rest of
 the documentation makes.
 
+## TL;DR
+
+For people evaluating drydock who haven't read the full doc:
+
+- **What we contain**: the agent process inside the per-task VM. Treat
+  every tool call, file write, and HTTP request it makes as adversarial.
+- **What we protect**: your real Anthropic key (never enters the VM),
+  your host filesystem and git credentials (never mounted into the VM),
+  egress (deny-by-default hostname allowlist enforced on the host).
+- **What crosses back to the host**: a single `git diff`. Not commands,
+  not files outside the work tree, not push events — just inert data
+  the operator reviews before it lands anywhere.
+- **What we don't claim**: defense against a host compromise, a kernel
+  or `container` 0day (guest-to-host escape defeats drydock entirely),
+  or attacks that need a malicious operator.
+- **The one knob that bypasses the gate**: `--auto-approve` skips the
+  diff-push review. Read the rest of this document before you enable
+  it in batch runs.
+
+The rest of this document is what those claims actually mean in code.
+
 ## In scope
 
 The agent process running inside the per-task VM is **untrusted**. drydock

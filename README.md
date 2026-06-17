@@ -69,6 +69,10 @@ drydock status
 
 ## Submit a task
 
+First time? Walk through [`examples/hello-task.md`](examples/hello-task.md) —
+a copy-paste first task that exercises every layer, fits inside the
+default budget, and tells you exactly what each step proves.
+
 In one shell, fire the task. **It blocks until the agent runs and you
 approve the diff** (typical: a few seconds to a few minutes, plus your
 review time):
@@ -102,6 +106,7 @@ drydock status                # brokerd up?, breakdown (running · egress · dif
 drydock tasks                 # recent runs: id, age, duration, cost, outcome
 drydock logs <id> [-f]        # stream-json audit (use -f to follow)
 drydock kill <id>             # cancel the in-flight task (VM down + gate unblocked)
+drydock doctor                # smoke-test the sandbox setup (no API spend)
 ```
 
 ### Submit variations
@@ -112,6 +117,9 @@ drydock submit --repo … --instruction-file ./task.md
 
 # Pipe from stdin
 echo "Refactor the egress compiler" | drydock submit --repo … -
+
+# Pick a specific model (overrides default_model in config)
+drydock submit --repo … --instruction "…" --model claude-sonnet-4-6
 
 # Skip the approval gate (trusted batch run; see threat model)
 drydock submit --repo … --instruction "…" --auto-approve
@@ -178,12 +186,23 @@ existing scripts keep working. `ANTHROPIC_API_KEY` is intentionally
 default:
   domains:
     - { host: api.anthropic.com,      ports: [443] }   # routed via gateway
+    # JavaScript
     - { host: registry.npmjs.org,     ports: [443] }   # routed via squid
+    # Python
     - { host: pypi.org,               ports: [443] }   # routed via squid
     - { host: files.pythonhosted.org, ports: [443] }   # routed via squid
+    # Go module ecosystem
+    - { host: proxy.golang.org,       ports: [443] }   # routed via squid
+    - { host: sum.golang.org,         ports: [443] }   # routed via squid
 per_task_widening:
   requires_approval: true
 ```
+
+The sandbox image ships **Node 22, Python 3.11, and Go 1.26** so JS,
+Python, and Go tasks work without operator customization. Other
+toolchains can be added by extending `image/Dockerfile` and rebuilding
+via `make image` (or `drydock init`, which detects stale images and
+rebuilds).
 
 `api.anthropic.com` is intentionally excluded from the squid allowlist —
 it routes through the credential gateway, not the proxy. Per-task widening
@@ -211,6 +230,7 @@ init` with the defaults below as a commented template. Edit and re-run
 | `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | per-task USD ceiling |
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | excess POSTs to `/tasks` get HTTP 503 |
 | `task_timeout` | — | `30m` | wall-clock per task |
+| `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | `claude --model` fallback for tasks that don't pass `--model`; empty = claude picks |
 | `stage_root` / `audit_root` / `squid_run_dir` | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `/tmp/broker/{stage,audit,squid}` | per-task scratch (audit dir is `0700`, audit log + diff are `0600`) |
 | `broker.socket` | `BROKER_SOCKET` | `$TMPDIR/drydock-$UID/drydock.sock` | Unix socket (per-user parent dir at `0700`, socket at `0600`) |
 | `broker.addr` | `BROKER_ADDR` | *(empty)* | set `host:port` to expose over TCP (warns at boot — see SECURITY.md) |
@@ -280,7 +300,8 @@ is macOS-only — runs locally, not in CI. No real Anthropic spend.
 
 ## Known gaps
 
-- Pricing in `internal/gateway/pricing.go` is point-in-time; bump when Anthropic publishes new rates.
+- Pricing in `internal/gateway/pricing.go` covers the 4.x families (Opus, Sonnet, Haiku) with an Opus-priced default fallback; bump when Anthropic publishes new rates.
+- Audit dir (`/tmp/broker/audit/`) grows unbounded — old `<id>.{jsonl,diff}` files aren't pruned. No `drydock tasks --prune` yet.
 - Up to `DRYDOCK_MAX_CONCURRENT_TASKS` tasks in flight per brokerd (default 2); raise on bigger hardware.
 - No Slack/web approval adapters yet — only the local CLI + macOS notifications.
 - Bitbucket PR/MR opening: push-only fallback (no widely-adopted CLI to wrap). Contribution slot.
