@@ -31,6 +31,14 @@ func runKill(id string) {
 			return
 		}
 	}
+	if brokerdDown(err) {
+		// The previous "no such task" path was misleading: it implied
+		// brokerd had checked and didn't know the id, when really
+		// brokerd wasn't even running. Be explicit before falling back
+		// to the container CLI orphan-cleanup.
+		fmt.Fprintln(stderr(), "drydock kill:", brokerDownHint)
+		fmt.Fprintln(stderr(), "  attempting best-effort VM cleanup anyway…")
+	}
 	// Brokerd unreachable or 404 — best-effort VM cleanup.
 	out, ferr := exec.Command("container", "delete", "--force", "task-"+id).CombinedOutput()
 	switch {

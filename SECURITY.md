@@ -76,13 +76,29 @@ These are known limits we've decided not to engineer around at v0.x.
 They're listed so an operator can decide whether the risk is acceptable
 in their environment, not because they need a CVE.
 
-- **`broker.addr` (or `BROKER_ADDR=host:port`) has no authentication.**
-  Setting it in `~/.drydock/config.yaml` or in the shell exposes
-  brokerd's API surface (`POST /tasks`, `POST /admin/approve/{id}`,
-  etc.) over TCP. Anyone who can reach the port can submit and approve
-  tasks. Treat that knob as a deliberate trust delegation to whoever
-  controls the network. The Unix socket (the default) has no such
-  caveat — mode 0600 on a per-uid parent dir.
+### TCP exposure (`broker.addr` / `BROKER_ADDR`)
+
+The default brokerd listener is a per-uid Unix socket
+(`$TMPDIR/drydock-$UID/drydock.sock`, mode `0600`, parent dir `0700`).
+Only processes running as your user can reach it; that's the
+authentication.
+
+Setting `broker.addr` (or the `BROKER_ADDR=host:port` env override)
+opts into TCP and **drops that authentication entirely**:
+
+- `POST /tasks` runs any agent task against any repo the caller names.
+- `POST /admin/approve/{id}` pushes whatever diff is sitting in the
+  approval gate, with the host's git credentials.
+- `POST /admin/kill/{id}` tears down an in-flight VM.
+- `GET /healthz` and `GET /admin/pending` leak running task IDs to
+  anyone who can reach the port — recon for a race against approve.
+
+drydock prints `listening on TCP — any process that can reach this port
+can submit and approve tasks` at boot when this mode is on. **You are
+responsible for the auth layer.** Acceptable patterns: bind to loopback
+only and SSH-tunnel; put brokerd behind an authenticating reverse proxy
+(mTLS, OAuth); restrict by firewall to a specific operator host. Binding
+to `0.0.0.0` on a shared network is a vulnerability, not a feature.
 
 - **`/healthz` and `/admin/pending` disclose task counts and IDs.**
   Fine on the per-user Unix socket; on TCP it's recon information for
@@ -90,7 +106,7 @@ in their environment, not because they need a CVE.
   brokerd to untrusted networks.
 
 - **Audit logs don't rotate.** `AUDIT_ROOT` (default
-  `/tmp/broker/audit`) grows monotonically. On a long-running brokerd
+  `~/.drydock/audit`) grows monotonically. On a long-running brokerd
   this becomes a disk-fill DoS. Prune manually or add a cron.
 
 - **macOS notifications contain attacker-controlled hostnames.**

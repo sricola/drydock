@@ -7,11 +7,40 @@ entry below corresponds to a Git tag of the same name.
 
 ## Unreleased
 
+### Changed
+
+- **State dirs default to `~/.drydock/{stage,audit,squid}`** instead of
+  `/tmp/broker/{stage,audit,squid}`. Audit history was silently
+  evictable on `/tmp` (tooling, OS upgrades, disk pressure all treat it
+  as scratch). Existing operators upgrading from < v0.1.4 still see
+  pre-existing `/tmp/broker/audit` history in `drydock tasks` while it
+  exists — a legacy fallback path triggers when the new default is
+  empty. The seeded config now uses `~/.drydock/...`; tilde-expansion
+  is applied at load time.
+
+### Fixed
+
+- **`drydock submit` propagates ^C as a request cancellation.** The
+  comment claimed this for a while; the code used `context.Background()`
+  so ^C just orphaned the CLI while brokerd kept running. Now wired
+  through `signal.NotifyContext`.
+- **Friendlier "brokerd not running" messages.** `drydock submit`,
+  `approve`, `deny`, `pending`, `kill`, and `status` all detect the
+  missing-socket / connection-refused case and print
+  `brokerd not running — start it in another shell with drydock start`
+  instead of the raw Go HTTP transport error. `drydock kill`
+  specifically used to say "no such task" without ever asking brokerd.
+
 ### Added
 
 - README: `--model` flag and `default_model` config field documented.
 - README: Egress section reflects the Go module proxies and notes which
   runtimes ship in the sandbox image (Node 22, Python 3.11, Go 1.26).
+- README: `brew tap` install snippet now includes `brew trust
+  sricola/drydock` (personal taps require explicit trust on newer brew).
+- `SECURITY.md`: dedicated "TCP exposure" section spelling out that
+  `broker.addr` / `BROKER_ADDR` has no built-in auth and naming the
+  acceptable deployment patterns (loopback + SSH, mTLS reverse proxy).
 - `examples/hello-task.md` — a copy-paste-ready first task that fits the
   default $1 budget and exercises every layer of the boundary.
 - `CHANGELOG.md` — this file.

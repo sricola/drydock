@@ -29,6 +29,7 @@ repos use, and run their respective `auth login` before submitting a task.
 
 ```bash
 brew tap sricola/drydock
+brew trust sricola/drydock     # personal taps require explicit trust
 brew install drydock
 drydock init
 ```
@@ -64,7 +65,7 @@ drydock status
 # brokerd     up
 # in flight   0 running · 0 awaiting egress · 0 awaiting diff · 0 pushing
 # tasks       0 total · 0 in last 24h
-# audit dir   /tmp/broker/audit
+# audit dir   ~/.drydock/audit
 ```
 
 ## Submit a task
@@ -89,7 +90,7 @@ A macOS notification fires when the diff is ready. In another shell:
 drydock pending               # awaiting tasks (egress + diff gates both shown)
 drydock review <id>           # diff in $PAGER, then prompt y/N — the one-shot path
                               # ─ or, step by step ─
-less /tmp/broker/audit/<id>.diff
+less ~/.drydock/audit/<id>.diff
 drydock approve <id>          # … or: drydock deny <id>
 ```
 
@@ -231,9 +232,9 @@ init` with the defaults below as a commented template. Edit and re-run
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | excess POSTs to `/tasks` get HTTP 503 |
 | `task_timeout` | — | `30m` | wall-clock per task |
 | `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | `claude --model` fallback for tasks that don't pass `--model`; empty = claude picks |
-| `stage_root` / `audit_root` / `squid_run_dir` | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `/tmp/broker/{stage,audit,squid}` | per-task scratch (audit dir is `0700`, audit log + diff are `0600`) |
+| `stage_root` / `audit_root` / `squid_run_dir` | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `~/.drydock/{stage,audit,squid}` | per-task scratch (audit dir is `0700`, audit log + diff are `0600`). Pre-v0.1.4 used `/tmp/broker/`; `drydock tasks` and friends still surface that history while it exists. |
 | `broker.socket` | `BROKER_SOCKET` | `$TMPDIR/drydock-$UID/drydock.sock` | Unix socket (per-user parent dir at `0700`, socket at `0600`) |
-| `broker.addr` | `BROKER_ADDR` | *(empty)* | set `host:port` to expose over TCP (warns at boot — see SECURITY.md) |
+| `broker.addr` | `BROKER_ADDR` | *(empty)* | set `host:port` to expose over TCP (warns at boot — **no auth**; see [SECURITY.md § TCP exposure](SECURITY.md#tcp-exposure-brokeraddr--broker_addr)) |
 | `notifications` | `DRYDOCK_NO_NOTIFY=1` (off) | `true` | macOS notifications on pending approval |
 | `log_json` | `DRYDOCK_LOG_JSON=1` | `false` | force JSON logs even on a TTY (default: terse text on TTY, JSON otherwise) |
 | `strict_container_version` | `DRYDOCK_STRICT_CONTAINER_VERSION=1` | `false` | fail closed when `container` major drifts from the tested range |
@@ -248,7 +249,7 @@ Gateway port `8088` and squid port `3128` are hard-coded in
 |---|---|
 | `192.168.66.1 never became bindable` | `container ls -a` (anchor running?), `container network inspect drydock-egress` (gateway IP?) |
 | Image build fails on `npm install` | Transient registry timeout; rerun `container build` |
-| Squid CONNECT 403 to an expected host | `cat /tmp/broker/squid/squid-allow.txt`; add via `egress.yaml` or `egress_extra` |
+| Squid CONNECT 403 to an expected host | `cat ~/.drydock/squid/squid-allow.txt`; add via `egress.yaml` or `egress_extra` |
 | Stale anchor after a crash | `container rm -f drydock-anchor`; next brokerd start does this for you |
 | Gateway 401 | Key wrong or placeholder (`sk-ant-fake` is *expected* to 401) |
 | VM reaches a host it shouldn't | Confirm `init-firewall.sh` ran inside the VM — overriding `--entrypoint` skips it |
@@ -301,7 +302,7 @@ is macOS-only — runs locally, not in CI. No real Anthropic spend.
 ## Known gaps
 
 - Pricing in `internal/gateway/pricing.go` covers the 4.x families (Opus, Sonnet, Haiku) with an Opus-priced default fallback; bump when Anthropic publishes new rates.
-- Audit dir (`/tmp/broker/audit/`) grows unbounded — old `<id>.{jsonl,diff}` files aren't pruned. No `drydock tasks --prune` yet.
+- Audit dir (`~/.drydock/audit/`) grows unbounded — old `<id>.{jsonl,diff}` files aren't pruned. No `drydock tasks --prune` yet.
 - Up to `DRYDOCK_MAX_CONCURRENT_TASKS` tasks in flight per brokerd (default 2); raise on bigger hardware.
 - No Slack/web approval adapters yet — only the local CLI + macOS notifications.
 - Bitbucket PR/MR opening: push-only fallback (no widely-adopted CLI to wrap). Contribution slot.

@@ -11,8 +11,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	ossignal "os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // taskRequest mirrors the broker.Task JSON shape. We don't import broker
@@ -199,7 +201,14 @@ func postSubmit(req taskRequest, jsonOut bool) error {
 		base = "http://brokerd"
 	}
 
-	httpReq, err := http.NewRequestWithContext(context.Background(), "POST",
+	// ^C in the submit shell cancels the in-flight POST instead of leaving
+	// the local CLI dead and brokerd quietly running the task. brokerd's
+	// HandleTask reads the request context and treats cancellation as a
+	// task kill (the comment a few lines above is now actually true).
+	ctx, stop := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		base+"/tasks", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -208,6 +217,9 @@ func postSubmit(req taskRequest, jsonOut bool) error {
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		if brokerdDown(err) {
+			return fmt.Errorf("%s", brokerDownHint)
+		}
 		return fmt.Errorf("brokerd: %w", err)
 	}
 	defer resp.Body.Close()
