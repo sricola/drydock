@@ -35,7 +35,7 @@ drydock init
 ```
 
 Pulls a pre-built Apple-silicon binary from the latest tagged release
-(currently `v0.1.2`); no Go toolchain required.
+(currently `v0.1.4`); no Go toolchain required.
 
 ### Option B — Build from source
 
@@ -151,7 +151,7 @@ Notifications opt-out: `DRYDOCK_NO_NOTIFY=1`.
 paths are rejected because adapters can't operate on filesystem origins.
 The PR/MR adapter is chosen by `platform`:
 
-- `"platform": "github"` → `gh pr create --fill` (needs `gh` authed)
+- `"platform": "github"` → `gh pr create --head <branch> --fill` (needs `gh` authed)
 - `"platform": "gitlab"` → `glab mr create --fill --yes` (needs `glab` authed)
 - `"platform": "gitea"` (alias `forgejo`) → `tea pr create --head <branch>` (needs `tea` authed)
 - `"platform": "none"` → push only; no PR/MR

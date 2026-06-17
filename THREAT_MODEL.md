@@ -199,7 +199,7 @@ reach.
 
 ### N6. Local attacker on the same host
 
-The default Unix socket at `/tmp/drydock.sock` is mode `0600`, owned by
+The default Unix socket at `$TMPDIR/drydock-$UID/drydock.sock` is mode `0600`, owned by
 the operator. Another user on the same host cannot reach it. But a
 process running as the operator can. drydock assumes the host's user
 boundary is the relevant trust boundary.
