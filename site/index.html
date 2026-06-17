@@ -549,15 +549,10 @@ meter  usage → spent += cost(model, in, out)
   <h2 class="reveal">A diff is data. <span style="color:var(--mut)">.git is a weapon.</span></h2>
   <div class="prose reveal">
     <p>Mount a normal clone into the VM and then run <span class="ic">git commit</span>/<span class="ic">push</span> on the host against that same repo: a malicious agent can drop <span class="ic">.git/hooks/pre-commit</span> or poison <span class="ic">.git/config</span> — and those execute <b>on the host</b>, with the host's credentials. RCE straight through the trust boundary.</p>
-    <p>drydock clones on the host, moves <span class="ic">.git</span> out of the mounted path, mounts <b>only the work tree</b>, and runs host git with <span class="ic">core.hooksPath=/dev/null</span>. The diff — and nothing else — crosses back. <span style="color:var(--grn)">Adversarially reviewed; regression-tested.</span></p>
+    <p>drydock clones on the host, moves <span class="ic">.git</span> out of the mounted path, mounts <b>only the work tree</b>, and runs host git with <span class="ic">core.hooksPath=/dev/null</span>. The diff — and nothing else — crosses back. <span style="color:var(--grn)">Regression-tested.</span></p>
   </div>
 </section>
 
-<section id="status">
-  <div class="seclabel reveal"><span class="n">07</span> Status</div>
-  <h2 class="reveal">Working alpha. No audit yet. macOS only.</h2>
-  <p class="status reveal">drydock boots on <span class="ic">apple/container 1.0</span> + Apple silicon and runs the full task lifecycle — POST, VM run, gated diff, approve, push. CI runs the build, vet, and the test suite on every change; there has been no third-party security audit. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.4" style="color:var(--grn)">v0.1.4</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
-</section>
 
 </div>
 
