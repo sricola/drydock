@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 
 	"drydock/internal/config"
@@ -28,6 +30,7 @@ func runInit() {
 	fmt.Println("drydock init — first-time setup")
 	fmt.Println()
 
+	checkPlatform()
 	checkBinary("container", "Apple container CLI", "Install: brew install --cask container (https://github.com/apple/container)")
 	checkSquid()
 	checkBinary("git", "git", "Install: xcode-select --install")
@@ -194,6 +197,38 @@ func step(label string, ok bool, detail string) {
 		mark = "FAIL"
 	}
 	fmt.Printf("  %s %-32s %s\n", mark, label, detail)
+}
+
+// checkPlatform fails loudly if drydock is run on a host where Apple's
+// `container` runtime can't work — non-darwin, or non-arm64. The Homebrew
+// formula already declares these constraints, but source builds skip that
+// path. Without this check, the failure surfaces 5 steps later as a cryptic
+// `container build` error or vmnet bind failure.
+func checkPlatform() {
+	if runtime.GOOS != "darwin" {
+		step("platform", false, "drydock requires macOS — Apple container is darwin-only")
+		os.Exit(1)
+	}
+	if runtime.GOARCH != "arm64" {
+		step("platform", false, "drydock requires Apple silicon (arm64) — running on "+runtime.GOARCH)
+		os.Exit(1)
+	}
+	// sw_vers ProductVersion → e.g. "26.0.0". `container` needs macOS 26+.
+	out, err := exec.Command("sw_vers", "-productVersion").Output()
+	if err != nil {
+		// sw_vers always exists on macOS; if we can't run it something is
+		// very off, but don't block on that — let the downstream check fail.
+		step("platform", true, runtime.GOOS+"/"+runtime.GOARCH+" (macOS version unknown)")
+		return
+	}
+	ver := strings.TrimSpace(string(out))
+	majorStr := strings.SplitN(ver, ".", 2)[0]
+	major, err := strconv.Atoi(majorStr)
+	if err == nil && major < 26 {
+		step("platform", false, "macOS "+ver+" — Apple container requires macOS 26 (Tahoe) or newer")
+		os.Exit(1)
+	}
+	step("platform", true, "macOS "+ver+" "+runtime.GOARCH)
 }
 
 func checkBinary(name, label, fix string) {
