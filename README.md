@@ -4,6 +4,13 @@
 
 # drydock
 
+<p align="center">
+  <img alt="status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
+  <img alt="version" src="https://img.shields.io/github/v/tag/sricola/drydock?label=release&color=brightgreen">
+  <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2026%2B%20·%20Apple%20silicon-black">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+</p>
+
 drydock is a sandbox for autonomous coding agents on macOS. Each task runs
 in a per-task hardware-isolated VM; the agent never sees your real
 Anthropic key — a host-side credential gateway issues short-lived
@@ -11,7 +18,18 @@ budgeted bearer tokens. Egress is deny-by-default. The only artifact
 that leaves the sandbox is a captured `git diff`, and it doesn't reach
 origin until you approve it.
 
-Security claims:[`THREAT_MODEL.md`](THREAT_MODEL.md).  
+> **Status: working alpha (v0.1.4).** The full task lifecycle works
+> end-to-end — submit → isolated VM → gated diff → push — and drydock ships
+> through a Homebrew tap. It is pre-1.0 and single-maintainer: only `main` is
+> supported, behavior and config can change between minor versions, and it
+> hasn't been hardened by real-world use. **There has been no third-party
+> security audit** — the security model is written down in detail in the
+> [threat model](THREAT_MODEL.md), so read that and decide for yourself
+> before trusting it. **Hard requirement: macOS 26+ on Apple silicon** — it
+> runs on Apple's `container` runtime (itself 1.0), so it won't run anywhere
+> else.
+
+Security claims: [`THREAT_MODEL.md`](THREAT_MODEL.md).  
 Website: https://sricola.github.io/drydock/  
 
 ## Install

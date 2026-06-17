@@ -87,6 +87,11 @@ h1 .u{color:var(--red);position:relative}
 h1 .t{color:var(--grn)}
 .lede{font-size:clamp(17px,2.1vw,21px);line-height:1.5;max-width:42ch;color:var(--mut)}
 .lede b{font-weight:600;color:var(--ink)}
+.herostatus{margin-top:22px;max-width:54ch;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--mut)}
+.herostatus b{color:var(--ink);font-weight:600}
+.statustag{display:inline-block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
+  color:var(--amber);background:rgba(168,102,0,.08);border:1px solid rgba(168,102,0,.28);
+  border-radius:3px;padding:2px 8px;margin-right:8px;vertical-align:1px}
 .install{margin-top:36px;max-width:640px}
 .install-label{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);margin-bottom:10px}
 .install-term{margin-top:0}
@@ -260,6 +265,7 @@ footer .mk path{stroke:var(--faint)}
     <div class="kicker reveal"><span class="bar"></span>macos · local containment for autonomous coding agents</div>
     <h1 class="reveal">Untrusted agents,<br><span class="t">hardware-isolated.</span></h1>
     <p class="lede reveal">drydock is a sandbox for autonomous coding agents on macOS. Each task runs in a <b>per-task hardware-isolated VM</b>; the agent never sees your real Anthropic key — a host-side credential gateway issues short-lived budgeted bearer tokens. Egress is <b>deny-by-default</b>. The only artifact that leaves the sandbox is a captured <span class="ic">git diff</span>, and it doesn't reach origin until you approve it.</p>
+    <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.4</span> The full lifecycle works end-to-end; pre-1.0 and single-maintainer, no third-party security audit, behavior may change between versions, and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
     <div class="install reveal">
       <div class="install-label">Install · macOS · Apple silicon</div>
       <div class="term install-term">
@@ -550,7 +556,7 @@ meter  usage → spent += cost(model, in, out)
 <section id="status">
   <div class="seclabel reveal"><span class="n">07</span> Status</div>
   <h2 class="reveal">Audited, race-clean, shipping today.</h2>
-  <p class="status reveal">drydock has been adversarially reviewed (credential gateway, no blocking findings), boots cleanly on <span class="ic">apple/container 1.0</span> + Apple silicon, and runs the full task lifecycle — POST, VM run, gated diff, approve, push — under unit, integration, and <span class="ic">-race</span> tests. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.4" style="color:var(--grn)">v0.1.4</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
+  <p class="status reveal">drydock boots on <span class="ic">apple/container 1.0</span> + Apple silicon and runs the full task lifecycle — POST, VM run, gated diff, approve, push. CI runs the build, vet, and the test suite on every change; there has been no third-party security audit. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.4" style="color:var(--grn)">v0.1.4</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
 </section>
 
 </div>
