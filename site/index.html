@@ -332,12 +332,11 @@ drydock start</pre>
   <h2 class="reveal">One broker, two host proxies, a sealed VM.</h2>
 
   <div class="archdiag reveal">
-    <svg viewBox="0 0 1200 540" xmlns="http://www.w3.org/2000/svg"
+    <svg viewBox="0 0 1200 600" xmlns="http://www.w3.org/2000/svg"
          font-family="ui-monospace, Menlo, monospace" aria-labelledby="archtitle">
       <title id="archtitle">drydock system diagram: VM, trust boundary, host services, and the only flows that cross</title>
 
       <defs>
-        <!-- arrowheads (matched to stroke colors) -->
         <marker id="ah-grn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" fill="#0d8d5e"/>
         </marker>
@@ -349,166 +348,132 @@ drydock start</pre>
         </marker>
       </defs>
 
-      <!-- zone tints -->
-      <rect x="0" y="40" width="500" height="500" fill="rgba(201,44,44,.04)"/>
-      <rect x="500" y="40" width="500" height="500" fill="rgba(13,141,94,.04)"/>
+      <!-- Three zones: VM (red, untrusted) | HOST (green, TCB) | EXTERNAL (neutral) -->
+      <rect x="0"   y="44" width="500" height="538" fill="rgba(201,44,44,.04)"/>
+      <rect x="500" y="44" width="500" height="538" fill="rgba(13,141,94,.04)"/>
 
-      <!-- zone labels -->
-      <text x="20" y="28" font-size="12" letter-spacing="3" fill="#c92c2c" font-weight="600">SANDBOX VM · UNTRUSTED</text>
-      <text x="520" y="28" font-size="12" letter-spacing="3" fill="#0d8d5e" font-weight="600">HOST · TRUSTED COMPUTING BASE</text>
-      <text x="1020" y="28" font-size="12" letter-spacing="3" fill="#54606b" font-weight="600">EXTERNAL</text>
+      <text x="20"   y="30" font-size="11.5" letter-spacing="3" fill="#c92c2c" font-weight="600">SANDBOX VM · UNTRUSTED</text>
+      <text x="520"  y="30" font-size="11.5" letter-spacing="3" fill="#0d8d5e" font-weight="600">HOST · TRUSTED COMPUTING BASE</text>
+      <text x="1020" y="30" font-size="11.5" letter-spacing="3" fill="#54606b" font-weight="600">EXTERNAL</text>
 
-      <!-- the trust boundary: thick dashed vertical line at x=500 -->
-      <line x1="500" y1="40" x2="500" y2="540"
-            stroke="#1a1d22" stroke-width="2" stroke-dasharray="8 6"/>
-      <text x="500" y="555" font-size="11" letter-spacing="3"
-            fill="#1a1d22" text-anchor="middle">TRUST BOUNDARY</text>
+      <line x1="500" y1="44" x2="500" y2="582" stroke="#1a1d22" stroke-width="2" stroke-dasharray="8 6"/>
+      <text x="500" y="598" font-size="10.5" letter-spacing="3" fill="#1a1d22" text-anchor="middle">TRUST BOUNDARY</text>
 
-      <!-- -- VM SIDE (LEFT) -- -->
-      <!-- claude --bare -->
-      <g transform="translate(40 60)">
-        <rect width="220" height="64" rx="8" fill="#ffffff" stroke="#c92c2c" stroke-width="2"/>
-        <text x="14" y="24" font-size="13" font-weight="600" fill="#c92c2c">claude --bare</text>
-        <text x="14" y="44" font-size="11" fill="#54606b">--dangerously-skip-permissions</text>
-        <text x="14" y="58" font-size="11" fill="#54606b">stream-json output</text>
+      <!-- ===== ROW 0: Operator + brokerd (control plane) ===== -->
+      <g transform="translate(540 56)">
+        <rect width="320" height="44" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.22)"/>
+        <text x="14" y="20" font-size="12" font-weight="600" fill="#1a1d22">operator</text>
+        <text x="14" y="36" font-size="10.5" fill="#54606b">drydock submit / approve / deny / kill</text>
+      </g>
+      <path d="M 700 100 L 700 116" stroke="#54606b" stroke-width="1.8" fill="none" marker-end="url(#ah-mut)"/>
+      <text x="712" y="113" font-size="10" fill="#54606b">POST /tasks · /admin/approve</text>
+
+      <g transform="translate(540 118)">
+        <rect width="320" height="68" rx="8" fill="#ffffff" stroke="#0d8d5e" stroke-width="2"/>
+        <text x="14" y="22" font-size="13" font-weight="600" fill="#0d8d5e">brokerd</text>
+        <text x="14" y="40" font-size="11" fill="#54606b">stage repo · mint token · run VM · capture diff · gate push</text>
+        <text x="14" y="58" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#1a1d22">listens on unix:///…/drydock.sock</text>
       </g>
 
-      <!-- env (injected) -->
-      <g transform="translate(40 150)">
-        <rect width="220" height="68" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">env (injected by broker)</text>
-        <text x="14" y="40" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">ANTHROPIC_BASE_URL=gw:8088</text>
-        <text x="14" y="54" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">ANTHROPIC_AUTH_TOKEN=tok_…</text>
-        <text x="14" y="64" font-size="10" fill="#c92c2c" font-weight="600">NO REAL KEY</text>
+      <!-- broker → VM lifecycle (dashed control-plane arrow across the boundary) -->
+      <path d="M 540 152 L 260 222" stroke="#54606b" stroke-width="1.6" fill="none"
+            marker-end="url(#ah-mut)" stroke-dasharray="5 4"/>
+      <text x="278" y="195" font-size="10" fill="#54606b">container run · inject env (token, no key)</text>
+
+      <!-- ===== ROW 1: model API path — claude → gateway → anthropic ===== -->
+      <g transform="translate(40 222)">
+        <rect width="220" height="88" rx="8" fill="#ffffff" stroke="#c92c2c" stroke-width="2"/>
+        <text x="14" y="22" font-size="13" font-weight="600" fill="#c92c2c">claude --bare</text>
+        <text x="14" y="40" font-size="10.5" fill="#54606b">--dangerously-skip-permissions · stream-json</text>
+        <text x="14" y="58" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">ANTHROPIC_BASE_URL=gw:8088</text>
+        <text x="14" y="72" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">ANTHROPIC_AUTH_TOKEN=tok_…</text>
+        <text x="14" y="84" font-size="10" font-weight="600" fill="#c92c2c">NO REAL KEY</text>
       </g>
 
-      <!-- nft pin -->
-      <g transform="translate(40 240)">
-        <rect width="220" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">nft pin · installed as root</text>
-        <text x="14" y="40" font-size="11" fill="#54606b">allow → gw:8088 + proxy:3128</text>
-        <text x="14" y="54" font-size="11" fill="#54606b">drop DNS, drop everything else</text>
+      <!-- arrow VM → gateway with bearer token; label sits ABOVE the arrow -->
+      <text x="400" y="252" font-size="10.5" fill="#c92c2c" font-weight="600" text-anchor="middle">HTTP · Authorization: Bearer tok_…</text>
+      <path d="M 260 266 L 540 266" stroke="#c92c2c" stroke-width="2.5" fill="none" marker-end="url(#ah-red)"/>
+
+      <g transform="translate(540 222)">
+        <rect width="320" height="88" rx="8" fill="#ffffff" stroke="#0d8d5e" stroke-width="2"/>
+        <text x="14" y="22" font-size="13" font-weight="600" fill="#0d8d5e">credential gateway :8088</text>
+        <text x="14" y="40" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">strip Authorization: Bearer</text>
+        <text x="14" y="54" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#0d8d5e">set X-Api-Key: REAL</text>
+        <text x="14" y="72" font-size="10.5" fill="#54606b">USD budget · revoke on task end</text>
       </g>
 
-      <!-- /work mount -->
-      <g transform="translate(40 326)">
-        <rect width="220" height="54" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">/work (bind mount)</text>
-        <text x="14" y="40" font-size="11" fill="#54606b">work tree only — never .git</text>
+      <!-- arrow gateway → anthropic (real HTTPS) -->
+      <text x="930" y="252" font-size="10.5" fill="#0d8d5e" font-weight="600" text-anchor="middle">HTTPS · X-Api-Key: REAL</text>
+      <path d="M 860 266 L 1010 266" stroke="#0d8d5e" stroke-width="2.5" fill="none" marker-end="url(#ah-grn)"/>
+
+      <g transform="translate(1010 234)">
+        <rect width="170" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.22)"/>
+        <text x="14" y="22" font-size="11.5" font-weight="600" fill="#1a1d22">api.anthropic.com</text>
+        <text x="14" y="40" font-size="10" fill="#0d8d5e">real key never enters VM</text>
+        <text x="14" y="55" font-size="10" fill="#54606b">audit log never sees it either</text>
       </g>
 
-      <!-- -- HOST SIDE (MIDDLE) -- -->
-      <!-- brokerd -->
-      <g transform="translate(540 60)">
-        <rect width="220" height="78" rx="8" fill="#ffffff" stroke="#0d8d5e" stroke-width="2"/>
-        <text x="14" y="24" font-size="13" font-weight="600" fill="#0d8d5e">brokerd</text>
-        <text x="14" y="42" font-size="11" fill="#54606b">stage repo · mint token · run VM</text>
-        <text x="14" y="56" font-size="11" fill="#54606b">capture diff · gate push</text>
-        <text x="14" y="72" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#1a1d22">unix:///…/drydock.sock</text>
+      <!-- ===== ROW 2: dependencies — npm/pip/go → squid → registries ===== -->
+      <g transform="translate(40 340)">
+        <rect width="220" height="70" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.22)"/>
+        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">npm · pip · go (in /work)</text>
+        <text x="14" y="40" font-size="10.5" fill="#54606b">honor HTTPS_PROXY</text>
+        <text x="14" y="56" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">HTTPS_PROXY=gw:3128</text>
       </g>
 
-      <!-- credential gateway -->
-      <g transform="translate(540 160)">
-        <rect width="220" height="80" rx="8" fill="#ffffff" stroke="#0d8d5e" stroke-width="2"/>
-        <text x="14" y="24" font-size="13" font-weight="600" fill="#0d8d5e">credential gateway :8088</text>
-        <text x="14" y="42" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">strip Authorization: Bearer tok_…</text>
-        <text x="14" y="56" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#0d8d5e">set X-Api-Key: REAL</text>
-        <text x="14" y="72" font-size="11" fill="#54606b">USD budget · TTL · revoke at task end</text>
-      </g>
+      <text x="400" y="368" font-size="10.5" fill="#c92c2c" font-weight="600" text-anchor="middle">CONNECT &lt;host&gt;:443</text>
+      <path d="M 260 380 L 540 380" stroke="#c92c2c" stroke-width="2.2" fill="none" marker-end="url(#ah-red)"/>
 
-      <!-- squid -->
-      <g transform="translate(540 262)">
-        <rect width="220" height="62" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
+      <g transform="translate(540 340)">
+        <rect width="320" height="70" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.22)"/>
         <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">squid :3128</text>
-        <text x="14" y="40" font-size="11" fill="#54606b">CONNECT allowlist by hostname</text>
-        <text x="14" y="54" font-size="11" fill="#54606b">no TLS interception</text>
+        <text x="14" y="40" font-size="10.5" fill="#54606b">CONNECT allowlist by hostname</text>
+        <text x="14" y="56" font-size="10.5" fill="#54606b">no TLS interception · resolves host-side</text>
       </g>
 
-      <!-- host-only .git + approval -->
-      <g transform="translate(540 346)">
-        <rect width="220" height="78" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">host-only .git + approval gate</text>
-        <text x="14" y="40" font-size="11" fill="#54606b">core.hooksPath=/dev/null</text>
-        <text x="14" y="54" font-size="11" fill="#54606b">drydock approve &lt;id&gt; · gh / glab / tea</text>
+      <text x="930" y="368" font-size="10.5" fill="#0d8d5e" font-weight="600" text-anchor="middle">allowlisted only</text>
+      <path d="M 860 380 L 1010 380" stroke="#0d8d5e" stroke-width="2.2" fill="none" marker-end="url(#ah-grn)"/>
+
+      <g transform="translate(1010 348)">
+        <rect width="170" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.22)"/>
+        <text x="14" y="22" font-size="11.5" font-weight="600" fill="#1a1d22">registries</text>
+        <text x="14" y="38" font-size="10" fill="#54606b">npmjs · pypi · pythonhosted</text>
+        <text x="14" y="52" font-size="10" fill="#54606b">proxy.golang · sum.golang</text>
       </g>
 
-      <!-- -- EXTERNAL (RIGHT) -- -->
-      <g transform="translate(800 60)">
-        <rect width="170" height="46" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="20" font-size="11" font-weight="600" fill="#1a1d22">operator</text>
-        <text x="14" y="36" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#54606b">drydock submit / approve</text>
+      <!-- ===== ROW 3: result — /work → host .git → git remote ===== -->
+      <g transform="translate(40 442)">
+        <rect width="220" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.22)"/>
+        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">/work (bind mount)</text>
+        <text x="14" y="40" font-size="10.5" fill="#54606b">agent writes a diff</text>
+        <text x="14" y="55" font-size="10.5" font-family="ui-monospace,Menlo,monospace" fill="#c92c2c" font-weight="600">never .git</text>
       </g>
 
-      <g transform="translate(1010 168)">
-        <rect width="170" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="11" font-weight="600" fill="#1a1d22">api.anthropic.com</text>
-        <text x="14" y="40" font-size="10" fill="#54606b">HTTPS</text>
-        <text x="14" y="54" font-size="10" fill="#0d8d5e">real key, host-only</text>
+      <text x="400" y="468" font-size="10.5" fill="#0d8d5e" font-weight="600" text-anchor="middle">git diff · the only thing that crosses BACK</text>
+      <path d="M 260 480 L 540 480" stroke="#0d8d5e" stroke-width="2.5" fill="none" marker-end="url(#ah-grn)"/>
+
+      <g transform="translate(540 442)">
+        <rect width="320" height="64" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.22)"/>
+        <text x="14" y="22" font-size="12" font-weight="600" fill="#1a1d22">host-only .git · approval gate</text>
+        <text x="14" y="40" font-size="10.5" fill="#54606b">core.hooksPath=/dev/null · fsmonitor off</text>
+        <text x="14" y="56" font-size="10.5" fill="#54606b">push waits on `drydock approve &lt;id&gt;`</text>
       </g>
 
-      <g transform="translate(1010 268)">
-        <rect width="170" height="62" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="11" font-weight="600" fill="#1a1d22">registries</text>
-        <text x="14" y="40" font-size="10" fill="#54606b">registry.npmjs.org</text>
-        <text x="14" y="54" font-size="10" fill="#54606b">pypi.org · files.pythonhosted.org</text>
+      <text x="930" y="468" font-size="10.5" fill="#0d8d5e" font-weight="600" text-anchor="middle">gh · glab · tea</text>
+      <path d="M 860 480 L 1010 480" stroke="#0d8d5e" stroke-width="2.2" fill="none" marker-end="url(#ah-grn)"/>
+
+      <g transform="translate(1010 454)">
+        <rect width="170" height="42" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.22)"/>
+        <text x="14" y="20" font-size="11.5" font-weight="600" fill="#1a1d22">github / gitlab / gitea</text>
+        <text x="14" y="35" font-size="10" fill="#54606b">push + open PR / MR</text>
       </g>
 
-      <g transform="translate(1010 360)">
-        <rect width="170" height="46" rx="8" fill="#ffffff" stroke="rgba(20,25,30,.18)"/>
-        <text x="14" y="22" font-size="11" font-weight="600" fill="#1a1d22">github / gitlab / gitea</text>
-        <text x="14" y="38" font-size="10" fill="#54606b">push + open PR/MR</text>
+      <!-- ===== Footer note — what the VM CANNOT do ===== -->
+      <g>
+        <rect x="20" y="530" width="480" height="36" rx="6" fill="rgba(201,44,44,.06)" stroke="rgba(201,44,44,.25)"/>
+        <text x="32" y="550" font-size="11" font-weight="600" fill="#c92c2c">nft pin (root, pre-priv-drop)</text>
+        <text x="32" y="563" font-size="10.5" fill="#54606b">allows only gw:8088 + gw:3128 · drops DNS · everything else → DROP</text>
       </g>
-
-      <!-- ARROWS — only the four flows that cross the trust boundary -->
-
-      <!-- A) operator → brokerd: POST /tasks -->
-      <path d="M 800 84 L 760 84" stroke="#54606b" stroke-width="2" fill="none"
-            marker-end="url(#ah-mut)"/>
-      <text x="780" y="76" font-size="10.5" fill="#54606b" text-anchor="middle">POST /tasks</text>
-
-      <!-- B) brokerd → VM: container run + inject token -->
-      <path d="M 540 118 Q 400 130 260 178" stroke="#54606b" stroke-width="2" fill="none"
-            marker-end="url(#ah-mut)" stroke-dasharray="6 4"/>
-      <text x="380" y="120" font-size="10.5" fill="#54606b">container run · inject token</text>
-
-      <!-- C) agent → gateway: bearer token CROSSES boundary -->
-      <path d="M 260 92 L 540 200" stroke="#c92c2c" stroke-width="2.5" fill="none"
-            marker-end="url(#ah-red)"/>
-      <text x="330" y="138" font-size="10.5" fill="#c92c2c" font-weight="600">bearer tok_…</text>
-
-      <!-- D) gateway → anthropic: real key (host side only) -->
-      <path d="M 760 200 L 1010 200" stroke="#0d8d5e" stroke-width="2.5" fill="none"
-            marker-end="url(#ah-grn)"/>
-      <text x="870" y="192" font-size="10.5" fill="#0d8d5e" font-weight="600">X-Api-Key: REAL</text>
-
-      <!-- E) agent → squid: CONNECT host -->
-      <path d="M 260 272 L 540 293" stroke="#c92c2c" stroke-width="2" fill="none"
-            marker-end="url(#ah-red)"/>
-      <text x="365" y="270" font-size="10.5" fill="#c92c2c">CONNECT host</text>
-
-      <!-- F) squid → registries -->
-      <path d="M 760 293 L 1010 299" stroke="#0d8d5e" stroke-width="2" fill="none"
-            marker-end="url(#ah-grn)"/>
-      <text x="870" y="285" font-size="10.5" fill="#0d8d5e">allowlisted</text>
-
-      <!-- G) anything else from VM: DROP -->
-      <text x="60" y="402" font-size="10.5" fill="#c92c2c" font-weight="600">everything else → DROP (nft + no DNS)</text>
-
-      <!-- H) result: diff CROSSES back -->
-      <path d="M 260 360 L 540 380" stroke="#0d8d5e" stroke-width="2.5" fill="none"
-            marker-end="url(#ah-grn)"/>
-      <text x="370" y="355" font-size="10.5" fill="#0d8d5e" font-weight="600">git diff (the only thing back)</text>
-
-      <!-- I) host pushes -->
-      <path d="M 760 385 L 1010 383" stroke="#0d8d5e" stroke-width="2" fill="none"
-            marker-end="url(#ah-grn)"/>
-      <text x="870" y="377" font-size="10.5" fill="#0d8d5e">git push (after approval)</text>
-
-      <!-- J) approval round-trip -->
-      <path d="M 760 100 Q 800 320 660 360" stroke="#54606b" stroke-width="1.5" fill="none"
-            marker-end="url(#ah-mut)" stroke-dasharray="4 4"/>
-      <text x="828" y="280" font-size="10" fill="#54606b">drydock approve &lt;id&gt;</text>
-
     </svg>
   </div>
 
@@ -597,7 +562,7 @@ meter  usage → spent += cost(model, in, out)
 <section id="status">
   <div class="seclabel reveal"><span class="n">07</span> Status</div>
   <h2 class="reveal">Audited, race-clean, shipping today.</h2>
-  <p class="status reveal">drydock has been adversarially reviewed (credential gateway, no blocking findings), boots cleanly on <span class="ic">apple/container 1.0</span> + Apple silicon, and runs the full task lifecycle — POST, VM run, gated diff, approve, push — under unit, integration, and <span class="ic">-race</span> tests. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.2" style="color:var(--grn)">v0.1.2</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
+  <p class="status reveal">drydock has been adversarially reviewed (credential gateway, no blocking findings), boots cleanly on <span class="ic">apple/container 1.0</span> + Apple silicon, and runs the full task lifecycle — POST, VM run, gated diff, approve, push — under unit, integration, and <span class="ic">-race</span> tests. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.4" style="color:var(--grn)">v0.1.4</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
 </section>
 
 </div>
