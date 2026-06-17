@@ -9,8 +9,15 @@ import (
 
 func TestAuditDir_DefaultAndOverride(t *testing.T) {
 	t.Setenv("AUDIT_ROOT", "")
-	if got := auditDir(); got != "/tmp/broker/audit" {
-		t.Errorf("default auditDir = %q", got)
+	// The resolver prefers ~/.drydock/audit and falls back to
+	// /tmp/broker/audit only when the new dir is empty AND the legacy
+	// path has files. Don't hard-code either path here (CI runner's home
+	// is /home/runner, workstations vary); just assert one of the two
+	// shapes. The new-default contract is unit-tested in internal/config
+	// (TestDefaults_StateDirsUnderHomeNotTmp).
+	got := auditDir()
+	if !strings.HasSuffix(got, "/.drydock/audit") && got != "/tmp/broker/audit" {
+		t.Errorf("default auditDir = %q; expected …/.drydock/audit (or legacy /tmp/broker/audit)", got)
 	}
 	t.Setenv("AUDIT_ROOT", "/custom/dir")
 	if got := auditDir(); got != "/custom/dir" {
