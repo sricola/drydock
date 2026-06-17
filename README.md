@@ -11,9 +11,8 @@ budgeted bearer tokens. Egress is deny-by-default. The only artifact
 that leaves the sandbox is a captured `git diff`, and it doesn't reach
 origin until you approve it.
 
-Design narrative: [`site/index.html`](site/index.html). 
 Security claims:[`THREAT_MODEL.md`](THREAT_MODEL.md).
-
+Website: https://sricola.github.io/drydock/
 ## Install
 
 ```bash
