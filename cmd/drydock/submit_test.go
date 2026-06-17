@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +74,25 @@ func TestRepeatedFlag(t *testing.T) {
 	}
 	if len(r) != 2 || r[0] != "a" || r[1] != "b" {
 		t.Errorf("slice = %v", r)
+	}
+}
+
+// Model must round-trip through the request JSON the same way the other
+// optional fields do (omitempty), so a Model-less submit doesn't pollute
+// audit logs with empty-string fields and an explicit Model lands intact.
+func TestTaskRequest_ModelOmitemptyAndRoundtrip(t *testing.T) {
+	empty, err := json.Marshal(taskRequest{RepoRef: "git@github.com:o/r", Instruction: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(empty), `"model"`) {
+		t.Errorf("empty Model should be omitted, got %s", empty)
+	}
+	set, err := json.Marshal(taskRequest{RepoRef: "git@github.com:o/r", Instruction: "x", Model: "claude-opus-4-8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(set), `"model":"claude-opus-4-8"`) {
+		t.Errorf("Model not emitted: %s", set)
 	}
 }

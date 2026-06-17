@@ -164,11 +164,13 @@ func main() {
 		ProxyPort:     proxyPort,
 		TaskBudget:    cfg.TaskBudgetUSD,
 		MaxConcurrent: cfg.MaxConcurrent,
+		DefaultModel:  cfg.DefaultModel,
 	}
 	slog.Info("config",
 		"network", cfg.Network,
 		"max_concurrent_tasks", cfg.MaxConcurrent,
-		"task_budget_usd", cfg.TaskBudgetUSD)
+		"task_budget_usd", cfg.TaskBudgetUSD,
+		"default_model", cfg.DefaultModel)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)

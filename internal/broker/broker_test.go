@@ -637,3 +637,29 @@ func TestHandleHealth_BreakdownByStage(t *testing.T) {
 		t.Errorf("breakdown = %+v, want running=1 pending=1 pushing=1", body)
 	}
 }
+
+func TestModelEnv(t *testing.T) {
+	cases := []struct {
+		name string
+		task string
+		def  string
+		want []string
+	}{
+		{"per-task wins over default", "claude-opus-4-8", "claude-sonnet-4-6", []string{"DRYDOCK_MODEL=claude-opus-4-8"}},
+		{"falls back to default", "", "claude-sonnet-4-6", []string{"DRYDOCK_MODEL=claude-sonnet-4-6"}},
+		{"both empty = no env (claude picks)", "", "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := modelEnv(tc.task, tc.def)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("got[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

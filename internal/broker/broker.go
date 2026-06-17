@@ -48,6 +48,11 @@ type Task struct {
 	// ""). Empty falls back to hostname autodetect from RepoRef. Self-hosted
 	// GitLab needs platform="gitlab" since the hostname won't say so.
 	Platform string `json:"platform"`
+	// Model passes through to `claude --model <Model>` in the sandbox. Empty
+	// falls back to Broker.DefaultModel (operator config), then to claude's
+	// own default. Value is unvalidated here — claude-code rejects unknown
+	// IDs at start, fail-closed.
+	Model string `json:"model"`
 }
 
 // ApprovalFn gates the egress-widening step. The diff-push step now has
@@ -65,7 +70,8 @@ type Broker struct {
 	Network    string  // stable egress network name (e.g. drydock-egress)
 	GatewayIP  string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
 	ProxyPort  int     // squid port (e.g. 3128)
-	TaskBudget float64 // USD budget per task
+	TaskBudget   float64 // USD budget per task
+	DefaultModel string  // operator-level default; per-task Task.Model overrides
 
 	// MaxConcurrent caps how many tasks may be in any non-terminal state at
 	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
@@ -317,6 +323,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		"NO_PROXY=127.0.0.1,localhost,"+b.GatewayIP,
 		"DRYDOCK_GW_IP="+b.GatewayIP,
 	)
+	env = append(env, modelEnv(t.Model, b.DefaultModel)...)
 
 	args := runner.BuildRunArgs(runner.Spec{
 		TaskID:     taskID,
@@ -670,4 +677,17 @@ func safeErr(err error) string {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// modelEnv resolves the model passthrough for a task: the per-task value wins,
+// then the operator default. When both are empty the env stays unset so
+// entrypoint.sh skips `--model` and claude-code picks its own default.
+func modelEnv(taskModel, defaultModel string) []string {
+	switch {
+	case taskModel != "":
+		return []string{"DRYDOCK_MODEL=" + taskModel}
+	case defaultModel != "":
+		return []string{"DRYDOCK_MODEL=" + defaultModel}
+	}
+	return nil
 }

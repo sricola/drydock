@@ -24,6 +24,7 @@ type taskRequest struct {
 	Sensitive   bool          `json:"sensitive,omitempty"`
 	AutoApprove bool          `json:"auto_approve,omitempty"`
 	Platform    string        `json:"platform,omitempty"`
+	Model       string        `json:"model,omitempty"`
 }
 
 type reqDomain struct {
@@ -45,6 +46,7 @@ func runSubmit(args []string) {
 		instrFile   = fs.String("instruction-file", "", "path to a file holding the instruction")
 		autoApprove = fs.Bool("auto-approve", false, "skip the diff-push gate (use only for trusted batch runs)")
 		platform    = fs.String("platform", "", "github | gitlab | gitea | none (default: autodetect)")
+		model       = fs.String("model", "", "claude --model passthrough (e.g. claude-opus-4-7); empty = use broker default")
 		sensitive   = fs.Bool("sensitive", false, "mark the task sensitive in the audit trail")
 		jsonOut     = fs.Bool("json", false, "print the raw response JSON instead of a pretty summary")
 		egress      repeatedFlag
@@ -100,6 +102,7 @@ sockpath.Default().`)
 		Sensitive:   *sensitive,
 		AutoApprove: *autoApprove,
 		Platform:    *platform,
+		Model:       *model,
 	}
 	if err := postSubmit(req, *jsonOut); err != nil {
 		die("%v", err)

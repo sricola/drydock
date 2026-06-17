@@ -37,6 +37,10 @@ type Config struct {
 	MaxConcurrent int           `yaml:"max_concurrent_tasks"`
 	TaskTimeout   time.Duration `yaml:"task_timeout"`
 
+	// DefaultModel passes through to `claude --model` for every task that
+	// doesn't supply --model itself. Empty = let claude-code pick.
+	DefaultModel string `yaml:"default_model"`
+
 	// Where state lives
 	StageRoot   string `yaml:"stage_root"`
 	AuditRoot   string `yaml:"audit_root"`
@@ -152,6 +156,9 @@ func (c *Config) applyEnvOverrides() {
 			c.MaxConcurrent = n
 		}
 	}
+	if v := os.Getenv("DRYDOCK_DEFAULT_MODEL"); v != "" {
+		c.DefaultModel = v
+	}
 	if v := os.Getenv("STAGE_ROOT"); v != "" {
 		c.StageRoot = v
 	}
@@ -216,6 +223,7 @@ anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gatewa
 task_budget_usd:        2.0            # hard USD ceiling; gateway rejects after exhaustion
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
+default_model:          ""             # claude --model fallback (e.g. claude-sonnet-4-6); empty = claude picks. Per-task --model overrides.
 
 # --- Where state lives ---
 stage_root:    /tmp/broker/stage       # per-task work tree (wiped on completion)
