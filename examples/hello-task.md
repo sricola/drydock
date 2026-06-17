@@ -100,6 +100,6 @@ gh repo delete $USER/drydock-smoke --yes
 ## Cost expectations
 
 Sonnet 4.6 with a 9-turn first-task footprint typically lands around
-**$0.02 – $0.05**. You can cap it lower with `--task-budget-usd` in
-`~/.drydock/config.yaml`; the gateway rejects further model requests
+**$0.02 – $0.05**. You can cap it lower with the `task_budget_usd` key in
+`~/.drydock/config.yaml` (or `DRYDOCK_TASK_BUDGET_USD`); the gateway rejects further model requests
 once the budget is exhausted (current request finishes streaming).

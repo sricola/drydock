@@ -1,6 +1,6 @@
 package remote
 
-// GitHubAdapter opens a PR via `gh pr create --fill`. Requires `gh` to be
+// GitHubAdapter opens a PR via `gh pr create --head <branch> --fill`. Requires `gh` to be
 // installed and authenticated on the host.
 type GitHubAdapter struct{}
 

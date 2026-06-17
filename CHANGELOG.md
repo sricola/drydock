@@ -5,7 +5,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.1.4 — 2026-06-17
 
 ### Changed
 
@@ -42,7 +42,7 @@ entry below corresponds to a Git tag of the same name.
   `broker.addr` / `BROKER_ADDR` has no built-in auth and naming the
   acceptable deployment patterns (loopback + SSH, mTLS reverse proxy).
 - `examples/hello-task.md` — a copy-paste-ready first task that fits the
-  default $1 budget and exercises every layer of the boundary.
+  default $2 budget and exercises every layer of the boundary.
 - `CHANGELOG.md` — this file.
 - `THREAT_MODEL.md` opens with a five-bullet TL;DR so the security
   posture is scannable without reading the full doc.
