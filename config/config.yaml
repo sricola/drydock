@@ -1,0 +1,32 @@
+# drydock configuration. Re-run `drydock start` after editing.
+#
+# Env vars override these values (e.g. setting BROKER_ADDR in the shell
+# wins over broker.addr below). ANTHROPIC_API_KEY is intentionally not in
+# this file — it never goes to disk.
+
+# --- Container runtime ---
+network:        drydock-egress         # vmnet network name (must exist)
+gateway_ip:     192.168.66.1           # gateway + squid bind here
+sandbox_image:  claude-sandbox:latest  # per-task agent VM image
+anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
+
+# --- Per-task limits ---
+task_budget_usd:        2.0            # hard USD ceiling; gateway rejects after exhaustion
+max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
+task_timeout:           30m            # wall-clock per task
+default_model:          ""             # claude --model fallback (e.g. claude-sonnet-4-6); empty = claude picks. Per-task --model overrides.
+
+# --- Where state lives ---
+stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)
+audit_root:    ~/.drydock/audit        # per-task <id>.jsonl + .diff
+squid_run_dir: ~/.drydock/squid        # squid pid/conf/cache.log
+
+# --- Broker listener ---
+broker:
+  socket: ""                           # empty = per-uid default ($TMPDIR/drydock-$UID/drydock.sock)
+  addr: ""                             # set "host:port" to expose over TCP (warns at boot)
+
+# --- Behavior ---
+notifications:              true       # macOS notifications on pending approval
+log_json:                   false      # force JSON logs (default: text on TTY, JSON otherwise)
+strict_container_version:   false      # fail closed when 'container' major drifts from tested range
