@@ -219,11 +219,26 @@ func ensureImage() {
 
 func ensureNamedImage(name, subdir, note string) {
 	label := "image " + name + ":latest"
-	out, _ := exec.Command("container", "image", "list").CombinedOutput()
-	if strings.Contains(string(out), name) {
+	listed, _ := exec.Command("container", "image", "list").CombinedOutput()
+	have := strings.Contains(string(listed), name)
+
+	// Existing image is necessary but not sufficient: a layer cache from before
+	// the macagent→drydock rename can leave a stale entrypoint.sh that reads
+	// MACAGENT_GW_IP instead of DRYDOCK_GW_IP, and every task fails to boot.
+	// For the sandbox image, peek inside and force a no-cache rebuild on drift.
+	stale := false
+	if have && name == "claude-sandbox" {
+		got, err := exec.Command("container", "run", "--rm", "--entrypoint", "/bin/cat",
+			name+":latest", "/usr/local/bin/entrypoint.sh").CombinedOutput()
+		if err == nil && !strings.Contains(string(got), "DRYDOCK_GW_IP") {
+			stale = true
+		}
+	}
+	if have && !stale {
 		step(label, true, "exists")
 		return
 	}
+
 	ctxDir, err := findImageDir(subdir)
 	if err != nil {
 		step(label, false, "Dockerfile not found: "+err.Error())
@@ -231,8 +246,17 @@ func ensureNamedImage(name, subdir, note string) {
 		fmt.Printf("    → container build -t %s:latest <path-to-drydock>/%s\n", name, subdir)
 		os.Exit(1)
 	}
-	fmt.Printf("  · building %s:latest from %s (%s)…\n", name, ctxDir, note)
-	cmd := exec.Command("container", "build", "-t", name+":latest", ctxDir)
+	args := []string{"build", "-t", name + ":latest", ctxDir}
+	noteOut := note
+	if stale {
+		// Drop the old image first so layer caching doesn't re-pull the stale
+		// entrypoint.sh, then force a no-cache rebuild.
+		_ = exec.Command("container", "image", "delete", name+":latest").Run()
+		args = []string{"build", "--no-cache", "-t", name + ":latest", ctxDir}
+		noteOut = "stale entrypoint detected — rebuilding from scratch"
+	}
+	fmt.Printf("  · building %s:latest from %s (%s)…\n", name, ctxDir, noteOut)
+	cmd := exec.Command("container", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
