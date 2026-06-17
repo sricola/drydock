@@ -334,6 +334,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.CommandContext(runCtx, "container", args...)
 	cmd.Stdout = io.MultiWriter(logf, os.Stdout)
 	cmd.Stderr = logf
+	taskStart := time.Now()
 	if err := cmd.Run(); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
@@ -343,6 +344,13 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"task_id": taskID, "cancelled": true, "pushed": false})
 			return
 		}
+		// If claude never wrote a `result` event (e.g. the entrypoint died
+		// before claude was even exec'd), `drydock tasks` would show this
+		// task as `running?` forever. Append a synthetic terminal event so
+		// the audit log is self-describing.
+		_, _ = fmt.Fprintf(logf,
+			`{"type":"result","subtype":"error","is_error":true,"duration_ms":%d,"total_cost_usd":0,"num_turns":0}`+"\n",
+			time.Since(taskStart).Milliseconds())
 		http.Error(w, "task failed: "+safeErr(err), http.StatusInternalServerError)
 		return
 	}
