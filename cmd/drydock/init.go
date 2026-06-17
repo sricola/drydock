@@ -73,6 +73,7 @@ func ensureUserConfig() {
 	egPath := config.EgressPath()
 	if _, err := os.Stat(egPath); err == nil {
 		step("~/.drydock/egress.yaml", true, "exists (your edits preserved)")
+		nudgeEgressRecommendations(egPath)
 		return
 	}
 	// Seed from the share-dir template (or a sane default if not present).
@@ -119,19 +120,65 @@ func findShareEgressTemplate() (string, error) {
 }
 
 // defaultEgressYAML is the absolute fallback — used only if the share-dir
-// template is unreachable. Matches config/egress.yaml in the repo.
+// template is unreachable. Must stay in sync with config/egress.yaml.
 const defaultEgressYAML = `version: 1
 default:
   allow_dns: true
   domains:
     - { host: api.anthropic.com,      ports: [443] }
+    # JavaScript
     - { host: registry.npmjs.org,     ports: [443] }
+    # Python
     - { host: pypi.org,               ports: [443] }
     - { host: files.pythonhosted.org, ports: [443] }
+    # Go module ecosystem — proxy.golang.org is the module cache; sum.golang.org
+    # is the checksum DB (Go refuses to fetch without it unless GOSUMDB=off).
+    - { host: proxy.golang.org,       ports: [443] }
+    - { host: sum.golang.org,         ports: [443] }
   cidrs: []
 per_task_widening:
   requires_approval: true
 `
+
+// recommendedEgressHosts is the allowlist a fresh install would receive.
+// When an existing operator config (~/.drydock/egress.yaml) lacks any of
+// these, init prints a one-shot nudge with the exact YAML to add. We do
+// not auto-edit — operator edits to that file are sacred. Add new shipping
+// entries here in the same PR that touches config/egress.yaml.
+var recommendedEgressHosts = []string{
+	"proxy.golang.org",
+	"sum.golang.org",
+}
+
+// nudgeEgressRecommendations checks the existing egress.yaml for the hosts
+// in recommendedEgressHosts. For each one missing, it prints a single
+// hint block telling the operator what to add and where. Empty list ->
+// silent. Errors reading the file -> silent (we already printed "exists").
+func nudgeEgressRecommendations(path string) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var missing []string
+	for _, h := range recommendedEgressHosts {
+		// Match the bare hostname; YAML quoting variants don't trip this
+		// because the host appears verbatim in either { host: x } or
+		// indented map style.
+		if !strings.Contains(string(body), h) {
+			missing = append(missing, h)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println("  ! ~/.drydock/egress.yaml is missing recommended entries.")
+	fmt.Println("    Add to default.domains: in", path, "—")
+	for _, h := range missing {
+		fmt.Printf("        - { host: %s, ports: [443] }\n", h)
+	}
+	fmt.Println("    (drydock won't edit your egress.yaml; copy these in by hand.)")
+}
 
 // step prints a one-line status. ok=true → "✓"; ok=false → "✗".
 func step(label string, ok bool, detail string) {
