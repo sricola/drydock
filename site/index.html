@@ -87,6 +87,11 @@ h1 .u{color:var(--red);position:relative}
 h1 .t{color:var(--grn)}
 .lede{font-size:clamp(17px,2.1vw,21px);line-height:1.5;max-width:42ch;color:var(--mut)}
 .lede b{font-weight:600;color:var(--ink)}
+.herostatus{margin-top:22px;max-width:54ch;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--mut)}
+.herostatus b{color:var(--ink);font-weight:600}
+.statustag{display:inline-block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
+  color:var(--amber);background:rgba(168,102,0,.08);border:1px solid rgba(168,102,0,.28);
+  border-radius:3px;padding:2px 8px;margin-right:8px;vertical-align:1px}
 .install{margin-top:36px;max-width:640px}
 .install-label{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);margin-bottom:10px}
 .install-term{margin-top:0}
@@ -260,6 +265,7 @@ footer .mk path{stroke:var(--faint)}
     <div class="kicker reveal"><span class="bar"></span>macos · local containment for autonomous coding agents</div>
     <h1 class="reveal">Untrusted agents,<br><span class="t">hardware-isolated.</span></h1>
     <p class="lede reveal">drydock is a sandbox for autonomous coding agents on macOS. Each task runs in a <b>per-task hardware-isolated VM</b>; the agent never sees your real Anthropic key — a host-side credential gateway issues short-lived budgeted bearer tokens. Egress is <b>deny-by-default</b>. The only artifact that leaves the sandbox is a captured <span class="ic">git diff</span>, and it doesn't reach origin until you approve it.</p>
+    <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.4</span> Runs the full lifecycle end-to-end today; pre-1.0 and single-maintainer, so behavior may change between versions and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
     <div class="install reveal">
       <div class="install-label">Install · macOS · Apple silicon</div>
       <div class="term install-term">
