@@ -2,6 +2,15 @@ PREFIX ?= /usr/local
 BIN := bin
 SRC := $(shell find . -name '*.go' -not -path './bin/*')
 
+# VERSION drives `-X main.version=…` so `drydock version` reports something
+# useful on source builds, not just "dev". Resolution order:
+#   1. VERSION=v0.1.3 make build                — explicit override
+#   2. release builds: nearest tag (v0.1.x)     — what the brew formula sees
+#   3. dev builds:     "<tag>-<n>-g<sha>"       — git describe
+#   4. no git context: "dev"                    — preserves the old default
+VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
+LDFLAGS := -X main.version=$(VERSION)
+
 .PHONY: all build install uninstall test vet image network init clean help
 
 all: build
@@ -20,11 +29,11 @@ help:
 
 $(BIN)/brokerd: $(SRC) go.mod go.sum
 	@mkdir -p $(BIN)
-	go build -o $@ ./cmd/brokerd
+	go build -ldflags '$(LDFLAGS)' -o $@ ./cmd/brokerd
 
 $(BIN)/drydock: $(SRC) go.mod go.sum
 	@mkdir -p $(BIN)
-	go build -o $@ ./cmd/drydock
+	go build -ldflags '$(LDFLAGS)' -o $@ ./cmd/drydock
 
 build: $(BIN)/brokerd $(BIN)/drydock
 

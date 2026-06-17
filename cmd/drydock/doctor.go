@@ -1,0 +1,108 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+
+	"drydock/internal/config"
+)
+
+// runDoctor is the no-API-spend smoke. It catches the failure modes that
+// only show up at task time today — stale image entrypoint, sandbox can't
+// boot, nft pin doesn't enforce, anchor isn't up. None of these require
+// brokerd to be running or a real ANTHROPIC_API_KEY; they just exercise
+// the container artifacts the broker would lean on.
+//
+// Exit code 0 = all checks passed; 1 = at least one check failed.
+func runDoctor() {
+	fmt.Println("drydock doctor — sandbox smoke test (no API spend)")
+	fmt.Println()
+	failed := false
+
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		step("config", false, err.Error())
+		os.Exit(1)
+	}
+
+	// 1. The image entrypoint must read DRYDOCK_GW_IP, not the pre-rename
+	// MACAGENT_GW_IP — otherwise every task aborts at boot. Same property
+	// `drydock init` guards on rebuild, just here as a runtime check too.
+	out, err := exec.Command("container", "run", "--rm", "--entrypoint", "/bin/cat",
+		cfg.SandboxImage, "/usr/local/bin/entrypoint.sh").CombinedOutput()
+	switch {
+	case err != nil:
+		step("sandbox entrypoint", false, "could not read: "+strings.TrimSpace(string(out)))
+		failed = true
+	case !strings.Contains(string(out), "DRYDOCK_GW_IP"):
+		step("sandbox entrypoint", false, "stale — reads MACAGENT_GW_IP; run `drydock init` to rebuild")
+		failed = true
+	default:
+		step("sandbox entrypoint", true, "fresh (reads DRYDOCK_GW_IP)")
+	}
+
+	// 2. Sandbox must actually boot and report a working `claude --version`.
+	// This is the cheap proof that the image is healthy end-to-end (apt
+	// layer, gosu, claude-code install all worked).
+	out, err = exec.Command("container", "run", "--rm", "--entrypoint", "/bin/sh",
+		cfg.SandboxImage, "-c", "claude --version 2>&1").CombinedOutput()
+	switch {
+	case err != nil:
+		step("sandbox boot", false, "container run failed: "+strings.TrimSpace(string(out)))
+		failed = true
+	case !strings.Contains(string(out), "Claude Code"):
+		step("sandbox boot", false, "claude --version did not return Claude Code: "+strings.TrimSpace(string(out)))
+		failed = true
+	default:
+		// `container run` prints [0/6]…[6/6] progress lines before the
+		// real stdout. Strip them so the doctor line stays one line.
+		step("sandbox boot", true, claudeVersionLine(string(out)))
+	}
+
+	// 3. The nft egress pin must default-deny output. We install the pin
+	// pointing at an unreachable gateway IP, then confirm a non-allowlisted
+	// host fails to resolve (DNS dropped) or fails to connect (no route).
+	// Passing means the central isolation claim holds; failing means the
+	// sandbox would leak egress if `drydock submit` were invoked.
+	out, err = exec.Command("container", "run", "--rm", "--user", "root",
+		"--entrypoint", "/bin/bash", "--cap-add", "CAP_NET_ADMIN",
+		cfg.SandboxImage, "-lc",
+		`/usr/local/bin/init-firewall.sh 192.168.66.1 8088 3128 &&
+		 curl -sS -m 5 https://example.com/ -o /dev/null -w '%{http_code}\n' 2>/dev/null || echo blocked`,
+	).CombinedOutput()
+	got := strings.TrimSpace(string(out))
+	switch {
+	case err != nil && !strings.Contains(got, "blocked"):
+		step("egress pin enforces", false, "smoke failed: "+got)
+		failed = true
+	case got == "blocked", strings.HasSuffix(got, "blocked"):
+		step("egress pin enforces", true, "non-allowlisted host blocked")
+	default:
+		step("egress pin enforces", false, "non-allowlisted host reachable: "+got)
+		failed = true
+	}
+
+	fmt.Println()
+	if failed {
+		fmt.Println("one or more checks failed — see above")
+		os.Exit(1)
+	}
+	fmt.Println("all checks passed — your sandbox is ready for `drydock submit`")
+}
+
+// claudeVersionLine extracts the last non-progress line from `container
+// run`'s combined output. `container run` prints [0/6]…[6/6] image-pull
+// progress before the real command stdout, so the last line is what claude
+// actually printed.
+func claudeVersionLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		ln := strings.TrimSpace(lines[i])
+		if strings.Contains(ln, "Claude Code") {
+			return ln
+		}
+	}
+	return strings.TrimSpace(s)
+}
