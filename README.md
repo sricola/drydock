@@ -18,13 +18,14 @@ budgeted bearer tokens. Egress is deny-by-default. The only artifact
 that leaves the sandbox is a captured `git diff`, and it doesn't reach
 origin until you approve it.
 
-> **Status: working alpha (v0.1.4).** drydock runs the full task lifecycle
-> end-to-end today — submit → isolated VM → gated diff → push — and ships
-> through a Homebrew tap with `go test -race` + `go vet` on every change and
-> an explicit, adversarially-reviewed [threat model](THREAT_MODEL.md). It is
-> pre-1.0 and single-maintainer: behavior and config may change between minor
-> versions, only `main` is supported, and it hasn't been hardened by broad
-> real-world use yet. **Hard requirement: macOS 26+ on Apple silicon** — it
+> **Status: working alpha (v0.1.4).** The full task lifecycle works
+> end-to-end — submit → isolated VM → gated diff → push — and drydock ships
+> through a Homebrew tap. It is pre-1.0 and single-maintainer: only `main` is
+> supported, behavior and config can change between minor versions, and it
+> hasn't been hardened by real-world use. **There has been no third-party
+> security audit** — the security model is written down in detail in the
+> [threat model](THREAT_MODEL.md), so read that and decide for yourself
+> before trusting it. **Hard requirement: macOS 26+ on Apple silicon** — it
 > runs on Apple's `container` runtime (itself 1.0), so it won't run anywhere
 > else.
 

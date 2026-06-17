@@ -265,7 +265,7 @@ footer .mk path{stroke:var(--faint)}
     <div class="kicker reveal"><span class="bar"></span>macos · local containment for autonomous coding agents</div>
     <h1 class="reveal">Untrusted agents,<br><span class="t">hardware-isolated.</span></h1>
     <p class="lede reveal">drydock is a sandbox for autonomous coding agents on macOS. Each task runs in a <b>per-task hardware-isolated VM</b>; the agent never sees your real Anthropic key — a host-side credential gateway issues short-lived budgeted bearer tokens. Egress is <b>deny-by-default</b>. The only artifact that leaves the sandbox is a captured <span class="ic">git diff</span>, and it doesn't reach origin until you approve it.</p>
-    <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.4</span> Runs the full lifecycle end-to-end today; pre-1.0 and single-maintainer, so behavior may change between versions and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
+    <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.4</span> The full lifecycle works end-to-end; pre-1.0 and single-maintainer, no third-party security audit, behavior may change between versions, and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
     <div class="install reveal">
       <div class="install-label">Install · macOS · Apple silicon</div>
       <div class="term install-term">
@@ -556,7 +556,7 @@ meter  usage → spent += cost(model, in, out)
 <section id="status">
   <div class="seclabel reveal"><span class="n">07</span> Status</div>
   <h2 class="reveal">Audited, race-clean, shipping today.</h2>
-  <p class="status reveal">drydock has been adversarially reviewed (credential gateway, no blocking findings), boots cleanly on <span class="ic">apple/container 1.0</span> + Apple silicon, and runs the full task lifecycle — POST, VM run, gated diff, approve, push — under unit, integration, and <span class="ic">-race</span> tests. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.4" style="color:var(--grn)">v0.1.4</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
+  <p class="status reveal">drydock boots on <span class="ic">apple/container 1.0</span> + Apple silicon and runs the full task lifecycle — POST, VM run, gated diff, approve, push. CI runs the build, vet, and the test suite on every change; there has been no third-party security audit. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.4" style="color:var(--grn)">v0.1.4</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
 </section>
 
 </div>
