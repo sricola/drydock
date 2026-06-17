@@ -122,3 +122,37 @@ func TestDefaultEgressYAML_ContainsRecommended(t *testing.T) {
 		}
 	}
 }
+
+// findShareFile must resolve both templates from a freshly-laid share dir.
+// Catches the failure mode where the share-dir lookup pattern changes for
+// one file but not the other — the exact asymmetry this scaffolding fix
+// exists to address.
+func TestFindShareFile_ResolvesBothTemplates(t *testing.T) {
+	root := t.TempDir()
+	shareDir := filepath.Join(root, "share", "drydock", "config")
+	if err := os.MkdirAll(shareDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"config.yaml", "egress.yaml"} {
+		if err := os.WriteFile(filepath.Join(shareDir, name), []byte("placeholder"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Setenv("HOMEBREW_PREFIX", root)
+
+	got, err := findShareConfigTemplate()
+	if err != nil {
+		t.Errorf("findShareConfigTemplate: %v", err)
+	}
+	if !strings.HasSuffix(got, "config/config.yaml") {
+		t.Errorf("config.yaml = %q, want suffix config/config.yaml", got)
+	}
+	got, err = findShareEgressTemplate()
+	if err != nil {
+		t.Errorf("findShareEgressTemplate: %v", err)
+	}
+	if !strings.HasSuffix(got, "config/egress.yaml") {
+		t.Errorf("egress.yaml = %q, want suffix config/egress.yaml", got)
+	}
+}

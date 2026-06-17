@@ -66,11 +66,7 @@ func ensureUserConfig() {
 	if _, err := os.Stat(cfgPath); err == nil {
 		step("~/.drydock/config.yaml", true, "exists (your edits preserved)")
 	} else {
-		if werr := config.WriteSeed(cfgPath); werr != nil {
-			step("~/.drydock/config.yaml", false, werr.Error())
-		} else {
-			step("~/.drydock/config.yaml", true, "seeded with defaults")
-		}
+		seedConfig(cfgPath)
 	}
 
 	egPath := config.EgressPath()
@@ -100,26 +96,63 @@ func ensureUserConfig() {
 	step("~/.drydock/egress.yaml", true, "seeded from "+tmpl)
 }
 
+// seedConfig writes ~/.drydock/config.yaml from the share-dir template
+// (brew/make install) when available, falling back to the embedded
+// SeedTemplate Go const when not. Mirrors the egress.yaml flow below so
+// brew-installed users get the commented template and source-only users
+// still get a working file.
+func seedConfig(cfgPath string) {
+	if tmpl, err := findShareConfigTemplate(); err == nil {
+		if b, rerr := os.ReadFile(tmpl); rerr == nil {
+			if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err == nil {
+				if werr := os.WriteFile(cfgPath, b, 0o644); werr == nil {
+					step("~/.drydock/config.yaml", true, "seeded from "+tmpl)
+					return
+				}
+			}
+		}
+	}
+	if werr := config.WriteSeed(cfgPath); werr != nil {
+		step("~/.drydock/config.yaml", false, werr.Error())
+	} else {
+		step("~/.drydock/config.yaml", true, "seeded with built-in default")
+	}
+}
+
+// findShareConfigTemplate locates config/config.yaml in the share-dir
+// layout (brew, make install) or the cloned-repo dev case. Mirrors
+// findShareEgressTemplate.
+func findShareConfigTemplate() (string, error) {
+	return findShareFile("config.yaml")
+}
+
 // findShareEgressTemplate locates config/egress.yaml in the share-dir layout
 // (brew, make install) or the cloned-repo dev case. Mirrors findImageDir.
 func findShareEgressTemplate() (string, error) {
+	return findShareFile("egress.yaml")
+}
+
+// findShareFile is the shared probe used by both share-dir lookups. Search
+// order matches findImageDir: alongside the drydock binary, $HOMEBREW_PREFIX,
+// then the cloned-repo dev case.
+func findShareFile(name string) (string, error) {
 	candidates := []string{}
 	if self, err := os.Executable(); err == nil {
 		root := filepath.Dir(filepath.Dir(self))
 		candidates = append(candidates,
-			filepath.Join(root, "share", "drydock", "config", "egress.yaml"))
+			filepath.Join(root, "share", "drydock", "config", name))
 	}
 	if hb := os.Getenv("HOMEBREW_PREFIX"); hb != "" {
 		candidates = append(candidates,
-			filepath.Join(hb, "share", "drydock", "config", "egress.yaml"))
+			filepath.Join(hb, "share", "drydock", "config", name))
 	}
-	candidates = append(candidates, "config/egress.yaml")
+	candidates = append(candidates, filepath.Join("config", name))
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
 			return c, nil
 		}
 	}
-	return "", fmt.Errorf("share-dir egress.yaml not found")
+	return "", fmt.Errorf("share-dir %s not found", name)
 }
 
 // defaultEgressYAML is the absolute fallback — used only if the share-dir

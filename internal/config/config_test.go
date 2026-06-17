@@ -203,3 +203,45 @@ func TestDefaults_StateDirsUnderHomeNotTmp(t *testing.T) {
 		}
 	}
 }
+
+// The on-disk template (shipped to $PREFIX/share/drydock/config/config.yaml
+// by `make install` and to share/drydock/config/config.yaml in the brew
+// tarball) MUST match the embedded SeedTemplate that `WriteSeed` writes
+// when the share dir is unreachable. Otherwise an operator who edits the
+// on-disk template, deletes their ~/.drydock/config.yaml, and re-runs
+// `drydock init` on a machine without share-dir reachability gets a
+// different file than they had before — silent drift.
+func TestSeedTemplate_MatchesOnDiskTemplate(t *testing.T) {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	for d := dir; d != "/"; d = filepath.Dir(d) {
+		if _, gerr := os.Stat(filepath.Join(d, "go.mod")); gerr == nil {
+			path = filepath.Join(d, "config", "config.yaml")
+			break
+		}
+	}
+	if path == "" {
+		t.Skip("could not locate module root; on-disk template can't be checked from this CWD")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(b) != SeedTemplate {
+		t.Errorf("config/config.yaml has drifted from SeedTemplate.\n"+
+			"Each is a copy of the other; update both together.\n\n"+
+			"on disk (first 200 chars): %q\n"+
+			"SeedTemplate (first 200): %q",
+			truncate200(string(b)), truncate200(SeedTemplate))
+	}
+}
+
+func truncate200(s string) string {
+	if len(s) <= 200 {
+		return s
+	}
+	return s[:200] + "…"
+}
