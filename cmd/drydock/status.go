@@ -17,6 +17,8 @@ func runStatus() {
 		fmt.Printf("brokerd     up\n")
 		fmt.Printf("in flight   %d running · %d awaiting egress · %d awaiting diff · %d pushing\n",
 			h.Running, h.AwaitingEgress, h.PendingApproval, h.Pushing)
+	} else if brokerdDown(err) {
+		fmt.Printf("brokerd     down — start it with `drydock start`\n")
 	} else {
 		fmt.Printf("brokerd     down (%v)\n", err)
 	}

@@ -69,9 +69,9 @@ func Defaults() *Config {
 		TaskBudgetUSD:          2.0,
 		MaxConcurrent:          2,
 		TaskTimeout:            30 * time.Minute,
-		StageRoot:              "/tmp/broker/stage",
-		AuditRoot:              "/tmp/broker/audit",
-		SquidRunDir:            "/tmp/broker/squid",
+		StageRoot:              defaultStateDir("stage"),
+		AuditRoot:              defaultStateDir("audit"),
+		SquidRunDir:            defaultStateDir("squid"),
 		Notifications:          true,
 		LogJSON:                false,
 		StrictContainerVersion: false,
@@ -107,6 +107,44 @@ func Dir() string {
 	return filepath.Join(home, ".drydock")
 }
 
+// defaultStateDir resolves <~/.drydock>/<sub> for stage/audit/squid runtime
+// state. Falls back to /tmp/broker/<sub> only if the home directory is
+// unresolvable (rare; happens in some CI/launchd contexts). The point of
+// moving off /tmp is so audit history survives — operators digging through
+// last week's tasks should find them there, not in a directory tools and
+// OS upgrades treat as scratch.
+func defaultStateDir(sub string) string {
+	if d := Dir(); d != "" {
+		return filepath.Join(d, sub)
+	}
+	return filepath.Join("/tmp", "broker", sub)
+}
+
+// expandHome resolves a leading ~ in path fields to the user's home dir.
+// YAML doesn't expand shell tildes, but the seeded config and operator
+// edits commonly write `~/.drydock/audit`; without this expansion brokerd
+// would create a literal directory named "~". Idempotent — paths already
+// starting with / are left alone.
+func (c *Config) expandHome() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	expand := func(p string) string {
+		switch {
+		case p == "~":
+			return home
+		case strings.HasPrefix(p, "~/"):
+			return filepath.Join(home, p[2:])
+		}
+		return p
+	}
+	c.StageRoot = expand(c.StageRoot)
+	c.AuditRoot = expand(c.AuditRoot)
+	c.SquidRunDir = expand(c.SquidRunDir)
+	c.Broker.Socket = expand(c.Broker.Socket)
+}
+
 // Load reads `path` (which may not exist) and applies env-var overrides.
 // A missing file is not an error — it just yields defaults + env. Parse
 // errors and obviously-wrong values DO error so the operator sees them.
@@ -126,6 +164,7 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	cfg.applyEnvOverrides()
+	cfg.expandHome()
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -226,9 +265,9 @@ task_timeout:           30m            # wall-clock per task
 default_model:          ""             # claude --model fallback (e.g. claude-sonnet-4-6); empty = claude picks. Per-task --model overrides.
 
 # --- Where state lives ---
-stage_root:    /tmp/broker/stage       # per-task work tree (wiped on completion)
-audit_root:    /tmp/broker/audit       # per-task <id>.jsonl + .diff
-squid_run_dir: /tmp/broker/squid       # squid pid/conf/cache.log
+stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)
+audit_root:    ~/.drydock/audit        # per-task <id>.jsonl + .diff
+squid_run_dir: ~/.drydock/squid        # squid pid/conf/cache.log
 
 # --- Broker listener ---
 broker:

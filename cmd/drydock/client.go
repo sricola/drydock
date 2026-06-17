@@ -66,10 +66,44 @@ func brokerClient() (*http.Client, string) {
 	return c, "http://brokerd"
 }
 
+// brokerdDown reports whether err comes from "brokerd isn't running" — the
+// unix socket file is missing, or the dial was refused. We use it so the
+// CLI can say something the user can act on ("start brokerd with `drydock
+// start`") instead of dumping the raw Go HTTP transport error.
+func brokerdDown(err error) bool {
+	if err == nil {
+		return false
+	}
+	if os.Getenv("BROKER_ADDR") != "" {
+		// TCP mode — most "refused" looks the same; don't second-guess.
+		return false
+	}
+	if _, ferr := os.Stat(socketPath()); os.IsNotExist(ferr) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection refused") || strings.Contains(s, "no such file or directory")
+}
+
+// brokerDownHint is the line printed when brokerdDown returns true. Keep
+// it actionable: name the binary the user runs to fix it.
+const brokerDownHint = "brokerd not running — start it in another shell with `drydock start`"
+
+// printClientErr writes a single line to stderr. For "broker is down"
+// errors it substitutes the friendly hint instead of dumping the raw Go
+// HTTP transport error a first-time user can't act on.
+func printClientErr(err error) {
+	if brokerdDown(err) {
+		fmt.Fprintln(os.Stderr, "drydock:", brokerDownHint)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "drydock: %v\n", err)
+}
+
 func listPending() {
 	tasks, err := fetchTasks()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "drydock: %v\n", err)
+		printClientErr(err)
 		os.Exit(1)
 	}
 	var pending []taskState
@@ -137,7 +171,7 @@ func signal(verb, id string) {
 	c, base := brokerClient()
 	resp, err := c.Post(base+"/admin/"+verb+"/"+id, "", nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "drydock: %v\n", err)
+		printClientErr(err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()

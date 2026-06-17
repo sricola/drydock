@@ -152,3 +152,54 @@ func TestDefaultPath_PointsAtHomeDotDrydock(t *testing.T) {
 		t.Errorf("DefaultPath() = %q, want %q", p, want)
 	}
 }
+
+// expandHome must rewrite the YAML-loaded "~/…" placeholders into real
+// paths. Without this, brokerd creates a literal directory named "~".
+func TestExpandHome_RewritesTilde(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	yaml := []byte(`network: drydock-egress
+gateway_ip: 192.168.66.1
+sandbox_image: claude-sandbox:latest
+anchor_image: drydock-anchor:latest
+task_budget_usd: 2.0
+max_concurrent_tasks: 2
+task_timeout: 30m
+stage_root: ~/.drydock/stage
+audit_root: ~/.drydock/audit
+squid_run_dir: ~/.drydock/squid
+`)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := filepath.Join(home, ".drydock", "audit")
+	if cfg.AuditRoot != want {
+		t.Errorf("AuditRoot = %q, want %q (tilde must expand at load time)", cfg.AuditRoot, want)
+	}
+	if cfg.StageRoot != filepath.Join(home, ".drydock", "stage") {
+		t.Errorf("StageRoot = %q, want ~/.drydock/stage expanded", cfg.StageRoot)
+	}
+	if cfg.SquidRunDir != filepath.Join(home, ".drydock", "squid") {
+		t.Errorf("SquidRunDir = %q, want ~/.drydock/squid expanded", cfg.SquidRunDir)
+	}
+}
+
+// Defaults() must point under the user's home dir, not /tmp. Audit history
+// surviving across reboots and OS housekeeping is the whole point of the
+// move; if the default regresses to /tmp this test will catch it.
+func TestDefaults_StateDirsUnderHomeNotTmp(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir on this host")
+	}
+	d := Defaults()
+	for _, p := range []string{d.StageRoot, d.AuditRoot, d.SquidRunDir} {
+		if !strings.HasPrefix(p, home) {
+			t.Errorf("default %q is outside %q — audit history won't survive /tmp cleanup", p, home)
+		}
+	}
+}
