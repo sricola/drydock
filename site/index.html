@@ -264,7 +264,7 @@ footer .mk path{stroke:var(--faint)}
   <div class="wrap">
     <div class="kicker reveal"><span class="bar"></span>macos · local containment for autonomous coding agents</div>
     <h1 class="reveal">Untrusted agents,<br><span class="t">hardware-isolated.</span></h1>
-    <p class="lede reveal">drydock is a sandbox for autonomous coding agents on macOS. Each task runs in a <b>per-task hardware-isolated VM</b>; the agent never sees your real Anthropic key — a host-side credential gateway issues short-lived budgeted bearer tokens. Egress is <b>deny-by-default</b>. The only artifact that leaves the sandbox is a captured <span class="ic">git diff</span>, and it doesn't reach origin until you approve it.</p>
+    <p class="lede reveal">drydock runs autonomous coding agents on <b>your own Mac</b> — not someone's cloud — each task sealed in its own <b>hardware-isolated VM</b>. It assumes the agent is already compromised: your real Anthropic key <b>never enters the sandbox</b> (a host-side gateway hands it short-lived, budget-capped tokens), egress is <b>deny-by-default</b>, and the only thing that crosses back out is a <span class="ic">git diff</span> you approve before it reaches origin.</p>
     <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.4</span> The full lifecycle works end-to-end; pre-1.0 and single-maintainer, no third-party security audit, behavior may change between versions, and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
     <div class="install reveal">
       <div class="install-label">Install · macOS · Apple silicon</div>
@@ -318,7 +318,7 @@ drydock start</pre>
   <div class="seclabel reveal"><span class="n">01</span> Why</div>
   <h2 class="reveal">Assume the VM is already hostile.</h2>
   <div class="prose reveal">
-    <p>The agent runs in bypass mode — every tool call executes with no confirmation. The threat isn't the agent misbehaving; it's the <b>code it runs</b>: a malicious dependency, a poisoned repository, a prompt-injection that turns a fetched URL into a shell command. drydock treats the sandbox as compromised by default and contains the blast radius with two boundaries that don't depend on the agent's good behavior: hardware isolation on one axis, deny-by-default egress on the other.</p>
+    <p>Most agent setups try to keep the agent <em>well-behaved</em> — permission prompts, output filters, policy. drydock takes the opposite stance: assume it is already compromised and make that survivable. The agent runs in bypass mode — every tool call executes with no confirmation — because the threat was never the agent misbehaving; it is the <b>code it runs</b>: a malicious dependency, a poisoned repository, a prompt-injection that turns a fetched URL into a shell command. drydock treats the sandbox as compromised by default and contains the blast radius with two boundaries that don't depend on the agent's good behavior: hardware isolation on one axis, deny-by-default egress on the other.</p>
     <p>Exactly one thing crosses <em>inward</em> (a per-task token + the instruction) and exactly one crosses <em>outward</em> (a diff a human approves). The agent produces <b>data</b>, never a command the host executes on its behalf.</p>
   </div>
   <table class="tbl reveal">
@@ -549,15 +549,10 @@ meter  usage → spent += cost(model, in, out)
   <h2 class="reveal">A diff is data. <span style="color:var(--mut)">.git is a weapon.</span></h2>
   <div class="prose reveal">
     <p>Mount a normal clone into the VM and then run <span class="ic">git commit</span>/<span class="ic">push</span> on the host against that same repo: a malicious agent can drop <span class="ic">.git/hooks/pre-commit</span> or poison <span class="ic">.git/config</span> — and those execute <b>on the host</b>, with the host's credentials. RCE straight through the trust boundary.</p>
-    <p>drydock clones on the host, moves <span class="ic">.git</span> out of the mounted path, mounts <b>only the work tree</b>, and runs host git with <span class="ic">core.hooksPath=/dev/null</span>. The diff — and nothing else — crosses back. <span style="color:var(--grn)">Adversarially reviewed; regression-tested.</span></p>
+    <p>drydock clones on the host, moves <span class="ic">.git</span> out of the mounted path, mounts <b>only the work tree</b>, and runs host git with <span class="ic">core.hooksPath=/dev/null</span>. The diff — and nothing else — crosses back. <span style="color:var(--grn)">Regression-tested.</span></p>
   </div>
 </section>
 
-<section id="status">
-  <div class="seclabel reveal"><span class="n">07</span> Status</div>
-  <h2 class="reveal">Audited, race-clean, shipping today.</h2>
-  <p class="status reveal">drydock boots on <span class="ic">apple/container 1.0</span> + Apple silicon and runs the full task lifecycle — POST, VM run, gated diff, approve, push. CI runs the build, vet, and the test suite on every change; there has been no third-party security audit. Install via the Homebrew tap (<span class="ic">brew install sricola/drydock/drydock</span>); the current release is <a href="https://github.com/sricola/drydock/releases/tag/v0.1.4" style="color:var(--grn)">v0.1.4</a>. Precise security claims live in the <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a>.</p>
-</section>
 
 </div>
 

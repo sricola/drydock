@@ -11,12 +11,19 @@
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
-drydock is a sandbox for autonomous coding agents on macOS. Each task runs
-in a per-task hardware-isolated VM; the agent never sees your real
-Anthropic key — a host-side credential gateway issues short-lived
-budgeted bearer tokens. Egress is deny-by-default. The only artifact
-that leaves the sandbox is a captured `git diff`, and it doesn't reach
-origin until you approve it.
+drydock runs autonomous coding agents on **your own Mac** — not someone's
+cloud — each task sealed in its own **hardware-isolated VM**. It starts from
+the assumption that the agent is already compromised: your real Anthropic key
+**never enters the sandbox** (a host-side gateway hands it short-lived,
+budget-capped tokens), egress is **deny-by-default**, and the only thing that
+crosses back out is a `git diff` you approve before it reaches origin.
+
+Most agent tooling tries to keep the agent *well-behaved* — permission
+prompts, output filters, policy. drydock takes the opposite stance: **contain
+the blast radius** so a hostile agent (a poisoned repo, a malicious
+dependency, a prompt-injection that turns a fetched URL into a shell command)
+can't reach your key, your filesystem, your push credentials, or the open
+internet — regardless of what it tries.
 
 > **Status: working alpha (v0.1.4).** The full task lifecycle works
 > end-to-end — submit → isolated VM → gated diff → push — and drydock ships
