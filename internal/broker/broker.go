@@ -69,13 +69,13 @@ type Broker struct {
 	Providers    map[string]creds.Provider // vendor -> provider
 	DefaultAgent string                    // "" -> "claude"
 	Approve      ApprovalFn
-	ImageRef   string
-	StageRoot  string
-	AuditRoot  string
-	Timeout    time.Duration
-	Network    string  // stable egress network name (e.g. drydock-egress)
-	GatewayIP  string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
-	ProxyPort  int     // squid port (e.g. 3128)
+	ImageRef     string
+	StageRoot    string
+	AuditRoot    string
+	Timeout      time.Duration
+	Network      string  // stable egress network name (e.g. drydock-egress)
+	GatewayIP    string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
+	ProxyPort    int     // squid port (e.g. 3128)
 	TaskBudget   float64 // USD budget per task
 	DefaultModel string  // operator-level default; per-task Task.Model overrides
 
@@ -294,21 +294,9 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentName := t.Agent
-	if agentName == "" {
-		agentName = b.DefaultAgent
-	}
-	if agentName == "" {
-		agentName = "claude"
-	}
-	vendor, known := agent.Vendor(agentName)
-	if !known {
-		http.Error(w, "unknown agent: "+agentName+" (want claude|codex)", http.StatusBadRequest)
-		return
-	}
-	prov := b.Providers[vendor]
-	if prov == nil {
-		http.Error(w, "agent unavailable — no API key configured for "+agentName, http.StatusBadRequest)
+	agentName, prov, status, msg := b.resolveAgent(t.Agent)
+	if status != 0 {
+		http.Error(w, msg, status)
 		return
 	}
 	grant, err := prov.Mint(b.TaskBudget)
@@ -714,4 +702,27 @@ func modelEnv(taskModel, defaultModel string) []string {
 		return []string{"DRYDOCK_MODEL=" + defaultModel}
 	}
 	return nil
+}
+
+// resolveAgent picks the agent (task value → operator default → "claude") and
+// returns the credential provider for its vendor. status is 0 when usable;
+// otherwise status is the HTTP code and msg the client-facing reason. It is
+// fail-closed: unknown agents and vendors with no configured key are rejected.
+func (b *Broker) resolveAgent(taskAgent string) (name string, prov creds.Provider, status int, msg string) {
+	name = taskAgent
+	if name == "" {
+		name = b.DefaultAgent
+	}
+	if name == "" {
+		name = "claude"
+	}
+	vendor, known := agent.Vendor(name)
+	if !known {
+		return name, nil, http.StatusBadRequest, "unknown agent: " + name + " (want claude|codex)"
+	}
+	prov = b.Providers[vendor]
+	if prov == nil {
+		return name, nil, http.StatusBadRequest, "agent unavailable — no API key configured for " + name
+	}
+	return name, prov, 0, ""
 }
