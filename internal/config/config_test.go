@@ -245,3 +245,17 @@ func truncate200(s string) string {
 	}
 	return s[:200] + "…"
 }
+
+func TestDefaultAgent_DefaultsToClaude(t *testing.T) {
+	if got := Defaults().DefaultAgent; got != "claude" {
+		t.Errorf("DefaultAgent default = %q, want claude", got)
+	}
+}
+
+func TestValidate_RejectsBadAgent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\ndefault_agent: gpt\n"), 0o644)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "default_agent") {
+		t.Errorf("want default_agent validation error, got %v", err)
+	}
+}
