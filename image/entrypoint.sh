@@ -9,13 +9,33 @@ AGENT="${DRYDOCK_AGENT:-claude}"
 
 case "$AGENT" in
   codex)
+    # codex ignores OPENAI_BASE_URL — it routes by its own model_provider
+    # config. Point a provider at the drydock credential gateway so the agent
+    # never talks to api.openai.com directly (deny-by-default egress would
+    # block it anyway). The grant injects OPENAI_BASE_URL=http://<gw>:8088 and
+    # OPENAI_API_KEY=<per-task bearer token>; codex's provider base_url wants
+    # the /v1 suffix (it appends /responses), and env_key tells it to send the
+    # token as the bearer the gateway validates.
+    GW_BASE="${OPENAI_BASE_URL:?missing OPENAI_BASE_URL}"
+    export CODEX_HOME=/home/agent/.codex
+    mkdir -p "$CODEX_HOME"
+    cat > "$CODEX_HOME/config.toml" <<EOF
+model_provider = "drydock"
+
+[model_providers.drydock]
+name = "drydock gateway"
+base_url = "${GW_BASE%/}/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+EOF
+    chown -R agent:agent "$CODEX_HOME"
     # The VM is the isolation boundary, so disable codex's own sandbox and
     # approval prompts. DRYDOCK_MODEL (when set) selects the model.
     MODEL_ARGS=()
     if [ -n "${DRYDOCK_MODEL:-}" ]; then
         MODEL_ARGS=(--model "${DRYDOCK_MODEL}")
     fi
-    exec gosu agent codex exec \
+    exec gosu agent env "CODEX_HOME=$CODEX_HOME" codex exec \
         --dangerously-bypass-approvals-and-sandbox \
         "${MODEL_ARGS[@]}" \
         "${PROMPT}"
