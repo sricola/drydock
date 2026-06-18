@@ -58,3 +58,11 @@ func (g *grant) Revoke() error {
 	g.gw.Revoke(g.token)
 	return nil
 }
+
+func (g *grant) Spent() float64 {
+	s := g.gw.spent(g.token)
+	if s < 0 {
+		return 0 // lease already revoked/expired
+	}
+	return s
+}

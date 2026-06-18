@@ -98,3 +98,47 @@ func TestGateway_RevokeInvalidates(t *testing.T) {
 		t.Errorf("status = %d after revoke, want 401", rec.Code)
 	}
 }
+
+func TestGrant_SpentReflectsMeteredCost(t *testing.T) {
+	up := upstream(t)
+	defer up.Close()
+	g := newGW(t, up.URL)
+	p := &Provider{GW: g, Vendor: "anthropic", BaseURL: "http://192.168.64.1:8088", TTL: time.Minute, Budget: 100}
+
+	grant, err := p.Mint(100)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	defer grant.Revoke()
+
+	// Before any request, spend should be zero.
+	if got := grant.Spent(); got != 0 {
+		t.Errorf("Spent before request = %v, want 0", got)
+	}
+
+	// Drive a request through the gateway to accumulate spend.
+	// The grant's token is in its env vars; extract it.
+	var tok string
+	for _, e := range grant.EnvVars() {
+		if len(e) > len("ANTHROPIC_AUTH_TOKEN=") && e[:len("ANTHROPIC_AUTH_TOKEN=")] == "ANTHROPIC_AUTH_TOKEN=" {
+			tok = e[len("ANTHROPIC_AUTH_TOKEN="):]
+		}
+	}
+	if tok == "" {
+		t.Fatal("could not extract token from EnvVars")
+	}
+	rec := do(g, tok)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy request failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 1M in @3 + 1M out @15 = 18.0 spent; Spent() must reflect that.
+	got := grant.Spent()
+	if got < 17.9 || got > 18.1 {
+		t.Errorf("Spent() = %v, want ~18", got)
+	}
+	// Also verify it matches the underlying gateway lease.
+	if lease := g.spent(tok); got != lease {
+		t.Errorf("Spent() = %v, gateway.spent() = %v, want equal", got, lease)
+	}
+}

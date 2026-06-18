@@ -374,6 +374,16 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// codex exec doesn't emit Claude's stream-json `result` trailer, so a
+	// completed codex task would read as `running?` in `drydock tasks`.
+	// Synthesize the terminal event from the elapsed time and the metered
+	// gateway spend. (Claude writes its own result line; don't double it.)
+	if agentName != "claude" {
+		_, _ = fmt.Fprintf(logf,
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0}`+"\n",
+			time.Since(taskStart).Milliseconds(), grant.Spent())
+	}
+
 	diff, err := st.CaptureDiff()
 	if err != nil {
 		http.Error(w, "diff capture failed", http.StatusInternalServerError)
