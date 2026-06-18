@@ -90,8 +90,10 @@ func TestLoad_ParsesYAML(t *testing.T) {
 	if !cfg.Default.AllowDNS {
 		t.Errorf("AllowDNS = false, want true")
 	}
-	if len(cfg.Default.Domains) != 1 || cfg.Default.Domains[0].Host != "api.anthropic.com" {
-		t.Errorf("Domains = %+v, want one api.anthropic.com", cfg.Default.Domains)
+	if len(cfg.Default.Domains) != 2 ||
+		cfg.Default.Domains[0].Host != "api.anthropic.com" ||
+		cfg.Default.Domains[1].Host != "api.openai.com" {
+		t.Errorf("Domains = %+v, want [api.anthropic.com, api.openai.com]", cfg.Default.Domains)
 	}
 	if !cfg.PerTaskWidening.RequiresApproval {
 		t.Errorf("RequiresApproval = false, want true")

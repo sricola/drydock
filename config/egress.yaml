@@ -3,6 +3,7 @@ default:
   allow_dns: true
   domains:
     - { host: api.anthropic.com,      ports: [443] }
+    - { host: api.openai.com,         ports: [443] }
     # JavaScript
     - { host: registry.npmjs.org,     ports: [443] }
     # Python

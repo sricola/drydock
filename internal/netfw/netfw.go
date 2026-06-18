@@ -10,15 +10,18 @@ import (
 	"drydock/internal/egress"
 )
 
-// modelAPIHost is reached via the credential gateway, not squid.
-const modelAPIHost = "api.anthropic.com"
+// gatewayHosts are reached via the credential gateway, not squid.
+var gatewayHosts = map[string]bool{
+	"api.anthropic.com": true,
+	"api.openai.com":    true,
+}
 
 // CompileSquidAllowlist renders one dstdomain per allowed host, excluding the
 // model API (which the gateway handles). Consumed as a squid "dstdomain" file.
 func CompileSquidAllowlist(cfg egress.Config) string {
 	var b strings.Builder
 	for _, d := range cfg.Default.Domains {
-		if d.Host == modelAPIHost {
+		if gatewayHosts[d.Host] {
 			continue
 		}
 		fmt.Fprintf(&b, "%s\n", d.Host)

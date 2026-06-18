@@ -13,6 +13,7 @@ func cfg() egress.Config {
 	var c egress.Config
 	c.Default.Domains = []egress.Domain{
 		{Host: "api.anthropic.com", Ports: []int{443}},
+		{Host: "api.openai.com", Ports: []int{443}},
 		{Host: "registry.npmjs.org", Ports: []int{443}},
 		{Host: "pypi.org", Ports: []int{443}},
 	}
@@ -22,10 +23,16 @@ func cfg() egress.Config {
 func TestCompileSquidAllowlist_ExcludesModelAPI(t *testing.T) {
 	out := CompileSquidAllowlist(cfg())
 	if strings.Contains(out, "anthropic.com") {
-		t.Errorf("model API must go via the gateway, not squid:\n%s", out)
+		t.Errorf("api.anthropic.com must go via the gateway, not squid:\n%s", out)
 	}
-	if !strings.Contains(out, "registry.npmjs.org") || !strings.Contains(out, "pypi.org") {
-		t.Errorf("registries missing from squid allowlist:\n%s", out)
+	if strings.Contains(out, "openai.com") {
+		t.Errorf("api.openai.com must go via the gateway, not squid:\n%s", out)
+	}
+	if !strings.Contains(out, "registry.npmjs.org") {
+		t.Errorf("registry.npmjs.org missing from squid allowlist:\n%s", out)
+	}
+	if !strings.Contains(out, "pypi.org") {
+		t.Errorf("pypi.org missing from squid allowlist:\n%s", out)
 	}
 }
 
