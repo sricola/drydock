@@ -31,6 +31,16 @@ func TestParseOpenAIUsage_StreamingResponsesEvent(t *testing.T) {
 	}
 }
 
+func TestParseOpenAIUsage_StreamingChatCompletionsNaming(t *testing.T) {
+	body := []byte("data: {\"model\":\"gpt-5\",\"choices\":[]}\n\n" +
+		"data: {\"model\":\"gpt-5\",\"usage\":{\"prompt_tokens\":80,\"completion_tokens\":12}}\n\n" +
+		"data: [DONE]\n")
+	m, in, out, ok := parseOpenAIUsage(body, "text/event-stream")
+	if !ok || m != "gpt-5" || in != 80 || out != 12 {
+		t.Fatalf("got (%q,%d,%d,%v)", m, in, out, ok)
+	}
+}
+
 func TestOpenAIVendor_InjectsBearer(t *testing.T) {
 	r, _ := http.NewRequest("POST", "http://gw/v1/responses", nil)
 	r.Header.Set("Authorization", "Bearer tok_fake")

@@ -109,6 +109,9 @@ func openaiUsageFromJSON(b []byte) (model string, in, out int, ok bool) {
 	if u == nil {
 		return "", 0, 0, false
 	}
+	// Zero is treated as "field absent": OpenAI omits the Responses-style
+	// fields when a response uses Chat-Completions naming (and vice versa),
+	// and a real call never reports zero input+output tokens.
 	in, out = u.InputTokens, u.OutputTokens
 	if in == 0 {
 		in = u.PromptTokens
