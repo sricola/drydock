@@ -11,6 +11,7 @@
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
+
 drydock runs autonomous coding agents (**Claude Code** or **OpenAI Codex**,
 per-task selectable) on **your own Mac** — not someone's cloud — each task
 sealed in its own **hardware-isolated VM**. It starts from the assumption that
