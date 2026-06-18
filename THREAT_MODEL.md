@@ -97,7 +97,7 @@ sees a budget-capped bearer token regardless of which upstream backs it.
 
 **Implementation:** `internal/gateway/provider.go` injects only
 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (Claude) or
-`OPENAI_BASE_URL`/`OPENAI_AUTH_TOKEN` (Codex). The real key never crosses
+`OPENAI_BASE_URL`/`OPENAI_API_KEY` (Codex). The real key never crosses
 the `container run` boundary.
 
 ### A2. Agent makes outbound calls to hostile or unintended hosts
