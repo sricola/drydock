@@ -251,7 +251,7 @@ init` with the defaults below as a commented template. Edit and re-run
 | — | `ANTHROPIC_API_KEY` | *(required)* | Real key; **host-only**, never goes to disk |
 | `network` | `DRYDOCK_NETWORK` | `drydock-egress` | vmnet network name |
 | `gateway_ip` | `DRYDOCK_GW_IP` | `192.168.66.1` | gateway + squid bind here |
-| `sandbox_image` | `SANDBOX_IMAGE` | `claude-sandbox:latest` | per-task agent VM image |
+| `sandbox_image` | `SANDBOX_IMAGE` | `drydock-sandbox:latest` | per-task agent VM image |
 | `anchor_image` | `DRYDOCK_ANCHOR_IMAGE` | `drydock-anchor:latest` | minimal sleep-forever image holding the vmnet gateway IP |
 | `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | per-task USD ceiling |
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | excess POSTs to `/tasks` get HTTP 503 |
@@ -297,7 +297,7 @@ internal/
   runner/         # `container run` argv builder
   sockpath/       # shared per-uid socket path discovery for brokerd + CLI
   stage/          # work tree, host-side commit + push, curated adapter env
-image/            # claude-sandbox: Dockerfile + entrypoint.sh + init-firewall.sh
+image/            # drydock-sandbox: Dockerfile + entrypoint.sh + init-firewall.sh
 image/anchor/     # drydock-anchor: FROM scratch + static Go sleep binary
 tests/integration # //go:build integration — boots brokerd against real container CLI
 config/           # egress.yaml

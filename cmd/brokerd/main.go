@@ -353,7 +353,7 @@ func pruneOrphanTasks() {
 // startAnchor keeps the network's vmnet gateway interface up. Idempotent: any
 // stale anchor is removed first. Uses a dedicated minimal image (drydock-anchor)
 // FROM scratch + a static Go binary that sleeps — sharing the agent image
-// here was a persistent-attack-surface risk if claude-sandbox were ever
+// here was a persistent-attack-surface risk if drydock-sandbox were ever
 // compromised.
 func startAnchor(network, image string) {
 	_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()

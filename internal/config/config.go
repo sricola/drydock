@@ -68,7 +68,7 @@ func Defaults() *Config {
 	c := &Config{
 		Network:                "drydock-egress",
 		GatewayIP:              "192.168.66.1",
-		SandboxImage:           "claude-sandbox:latest",
+		SandboxImage:           "drydock-sandbox:latest",
 		AnchorImage:            "drydock-anchor:latest",
 		TaskBudgetUSD:          2.0,
 		MaxConcurrent:          2,
@@ -266,7 +266,7 @@ const SeedTemplate = `# drydock configuration. Re-run ` + "`" + `drydock start` 
 # --- Container runtime ---
 network:        drydock-egress         # vmnet network name (must exist)
 gateway_ip:     192.168.66.1           # gateway + squid bind here
-sandbox_image:  claude-sandbox:latest  # per-task agent VM image
+sandbox_image:  drydock-sandbox:latest # per-task agent VM image
 anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
 
 # --- Per-task limits ---

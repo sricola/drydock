@@ -9,7 +9,7 @@ func TestBuildRunArgs_Contains(t *testing.T) {
 	args := BuildRunArgs(Spec{
 		TaskID:     "abc123",
 		Network:    "drydock-egress",
-		ImageRef:   "claude-sandbox:latest",
+		ImageRef:   "drydock-sandbox:latest",
 		Env:        []string{"ANTHROPIC_BASE_URL=http://gw:8088", "DRYDOCK_GW_IP=192.168.64.1"},
 		StageDir:   "/tmp/broker/stage/abc123",
 		PromptFile: "/work/.task/prompt.txt",
@@ -36,7 +36,7 @@ func TestBuildRunArgs_Contains(t *testing.T) {
 	if args[len(args)-1] != "/usr/local/bin/entrypoint.sh" {
 		t.Errorf("last arg = %q, want entrypoint.sh", args[len(args)-1])
 	}
-	if !slices.Contains(args, "claude-sandbox:latest") {
+	if !slices.Contains(args, "drydock-sandbox:latest") {
 		t.Errorf("args missing image ref")
 	}
 }

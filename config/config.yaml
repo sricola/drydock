@@ -7,7 +7,7 @@
 # --- Container runtime ---
 network:        drydock-egress         # vmnet network name (must exist)
 gateway_ip:     192.168.66.1           # gateway + squid bind here
-sandbox_image:  claude-sandbox:latest  # per-task agent VM image
+sandbox_image:  drydock-sandbox:latest # per-task agent VM image
 anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
 
 # --- Per-task limits ---

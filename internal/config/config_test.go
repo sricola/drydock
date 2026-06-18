@@ -22,7 +22,7 @@ func TestDefaults_MatchV01EnvFallbacks(t *testing.T) {
 	wants := map[string]any{
 		"Network":       "drydock-egress",
 		"GatewayIP":     "192.168.66.1",
-		"SandboxImage":  "claude-sandbox:latest",
+		"SandboxImage":  "drydock-sandbox:latest",
 		"AnchorImage":   "drydock-anchor:latest",
 		"TaskBudgetUSD": 2.0,
 		"MaxConcurrent": 2,
@@ -159,7 +159,7 @@ func TestExpandHome_RewritesTilde(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	yaml := []byte(`network: drydock-egress
 gateway_ip: 192.168.66.1
-sandbox_image: claude-sandbox:latest
+sandbox_image: drydock-sandbox:latest
 anchor_image: drydock-anchor:latest
 task_budget_usd: 2.0
 max_concurrent_tasks: 2
