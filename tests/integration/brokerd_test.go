@@ -18,6 +18,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -320,6 +321,11 @@ func TestBrokerd_CodexTaskReachesAwaitingApproval(t *testing.T) {
 		t.Skip("OPENAI_API_KEY not set; skipping codex integration test")
 	}
 
+	repo := os.Getenv("DRYDOCK_CODEX_TEST_REPO")
+	if repo == "" {
+		t.Skip("DRYDOCK_CODEX_TEST_REPO not set (need a real clonable repo); skipping codex integration test")
+	}
+
 	h := startBrokerdOpenAI(t, openaiKey)
 
 	// Submit the codex task asynchronously — POST /tasks is synchronous and
@@ -335,11 +341,11 @@ func TestBrokerd_CodexTaskReachesAwaitingApproval(t *testing.T) {
 		resp, err := h.client().Post(
 			"http://drydock/tasks",
 			"application/json",
-			strings.NewReader(`{
-				"repo_ref":    "https://github.com/example/drydock-codex-test.git",
+			strings.NewReader(fmt.Sprintf(`{
+				"repo_ref":    "%s",
 				"instruction": "add a comment to README.md",
 				"agent":       "codex"
-			}`),
+			}`, repo)),
 		)
 		if err != nil {
 			postDone <- postResult{err: err}
