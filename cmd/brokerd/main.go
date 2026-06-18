@@ -162,8 +162,9 @@ func main() {
 	slog.Info("agents available", "anthropic", anthropicKey != "", "openai", openaiKey != "")
 
 	b := &broker.Broker{
-		Cfg:   egCfg,
-		Creds: providers["anthropic"],
+		Cfg:          egCfg,
+		Providers:    providers,
+		DefaultAgent: "claude", // TODO(task5): use cfg.DefaultAgent
 		Approve: func(kind string, _ any) bool {
 			slog.Info("approval gate auto-approve (MVP)", "kind", kind)
 			return true

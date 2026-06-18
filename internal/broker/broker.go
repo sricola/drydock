@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"drydock/internal/agent"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
 	"drydock/internal/remote"
@@ -53,6 +54,10 @@ type Task struct {
 	// own default. Value is unvalidated here — claude-code rejects unknown
 	// IDs at start, fail-closed.
 	Model string `json:"model"`
+	// Agent selects the sandbox CLI: "claude" (default) or "codex". Empty
+	// falls back to Broker.DefaultAgent, then "claude". Unknown agents are
+	// rejected before any VM starts (fail-closed).
+	Agent string `json:"agent"`
 }
 
 // ApprovalFn gates the egress-widening step. The diff-push step now has
@@ -60,9 +65,10 @@ type Task struct {
 type ApprovalFn func(kind string, payload any) bool
 
 type Broker struct {
-	Cfg        egress.Config
-	Creds      creds.Provider
-	Approve    ApprovalFn
+	Cfg          egress.Config
+	Providers    map[string]creds.Provider // vendor -> provider
+	DefaultAgent string                    // "" -> "claude"
+	Approve      ApprovalFn
 	ImageRef   string
 	StageRoot  string
 	AuditRoot  string
@@ -288,7 +294,24 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grant, err := b.Creds.Mint(b.TaskBudget)
+	agentName := t.Agent
+	if agentName == "" {
+		agentName = b.DefaultAgent
+	}
+	if agentName == "" {
+		agentName = "claude"
+	}
+	vendor, known := agent.Vendor(agentName)
+	if !known {
+		http.Error(w, "unknown agent: "+agentName+" (want claude|codex)", http.StatusBadRequest)
+		return
+	}
+	prov := b.Providers[vendor]
+	if prov == nil {
+		http.Error(w, "agent unavailable — no API key configured for "+agentName, http.StatusBadRequest)
+		return
+	}
+	grant, err := prov.Mint(b.TaskBudget)
 	if err != nil {
 		http.Error(w, "credential mint failed", http.StatusInternalServerError)
 		return
@@ -324,6 +347,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		"DRYDOCK_GW_IP="+b.GatewayIP,
 	)
 	env = append(env, modelEnv(t.Model, b.DefaultModel)...)
+	env = append(env, "DRYDOCK_AGENT="+agentName)
 
 	args := runner.BuildRunArgs(runner.Spec{
 		TaskID:     taskID,
