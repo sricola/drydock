@@ -36,3 +36,18 @@ func AnthropicVendor() Vendor {
 		Prices:     AnthropicPrices(),
 	}
 }
+
+// OpenAIVendor is the api.openai.com upstream: bearer auth, OpenAI usage
+// shapes (Responses + Chat Completions), OpenAI prices.
+func OpenAIVendor() Vendor {
+	return Vendor{
+		Name:    "openai",
+		BaseURL: "https://api.openai.com",
+		Inject: func(r *http.Request, realKey string) {
+			r.Header.Del("X-Api-Key")
+			r.Header.Set("Authorization", "Bearer "+realKey)
+		},
+		ParseUsage: parseOpenAIUsage,
+		Prices:     OpenAIPrices(),
+	}
+}

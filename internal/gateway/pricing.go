@@ -34,6 +34,20 @@ func AnthropicPrices() map[string]Price {
 	}
 }
 
+// OpenAIPrices seeds the per-task budget gate for Codex tasks. USD per 1M
+// tokens, approximate (OpenAI publishes live rates). "default" is the family
+// high end so a new model can't overrun the budget before this table catches
+// up. Tune for your workload — the gate is a safety cap, not billing truth.
+func OpenAIPrices() map[string]Price {
+	return map[string]Price{
+		"gpt-5":       {InputPer1M: 1.25, OutputPer1M: 10},
+		"gpt-5-codex": {InputPer1M: 1.25, OutputPer1M: 10},
+		"gpt-5-mini":  {InputPer1M: 0.25, OutputPer1M: 2},
+		"o4-mini":     {InputPer1M: 1.1, OutputPer1M: 4.4},
+		"default":     {InputPer1M: 1.25, OutputPer1M: 10},
+	}
+}
+
 func cost(prices map[string]Price, model string, in, out int) float64 {
 	p, ok := prices[model]
 	if !ok {
