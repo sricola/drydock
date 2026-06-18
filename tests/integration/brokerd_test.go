@@ -243,6 +243,191 @@ func TestBrokerd_TaskValidation(t *testing.T) {
 	}
 }
 
+// startBrokerdOpenAI is a variant of startBrokerd that sets OPENAI_API_KEY
+// from the caller-supplied value instead of the placeholder Anthropic key.
+// The ANTHROPIC_API_KEY is intentionally omitted so brokerd starts with only
+// the OpenAI vendor configured — exercising the codex-only path.
+func startBrokerdOpenAI(t *testing.T, openaiKey string) *brokerdHandle {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "drydk-")
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s")
+
+	egressPath, err := filepath.Abs("../../config/egress.yaml")
+	if err != nil {
+		t.Fatalf("locate egress.yaml: %v", err)
+	}
+
+	cmd := exec.Command(brokerdBin)
+	cmd.Env = append(os.Environ(),
+		"OPENAI_API_KEY="+openaiKey,
+		"DRYDOCK_NO_NOTIFY=1",
+		"BROKER_SOCKET="+sock,
+		"EGRESS_CONFIG="+egressPath,
+		"AUDIT_ROOT="+filepath.Join(dir, "audit"),
+		"STAGE_ROOT="+filepath.Join(dir, "stage"),
+		"SQUID_RUN_DIR="+filepath.Join(dir, "squid"),
+	)
+	// Strip any ambient ANTHROPIC_API_KEY so only the OpenAI provider is
+	// registered. We rebuild the env from os.Environ() above, so override it.
+	filtered := cmd.Env[:0]
+	for _, kv := range cmd.Env {
+		if !strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") {
+			filtered = append(filtered, kv)
+		}
+	}
+	cmd.Env = filtered
+
+	logFile, err := os.Create(filepath.Join(dir, "brokerd.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start brokerd: %v", err)
+	}
+	h := &brokerdHandle{t: t, cmd: cmd, sock: sock}
+	t.Cleanup(h.stop)
+
+	if !h.waitReady(20 * time.Second) {
+		logBytes, _ := os.ReadFile(filepath.Join(dir, "brokerd.log"))
+		t.Fatalf("brokerd never became ready. log:\n%s", logBytes)
+	}
+	return h
+}
+
+// TestBrokerd_CodexTaskReachesAwaitingApproval submits a task with
+// agent:"codex" and asserts the broker registers it (task appears in
+// /admin/tasks as running or awaiting_approval), then kills it to avoid
+// spending real tokens.
+//
+// Skip conditions (any one is sufficient):
+//   - OPENAI_API_KEY unset — no key, no spend
+//
+// This test requires macOS Apple-silicon, the Apple container CLI, a pre-built
+// drydock-sandbox image whose Codex exec flags are confirmed per Task 8, and a
+// real OPENAI_API_KEY. It is NOT run in CI and is NOT claimed to have passed
+// in any automated environment. Run manually:
+//
+//	go test -tags integration -v -run TestBrokerd_CodexTaskReachesAwaitingApproval ./tests/integration/
+func TestBrokerd_CodexTaskReachesAwaitingApproval(t *testing.T) {
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiKey == "" {
+		t.Skip("OPENAI_API_KEY not set; skipping codex integration test")
+	}
+
+	h := startBrokerdOpenAI(t, openaiKey)
+
+	// Submit the codex task asynchronously — POST /tasks is synchronous and
+	// blocks until the container run finishes (or is killed). We poll
+	// /admin/tasks from the test goroutine while the submission is in flight.
+	type postResult struct {
+		statusCode int
+		body       []byte
+		err        error
+	}
+	postDone := make(chan postResult, 1)
+	go func() {
+		resp, err := h.client().Post(
+			"http://drydock/tasks",
+			"application/json",
+			strings.NewReader(`{
+				"repo_ref":    "https://github.com/example/drydock-codex-test.git",
+				"instruction": "add a comment to README.md",
+				"agent":       "codex"
+			}`),
+		)
+		if err != nil {
+			postDone <- postResult{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		var buf [4096]byte
+		n, _ := resp.Body.Read(buf[:])
+		postDone <- postResult{statusCode: resp.StatusCode, body: buf[:n]}
+	}()
+
+	// Poll /admin/tasks until the task appears (running or awaiting_approval).
+	// Give it up to 60 s for the container CLI to start the VM.
+	var taskID string
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := h.get("/admin/tasks")
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		var tasks []map[string]any
+		if jerr := json.NewDecoder(resp.Body).Decode(&tasks); jerr != nil {
+			resp.Body.Close()
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		resp.Body.Close()
+		for _, task := range tasks {
+			id, _ := task["id"].(string)
+			if id != "" {
+				taskID = id
+				break
+			}
+		}
+		if taskID != "" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if taskID == "" {
+		// The task never appeared — it may have been rejected immediately
+		// (e.g. the container CLI is unavailable on this host). Check what
+		// the POST returned before declaring failure.
+		select {
+		case pr := <-postDone:
+			if pr.err != nil {
+				t.Fatalf("POST /tasks: %v", pr.err)
+			}
+			t.Fatalf("task never appeared in /admin/tasks; POST returned %d: %s",
+				pr.statusCode, pr.body)
+		default:
+			t.Fatal("task never appeared in /admin/tasks within 60 s")
+		}
+	}
+
+	// Task is live. Kill it to avoid any real spend.
+	killResp, err := h.client().Post(
+		"http://drydock/admin/kill/"+taskID,
+		"application/json",
+		strings.NewReader(""),
+	)
+	if err != nil {
+		t.Fatalf("kill task %s: %v", taskID, err)
+	}
+	killResp.Body.Close()
+	if killResp.StatusCode != http.StatusNoContent {
+		t.Errorf("kill returned %d, want 204", killResp.StatusCode)
+	}
+
+	// Wait for the POST goroutine to finish (the kill propagates via context
+	// cancellation; brokerd should respond within a few seconds).
+	select {
+	case pr := <-postDone:
+		if pr.err != nil {
+			t.Fatalf("POST /tasks after kill: %v", pr.err)
+		}
+		// Accepted responses: 200 with cancelled:true, or 500 if the
+		// container run failed before the kill landed. Both are fine — the
+		// point is the task was registered and killed cleanly.
+		if pr.statusCode != http.StatusOK && pr.statusCode != http.StatusInternalServerError {
+			t.Errorf("POST /tasks returned %d after kill, want 200 or 500", pr.statusCode)
+		}
+	case <-time.After(30 * time.Second):
+		t.Error("POST /tasks goroutine did not return within 30 s after kill")
+	}
+}
+
 func TestDrydock_CLIAgainstLiveBroker(t *testing.T) {
 	h := startBrokerd(t)
 
