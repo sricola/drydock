@@ -11,12 +11,13 @@
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
-drydock runs autonomous coding agents on **your own Mac** — not someone's
-cloud — each task sealed in its own **hardware-isolated VM**. It starts from
-the assumption that the agent is already compromised: your real Anthropic key
-**never enters the sandbox** (a host-side gateway hands it short-lived,
-budget-capped tokens), egress is **deny-by-default**, and the only thing that
-crosses back out is a `git diff` you approve before it reaches origin.
+drydock runs autonomous coding agents (**Claude Code** or **OpenAI Codex**,
+per-task selectable) on **your own Mac** — not someone's cloud — each task
+sealed in its own **hardware-isolated VM**. It starts from the assumption that
+the agent is already compromised: your real API key **never enters the sandbox**
+(a host-side gateway hands it short-lived, budget-capped tokens), egress is
+**deny-by-default**, and the only thing that crosses back out is a `git diff`
+you approve before it reaches origin.
 
 Most agent tooling tries to keep the agent *well-behaved* — permission
 prompts, output filters, policy. drydock takes the opposite stance: **contain
@@ -78,8 +79,12 @@ per-step status. Idempotent — re-run any time.
 
 ## Run
 
+At least one vendor key is required. Both are host-only — they never go to
+disk and never enter the VM:
+
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...   # required for Claude Code tasks
+export OPENAI_API_KEY=sk-...          # required for Codex tasks
 drydock start              # foreground; ^C to stop. backgrounds via & or your launchd plist.
 ```
 
@@ -138,6 +143,9 @@ drydock doctor                # smoke-test the sandbox setup (no API spend)
 ### Submit variations
 
 ```bash
+# Use OpenAI Codex instead of Claude Code for this task
+drydock submit --repo … --instruction "…" --agent codex
+
 # Long prompt from a file
 drydock submit --repo … --instruction-file ./task.md
 
@@ -248,7 +256,9 @@ init` with the defaults below as a commented template. Edit and re-run
 
 | Field (`config.yaml`) | Env override | Default | Meaning |
 |---|---|---|---|
-| — | `ANTHROPIC_API_KEY` | *(required)* | Real key; **host-only**, never goes to disk |
+| — | `ANTHROPIC_API_KEY` | *(at least one required)* | Real Anthropic key; **host-only**, never goes to disk |
+| — | `OPENAI_API_KEY` | *(at least one required)* | Real OpenAI key; **host-only**, never goes to disk |
+| `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent to use when `--agent` is not passed; allowed values: `claude` \| `codex` |
 | `network` | `DRYDOCK_NETWORK` | `drydock-egress` | vmnet network name |
 | `gateway_ip` | `DRYDOCK_GW_IP` | `192.168.66.1` | gateway + squid bind here |
 | `sandbox_image` | `SANDBOX_IMAGE` | `drydock-sandbox:latest` | per-task agent VM image |
