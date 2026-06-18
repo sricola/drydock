@@ -10,8 +10,8 @@ import (
 )
 
 func TestProvider_GrantCarriesBaseURLAndToken(t *testing.T) {
-	g, _ := New("REAL", "http://unused", DefaultPrices())
-	var p creds.Provider = &Provider{GW: g, BaseURL: "http://192.168.64.1:8088", TTL: time.Minute}
+	g, _ := New(Backend{Vendor: AnthropicVendor(), RealKey: "REAL"})
+	var p creds.Provider = &Provider{GW: g, Vendor: "anthropic", BaseURL: "http://192.168.64.1:8088", TTL: time.Minute}
 
 	grant, err := p.Mint(2.5)
 	if err != nil {

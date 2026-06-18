@@ -25,8 +25,8 @@ func TestCost_FallsBackToDefault(t *testing.T) {
 // The seeded table must (a) cover the current 4.x families, (b) have a
 // fallback that's at least as expensive as the priciest known model, so an
 // unknown release can't accidentally undercount and overrun the budget.
-func TestDefaultPrices_CoversFamiliesAndFailsConservative(t *testing.T) {
-	p := DefaultPrices()
+func TestAnthropicPrices_CoversFamiliesAndFailsConservative(t *testing.T) {
+	p := AnthropicPrices()
 	mustHave := []string{
 		"claude-opus-4-7", "claude-opus-4-8",
 		"claude-sonnet-4-6",

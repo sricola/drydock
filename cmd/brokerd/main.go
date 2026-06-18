@@ -128,7 +128,7 @@ func main() {
 	go func() { <-sigCh; cleanup(); os.Exit(0) }()
 
 	// Credential gateway: real key host-only; the VM gets a bearer token.
-	gw, err := gateway.New(apiKey, "https://api.anthropic.com", gateway.DefaultPrices())
+	gw, err := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), RealKey: apiKey})
 	if err != nil {
 		cleanup()
 		die("gateway init failed", "err", err)
@@ -143,6 +143,7 @@ func main() {
 
 	var provider creds.Provider = &gateway.Provider{
 		GW:      gw,
+		Vendor:  "anthropic",
 		BaseURL: "http://" + gwAddr,
 		Budget:  cfg.TaskBudgetUSD,
 		TTL:     cfg.TaskTimeout + 5*time.Minute,

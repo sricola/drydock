@@ -5,9 +5,9 @@ import (
 	"strings"
 )
 
-// parseUsage extracts (model, input tokens, output tokens) from an Anthropic
+// parseAnthropicUsage extracts (model, input tokens, output tokens) from an Anthropic
 // response body, handling both a single JSON message and an SSE stream.
-func parseUsage(body []byte, contentType string) (model string, in, out int, ok bool) {
+func parseAnthropicUsage(body []byte, contentType string) (model string, in, out int, ok bool) {
 	if strings.Contains(contentType, "text/event-stream") {
 		return parseSSEUsage(body)
 	}

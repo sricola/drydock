@@ -26,7 +26,14 @@ func upstream(t *testing.T) *httptest.Server {
 
 func newGW(t *testing.T, up string) *Gateway {
 	t.Helper()
-	g, err := New("REAL", up, map[string]Price{"claude-x": {InputPer1M: 3, OutputPer1M: 15}})
+	v := Vendor{
+		Name:       "anthropic",
+		BaseURL:    up,
+		Inject:     AnthropicVendor().Inject,
+		ParseUsage: parseAnthropicUsage,
+		Prices:     map[string]Price{"claude-x": {InputPer1M: 3, OutputPer1M: 15}},
+	}
+	g, err := New(Backend{Vendor: v, RealKey: "REAL"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +52,7 @@ func TestGateway_ValidTokenProxiesAndMeters(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok := g.Mint(100, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, time.Minute)
 
 	rec := do(g, tok)
 	if rec.Code != http.StatusOK {
@@ -66,7 +73,7 @@ func TestGateway_UnknownToken401(t *testing.T) {
 
 func TestGateway_ExpiredToken401(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok := g.Mint(100, -time.Second) // already expired
+	tok, _ := g.Mint("anthropic", 100, -time.Second) // already expired
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rec.Code)
 	}
@@ -76,7 +83,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok := g.Mint(1.0, time.Minute) // budget 1.0; one call spends ~18 → next call 402
+	tok, _ := g.Mint("anthropic", 1.0, time.Minute) // budget 1.0; one call spends ~18 → next call 402
 	do(g, tok)
 	if rec := do(g, tok); rec.Code != http.StatusPaymentRequired {
 		t.Errorf("status = %d, want 402", rec.Code)
@@ -85,7 +92,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 
 func TestGateway_RevokeInvalidates(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok := g.Mint(100, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, time.Minute)
 	g.Revoke(tok)
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d after revoke, want 401", rec.Code)

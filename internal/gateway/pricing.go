@@ -6,17 +6,17 @@ type Price struct {
 	OutputPer1M float64
 }
 
-// DefaultPrices seeds the per-task budget gate. Keys match the model string
-// that parseUsage extracts from `message.model` (the base ID, not the modelUsage
-// "[1m]" suffix). Numbers are approximate — Anthropic publishes the live rates
-// and the 1M-context tier carries a premium not modeled here. The gate is a
-// safety cap, not a billing source of truth; tune for your workload.
+// AnthropicPrices seeds the per-task budget gate. Keys match the model string
+// that parseAnthropicUsage extracts from `message.model` (the base ID, not the
+// modelUsage "[1m]" suffix). Numbers are approximate — Anthropic publishes the
+// live rates and the 1M-context tier carries a premium not modeled here. The
+// gate is a safety cap, not a billing source of truth; tune for your workload.
 //
 // "default" catches any model not in the table (e.g. when a new release lands
 // before the operator updates this file). It's set to the family's high end
 // so new models can't accidentally spend past the budget while the table
 // catches up.
-func DefaultPrices() map[string]Price {
+func AnthropicPrices() map[string]Price {
 	return map[string]Price{
 		// Opus family — frontier tier.
 		"claude-opus-4-5": {InputPer1M: 15, OutputPer1M: 75},
