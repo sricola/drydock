@@ -11,7 +11,7 @@ For people evaluating drydock who haven't read the full doc:
 
 - **What we contain**: the agent process inside the per-task VM. Treat
   every tool call, file write, and HTTP request it makes as adversarial.
-- **What we protect**: your real Anthropic key (never enters the VM),
+- **What we protect**: your real API key — Anthropic or OpenAI, whichever the task uses — (never enters the VM),
   your host filesystem and git credentials (never mounted into the VM),
   egress (deny-by-default hostname allowlist enforced on the host).
 - **What crosses back to the host**: a single `git diff`. Not commands,
@@ -75,21 +75,29 @@ outside drydock:
 | Host filesystem | trusted | drydock writes audit logs, staging, sockets here |
 | Apple `container` runtime + vmnet | trusted | underlies the VM/network boundary |
 | Squid + nft | trusted | enforce the network policy |
-| `claude-code` binary inside the VM | **untrusted** | runs the agent loop and the agent's tool calls |
+| `claude-code` or `codex` binary inside the VM | **untrusted** | runs the agent loop and the agent's tool calls |
 | The staged repository contents | **untrusted** | may contain hostile files |
 | The agent's outputs (tool calls, file writes, the captured diff) | **untrusted** | filtered, gated, and made visible before action |
 
 ## Attacks drydock defends against
 
-### A1. Agent reads `ANTHROPIC_API_KEY` from environment, config file, or memory
+### A1. Agent reads a vendor API key from environment, config file, or memory
 
-The VM is started with no copy of the real key. The credential gateway
-holds the key on the host and issues a short-lived bearer token bound to
-a USD budget. The VM sees only the bearer. Even if the agent exfiltrates
-the bearer, it expires with the task and is capped by `DRYDOCK_TASK_BUDGET_USD`.
+The VM is started with no copy of the real key — for either vendor. The
+credential gateway holds the key on the host (Anthropic or OpenAI, whichever
+the task uses) and issues a short-lived bearer token bound to a USD budget.
+The VM sees only the bearer. Even if the agent exfiltrates the bearer, it
+expires with the task and is capped by `DRYDOCK_TASK_BUDGET_USD`.
+
+The gateway now fronts two upstreams: `api.anthropic.com` (Claude Code tasks)
+and `api.openai.com` (Codex tasks). The real key for whichever vendor stays
+host-only in both cases. No new trust assumptions are introduced by the second
+vendor: the same mint/validate/revoke cycle applies; the VM still only ever
+sees a budget-capped bearer token regardless of which upstream backs it.
 
 **Implementation:** `internal/gateway/provider.go` injects only
-`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`. The real key never crosses
+`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (Claude) or
+`OPENAI_BASE_URL`/`OPENAI_API_KEY` (Codex). The real key never crosses
 the `container run` boundary.
 
 ### A2. Agent makes outbound calls to hostile or unintended hosts
@@ -216,8 +224,8 @@ publishes security advisories.
   human judgment is load-bearing.
 - **You must keep your host clean.** No drydock defense survives host
   compromise.
-- **You must pin and update `container` and `claude-code`.** Both move
-  fast; drydock's claims hold only against the versions it was tested
+- **You must pin and update `container`, `claude-code`, and `codex`.** All
+  move fast; drydock's claims hold only against the versions it was tested
   against.
 
 If you find a residual that isn't covered here, open an issue. The model

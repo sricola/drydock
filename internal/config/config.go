@@ -41,6 +41,10 @@ type Config struct {
 	// doesn't supply --model itself. Empty = let claude-code pick.
 	DefaultModel string `yaml:"default_model"`
 
+	// DefaultAgent selects the sandbox CLI when a task doesn't pass --agent.
+	// "claude" or "codex".
+	DefaultAgent string `yaml:"default_agent"`
+
 	// Where state lives
 	StageRoot   string `yaml:"stage_root"`
 	AuditRoot   string `yaml:"audit_root"`
@@ -64,11 +68,12 @@ func Defaults() *Config {
 	c := &Config{
 		Network:                "drydock-egress",
 		GatewayIP:              "192.168.66.1",
-		SandboxImage:           "claude-sandbox:latest",
+		SandboxImage:           "drydock-sandbox:latest",
 		AnchorImage:            "drydock-anchor:latest",
 		TaskBudgetUSD:          2.0,
 		MaxConcurrent:          2,
 		TaskTimeout:            30 * time.Minute,
+		DefaultAgent:           "claude",
 		StageRoot:              defaultStateDir("stage"),
 		AuditRoot:              defaultStateDir("audit"),
 		SquidRunDir:            defaultStateDir("squid"),
@@ -198,6 +203,9 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("DRYDOCK_DEFAULT_MODEL"); v != "" {
 		c.DefaultModel = v
 	}
+	if v := os.Getenv("DRYDOCK_DEFAULT_AGENT"); v != "" {
+		c.DefaultAgent = v
+	}
 	if v := os.Getenv("STAGE_ROOT"); v != "" {
 		c.StageRoot = v
 	}
@@ -240,6 +248,9 @@ func (c *Config) validate() error {
 	if c.TaskTimeout < time.Second {
 		return fmt.Errorf("config: task_timeout must be ≥ 1s")
 	}
+	if c.DefaultAgent != "claude" && c.DefaultAgent != "codex" {
+		return fmt.Errorf("config: default_agent must be claude or codex, got %q", c.DefaultAgent)
+	}
 	return nil
 }
 
@@ -255,7 +266,7 @@ const SeedTemplate = `# drydock configuration. Re-run ` + "`" + `drydock start` 
 # --- Container runtime ---
 network:        drydock-egress         # vmnet network name (must exist)
 gateway_ip:     192.168.66.1           # gateway + squid bind here
-sandbox_image:  claude-sandbox:latest  # per-task agent VM image
+sandbox_image:  drydock-sandbox:latest # per-task agent VM image
 anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
 
 # --- Per-task limits ---
@@ -263,6 +274,7 @@ task_budget_usd:        2.0            # hard USD ceiling; gateway rejects after
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
 default_model:          ""             # claude --model fallback (e.g. claude-sonnet-4-6); empty = claude picks. Per-task --model overrides.
+default_agent:          claude         # sandbox CLI: claude | codex. Per-task --agent overrides.
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

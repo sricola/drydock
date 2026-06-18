@@ -22,7 +22,7 @@ help:
 	@echo "  uninstall   remove installed binaries + share"
 	@echo "  test        go test -race ./..."
 	@echo "  vet         go vet ./..."
-	@echo "  image       container build -t claude-sandbox:latest image/"
+	@echo "  image       container build -t drydock-sandbox:latest image/"
 	@echo "  network     create the drydock-egress vmnet network if missing"
 	@echo "  init        run \`drydock init\` to do first-time setup end-to-end"
 	@echo "  clean       remove bin/"
@@ -68,7 +68,7 @@ vet:
 image: image-sandbox image-anchor
 
 image-sandbox:
-	container build -t claude-sandbox:latest image/
+	container build -t drydock-sandbox:latest image/
 
 image-anchor:
 	container build -t drydock-anchor:latest image/anchor/

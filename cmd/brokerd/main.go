@@ -86,9 +86,10 @@ func main() {
 		die("load egress config", "path", egressPath, "err", err)
 	}
 
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		die("ANTHROPIC_API_KEY must be set on the broker host")
+	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if anthropicKey == "" && openaiKey == "" {
+		die("set at least one of ANTHROPIC_API_KEY or OPENAI_API_KEY on the broker host")
 	}
 
 	gwPort, proxyPort := 8088, 3128
@@ -128,7 +129,14 @@ func main() {
 	go func() { <-sigCh; cleanup(); os.Exit(0) }()
 
 	// Credential gateway: real key host-only; the VM gets a bearer token.
-	gw, err := gateway.New(apiKey, "https://api.anthropic.com", gateway.DefaultPrices())
+	var backends []gateway.Backend
+	if anthropicKey != "" {
+		backends = append(backends, gateway.Backend{Vendor: gateway.AnthropicVendor(), RealKey: anthropicKey})
+	}
+	if openaiKey != "" {
+		backends = append(backends, gateway.Backend{Vendor: gateway.OpenAIVendor(), RealKey: openaiKey})
+	}
+	gw, err := gateway.New(backends...)
 	if err != nil {
 		cleanup()
 		die("gateway init failed", "err", err)
@@ -141,16 +149,22 @@ func main() {
 		}
 	}()
 
-	var provider creds.Provider = &gateway.Provider{
-		GW:      gw,
-		BaseURL: "http://" + gwAddr,
-		Budget:  cfg.TaskBudgetUSD,
-		TTL:     cfg.TaskTimeout + 5*time.Minute,
+	providers := map[string]creds.Provider{}
+	for _, b := range backends {
+		providers[b.Vendor.Name] = &gateway.Provider{
+			GW:      gw,
+			Vendor:  b.Vendor.Name,
+			BaseURL: "http://" + gwAddr,
+			Budget:  cfg.TaskBudgetUSD,
+			TTL:     cfg.TaskTimeout + 5*time.Minute,
+		}
 	}
+	slog.Info("agents available", "anthropic", anthropicKey != "", "openai", openaiKey != "")
 
 	b := &broker.Broker{
-		Cfg:   egCfg,
-		Creds: provider,
+		Cfg:          egCfg,
+		Providers:    providers,
+		DefaultAgent: cfg.DefaultAgent,
 		Approve: func(kind string, _ any) bool {
 			slog.Info("approval gate auto-approve (MVP)", "kind", kind)
 			return true
@@ -339,7 +353,7 @@ func pruneOrphanTasks() {
 // startAnchor keeps the network's vmnet gateway interface up. Idempotent: any
 // stale anchor is removed first. Uses a dedicated minimal image (drydock-anchor)
 // FROM scratch + a static Go binary that sleeps — sharing the agent image
-// here was a persistent-attack-surface risk if claude-sandbox were ever
+// here was a persistent-attack-surface risk if drydock-sandbox were ever
 // compromised.
 func startAnchor(network, image string) {
 	_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()

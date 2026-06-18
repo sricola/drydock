@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -22,45 +23,51 @@ type Lease struct {
 	// even if Go's map lookup ever changes to a timing-sensitive shape,
 	// the defense-in-depth comparison stops timing-side-channel leakage.
 	Token     string
+	Vendor    string
 	BudgetUSD float64
 	SpentUSD  float64
 	Expiry    time.Time
 }
 
-type Gateway struct {
-	mu       sync.Mutex
-	leases   map[string]*Lease
+type vendorRT struct {
+	v        Vendor
 	realKey  string
 	upstream *url.URL
-	prices   map[string]Price
-	proxy    *httputil.ReverseProxy
+}
+
+type Gateway struct {
+	mu      sync.Mutex
+	leases  map[string]*Lease
+	vendors map[string]vendorRT
+	proxy   *httputil.ReverseProxy
 }
 
 type ctxKey struct{}
 
-func New(realKey, upstream string, prices map[string]Price) (*Gateway, error) {
-	u, err := url.Parse(upstream)
-	if err != nil {
-		return nil, err
-	}
-	g := &Gateway{
-		leases:   map[string]*Lease{},
-		realKey:  realKey,
-		upstream: u,
-		prices:   prices,
+func New(backends ...Backend) (*Gateway, error) {
+	g := &Gateway{leases: map[string]*Lease{}, vendors: map[string]vendorRT{}}
+	for _, b := range backends {
+		u, err := url.Parse(b.Vendor.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		g.vendors[b.Vendor.Name] = vendorRT{v: b.Vendor, realKey: b.RealKey, upstream: u}
 	}
 	g.proxy = &httputil.ReverseProxy{Director: g.director, ModifyResponse: g.meter}
 	return g, nil
 }
 
-func (g *Gateway) Mint(budgetUSD float64, ttl time.Duration) string {
+func (g *Gateway) Mint(vendor string, budgetUSD float64, ttl time.Duration) (string, error) {
+	if _, ok := g.vendors[vendor]; !ok {
+		return "", fmt.Errorf("gateway: no backend for vendor %q", vendor)
+	}
 	b := make([]byte, 18)
 	rand.Read(b)
 	tok := "tok_" + hex.EncodeToString(b)
 	g.mu.Lock()
-	g.leases[tok] = &Lease{Token: tok, BudgetUSD: budgetUSD, Expiry: time.Now().Add(ttl)}
+	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD, Expiry: time.Now().Add(ttl)}
 	g.mu.Unlock()
-	return tok
+	return tok, nil
 }
 
 func (g *Gateway) Revoke(token string) {
@@ -116,14 +123,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) director(req *http.Request) {
-	req.URL.Scheme = g.upstream.Scheme
-	req.URL.Host = g.upstream.Host
-	req.Host = g.upstream.Host
-	req.Header.Del("Authorization")
-	req.Header.Set("X-Api-Key", g.realKey)
-	if req.Header.Get("anthropic-version") == "" {
-		req.Header.Set("anthropic-version", "2023-06-01")
+	lease, _ := req.Context().Value(ctxKey{}).(*Lease)
+	if lease == nil {
+		return
 	}
+	vt, ok := g.vendors[lease.Vendor]
+	if !ok {
+		return
+	}
+	req.URL.Scheme = vt.upstream.Scheme
+	req.URL.Host = vt.upstream.Host
+	req.Host = vt.upstream.Host
+	vt.v.Inject(req, vt.realKey)
 }
 
 // meter tees the response body and, on completion, adds its cost to the lease.
@@ -132,11 +143,15 @@ func (g *Gateway) meter(resp *http.Response) error {
 	if lease == nil {
 		return nil
 	}
+	vt, ok := g.vendors[lease.Vendor]
+	if !ok {
+		return nil
+	}
 	ct := resp.Header.Get("Content-Type")
 	resp.Body = &usageReader{rc: resp.Body, onDone: func(body []byte) {
-		if model, in, out, ok := parseUsage(body, ct); ok {
+		if model, in, out, ok := vt.v.ParseUsage(body, ct); ok {
 			g.mu.Lock()
-			lease.SpentUSD += cost(g.prices, model, in, out)
+			lease.SpentUSD += cost(vt.v.Prices, model, in, out)
 			g.mu.Unlock()
 		}
 	}}

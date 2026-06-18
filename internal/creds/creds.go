@@ -8,6 +8,9 @@ import "errors"
 type Grant interface {
 	EnvVars() []string
 	Revoke() error
+	// Spent returns USD metered against this grant so far (0 for providers
+	// that don't meter).
+	Spent() float64
 }
 
 type Provider interface {
@@ -30,3 +33,4 @@ func (p StaticProvider) Mint(float64) (Grant, error) {
 
 func (g staticGrant) EnvVars() []string { return []string{"ANTHROPIC_API_KEY=" + g.key} }
 func (g staticGrant) Revoke() error     { return nil }
+func (g staticGrant) Spent() float64    { return 0 }

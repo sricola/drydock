@@ -7,7 +7,7 @@
 # --- Container runtime ---
 network:        drydock-egress         # vmnet network name (must exist)
 gateway_ip:     192.168.66.1           # gateway + squid bind here
-sandbox_image:  claude-sandbox:latest  # per-task agent VM image
+sandbox_image:  drydock-sandbox:latest # per-task agent VM image
 anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
 
 # --- Per-task limits ---
@@ -15,6 +15,7 @@ task_budget_usd:        2.0            # hard USD ceiling; gateway rejects after
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
 default_model:          ""             # claude --model fallback (e.g. claude-sonnet-4-6); empty = claude picks. Per-task --model overrides.
+default_agent:          claude         # sandbox CLI: claude | codex. Per-task --agent overrides.
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"drydock/internal/agent"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
 	"drydock/internal/remote"
@@ -53,6 +54,10 @@ type Task struct {
 	// own default. Value is unvalidated here — claude-code rejects unknown
 	// IDs at start, fail-closed.
 	Model string `json:"model"`
+	// Agent selects the sandbox CLI: "claude" (default) or "codex". Empty
+	// falls back to Broker.DefaultAgent, then "claude". Unknown agents are
+	// rejected before any VM starts (fail-closed).
+	Agent string `json:"agent"`
 }
 
 // ApprovalFn gates the egress-widening step. The diff-push step now has
@@ -60,16 +65,17 @@ type Task struct {
 type ApprovalFn func(kind string, payload any) bool
 
 type Broker struct {
-	Cfg        egress.Config
-	Creds      creds.Provider
-	Approve    ApprovalFn
-	ImageRef   string
-	StageRoot  string
-	AuditRoot  string
-	Timeout    time.Duration
-	Network    string  // stable egress network name (e.g. drydock-egress)
-	GatewayIP  string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
-	ProxyPort  int     // squid port (e.g. 3128)
+	Cfg          egress.Config
+	Providers    map[string]creds.Provider // vendor -> provider
+	DefaultAgent string                    // "" -> "claude"
+	Approve      ApprovalFn
+	ImageRef     string
+	StageRoot    string
+	AuditRoot    string
+	Timeout      time.Duration
+	Network      string  // stable egress network name (e.g. drydock-egress)
+	GatewayIP    string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
+	ProxyPort    int     // squid port (e.g. 3128)
 	TaskBudget   float64 // USD budget per task
 	DefaultModel string  // operator-level default; per-task Task.Model overrides
 
@@ -288,7 +294,12 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grant, err := b.Creds.Mint(b.TaskBudget)
+	agentName, prov, status, msg := b.resolveAgent(t.Agent)
+	if status != 0 {
+		http.Error(w, msg, status)
+		return
+	}
+	grant, err := prov.Mint(b.TaskBudget)
 	if err != nil {
 		http.Error(w, "credential mint failed", http.StatusInternalServerError)
 		return
@@ -324,6 +335,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		"DRYDOCK_GW_IP="+b.GatewayIP,
 	)
 	env = append(env, modelEnv(t.Model, b.DefaultModel)...)
+	env = append(env, "DRYDOCK_AGENT="+agentName)
 
 	args := runner.BuildRunArgs(runner.Spec{
 		TaskID:     taskID,
@@ -360,6 +372,16 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 			time.Since(taskStart).Milliseconds())
 		http.Error(w, "task failed: "+safeErr(err), http.StatusInternalServerError)
 		return
+	}
+
+	// codex exec doesn't emit Claude's stream-json `result` trailer, so a
+	// completed codex task would read as `running?` in `drydock tasks`.
+	// Synthesize the terminal event from the elapsed time and the metered
+	// gateway spend. (Claude writes its own result line; don't double it.)
+	if agentName != "claude" {
+		_, _ = fmt.Fprintf(logf,
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0}`+"\n",
+			time.Since(taskStart).Milliseconds(), grant.Spent())
 	}
 
 	diff, err := st.CaptureDiff()
@@ -690,4 +712,27 @@ func modelEnv(taskModel, defaultModel string) []string {
 		return []string{"DRYDOCK_MODEL=" + defaultModel}
 	}
 	return nil
+}
+
+// resolveAgent picks the agent (task value → operator default → "claude") and
+// returns the credential provider for its vendor. status is 0 when usable;
+// otherwise status is the HTTP code and msg the client-facing reason. It is
+// fail-closed: unknown agents and vendors with no configured key are rejected.
+func (b *Broker) resolveAgent(taskAgent string) (name string, prov creds.Provider, status int, msg string) {
+	name = taskAgent
+	if name == "" {
+		name = b.DefaultAgent
+	}
+	if name == "" {
+		name = "claude"
+	}
+	vendor, known := agent.Vendor(name)
+	if !known {
+		return name, nil, http.StatusBadRequest, "unknown agent: " + name + " (want claude|codex)"
+	}
+	prov = b.Providers[vendor]
+	if prov == nil {
+		return name, nil, http.StatusBadRequest, "agent unavailable — no API key configured for " + name
+	}
+	return name, prov, 0, ""
 }

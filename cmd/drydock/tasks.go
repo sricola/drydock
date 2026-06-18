@@ -105,7 +105,11 @@ func summarize(id, path string, info os.FileInfo) taskRow {
 	case last.IsError:
 		r.outcome = "error"
 	case last.Subtype == "success":
-		r.outcome = fmt.Sprintf("ok (%d turn)", last.NumTurns)
+		if last.NumTurns > 0 {
+			r.outcome = fmt.Sprintf("ok (%d turn)", last.NumTurns)
+		} else {
+			r.outcome = "ok"
+		}
 	default:
 		r.outcome = last.Subtype
 	}

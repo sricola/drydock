@@ -162,6 +162,7 @@ default:
   allow_dns: true
   domains:
     - { host: api.anthropic.com,      ports: [443] }
+    - { host: api.openai.com,         ports: [443] }
     # JavaScript
     - { host: registry.npmjs.org,     ports: [443] }
     # Python
@@ -328,7 +329,7 @@ func ensureNetwork() {
 }
 
 func ensureImage() {
-	ensureNamedImage("claude-sandbox", "image", "first build can take a few minutes")
+	ensureNamedImage("drydock-sandbox", "image", "first build can take a few minutes")
 	ensureNamedImage("drydock-anchor", "image/anchor", "minimal — usually quick")
 }
 
@@ -342,7 +343,7 @@ func ensureNamedImage(name, subdir, note string) {
 	// MACAGENT_GW_IP instead of DRYDOCK_GW_IP, and every task fails to boot.
 	// For the sandbox image, peek inside and force a no-cache rebuild on drift.
 	stale := false
-	if have && name == "claude-sandbox" {
+	if have && name == "drydock-sandbox" {
 		got, err := exec.Command("container", "run", "--rm", "--entrypoint", "/bin/cat",
 			name+":latest", "/usr/local/bin/entrypoint.sh").CombinedOutput()
 		if err == nil && !strings.Contains(string(got), "DRYDOCK_GW_IP") {
