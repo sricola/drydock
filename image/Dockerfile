@@ -22,6 +22,13 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # --build-arg CLAUDE_CODE_VERSION=x.y.z.
 ARG CLAUDE_CODE_VERSION=2.1.177
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# Pin the Codex CLI alongside claude-code. Bump deliberately; every drydock
+# release anchors to a known codex version. Override with
+# --build-arg CODEX_VERSION=x.y.z.
+ARG CODEX_VERSION=0.140.0
+RUN npm install -g @openai/codex@${CODEX_VERSION}
+
 RUN useradd -m -u 10001 -s /bin/bash agent
 COPY init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY entrypoint.sh    /usr/local/bin/entrypoint.sh

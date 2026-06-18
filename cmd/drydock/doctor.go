@@ -61,6 +61,16 @@ func runDoctor() {
 		step("sandbox boot", true, claudeVersionLine(string(out)))
 	}
 
+	// 2b. Codex CLI must also be installed (the image hosts both agents).
+	out, err = exec.Command("container", "run", "--rm", "--entrypoint", "/bin/sh",
+		cfg.SandboxImage, "-c", "codex --version 2>&1").CombinedOutput()
+	if err != nil {
+		step("codex present", false, "codex --version failed: "+strings.TrimSpace(string(out)))
+		failed = true
+	} else {
+		step("codex present", true, strings.TrimSpace(lastLine(string(out))))
+	}
+
 	// 3. The nft egress pin must default-deny output. We install the pin
 	// pointing at an unreachable gateway IP, then confirm a non-allowlisted
 	// host fails to resolve (DNS dropped) or fails to connect (no route).
@@ -90,6 +100,13 @@ func runDoctor() {
 		os.Exit(1)
 	}
 	fmt.Println("all checks passed — your sandbox is ready for `drydock submit`")
+}
+
+// lastLine returns the last non-empty line of s, trimmed. Used for version
+// output where the real version string is the final line after any preamble.
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 // claudeVersionLine extracts the last non-progress line from `container
