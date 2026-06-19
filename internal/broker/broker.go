@@ -171,7 +171,11 @@ const instructionSnippetMax = 140
 // from the attack tree entirely.
 func newID() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// No entropy means we can't mint an unguessable task ID — and the
+		// approval-race threat model leans on that. Fail closed, don't ship zeros.
+		panic("drydock: crypto/rand failed — cannot mint task IDs: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }
 
@@ -405,7 +409,10 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	if err := run(runCtx, args, io.MultiWriter(logf, os.Stdout), logf); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
-		_ = exec.Command("container", "delete", "--force", "task-"+taskID).Run()
+		if derr := exec.Command("container", "delete", "--force", "task-"+taskID).Run(); derr != nil {
+			slog.Warn("force-delete of task VM failed; reaped at next brokerd boot",
+				"task_id", taskID, "err", derr)
+		}
 		if taskCtx.Err() != nil {
 			// Operator killed it, or the client went away. Be explicit.
 			writeJSON(w, map[string]any{"task_id": taskID, "cancelled": true, "pushed": false})

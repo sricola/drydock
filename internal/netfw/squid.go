@@ -75,10 +75,16 @@ func StartSquid(binPath, bindAddr, allowlist, runDir string) (*Squid, error) {
 	return &Squid{cmd: cmd}, nil
 }
 
-// Stop terminates the squid process.
+// Stop terminates the squid process and reaps it.
 func (s *Squid) Stop() error {
 	if s == nil || s.cmd == nil || s.cmd.Process == nil {
 		return nil
 	}
-	return s.cmd.Process.Kill()
+	if err := s.cmd.Process.Kill(); err != nil {
+		return err
+	}
+	// Reap so squid doesn't linger as a zombie until brokerd exits. The wait
+	// error is just the "signal: killed" status; ignore it.
+	_ = s.cmd.Wait()
+	return nil
 }
