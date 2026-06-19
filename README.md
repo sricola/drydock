@@ -39,6 +39,7 @@ internet — regardless of what it tries.
 > else.
 
 Security claims: [`THREAT_MODEL.md`](THREAT_MODEL.md).  
+Roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md) (security-credibility focus).  
 Website: https://sricola.github.io/drydock/  
 
 ## Install
