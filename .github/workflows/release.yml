@@ -1,0 +1,68 @@
+name: release
+
+# Builds the darwin-arm64 release on a tag, then makes it independently
+# verifiable: a CycloneDX SBOM, keyless cosign signatures, and SLSA build
+# provenance (the artifact was built by THIS workflow from THIS commit). All
+# of it is attached to the GitHub release. See SECURITY.md "Verifying a
+# release" for the consumer-side checks.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # dispatch against a tag ref to (re)build its artifacts
+
+permissions:
+  contents: write # create the release + upload assets
+  id-token: write # OIDC for cosign keyless + provenance
+  attestations: write # actions/attest-build-provenance
+
+jobs:
+  release:
+    # Apple silicon runner — drydock ships a darwin-arm64 binary built against
+    # Apple's `container` runtime; cross-building elsewhere is not supported.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so `git describe` resolves the tag
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build dist tarball (darwin-arm64)
+        run: make dist
+
+      - name: Generate CycloneDX SBOM
+        run: make sbom
+
+      - name: Resolve artifact path
+        id: art
+        run: echo "tarball=$(ls dist/drydock-*-darwin-arm64.tar.gz)" >> "$GITHUB_OUTPUT"
+
+      - name: SLSA build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ steps.art.outputs.tarball }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the tarball (keyless)
+        run: |
+          cosign sign-blob --yes \
+            --output-signature "${{ steps.art.outputs.tarball }}.sig" \
+            --output-certificate "${{ steps.art.outputs.tarball }}.pem" \
+            "${{ steps.art.outputs.tarball }}"
+
+      - name: Publish release with artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/drydock-*-darwin-arm64.tar.gz
+            dist/drydock-*-darwin-arm64.tar.gz.sha256
+            dist/drydock-*-darwin-arm64.tar.gz.sig
+            dist/drydock-*-darwin-arm64.tar.gz.pem
+            dist/drydock.cdx.json

@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test redteam redteam-vm vet image network init clean help
+.PHONY: all build install uninstall test redteam redteam-vm sbom vet image network init clean help
 
 all: build
 
@@ -23,6 +23,7 @@ help:
 	@echo "  test        go test -race ./..."
 	@echo "  redteam     run the host-side adversarial containment suite (A3-A6)"
 	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7); macOS + container runtime"
+	@echo "  sbom        write a CycloneDX SBOM to dist/drydock.cdx.json"
 	@echo "  vet         go vet ./..."
 	@echo "  image       container build -t drydock-sandbox:latest image/"
 	@echo "  network     create the drydock-egress vmnet network if missing"
@@ -80,6 +81,16 @@ redteam:
 redteam-vm: build
 	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7) =="
 	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
+
+# sbom writes a CycloneDX SBOM of the module + its dependencies to dist/, beside
+# the release tarball. Go-native (no external binary); the version is pinned for
+# reproducibility. The release workflow runs this after `make dist`.
+CYCLONEDX_VERSION := v1.7.0
+sbom:
+	@mkdir -p dist
+	go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@$(CYCLONEDX_VERSION) \
+		mod -json -output dist/drydock.cdx.json .
+	@echo "==> dist/drydock.cdx.json"
 
 vet:
 	go vet ./...

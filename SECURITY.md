@@ -70,6 +70,33 @@ drydock is pre-1.0. Only `main` is supported; we'll backport fixes to
 the most recent tagged release if there's user demand. Always upgrade
 to the latest `main` before reporting.
 
+## Verifying a release
+
+Each tagged release is built by the `release` GitHub Actions workflow and
+carries supply-chain attestations you can check before trusting a binary
+(`X.Y.Z` = the release version):
+
+- **SLSA build provenance** — the tarball was built by drydock's release
+  workflow from the tagged commit, not uploaded by hand:
+
+  ```
+  gh attestation verify drydock-vX.Y.Z-darwin-arm64.tar.gz --repo sricola/drydock
+  ```
+
+- **cosign signature** (keyless / Sigstore — no key to trust):
+
+  ```
+  cosign verify-blob \
+    --certificate drydock-vX.Y.Z-darwin-arm64.tar.gz.pem \
+    --signature  drydock-vX.Y.Z-darwin-arm64.tar.gz.sig \
+    --certificate-identity-regexp 'https://github.com/sricola/drydock/.*' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    drydock-vX.Y.Z-darwin-arm64.tar.gz
+  ```
+
+- **SBOM** — `drydock.cdx.json` (CycloneDX) lists the module dependencies.
+- **sha256** — the `.sha256` asset matches the value the Homebrew formula pins.
+
 ## Documented residuals
 
 These are known limits we've decided not to engineer around at v0.x.
@@ -116,9 +143,10 @@ to `0.0.0.0` on a shared network is a vulnerability, not a feature.
   the macOS surface; treat the body as untrusted input if you ever
   route it through a webhook adapter.
 
-- **No SBOM and no signed binaries yet.** Released artifacts (now
-  shipping through the `sricola/drydock` Homebrew tap) are MIT-licensed
-  pre-built arm64 binaries verified by the sha256 in the release
-  metadata. A real SBOM + Apple notarization land in a later cycle.
-  Until then, build from source and `go mod verify`, or check the
-  sha256 against the value the formula pins.
+- **Apple notarization still pending.** Each tagged release now ships a
+  CycloneDX SBOM, a keyless **cosign** signature, and **SLSA build
+  provenance** (the tarball was built by the release workflow from the
+  tagged commit) — see "Verifying a release" above. The macOS binaries are
+  not yet Apple-notarized, so a non-brew download may be quarantined by
+  Gatekeeper; notarization lands once the Developer ID certificate is in
+  place. You can also always build from source and `go mod verify`.

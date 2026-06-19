@@ -71,6 +71,12 @@ subset, and every A1–A7 cites a test.
 *where* it came from. Closes the SECURITY.md "No SBOM and no signed binaries
 yet" residual.
 
+**Status:** the `release` GitHub Actions workflow now produces, on every tag,
+a CycloneDX SBOM (2.1), keyless cosign signatures, and SLSA build provenance
+(2.3) — attached to the release; consumer checks are in SECURITY.md "Verifying
+a release". Remaining: reproducible-build docs + `govulncheck` (2.4), a
+dependency-pin policy (2.5), and Apple notarization (2.2, needs the paid cert).
+
 ### 2.3 Keyless signing + provenance — *do first (free, high signal)*
 `cosign sign-blob` the release tarball; SLSA build provenance via GitHub
 Actions OIDC (`actions/attest-build-provenance`). No certificate cost
