@@ -27,7 +27,7 @@ dependency, a prompt-injection that turns a fetched URL into a shell command)
 can't reach your key, your filesystem, your push credentials, or the open
 internet — regardless of what it tries.
 
-> **Status: working alpha (v0.1.4).** The full task lifecycle works
+> **Status: working alpha (v0.1.5).** The full task lifecycle works
 > end-to-end — submit → isolated VM → gated diff → push — and drydock ships
 > through a Homebrew tap. It is pre-1.0 and single-maintainer: only `main` is
 > supported, behavior and config can change between minor versions, and it
@@ -62,7 +62,7 @@ drydock init
 ```
 
 Pulls a pre-built Apple-silicon binary from the latest tagged release
-(currently `v0.1.4`); no Go toolchain required.
+(currently `v0.1.5`); no Go toolchain required.
 
 ### Option B — Build from source
 
@@ -209,8 +209,9 @@ model before using it.
 Both files are seeded from defaults the first time; `drydock init` never
 overwrites them. Env vars still win over file values (e.g.
 `BROKER_ADDR=…` in the shell overrides `broker.addr` in the YAML), so
-existing scripts keep working. `ANTHROPIC_API_KEY` is intentionally
-**not** in either file — by design, it never goes to disk.
+existing scripts keep working. The vendor keys (`ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY`) are intentionally **not** in either file — by design,
+they never go to disk.
 
 ## Egress policy
 
@@ -221,6 +222,7 @@ existing scripts keep working. `ANTHROPIC_API_KEY` is intentionally
 default:
   domains:
     - { host: api.anthropic.com,      ports: [443] }   # routed via gateway
+    - { host: api.openai.com,         ports: [443] }   # routed via gateway
     # JavaScript
     - { host: registry.npmjs.org,     ports: [443] }   # routed via squid
     # Python
@@ -239,8 +241,9 @@ toolchains can be added by extending `image/Dockerfile` and rebuilding
 via `make image` (or `drydock init`, which detects stale images and
 rebuilds).
 
-`api.anthropic.com` is intentionally excluded from the squid allowlist —
-it routes through the credential gateway, not the proxy. Per-task widening
+`api.anthropic.com` and `api.openai.com` are intentionally excluded from
+the squid allowlist — they route through the credential gateway, not the
+proxy. Per-task widening
 via `egress_extra` goes through the same human-driven gate as the diff
 push (when `per_task_widening.requires_approval: true`, which is the
 default): brokerd blocks the request, writes the requested hosts to
@@ -267,7 +270,7 @@ init` with the defaults below as a commented template. Edit and re-run
 | `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | per-task USD ceiling |
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | excess POSTs to `/tasks` get HTTP 503 |
 | `task_timeout` | — | `30m` | wall-clock per task |
-| `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | `claude --model` fallback for tasks that don't pass `--model`; empty = claude picks |
+| `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | agent `--model` fallback for tasks that don't pass `--model` (passed to `claude --model` or `codex exec --model`); empty = the agent picks |
 | `stage_root` / `audit_root` / `squid_run_dir` | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `~/.drydock/{stage,audit,squid}` | per-task scratch (audit dir is `0700`, audit log + diff are `0600`). Pre-v0.1.4 used `/tmp/broker/`; `drydock tasks` and friends still surface that history while it exists. |
 | `broker.socket` | `BROKER_SOCKET` | `$TMPDIR/drydock-$UID/drydock.sock` | Unix socket (per-user parent dir at `0700`, socket at `0600`) |
 | `broker.addr` | `BROKER_ADDR` | *(empty)* | set `host:port` to expose over TCP (warns at boot — **no auth**; see [SECURITY.md § TCP exposure](SECURITY.md#tcp-exposure-brokeraddr--broker_addr)) |
@@ -308,7 +311,7 @@ internal/
   runner/         # `container run` argv builder
   sockpath/       # shared per-uid socket path discovery for brokerd + CLI
   stage/          # work tree, host-side commit + push, curated adapter env
-image/            # drydock-sandbox: Dockerfile + entrypoint.sh + init-firewall.sh
+image/            # drydock-sandbox (hosts claude-code + codex): Dockerfile + entrypoint.sh + init-firewall.sh
 image/anchor/     # drydock-anchor: FROM scratch + static Go sleep binary
 tests/integration # //go:build integration — boots brokerd against real container CLI
 config/           # egress.yaml
@@ -333,11 +336,11 @@ make test-integration   # boot brokerd as subprocess; macOS only, needs containe
 
 GitHub Actions runs `go build`, `go test -race`, and `go vet` on every
 push/PR. Integration (`make test-integration`) requires `container` and
-is macOS-only — runs locally, not in CI. No real Anthropic spend.
+is macOS-only — runs locally, not in CI. No real Anthropic or OpenAI spend.
 
 ## Known gaps
 
-- Pricing in `internal/gateway/pricing.go` covers the 4.x families (Opus, Sonnet, Haiku) with an Opus-priced default fallback; bump when Anthropic publishes new rates.
+- Pricing in `internal/gateway/pricing.go` covers Anthropic 4.x families (Opus, Sonnet, Haiku) and OpenAI GPT-5/o4 families, each with a high-end default fallback; the budget gate is a safety cap, not a billing source of truth. Bump when either vendor publishes new rates.
 - Audit dir (`~/.drydock/audit/`) grows unbounded — old `<id>.{jsonl,diff}` files aren't pruned. No `drydock tasks --prune` yet.
 - Up to `DRYDOCK_MAX_CONCURRENT_TASKS` tasks in flight per brokerd (default 2); raise on bigger hardware.
 - No Slack/web approval adapters yet — only the local CLI + macOS notifications.

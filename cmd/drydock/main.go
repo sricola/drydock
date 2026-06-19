@@ -12,7 +12,7 @@ func usage() {
 
 Setup:
   drydock init                   one-time setup: container service, network, image, smoke
-  drydock start                  run brokerd in the foreground (expects ANTHROPIC_API_KEY)
+  drydock start                  run brokerd in the foreground (expects ANTHROPIC_API_KEY and/or OPENAI_API_KEY)
   drydock status                 brokerd up?, pending count, recent tasks
   drydock doctor                 smoke-test the sandbox setup (no API spend)
 
@@ -52,7 +52,7 @@ var version = "dev"
 // never accidentally approve a task literally named "--help".
 var subHelp = map[string]string{
 	"init":    "first-time setup: container service, network, sandbox image, ~/.drydock seed. Idempotent.",
-	"start":   "run brokerd in the foreground. Requires ANTHROPIC_API_KEY in env. ^C to stop.",
+	"start":   "run brokerd in the foreground. Requires ANTHROPIC_API_KEY and/or OPENAI_API_KEY in env. ^C to stop.",
 	"status":  "brokerd up?, in-flight stage breakdown, recent task counts.",
 	"tasks":   "list recent runs: id, age, duration, cost, outcome.",
 	"logs":    "<id> [-f] — print the task's stream-json audit log; -f to follow.",
