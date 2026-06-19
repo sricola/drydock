@@ -214,6 +214,13 @@ $2 on no-op API calls hits the cap and produces no diff. Operators
 should monitor `costUSD` in `<task>.jsonl` and treat repeated zero-diff
 runs as a flag.
 
+`DRYDOCK_TASK_BUDGET_USD` is a **soft cap**: the gateway meters a request's
+cost only once its response completes, so a single in-flight request can
+overshoot by its own cost before the next one is refused (`402`). Within a
+task the agent calls the API sequentially, so the overshoot is bounded by one
+call — but a single deliberately oversized call can exceed the budget in one
+shot. Set the budget with that headroom in mind.
+
 ### N5. Compromise of the host's git remote credentials
 
 `gh` on the host uses the operator's GitHub credentials to push and

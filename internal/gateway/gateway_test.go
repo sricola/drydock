@@ -64,6 +64,33 @@ func TestGateway_ValidTokenProxiesAndMeters(t *testing.T) {
 	}
 }
 
+// The usageReader must meter a streaming SSE response correctly WITHOUT
+// buffering the whole body: input from message_start, output from message_delta,
+// while the hundreds of usage-less content_block_delta events (the bulk, often
+// split across read boundaries) are discarded as they flow.
+func TestGateway_MetersStreamingWithoutBufferingBody(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: message_start\n")
+		io.WriteString(w, `data: {"type":"message_start","message":{"model":"claude-x","usage":{"input_tokens":1000000,"output_tokens":0}}}`+"\n\n")
+		for i := 0; i < 500; i++ { // ~45KB of usage-less events → spans read chunks
+			io.WriteString(w, `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"streamed output chunk"}}`+"\n\n")
+		}
+		io.WriteString(w, `data: {"type":"message_delta","usage":{"output_tokens":1000000}}`+"\n\n")
+	}))
+	defer up.Close()
+
+	g := newGW(t, up.URL)
+	tok, _ := g.Mint("anthropic", 100, time.Minute)
+	if rec := do(g, tok); rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// 1M in @3 + 1M out @15 = 18.0
+	if s := g.spent(tok); s < 17.9 || s > 18.1 {
+		t.Errorf("spent=%v, want ~18 (metered input from message_start + output from message_delta across a chunked stream)", s)
+	}
+}
+
 func TestGateway_UnknownToken401(t *testing.T) {
 	g := newGW(t, "http://unused")
 	if rec := do(g, "nope"); rec.Code != http.StatusUnauthorized {

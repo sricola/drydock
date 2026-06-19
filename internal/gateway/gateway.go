@@ -162,10 +162,20 @@ func (g *Gateway) meter(resp *http.Response) error {
 	return nil
 }
 
-// usageReader buffers the streamed body and invokes onDone once at EOF/Close.
+// usageMarker is the substring every usage-bearing line carries. Streaming
+// agent responses are megabytes of `content_block_delta` events that have no
+// usage; only `message_start`/`message_delta` (and the final OpenAI event) do.
+var usageMarker = []byte("usage")
+
+// usageReader tees the response body to the client unchanged while metering it,
+// without buffering the whole (multi-MB) stream. It scans line by line and
+// retains ONLY lines containing "usage" — a handful of small events — then
+// hands those to the vendor parser at EOF/Close. Peak memory is one line plus
+// the few usage events, not the entire body.
 type usageReader struct {
 	rc     io.ReadCloser
-	buf    bytes.Buffer
+	line   bytes.Buffer // current incomplete line
+	kept   bytes.Buffer // only the usage-bearing lines, preserved verbatim
 	onDone func([]byte)
 	done   bool
 }
@@ -173,12 +183,34 @@ type usageReader struct {
 func (u *usageReader) Read(p []byte) (int, error) {
 	n, err := u.rc.Read(p)
 	if n > 0 {
-		u.buf.Write(p[:n])
+		u.consume(p[:n])
 	}
 	if err == io.EOF {
 		u.finish()
 	}
 	return n, err
+}
+
+func (u *usageReader) consume(b []byte) {
+	for {
+		i := bytes.IndexByte(b, '\n')
+		if i < 0 {
+			u.line.Write(b)
+			return
+		}
+		u.line.Write(b[:i])
+		u.flushLine()
+		b = b[i+1:]
+	}
+}
+
+// flushLine keeps the just-completed line iff it carries usage, then resets it.
+func (u *usageReader) flushLine() {
+	if bytes.Contains(u.line.Bytes(), usageMarker) {
+		u.kept.Write(u.line.Bytes())
+		u.kept.WriteByte('\n')
+	}
+	u.line.Reset()
 }
 
 func (u *usageReader) Close() error {
@@ -191,5 +223,6 @@ func (u *usageReader) finish() {
 		return
 	}
 	u.done = true
-	u.onDone(u.buf.Bytes())
+	u.flushLine() // a non-streaming body has no trailing newline — flush it
+	u.onDone(u.kept.Bytes())
 }
