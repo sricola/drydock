@@ -5,6 +5,46 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.1.8 — 2026-06-19
+
+A hardening release: reliability, performance, and supply-chain work from an
+internal audit. No new user-facing features; behavior is unchanged except where
+noted.
+
+### Fixed / reliability
+
+- **Graceful shutdown.** On `SIGINT`/`SIGTERM`, brokerd now cancels every
+  in-flight task (each tears down its own VM and answers the client), drains
+  the HTTP server, stops squid + the anchor, and removes the socket — instead
+  of `os.Exit`-ing and orphaning running VMs until the next boot.
+- **HTTP server timeouts** (`ReadHeaderTimeout` + `IdleTimeout`) on the broker
+  and gateway listeners blunt slow-loris / idle-keepalive abuse without cutting
+  off long agent streams or the blocking approval wait.
+- Task IDs and gateway tokens **fail closed** if `crypto/rand` ever fails
+  (no zero-filled IDs/tokens); failed VM force-deletes and squid stops are now
+  logged instead of silently swallowed.
+
+### Performance
+
+- The credential gateway **meters usage by streaming** the response line by
+  line and keeping only the few usage-bearing events, instead of buffering the
+  whole multi-MB SSE body. Peak memory drops from O(body) to O(one line).
+- `drydock tasks` reads each audit log's **tail** (not the whole trace) and
+  sorts from cached `mtime` (no per-comparison `stat`).
+
+### Supply chain
+
+- `govulncheck` runs in CI and fails the build on a known dependency
+  vulnerability; the sandbox base image is **pinned by digest**.
+- Release **binaries are byte-for-byte reproducible**; each release publishes a
+  per-binary checksum and `make verify-build` re-derives it.
+
+### Notes
+
+- `DRYDOCK_TASK_BUDGET_USD` is documented as a **soft cap** (post-paid): a
+  single in-flight request can overshoot by its own cost before the next is
+  refused. See `THREAT_MODEL.md` N4.
+
 ## v0.1.7 — 2026-06-19
 
 ### Security / credibility
