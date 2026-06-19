@@ -27,7 +27,7 @@ dependency, a prompt-injection that turns a fetched URL into a shell command)
 can't reach your key, your filesystem, your push credentials, or the open
 internet — regardless of what it tries.
 
-> **Status: working alpha (v0.1.5).** The full task lifecycle works
+> **Status: working alpha (v0.1.6).** The full task lifecycle works
 > end-to-end — submit → isolated VM → gated diff → push — and drydock ships
 > through a Homebrew tap. It is pre-1.0 and single-maintainer: only `main` is
 > supported, behavior and config can change between minor versions, and it
@@ -62,7 +62,7 @@ drydock init
 ```
 
 Pulls a pre-built Apple-silicon binary from the latest tagged release
-(currently `v0.1.5`); no Go toolchain required.
+(currently `v0.1.6`); no Go toolchain required.
 
 ### Option B — Build from source
 
