@@ -20,14 +20,14 @@ import (
 // taskRequest mirrors the broker.Task JSON shape. We don't import broker
 // to keep the CLI lean; the contract is stable.
 type taskRequest struct {
-	RepoRef     string        `json:"repo_ref"`
-	Instruction string        `json:"instruction"`
-	EgressExtra []reqDomain   `json:"egress_extra,omitempty"`
-	Sensitive   bool          `json:"sensitive,omitempty"`
-	AutoApprove bool          `json:"auto_approve,omitempty"`
-	Platform    string        `json:"platform,omitempty"`
-	Model       string        `json:"model,omitempty"`
-	Agent       string        `json:"agent,omitempty"`
+	RepoRef     string      `json:"repo_ref"`
+	Instruction string      `json:"instruction"`
+	EgressExtra []reqDomain `json:"egress_extra,omitempty"`
+	Sensitive   bool        `json:"sensitive,omitempty"`
+	AutoApprove bool        `json:"auto_approve,omitempty"`
+	Platform    string      `json:"platform,omitempty"`
+	Model       string      `json:"model,omitempty"`
+	Agent       string      `json:"agent,omitempty"`
 }
 
 type reqDomain struct {
@@ -227,7 +227,10 @@ func postSubmit(req taskRequest, jsonOut bool) error {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		return fmt.Errorf("read brokerd response: %w", rerr)
+	}
 	if jsonOut {
 		os.Stdout.Write(respBody)
 		if len(respBody) == 0 || respBody[len(respBody)-1] != '\n' {

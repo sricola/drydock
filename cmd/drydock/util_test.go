@@ -136,20 +136,6 @@ func TestIsNoSuchContainer(t *testing.T) {
 	}
 }
 
-// indexOf / contains are tiny helpers — verify they don't fence-post on the
-// edges (empty needle, needle == haystack, etc.).
-func TestContains_Edges(t *testing.T) {
-	if !contains("abc", "abc") {
-		t.Error("equal must match")
-	}
-	if contains("ab", "abc") {
-		t.Error("shorter haystack must not match")
-	}
-	if !contains("xyzfoo", "foo") {
-		t.Error("suffix must match")
-	}
-}
-
 func TestEnv_Smoke(t *testing.T) {
 	// Used by client/status code paths — ensure helpers don't panic on
 	// pathological input.

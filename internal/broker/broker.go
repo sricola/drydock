@@ -184,11 +184,11 @@ func newID() string {
 // existing tests/callers that build a Broker by literal don't have to
 // remember to do this.
 func (b *Broker) initSlots() {
-	cap := b.MaxConcurrent
-	if cap <= 0 {
-		cap = 2
+	n := b.MaxConcurrent
+	if n <= 0 {
+		n = 2
 	}
-	b.slots = make(chan struct{}, cap)
+	b.slots = make(chan struct{}, n)
 }
 
 // acquireSlot is a non-blocking semaphore-take. Returns false when the cap
@@ -494,7 +494,9 @@ func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []eg
 	widenPath := filepath.Join(b.AuditRoot, taskID+".widen.json")
 	if err := os.MkdirAll(b.AuditRoot, 0o700); err == nil {
 		if payload, jerr := json.MarshalIndent(extras, "", "  "); jerr == nil {
-			_ = os.WriteFile(widenPath, payload, 0o600)
+			if werr := os.WriteFile(widenPath, payload, 0o600); werr != nil {
+				slog.Warn("could not persist egress-widen request", "task_id", taskID, "err", werr)
+			}
 		}
 	}
 	summary := summariseExtras(extras)
@@ -555,7 +557,9 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 
 	// Persist the diff for the human reviewing it.
 	diffPath := filepath.Join(b.AuditRoot, taskID+".diff")
-	_ = os.WriteFile(diffPath, []byte(diff), 0o600)
+	if werr := os.WriteFile(diffPath, []byte(diff), 0o600); werr != nil {
+		slog.Warn("could not persist diff for review", "task_id", taskID, "path", diffPath, "err", werr)
+	}
 	slog.Info("task awaiting approval",
 		"task_id", taskID, "diff_bytes", len(diff), "diff_path", diffPath,
 		"hint", "drydock approve "+taskID+" | drydock deny "+taskID)

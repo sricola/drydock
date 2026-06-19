@@ -89,13 +89,13 @@ func (s *Stage) CaptureDiff() (string, error) {
 	return s.git("diff", "--cached")
 }
 
-// RequestOpener opens a PR/MR for a freshly pushed branch. Satisfied by
+// requestOpener opens a PR/MR for a freshly pushed branch. Satisfied by
 // the adapters in internal/remote (GitHub / GitLab / push-only). Kept as
 // an interface here so stage doesn't need to import remote — broker wires
 // the two together. Adapters MUST honor the env vars (they carry GIT_DIR
 // and the hook-neutralization that keeps any vendor CLI on the host-only
 // git dir even if the work tree contains a planted .git).
-type RequestOpener interface {
+type requestOpener interface {
 	OpenRequest(workDir, branch string, env []string) error
 }
 
@@ -104,14 +104,14 @@ type RequestOpener interface {
 // secret you've ever exported) stays out — drastically narrows the blast
 // radius of a future gh plugin or supply-chain compromise.
 var adapterAllowedEnv = []string{
-	"PATH",         // find gh, glab, git
-	"HOME",         // gh/glab read ~/.config/gh, ~/.config/glab
-	"USER",         // some CLIs require it
-	"LOGNAME",      // ditto
-	"LANG",         // utf-8 output
+	"PATH",    // find gh, glab, git
+	"HOME",    // gh/glab read ~/.config/gh, ~/.config/glab
+	"USER",    // some CLIs require it
+	"LOGNAME", // ditto
+	"LANG",    // utf-8 output
 	"LC_ALL",
 	"LC_CTYPE",
-	"TMPDIR",       // gh writes per-request temp files
+	"TMPDIR", // gh writes per-request temp files
 	// Vendor tokens — forwarded only if explicitly present.
 	"GH_TOKEN",
 	"GITHUB_TOKEN",
@@ -127,7 +127,7 @@ var adapterAllowedEnv = []string{
 // Push commits the staged changes onto a new branch, pushes it via the
 // host-only git dir, then asks the adapter to open a PR/MR. Called only
 // after the approval gate.
-func (s *Stage) Push(opener RequestOpener, branch, message string) error {
+func (s *Stage) Push(opener requestOpener, branch, message string) error {
 	if _, err := s.git("checkout", "-b", branch); err != nil {
 		return err
 	}
