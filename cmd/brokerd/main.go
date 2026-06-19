@@ -173,13 +173,9 @@ func main() {
 	}
 
 	b := &broker.Broker{
-		Cfg:          egCfg,
-		Providers:    providers,
-		DefaultAgent: cfg.DefaultAgent,
-		Approve: func(kind string, _ any) bool {
-			slog.Info("approval gate auto-approve (MVP)", "kind", kind)
-			return true
-		},
+		Cfg:           egCfg,
+		Providers:     providers,
+		DefaultAgent:  cfg.DefaultAgent,
 		ImageRef:      cfg.SandboxImage,
 		StageRoot:     cfg.StageRoot,
 		AuditRoot:     cfg.AuditRoot,
