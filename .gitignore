@@ -7,6 +7,7 @@
 /brokerd
 /drydock
 /bin/
+/dist/
 
 # Per-task scratch (default STAGE_ROOT / AUDIT_ROOT / SQUID_RUN_DIR)
 /tmp/broker/
