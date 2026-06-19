@@ -96,6 +96,17 @@ carries supply-chain attestations you can check before trusting a binary
 
 - **SBOM** — `drydock.cdx.json` (CycloneDX) lists the module dependencies.
 - **sha256** — the `.sha256` asset matches the value the Homebrew formula pins.
+- **Reproducible binaries** — rebuild the binaries and confirm they match
+  byte-for-byte (needs Go 1.26.4 on darwin/arm64, a clean tag checkout):
+
+  ```
+  git checkout vX.Y.Z
+  gh release download vX.Y.Z -R sricola/drydock -p '*-bin.sha256'
+  make verify-build SUMS=drydock-vX.Y.Z-darwin-arm64-bin.sha256
+  ```
+
+  The release tarball itself is not byte-reproducible (tar/gzip embed
+  metadata), but the binaries inside it are — which is what matters.
 
 ## Documented residuals
 
