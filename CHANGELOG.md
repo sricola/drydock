@@ -5,6 +5,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.1.7 — 2026-06-19
+
+### Security / credibility
+
+- **Adversarial red-team harness.** Every `THREAT_MODEL.md` claim (A1–A7) is
+  now backed by a test that runs the actual attack and asserts containment.
+  `make redteam` runs the host-side claims (A3–A6, also in CI); `make
+  redteam-vm` runs the VM-backed claims (A1, A2, A7) on macOS / Apple silicon.
+  THREAT_MODEL carries a `Verified by:` link for each.
+- **Verifiable releases.** Each tagged release now ships a CycloneDX SBOM, a
+  keyless **cosign** signature, and **SLSA build provenance** (built by the
+  release workflow from the tagged commit), all attached to the GitHub
+  release. See `SECURITY.md` "Verifying a release"; `make sbom` generates the
+  SBOM locally.
+
+### Changed
+
+- Removed the dead `Broker.Approve` hook (it was set but never called — the
+  real gates are `gatePush` / `gateEgressWiden`). Internal cleanup, no
+  behavior change.
+
 ## v0.1.6 — 2026-06-19
 
 ### Added
