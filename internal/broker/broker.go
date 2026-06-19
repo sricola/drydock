@@ -79,6 +79,12 @@ type Broker struct {
 	TaskBudget   float64 // USD budget per task
 	DefaultModel string  // operator-level default; per-task Task.Model overrides
 
+	// Test seams. nil in production -> the real implementations
+	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
+	// drive HandleTask without a git clone or a container run.
+	prepareStage func(root, repoRef string) (taskStage, error)
+	runAgent     func(ctx context.Context, args []string, stdout, stderr io.Writer) error
+
 	// MaxConcurrent caps how many tasks may be in any non-terminal state at
 	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
 	MaxConcurrent int
@@ -93,6 +99,48 @@ type Broker struct {
 	pending    map[string]chan bool          // task_id -> approval channel
 	tasks      map[string]*TaskState         // task_id -> live state (running + awaiting_approval)
 	cancellers map[string]context.CancelFunc // task_id -> cancel hook for in-flight kill
+}
+
+// taskStage is the subset of *stage.Stage that HandleTask uses. It exists so
+// white-box tests can drive the handler without a real git clone; production
+// uses realStage, a thin adapter over *stage.Stage.
+type taskStage interface {
+	WorkDir() string
+	WriteTaskFiles(prompt, allowlist string) error
+	CaptureDiff() (string, error)
+	Push(adapter remote.Adapter, branch, msg string) error
+	Cleanup() error
+}
+
+type realStage struct{ s *stage.Stage }
+
+func (r realStage) WorkDir() string { return r.s.WorkDir }
+func (r realStage) WriteTaskFiles(prompt, allowlist string) error {
+	return r.s.WriteTaskFiles(prompt, allowlist)
+}
+func (r realStage) CaptureDiff() (string, error) { return r.s.CaptureDiff() }
+func (r realStage) Push(adapter remote.Adapter, branch, msg string) error {
+	return r.s.Push(adapter, branch, msg)
+}
+func (r realStage) Cleanup() error { return r.s.Cleanup() }
+
+// defaultPrepareStage is the production prepareStage: a real host clone with
+// the .git dir moved out of the mounted work tree.
+func defaultPrepareStage(root, repoRef string) (taskStage, error) {
+	s, err := stage.Prepare(root, repoRef)
+	if err != nil {
+		return nil, err
+	}
+	return realStage{s}, nil
+}
+
+// runContainer is the production runAgent: it runs the Apple `container` CLI
+// for the task and streams its output to the audit log.
+func runContainer(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, "container", args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
 }
 
 // TaskStage tracks where a task currently is in its lifecycle. Only the
@@ -281,7 +329,11 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	stageDir := filepath.Join(b.StageRoot, taskID)
 
-	st, err := stage.Prepare(stageDir, t.RepoRef)
+	prepare := b.prepareStage
+	if prepare == nil {
+		prepare = defaultPrepareStage
+	}
+	st, err := prepare(stageDir, t.RepoRef)
 	if err != nil {
 		http.Error(w, "clone failed", http.StatusBadGateway)
 		return
@@ -342,7 +394,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		Network:    b.Network,
 		ImageRef:   b.ImageRef,
 		Env:        env,
-		StageDir:   st.WorkDir,
+		StageDir:   st.WorkDir(),
 		PromptFile: "/work/.task/prompt.txt",
 		MemoryGB:   4,
 		CPUs:       4,
@@ -350,11 +402,12 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	runCtx, runCancel := context.WithTimeout(taskCtx, b.Timeout)
 	defer runCancel()
-	cmd := exec.CommandContext(runCtx, "container", args...)
-	cmd.Stdout = io.MultiWriter(logf, os.Stdout)
-	cmd.Stderr = logf
+	run := b.runAgent
+	if run == nil {
+		run = runContainer
+	}
 	taskStart := time.Now()
-	if err := cmd.Run(); err != nil {
+	if err := run(runCtx, args, io.MultiWriter(logf, os.Stdout), logf); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
 		_ = exec.Command("container", "delete", "--force", "task-"+taskID).Run()
