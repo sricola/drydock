@@ -300,7 +300,7 @@ diff lands in `$AUDIT_ROOT/<id>.diff`.
 
 ```
 cmd/brokerd/      # broker daemon
-cmd/drydock/      # operator CLI (init|start|submit|status|tasks|pending|review|approve|deny|kill|logs)
+cmd/drydock/      # operator CLI (init|start|submit|status|tasks|pending|review|approve|deny|kill|prune|logs)
 internal/
   broker/         # /tasks + admin handlers, approval + egress gates, concurrency, cancellation
   creds/          # Grant/Provider interfaces
@@ -341,7 +341,7 @@ is macOS-only — runs locally, not in CI. No real Anthropic or OpenAI spend.
 ## Known gaps
 
 - Pricing in `internal/gateway/pricing.go` covers Anthropic 4.x families (Opus, Sonnet, Haiku) and OpenAI GPT-5/o4 families, each with a high-end default fallback; the budget gate is a safety cap, not a billing source of truth. Bump when either vendor publishes new rates.
-- Audit dir (`~/.drydock/audit/`) grows unbounded — old `<id>.{jsonl,diff}` files aren't pruned. No `drydock tasks --prune` yet.
+- Audit dir (`~/.drydock/audit/`) has no automatic retention. Run `drydock prune --older-than DUR [--keep-last N]` to delete old `<id>.{jsonl,diff,widen.json}` artifacts (dry-run unless `--yes`); brokerd-side auto-retention isn't wired up yet.
 - Up to `DRYDOCK_MAX_CONCURRENT_TASKS` tasks in flight per brokerd (default 2); raise on bigger hardware.
 - No Slack/web approval adapters yet — only the local CLI + macOS notifications.
 - Bitbucket PR/MR opening: push-only fallback (no widely-adopted CLI to wrap). Contribution slot.

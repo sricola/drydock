@@ -5,6 +5,20 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Added
+
+- **`drydock prune --older-than DUR [--keep-last N] [--yes]`** deletes old
+  per-task audit artifacts (`<id>.jsonl` / `.diff` / `.widen.json`) from the
+  audit dir, which previously grew unbounded. Dry-run by default (prints what
+  it would remove + bytes freed); `--older-than` is required so it can never
+  prune everything by accident; `--keep-last` always retains the N
+  most-recent tasks. Only touches files matching the task-artifact pattern.
+- `brokerd` warns at boot when `default_agent`'s vendor has no API key
+  configured — tasks that don't pass `--agent` would otherwise be rejected
+  at submit time with no upfront signal.
+
 ## v0.1.5 — 2026-06-18
 
 ### Added

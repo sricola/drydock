@@ -22,6 +22,7 @@ Tasks:
   drydock logs    <id> [-f]      print (or follow) the task's stream-json audit log
   drydock review  <id>           open the diff in $PAGER, then prompt y/N
   drydock kill    <id>           tear down the VM and deny if pending
+  drydock prune   <flags>        delete old audit artifacts (--older-than DUR [--keep-last N] [--yes])
 
 Approvals:
   drydock pending                list task IDs awaiting approval
@@ -58,6 +59,7 @@ var subHelp = map[string]string{
 	"logs":    "<id> [-f] — print the task's stream-json audit log; -f to follow.",
 	"review":  "<id> — open the diff in $PAGER, prompt y/N to approve or deny.",
 	"kill":    "<id> — tear down the VM and deny if pending.",
+	"prune":   "delete old per-task audit artifacts; --older-than DUR [--keep-last N] [--yes]. Dry-run unless --yes.",
 	"pending": "list task IDs awaiting approval (egress + diff gates both shown).",
 	"approve": "<id> — approve the pending push for <id>.",
 	"deny":    "<id> — deny the pending push (diff captured, not pushed).",
@@ -115,6 +117,9 @@ func main() {
 		consumeHelpFlag(cmd, subArgs)
 		mustArgs(2)
 		runKill(os.Args[2])
+	case "prune":
+		// `prune` has its own flag.FlagSet which handles -h/--help.
+		runPrune(subArgs)
 	case "pending":
 		consumeHelpFlag(cmd, subArgs)
 		listPending()
