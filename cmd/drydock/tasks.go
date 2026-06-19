@@ -1,13 +1,15 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // auditResult is the single line at the end of each <id>.jsonl that
@@ -23,6 +25,7 @@ type auditResult struct {
 
 type taskRow struct {
 	id      string
+	mtime   time.Time
 	age     string
 	dur     string
 	cost    string
@@ -60,13 +63,10 @@ func runTasks() {
 		return
 	}
 
-	// Sort newest-first by sortable key embedded in age. Simpler: just sort
-	// by mtime via a parallel slice. Re-read info() each time would be ugly,
-	// so we reread mtime here for ordering only.
+	// Newest-first. mtime was captured once per row from the ReadDir entry, so
+	// the comparator is a field read — no per-comparison stat() syscalls.
 	sort.SliceStable(rows, func(i, j int) bool {
-		ii, _ := os.Stat(filepath.Join(dir, rows[i].id+".jsonl"))
-		jj, _ := os.Stat(filepath.Join(dir, rows[j].id+".jsonl"))
-		return ii.ModTime().After(jj.ModTime())
+		return rows[i].mtime.After(rows[j].mtime)
 	})
 
 	fmt.Printf("%-14s  %5s  %8s  %8s  %s\n", "ID", "AGE", "DUR", "COST", "OUTCOME")
@@ -76,27 +76,10 @@ func runTasks() {
 }
 
 func summarize(id, path string, info os.FileInfo) taskRow {
-	r := taskRow{id: id, age: relAge(info.ModTime()), dur: "-", cost: "-", outcome: "running?"}
+	r := taskRow{id: id, mtime: info.ModTime(), age: relAge(info.ModTime()), dur: "-", cost: "-", outcome: "running?"}
 
-	f, err := os.Open(path)
-	if err != nil {
-		return r
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	// Audit jsonl can have very long lines (stream events). Bump the limit.
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	var last auditResult
-	for sc.Scan() {
-		var x auditResult
-		if err := json.Unmarshal(sc.Bytes(), &x); err != nil {
-			continue
-		}
-		if x.Type == "result" {
-			last = x
-		}
-	}
-	if last.Type == "" {
+	last, ok := lastResult(path, info.Size())
+	if !ok {
 		return r
 	}
 	r.dur = shortDur(last.DurationMs)
@@ -114,4 +97,35 @@ func summarize(id, path string, info os.FileInfo) taskRow {
 		r.outcome = last.Subtype
 	}
 	return r
+}
+
+// lastResult finds the final {"type":"result",...} line, which the broker
+// appends at task completion. It reads only the file's tail, not the whole
+// (potentially multi-MB) stream-event trace. Returns ok=false for a task that
+// never wrote a result line (still running, or killed before completion).
+func lastResult(path string, size int64) (auditResult, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return auditResult{}, false
+	}
+	defer f.Close()
+
+	const tail = 16 * 1024 // the result line is ~120 bytes and always last
+	if size > tail {
+		if _, err := f.Seek(size-tail, io.SeekStart); err != nil {
+			return auditResult{}, false
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return auditResult{}, false
+	}
+	lines := bytes.Split(data, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		var x auditResult
+		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" {
+			return x, true
+		}
+	}
+	return auditResult{}, false
 }
