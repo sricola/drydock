@@ -9,7 +9,7 @@
 <link rel="alternate icon" href="favicon-32.png">
 <!-- Open Graph / Twitter card -->
 <meta property="og:title" content="drydock — untrusted agents, hardware-isolated">
-<meta property="og:description" content="A sandbox for autonomous coding agents on macOS. The agent never sees your real Anthropic key.">
+<meta property="og:description" content="A sandbox for autonomous coding agents (Claude Code or OpenAI Codex) on macOS. The agent never sees your real API key.">
 <meta property="og:image" content="https://sricola.github.io/drydock/og-image.png">
 <meta property="og:url" content="https://sricola.github.io/drydock/">
 <meta property="og:type" content="website">
@@ -265,7 +265,7 @@ footer .mk path{stroke:var(--faint)}
     <div class="kicker reveal"><span class="bar"></span>macos · local containment for autonomous coding agents</div>
     <h1 class="reveal">Untrusted agents,<br><span class="t">hardware-isolated.</span></h1>
     <p class="lede reveal">drydock runs autonomous coding agents (<b>Claude Code</b> or <b>OpenAI Codex</b>, per-task selectable) on <b>your own Mac</b> — not someone's cloud — each task sealed in its own <b>hardware-isolated VM</b>. It assumes the agent is already compromised: your real API key <b>never enters the sandbox</b> (a host-side gateway hands it short-lived, budget-capped tokens), egress is <b>deny-by-default</b>, and the only thing that crosses back out is a <span class="ic">git diff</span> you approve before it reaches origin.</p>
-    <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.4</span> The full lifecycle works end-to-end; pre-1.0 and single-maintainer, no third-party security audit, behavior may change between versions, and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
+    <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.5</span> The full lifecycle works end-to-end; pre-1.0 and single-maintainer, no third-party security audit, behavior may change between versions, and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
     <div class="install reveal">
       <div class="install-label">Install · macOS · Apple silicon</div>
       <div class="term install-term">
@@ -288,15 +288,16 @@ footer .mk path{stroke:var(--faint)}
 brew install --cask container
 brew install sricola/drydock/drydock
 
-<span class="c"># bootstrap ~/.drydock and the container image set</span>
+<span class="c"># set at least one vendor key — Claude Code and/or OpenAI Codex</span>
 export <span class="a">ANTHROPIC_API_KEY</span>=<span class="r">sk-ant-…</span>
+export <span class="a">OPENAI_API_KEY</span>=<span class="r">sk-…</span>
 drydock init
 drydock start</pre>
       </div>
       <div class="install-foot">
         <a href="https://github.com/sricola/drydock#install">install options</a>
         ·
-        <a href="https://github.com/sricola/drydock/releases/tag/v0.1.4">v0.1.4 release notes</a>
+        <a href="https://github.com/sricola/drydock/releases/tag/v0.1.5">v0.1.5 release notes</a>
         ·
         <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">threat model</a>
       </div>
@@ -403,7 +404,7 @@ drydock start</pre>
 
       <g>
         <rect x="1080" y="186" width="260" height="52" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="1098" y="208" font-size="13" font-weight="600" fill="#1a1d22">api.anthropic.com</text>
+        <text x="1098" y="208" font-size="13" font-weight="600" fill="#1a1d22">anthropic.com / openai.com</text>
         <text x="1098" y="226" font-size="10" fill="#6b7480">real key, host-only</text>
       </g>
 
@@ -411,7 +412,7 @@ drydock start</pre>
       <text x="640" y="204" font-size="9.5" letter-spacing="1.5" fill="#c92c2c" font-weight="600" text-anchor="middle">BEARER TOK</text>
 
       <path d="M 1000 212 L 1080 212" stroke="#0d8d5e" stroke-width="1.4" fill="none" marker-end="url(#t-grn)"/>
-      <text x="1040" y="204" font-size="9.5" letter-spacing="1.5" fill="#0d8d5e" font-weight="600" text-anchor="middle">X-API-KEY</text>
+      <text x="1040" y="204" font-size="9.5" letter-spacing="1.5" fill="#0d8d5e" font-weight="600" text-anchor="middle">REAL KEY</text>
 
       <!-- ============ ROW 2 — dependencies ============ -->
       <g>
@@ -487,7 +488,7 @@ drydock start</pre>
     <div class="card reveal">
       <div class="idx">/ 01</div>
       <h3>The key is never in the VM</h3>
-      <p>The sandbox holds only a per-task <b>bearer token</b>. An in-broker reverse proxy validates it, strips <span style="font-family:var(--mono);font-size:.85em">Authorization</span>, and injects the real <b>X-Api-Key</b>. Leak the token: works only through your gateway, capped by budget, revoked at task end.</p>
+      <p>The sandbox holds only a per-task <b>bearer token</b>. An in-broker reverse proxy validates it and swaps in the real <b>upstream key</b> host-side (Anthropic or OpenAI, whichever the task uses). Leak the token: works only through your gateway, capped by budget, revoked at task end.</p>
     </div>
     <div class="card reveal">
       <div class="idx">/ 02</div>
@@ -530,7 +531,7 @@ drydock start</pre>
   </div>
   <div class="term reveal">
     <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">gateway — request path</span></div>
-<pre><span class="c"># inside the VM — all it ever holds</span>
+<pre><span class="c"># inside the VM (claude task) — all it ever holds</span>
 ANTHROPIC_BASE_URL = <span class="k">http://192.168.66.1:8088</span>
 ANTHROPIC_AUTH_TOKEN = <span class="r">tok_9f3c…a17b</span>   <span class="c"># per-task, revocable</span>
 
@@ -539,6 +540,7 @@ ANTHROPIC_AUTH_TOKEN = <span class="r">tok_9f3c…a17b</span>   <span class="c">
 strip  <span class="r">Authorization: Bearer tok_…</span>
 set    <span class="g">X-Api-Key: sk-ant-…REAL</span>
 <span class="a">forward</span> → <span class="g">https://api.anthropic.com</span>   <span class="c"># real TLS, host→Anthropic</span>
+<span class="c"># a codex task is symmetric: OPENAI_* token in → Authorization: Bearer sk-…REAL → api.openai.com</span>
 meter  usage → spent += cost(model, in, out)
 <span class="c"># task ends → Revoke(tok) → 401 forever after</span></pre>
   </div>

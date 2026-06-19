@@ -2,8 +2,8 @@
 
 drydock is a containment for autonomous coding agents on macOS. A security
 bug in drydock can let an untrusted agent reach things it shouldn't —
-your real Anthropic key, your host filesystem, your git credentials. We
-take reports seriously and respond quickly.
+your real API key (Anthropic or OpenAI), your host filesystem, your git
+credentials. We take reports seriously and respond quickly.
 
 ## Reporting
 
@@ -22,7 +22,7 @@ When you report, include:
 
 - A minimal reproduction (commands, config, expected vs. observed).
 - Which drydock commit or release you tested against.
-- Which `container` and `claude-code` versions were installed.
+- Which `container` and agent CLI (`claude-code` / `codex`) versions were installed.
 - Your assessment of the impact (read host file? exfil key? push without
   approval?).
 
@@ -34,8 +34,8 @@ prefer to stay anonymous.
 
 In scope (please report):
 
-- Anything that lets an in-VM agent read or exfiltrate the real
-  `ANTHROPIC_API_KEY`.
+- Anything that lets an in-VM agent read or exfiltrate a real vendor key
+  (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).
 - Anything that lets an in-VM agent reach a host not on the compiled
   allowlist.
 - Anything that lets the host execute code planted in the work tree
@@ -54,8 +54,8 @@ Out of scope (don't report; documented in `THREAT_MODEL.md`):
   virtualization stack — report those to Apple.
 - Supply-chain compromise of dependencies (claude-code, squid, Debian
   base, Go std lib).
-- Operator-key hygiene (a leaked `ANTHROPIC_API_KEY` defeats the
-  gateway; drydock doesn't manage its lifecycle).
+- Operator-key hygiene (a leaked `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
+  defeats the gateway; drydock doesn't manage its lifecycle).
 - Operator approving a malicious diff — the gate makes review possible,
   not automatic.
 - Prompt injection in staged repo files influencing the agent for that

@@ -12,9 +12,10 @@ import (
 // separate binaries so the CLI can talk to a long-running brokerd; `start`
 // is a convenience for the foreground case.
 func runStart() {
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		fmt.Fprintln(os.Stderr, "drydock start: ANTHROPIC_API_KEY must be set in this shell.")
-		fmt.Fprintln(os.Stderr, "  export ANTHROPIC_API_KEY=sk-ant-...")
+	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "" {
+		fmt.Fprintln(os.Stderr, "drydock start: set at least one vendor key in this shell.")
+		fmt.Fprintln(os.Stderr, "  export ANTHROPIC_API_KEY=sk-ant-...   # for Claude Code")
+		fmt.Fprintln(os.Stderr, "  export OPENAI_API_KEY=sk-...          # for OpenAI Codex")
 		os.Exit(1)
 	}
 	path, err := findBrokerd()

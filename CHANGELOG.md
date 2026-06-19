@@ -5,6 +5,43 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.1.5 — 2026-06-18
+
+### Added
+
+- **OpenAI Codex as a second agent.** Tasks choose their agent with
+  `drydock submit --agent claude|codex`; the operator default is set via
+  `default_agent` (config) / `DRYDOCK_DEFAULT_AGENT` (env), default
+  `claude`. The credential gateway gained a vendor registry: the real key
+  for whichever vendor (Anthropic or OpenAI) stays **host-only**, the VM
+  only ever sees a budget-capped bearer token, and per-task USD metering +
+  revoke apply to both. `brokerd` now accepts **at least one** of
+  `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. `drydock tasks` shows
+  duration + metered cost + outcome for Codex tasks too.
+
+### Changed
+
+- **The sandbox image is renamed `claude-sandbox` → `drydock-sandbox`**
+  and now ships both the Claude Code and Codex CLIs; `entrypoint.sh`
+  dispatches on `DRYDOCK_AGENT`. Re-run `drydock init` to rebuild (it
+  detects the stale image); set `SANDBOX_IMAGE` if you had pinned the old
+  name. `api.openai.com` is added to the default egress allowlist and,
+  like `api.anthropic.com`, routes through the gateway rather than squid.
+
+### Fixed
+
+- `drydock start` now accepts either vendor key — it previously refused
+  to start without `ANTHROPIC_API_KEY`, blocking Codex-only operation
+  even though `brokerd` itself accepted either key.
+
+### Notes
+
+- Codex routes through the gateway via a generated `model_provider`
+  config written by the entrypoint (Codex ignores `OPENAI_BASE_URL`); the
+  real key still never enters the VM. The OpenAI entries in the budget
+  gate's pricing table are approximate — a safety cap, not a billing
+  source of truth.
+
 ## v0.1.4 — 2026-06-17
 
 ### Changed
