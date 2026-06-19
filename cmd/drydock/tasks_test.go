@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,31 @@ func TestSummarize_SyntheticErrorIsReadAsError(t *testing.T) {
 	}
 	if got.dur == "-" || got.dur == "" {
 		t.Errorf("dur = %q, want a duration parsed from duration_ms", got.dur)
+	}
+}
+
+// summarize now reads only the file tail to find the result line. Guard the
+// seek path: a large (>16KB) preamble of stream events followed by the result
+// line at the very end must still resolve — the tail read starts mid-line, but
+// the final result line is fully within the tail.
+func TestSummarize_FindsResultPastTailSeek(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-big.jsonl")
+	var b strings.Builder
+	for b.Len() < 64*1024 { // well past the 16KB tail window
+		b.WriteString(`{"type":"stream_event","delta":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}` + "\n")
+	}
+	b.WriteString(`{"type":"result","subtype":"success","duration_ms":1000,"total_cost_usd":0.0500,"num_turns":3}` + "\n")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	got := summarize("task-big", path, info)
+	if got.outcome != "ok (3 turn)" {
+		t.Errorf("outcome = %q, want %q (tail read must find the final result line)", got.outcome, "ok (3 turn)")
+	}
+	if got.cost != "$0.0500" {
+		t.Errorf("cost = %q, want $0.0500", got.cost)
 	}
 }
 
