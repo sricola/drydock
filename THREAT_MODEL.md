@@ -104,7 +104,9 @@ sees a budget-capped bearer token regardless of which upstream backs it.
 **Implementation:** `internal/gateway/provider.go` injects only
 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (Claude) or
 `OPENAI_BASE_URL`/`OPENAI_API_KEY` (Codex). The real key never crosses
-the `container run` boundary.
+the `container run` boundary. **Verified by**
+`TestRedteam_A1_RealKeyNeverInVM` (inspects the VM env built from a real
+gateway grant with a sentinel key).
 
 ### A2. Agent makes outbound calls to hostile or unintended hosts
 
@@ -115,7 +117,9 @@ asking squid, which only resolves hosts on the operator's allowlist.
 
 **Implementation:** `image/init-firewall.sh` plus `internal/netfw`'s
 hostname allowlist compiler. The agent user has no `CAP_NET_ADMIN`, so
-it cannot rewrite the rules.
+it cannot rewrite the rules. **Verified by**
+`TestRedteam_A2_EgressToHostileHostBlocked` (HTTPS, raw DNS, and direct-IP
+escapes all blocked).
 
 ### A3. Agent plants a git hook in the work tree so the host-side commit runs hostile code on the host
 
@@ -173,6 +177,10 @@ Every task runs in a fresh VM (`--rm`). The host-side staging directory
 is wiped (`defer st.Cleanup()`) on every code path. The anchor container
 is unrelated to task state — it exists only to keep the vmnet gateway IP
 up.
+
+**Verified by** `TestRedteam_A7_NoStatePersistsBetweenTasks` (a marker
+written by one task is absent in the next) plus the host-side
+`TestCleanup_*` stage tests.
 
 ## Attacks drydock does NOT defend against
 

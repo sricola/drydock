@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test redteam vet image network init clean help
+.PHONY: all build install uninstall test redteam redteam-vm vet image network init clean help
 
 all: build
 
@@ -21,7 +21,8 @@ help:
 	@echo "  install     binaries into \$$PREFIX/bin, image+config into \$$PREFIX/share/drydock (PREFIX=$(PREFIX))"
 	@echo "  uninstall   remove installed binaries + share"
 	@echo "  test        go test -race ./..."
-	@echo "  redteam     run the adversarial containment suite (attacks that must fail)"
+	@echo "  redteam     run the host-side adversarial containment suite (A3-A6)"
+	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7); macOS + container runtime"
 	@echo "  vet         go vet ./..."
 	@echo "  image       container build -t drydock-sandbox:latest image/"
 	@echo "  network     create the drydock-egress vmnet network if missing"
@@ -71,7 +72,14 @@ REDTEAM := TestRedteam_A[0-9]|TestHostCommit_IgnoresPlantedHook|TestCaptureDiff_
 redteam:
 	@echo "== drydock red-team — attacks that must fail (host-side: A3-A6) =="
 	go test -count=1 -run '$(REDTEAM)' ./...
-	@echo "== host-side containment verified. VM-backed A1/A2/A7: make test-integration =="
+	@echo "== host-side containment verified. VM-backed A1/A2/A7: make redteam-vm =="
+
+# redteam-vm runs the VM-backed attacks (A1 key-exfil, A2 egress, A7
+# ephemerality) inside the sandbox. macOS / Apple silicon only; needs the
+# `container` runtime + the drydock-sandbox image (`make image`).
+redteam-vm: build
+	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7) =="
+	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
 
 vet:
 	go vet ./...
