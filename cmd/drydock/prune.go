@@ -25,7 +25,10 @@ type taskArtifacts struct {
 var knownSuffixes = []string{".jsonl", ".diff", ".widen.json"}
 
 func isHexID(s string) bool {
-	if s == "" {
+	// Real task ids are 32 hex chars (128-bit, see broker.newID). Require a
+	// conservative floor so a short stray file like "a.diff" can never be
+	// mistaken for a task artifact.
+	if len(s) < 16 {
 		return false
 	}
 	for _, c := range s {
@@ -137,7 +140,11 @@ func humanBytes(n int64) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGT"[exp])
+	const units = "KMGTPE"
+	if exp >= len(units) {
+		exp = len(units) - 1
+	}
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), units[exp])
 }
 
 func runPrune(args []string) {
@@ -196,26 +203,37 @@ Flags:`)
 		return
 	}
 
-	var removed, failed int
-	var freed int64
-	for _, ta := range prune {
-		ok := true
-		for _, f := range ta.files {
-			if err := os.Remove(f); err != nil {
-				ok = false
-				fmt.Fprintf(os.Stderr, "  remove %s: %v\n", f, err)
-			}
-		}
-		if ok {
-			removed++
-			freed += ta.bytes
-		} else {
-			failed++
-		}
-	}
+	removed, failed, freed := deleteTasks(prune)
 	fmt.Printf("\nfreed %s across %d task(s)", humanBytes(freed), removed)
 	if failed > 0 {
 		fmt.Printf(" — %d task(s) had errors (see above)", failed)
 	}
 	fmt.Println()
+}
+
+// deleteTasks removes each task's files. freed accumulates the size of files
+// actually removed (so a partial failure still reports what it freed, rather
+// than crediting or discarding a whole task's bytes). A task with any failed
+// removal is counted in failed, not removed.
+func deleteTasks(tasks []taskArtifacts) (removed, failed int, freed int64) {
+	for _, ta := range tasks {
+		taskFailed := false
+		for _, f := range ta.files {
+			info, statErr := os.Stat(f)
+			if err := os.Remove(f); err != nil {
+				taskFailed = true
+				fmt.Fprintf(os.Stderr, "  remove %s: %v\n", f, err)
+				continue
+			}
+			if statErr == nil {
+				freed += info.Size()
+			}
+		}
+		if taskFailed {
+			failed++
+		} else {
+			removed++
+		}
+	}
+	return removed, failed, freed
 }

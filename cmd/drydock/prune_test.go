@@ -91,12 +91,15 @@ func TestScanAuditTasks_GroupsAndIgnoresNonTaskFiles(t *testing.T) {
 		mt := time.Now().Add(-age)
 		os.Chtimes(p, mt, mt)
 	}
-	write("aaaaaa.jsonl", "trace", 40*24*time.Hour)
-	write("aaaaaa.diff", "diffbody", 40*24*time.Hour)
-	write("bbbbbb.jsonl", "recent", time.Hour)
-	write("config.yaml", "secret", 100*24*time.Hour)    // wrong suffix — must be ignored
-	write("NOTHEX.jsonl", "x", 100*24*time.Hour)        // non-hex id — must be ignored
-	os.Mkdir(filepath.Join(dir, "cccccc.jsonl"), 0o755) // directory — must be skipped
+	const oldID = "aaaa1111aaaa1111aaaa1111aaaa1111" // 32-char hex, like a real id
+	const newID = "bbbb2222bbbb2222bbbb2222bbbb2222"
+	write(oldID+".jsonl", "trace", 40*24*time.Hour)
+	write(oldID+".diff", "diffbody", 40*24*time.Hour)
+	write(newID+".jsonl", "recent", time.Hour)
+	write("config.yaml", "secret", 100*24*time.Hour)                              // wrong suffix — must be ignored
+	write("a.jsonl", "shorthex", 100*24*time.Hour)                                // too-short id — must be ignored
+	write("NOTHEXNOTHEXNOTH.jsonl", "x", 100*24*time.Hour)                        // non-hex id — must be ignored
+	os.Mkdir(filepath.Join(dir, "cccc3333cccc3333cccc3333cccc3333.jsonl"), 0o755) // directory — must be skipped
 
 	tasks, err := scanAuditTasks(dir)
 	if err != nil {
@@ -106,31 +109,54 @@ func TestScanAuditTasks_GroupsAndIgnoresNonTaskFiles(t *testing.T) {
 		t.Fatalf("found %d tasks, want 2 (ids: %s)", len(tasks), ids(tasks))
 	}
 	for _, ta := range tasks {
-		if ta.id == "aaaaaa" {
+		if ta.id == oldID {
 			if len(ta.files) != 2 {
-				t.Errorf("aaaaaa grouped %d files, want 2", len(ta.files))
+				t.Errorf("old task grouped %d files, want 2", len(ta.files))
 			}
 			if ta.bytes != int64(len("trace")+len("diffbody")) {
-				t.Errorf("aaaaaa bytes = %d, want %d", ta.bytes, len("trace")+len("diffbody"))
+				t.Errorf("old task bytes = %d, want %d", ta.bytes, len("trace")+len("diffbody"))
 			}
 		}
 	}
 
 	prune := selectForPrune(tasks, 30*24*time.Hour, 0, time.Now())
-	if len(prune) != 1 || prune[0].id != "aaaaaa" {
-		t.Fatalf("prune = %s, want [aaaaaa]", ids(prune))
+	if len(prune) != 1 || prune[0].id != oldID {
+		t.Fatalf("prune = %s, want [%s]", ids(prune), oldID)
 	}
-	for _, f := range prune[0].files {
-		if err := os.Remove(f); err != nil {
-			t.Errorf("remove %s: %v", f, err)
-		}
-	}
-	// The recent task and the non-task config must remain untouched.
-	if _, err := os.Stat(filepath.Join(dir, "bbbbbb.jsonl")); err != nil {
-		t.Error("recent task bbbbbb was removed")
+	deleteTasks(prune)
+	// The recent task and the non-task files must remain untouched.
+	if _, err := os.Stat(filepath.Join(dir, newID+".jsonl")); err != nil {
+		t.Error("recent task was removed")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); err != nil {
 		t.Error("config.yaml must never be touched by prune")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.jsonl")); err != nil {
+		t.Error("too-short-id file must never be touched by prune")
+	}
+}
+
+func TestDeleteTasks_RemovesFilesAndCountsFreed(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	ta := taskArtifacts{
+		id:    "deadbeefdeadbeefdeadbeefdeadbeef",
+		files: []string{mk("x.jsonl", "12345"), mk("x.diff", "678")},
+	}
+	removed, failed, freed := deleteTasks([]taskArtifacts{ta})
+	if removed != 1 || failed != 0 || freed != 8 {
+		t.Fatalf("removed=%d failed=%d freed=%d, want 1,0,8", removed, failed, freed)
+	}
+	for _, f := range ta.files {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Errorf("%s not removed", f)
+		}
 	}
 }
 
