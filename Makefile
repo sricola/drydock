@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test vet image network init clean help
+.PHONY: all build install uninstall test redteam vet image network init clean help
 
 all: build
 
@@ -21,6 +21,7 @@ help:
 	@echo "  install     binaries into \$$PREFIX/bin, image+config into \$$PREFIX/share/drydock (PREFIX=$(PREFIX))"
 	@echo "  uninstall   remove installed binaries + share"
 	@echo "  test        go test -race ./..."
+	@echo "  redteam     run the adversarial containment suite (attacks that must fail)"
 	@echo "  vet         go vet ./..."
 	@echo "  image       container build -t drydock-sandbox:latest image/"
 	@echo "  network     create the drydock-egress vmnet network if missing"
@@ -61,6 +62,16 @@ test:
 # image exist. Does NOT spend Anthropic tokens (uses a placeholder key).
 test-integration: build
 	go test -tags=integration -count=1 -timeout=2m ./tests/...
+
+# redteam runs the adversarial containment suite: each test performs an attack
+# from THREAT_MODEL.md and asserts it is blocked. Host-side claims (A3-A6) run
+# here and in CI. VM-backed claims (A1, A2, A7) need the sandbox — run
+# `make test-integration` on macOS / Apple silicon (added as they land).
+REDTEAM := TestRedteam_A[0-9]|TestHostCommit_IgnoresPlantedHook|TestCaptureDiff_ExcludesTaskDir
+redteam:
+	@echo "== drydock red-team — attacks that must fail (host-side: A3-A6) =="
+	go test -count=1 -run '$(REDTEAM)' ./...
+	@echo "== host-side containment verified. VM-backed A1/A2/A7: make test-integration =="
 
 vet:
 	go vet ./...
