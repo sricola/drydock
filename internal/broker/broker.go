@@ -60,15 +60,10 @@ type Task struct {
 	Agent string `json:"agent"`
 }
 
-// ApprovalFn gates the egress-widening step. The diff-push step now has
-// its own explicit gate driven by Task.AutoApprove + the admin endpoints.
-type ApprovalFn func(kind string, payload any) bool
-
 type Broker struct {
 	Cfg          egress.Config
 	Providers    map[string]creds.Provider // vendor -> provider
 	DefaultAgent string                    // "" -> "claude"
-	Approve      ApprovalFn
 	ImageRef     string
 	StageRoot    string
 	AuditRoot    string
