@@ -107,7 +107,8 @@ to `0.0.0.0` on a shared network is a vulnerability, not a feature.
 
 - **Audit logs don't rotate.** `AUDIT_ROOT` (default
   `~/.drydock/audit`) grows monotonically. On a long-running brokerd
-  this becomes a disk-fill DoS. Prune manually or add a cron.
+  this becomes a disk-fill DoS. Run `drydock prune --older-than DUR`
+  (dry-run unless `--yes`), or schedule it via cron.
 
 - **macOS notifications contain attacker-controlled hostnames.**
   Per-task `egress_extra` hostnames flow into the notification body.
