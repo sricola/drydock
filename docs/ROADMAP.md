@@ -91,9 +91,17 @@ packages; attach SPDX/CycloneDX to each GitHub release.
 documented version), document the exact build env, and add `make verify-build`
 (rebuild → compare to the published sha256).
 
-### 2.5 Dependency-pinning policy
-Pin the Debian base image by digest; document the pin/bump policy (claude-code,
-codex, Go are already `ARG`-pinned); add `govulncheck` to CI.
+### 2.5 Dependency-pinning policy — *landed*
+**Pin policy:** every external input is pinned and bumped deliberately —
+- the sandbox base image `node:22-bookworm-slim` is pinned **by digest** in
+  `image/Dockerfile` (re-pull + `container image inspect` to bump);
+- the agent CLIs (`@anthropic-ai/claude-code`, `@openai/codex`) and the Go
+  tarball are version-pinned via `ARG`s in the Dockerfile;
+- the Go toolchain is pinned to `go 1.26.4` in `go.mod`;
+- `go.sum` pins module checksums.
+
+`govulncheck` runs in CI (`.github/workflows/test.yml`) and **fails the build on
+a known vulnerability** in any dependency.
 
 ### 2.2 Signed + notarized macOS binaries — *needs a paid prereq*
 `codesign` (Developer ID) + `notarytool` + staple so brew-installed binaries

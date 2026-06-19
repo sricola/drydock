@@ -1,4 +1,7 @@
-FROM node:22-bookworm-slim
+# Pinned by digest for a reproducible base. Bump deliberately: re-pull
+# node:22-bookworm-slim, read its digest (`container image inspect`), and update
+# here. See docs/ROADMAP.md (Phase 2.5) for the dependency-pinning policy.
+FROM node:22-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
 # Base toolchain + Python 3.11 (Debian default). Python lives next to Node so
 # the egress allowlist's pypi.org slot has a runtime to land on.
 RUN apt-get update && apt-get install -y --no-install-recommends \
