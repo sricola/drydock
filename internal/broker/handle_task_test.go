@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -340,5 +341,19 @@ func deny(t *testing.T, b *Broker, id string) {
 	b.HandleDeny(rr, r)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("deny code=%d, want 204", rr.Code)
+	}
+}
+
+// CancelAll must fire every registered task's cancel — that's what lets a
+// graceful brokerd shutdown tear down each in-flight VM and unblock its client.
+func TestCancelAll_CancelsEveryRegisteredTask(t *testing.T) {
+	b := &Broker{}
+	var calls int32
+	for i := 0; i < 3; i++ {
+		b.registerTask(fmt.Sprintf("task%d", i), "repo", "instr", func() { atomic.AddInt32(&calls, 1) })
+	}
+	b.CancelAll()
+	if calls != 3 {
+		t.Errorf("CancelAll fired %d cancels, want 3", calls)
 	}
 }
