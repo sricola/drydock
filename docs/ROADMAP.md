@@ -32,13 +32,19 @@ whether the attack can run host-side (pure Go, CI-able) or needs the sandbox VM
 
 | Claim | Attack | Status | Where | Test |
 |---|---|---|---|---|
-| **A1** agent reads the real vendor key | in-VM: grep `/proc/self/environ`, fs, env for `sk-ant`/`sk-`; assert only `tok_` present | **gap** | VM | _to add_ |
-| **A2** agent reaches a hostile/unintended host | in-VM: `curl https://evil.example` + raw DNS; assert both blocked | **gap** | VM | _to add_ (doctor covers a slice) |
+| **A1** agent reads the real vendor key | in-VM: inspect the env built from a real gateway grant; assert only `tok_`, never the sentinel `sk-ant-` key | **covered** | VM | `TestRedteam_A1_RealKeyNeverInVM` |
+| **A2** agent reaches a hostile/unintended host | in-VM: `curl https://example.com` + raw DNS + direct-IP; assert all blocked | **covered** | VM | `TestRedteam_A2_EgressToHostileHostBlocked` |
 | **A3** agent plants a `.git` hook → host RCE | host commits a work tree with a planted `pre-commit`; assert it never runs on the host | **covered** | host | `TestHostCommit_IgnoresPlantedHook` |
 | **A4** agent leaks `.task/` (prompt/allowlist) into the PR | write inside `.task/`; assert it is excluded from the captured diff | **covered** | host | `TestCaptureDiff_ExcludesTaskDir` |
-| **A5** agent crafts a malicious diff to bypass the gate | submit without `auto_approve`; deny; assert nothing is pushed | **partial** | host | `TestHandleTask_GatedDeny_NoPush` (promote/label) |
-| **A6** agent widens its own egress | submit `egress_extra: evil:443`; deny; assert it never compiled into squid | **gap** | host | _to add_ (`gateEgressWiden`) |
-| **A7** task state persists between tasks | run two tasks; assert task 2 cannot see task 1's VM/stage; `--rm` + `Cleanup` ran | **gap** | VM (+ host `TestCleanup_*`) | _to add_ |
+| **A5** agent crafts a malicious diff to bypass the gate | submit a backdoor diff without `auto_approve`; deny; assert nothing is pushed | **covered** | host | `TestRedteam_A5_GateBlocksUnapprovedPush` |
+| **A6** agent widens its own egress | submit `egress_extra: evil:443`; deny; assert 403 and never reaches staging | **covered** | host | `TestRedteam_A6_EgressWidenDenied` |
+| **A7** task state persists between tasks | run two tasks; assert task 2 cannot see task 1's VM/stage; `--rm` + `Cleanup` ran | **covered** | VM (+ host `TestCleanup_*`) | `TestRedteam_A7_NoStatePersistsBetweenTasks` |
+
+**Phase 1 status:** all seven A-claims are now backed by a runnable
+attack-that-fails. Host-side (A3–A6) run in CI via `make redteam`; VM-backed
+(A1, A2, A7) run via `make redteam-vm` on macOS / Apple silicon. THREAT_MODEL
+carries `Verified by:` links for each. Remaining polish: a nicer per-claim
+green/red report wrapper (currently raw `go test` output).
 
 ### 1.2 Adversarial tests for the gaps
 Write the missing tests (A1, A2, A6, A7), each named/labeled to its claim so
