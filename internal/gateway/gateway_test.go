@@ -99,6 +99,66 @@ func TestGateway_RevokeInvalidates(t *testing.T) {
 	}
 }
 
+// TestGateway_MultiVendorRouting drives one gateway holding BOTH an anthropic
+// and an openai backend, and asserts each minted token routes to the right
+// upstream with the right credential injection (X-Api-Key vs Authorization:
+// Bearer) — the property the vendor registry exists to guarantee.
+func TestGateway_MultiVendorRouting(t *testing.T) {
+	var anthropicHit, openaiHit bool
+	anthropicUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anthropicHit = true
+		if r.Header.Get("X-Api-Key") != "REAL_ANTHROPIC" {
+			t.Errorf("anthropic upstream: X-Api-Key=%q, want REAL_ANTHROPIC", r.Header.Get("X-Api-Key"))
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("anthropic upstream: Authorization not stripped: %q", r.Header.Get("Authorization"))
+		}
+		io.WriteString(w, `{"model":"claude-x","usage":{"input_tokens":10,"output_tokens":10}}`)
+	}))
+	defer anthropicUp.Close()
+	openaiUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		openaiHit = true
+		if r.Header.Get("Authorization") != "Bearer REAL_OPENAI" {
+			t.Errorf("openai upstream: Authorization=%q, want Bearer REAL_OPENAI", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("X-Api-Key") != "" {
+			t.Errorf("openai upstream: X-Api-Key not stripped: %q", r.Header.Get("X-Api-Key"))
+		}
+		io.WriteString(w, `{"model":"gpt-5-codex","usage":{"input_tokens":10,"output_tokens":10}}`)
+	}))
+	defer openaiUp.Close()
+
+	av := Vendor{Name: "anthropic", BaseURL: anthropicUp.URL, Inject: AnthropicVendor().Inject, ParseUsage: parseAnthropicUsage, Prices: AnthropicPrices()}
+	ov := Vendor{Name: "openai", BaseURL: openaiUp.URL, Inject: OpenAIVendor().Inject, ParseUsage: parseOpenAIUsage, Prices: OpenAIPrices()}
+	g, err := New(Backend{Vendor: av, RealKey: "REAL_ANTHROPIC"}, Backend{Vendor: ov, RealKey: "REAL_OPENAI"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	atok, _ := g.Mint("anthropic", 100, time.Minute)
+	otok, _ := g.Mint("openai", 100, time.Minute)
+
+	if rec := do(g, atok); rec.Code != http.StatusOK {
+		t.Fatalf("anthropic token: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := do(g, otok); rec.Code != http.StatusOK {
+		t.Fatalf("openai token: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !anthropicHit || !openaiHit {
+		t.Errorf("upstreams hit: anthropic=%v openai=%v (each token must reach its own vendor)", anthropicHit, openaiHit)
+	}
+	if g.spent(atok) <= 0 || g.spent(otok) <= 0 {
+		t.Errorf("per-vendor metering: anthropic spent=%v openai spent=%v", g.spent(atok), g.spent(otok))
+	}
+}
+
+func TestGateway_MintUnknownVendorErrors(t *testing.T) {
+	g := newGW(t, "http://unused")
+	if _, err := g.Mint("nope", 100, time.Minute); err == nil {
+		t.Error("Mint for a vendor with no backend should error")
+	}
+}
+
 func TestGrant_SpentReflectsMeteredCost(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
