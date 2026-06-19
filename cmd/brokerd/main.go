@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"drydock/internal/agent"
 	"drydock/internal/broker"
 	"drydock/internal/config"
 	"drydock/internal/creds"
@@ -160,6 +161,16 @@ func main() {
 		}
 	}
 	slog.Info("agents available", "anthropic", anthropicKey != "", "openai", openaiKey != "")
+	// Fail-loud at boot if the operator default points at a vendor with no
+	// key: brokerd still starts (other agents may work), but every task that
+	// doesn't pass --agent would be rejected with a 400, which is confusing
+	// to debug after the fact.
+	if v, ok := agent.Vendor(cfg.DefaultAgent); ok {
+		if _, have := providers[v]; !have {
+			slog.Warn("default_agent has no API key configured — tasks that don't pass --agent will be rejected",
+				"default_agent", cfg.DefaultAgent, "set", strings.ToUpper(v)+"_API_KEY")
+		}
+	}
 
 	b := &broker.Broker{
 		Cfg:          egCfg,

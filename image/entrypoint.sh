@@ -16,18 +16,8 @@ case "$AGENT" in
     # OPENAI_API_KEY=<per-task bearer token>; codex's provider base_url wants
     # the /v1 suffix (it appends /responses), and env_key tells it to send the
     # token as the bearer the gateway validates.
-    GW_BASE="${OPENAI_BASE_URL:?missing OPENAI_BASE_URL}"
     export CODEX_HOME=/home/agent/.codex
-    mkdir -p "$CODEX_HOME"
-    cat > "$CODEX_HOME/config.toml" <<EOF
-model_provider = "drydock"
-
-[model_providers.drydock]
-name = "drydock gateway"
-base_url = "${GW_BASE%/}/v1"
-env_key = "OPENAI_API_KEY"
-wire_api = "responses"
-EOF
+    /usr/local/bin/write-codex-config.sh "${OPENAI_BASE_URL:?missing OPENAI_BASE_URL}" "$CODEX_HOME"
     chown -R agent:agent "$CODEX_HOME"
     # The VM is the isolation boundary, so disable codex's own sandbox and
     # approval prompts. DRYDOCK_MODEL (when set) selects the model.

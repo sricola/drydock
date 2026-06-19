@@ -30,7 +30,8 @@ ARG CODEX_VERSION=0.140.0
 RUN npm install -g @openai/codex@${CODEX_VERSION}
 
 RUN useradd -m -u 10001 -s /bin/bash agent
-COPY init-firewall.sh /usr/local/bin/init-firewall.sh
-COPY entrypoint.sh    /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh
+COPY init-firewall.sh     /usr/local/bin/init-firewall.sh
+COPY entrypoint.sh        /usr/local/bin/entrypoint.sh
+COPY write-codex-config.sh /usr/local/bin/write-codex-config.sh
+RUN chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh /usr/local/bin/write-codex-config.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
