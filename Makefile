@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test redteam redteam-vm sbom vet image network init clean help
+.PHONY: all build install uninstall test redteam redteam-vm sbom verify-build vet image network init clean help
 
 all: build
 
@@ -24,6 +24,7 @@ help:
 	@echo "  redteam     run the host-side adversarial containment suite (A3-A6)"
 	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7); macOS + container runtime"
 	@echo "  sbom        write a CycloneDX SBOM to dist/drydock.cdx.json"
+	@echo "  verify-build  rebuild the binaries and check them against SUMS=<release bin.sha256>"
 	@echo "  vet         go vet ./..."
 	@echo "  image       container build -t drydock-sandbox:latest image/"
 	@echo "  network     create the drydock-egress vmnet network if missing"
@@ -130,6 +131,9 @@ dist: clean
 		-o $(DIST_DIR)/bin/brokerd ./cmd/brokerd
 	go build -trimpath -ldflags '-s -w -X main.version=$(DRYDOCK_VERSION)' \
 		-o $(DIST_DIR)/bin/drydock ./cmd/drydock
+	# Per-binary checksums (paths relative to the dist root) so a third party
+	# can `make verify-build` and confirm the binaries reproduce byte-for-byte.
+	@cd $(DIST_DIR) && shasum -a 256 bin/brokerd bin/drydock > ../$(DIST_NAME)-bin.sha256
 	cp -R image $(DIST_DIR)/share/drydock/
 	cp -R config $(DIST_DIR)/share/drydock/
 	cp README.md LICENSE SECURITY.md THREAT_MODEL.md $(DIST_DIR)/
@@ -138,3 +142,18 @@ dist: clean
 	tar -C dist -czf dist/$(DIST_NAME).tar.gz $(DIST_NAME)
 	shasum -a 256 dist/$(DIST_NAME).tar.gz | tee dist/$(DIST_NAME).tar.gz.sha256
 	@echo "==> dist/$(DIST_NAME).tar.gz"
+
+# verify-build rebuilds the release binaries with the exact release flags and
+# checks them against a published `*-bin.sha256` — proving they reproduce
+# byte-for-byte. Needs Go 1.26.4 on darwin/arm64 and a CLEAN checkout of the
+# tag (so `git describe` matches the released version). Usage:
+#   git checkout vX.Y.Z
+#   gh release download vX.Y.Z -R sricola/drydock -p '*-bin.sha256'
+#   make verify-build SUMS=drydock-vX.Y.Z-darwin-arm64-bin.sha256
+verify-build:
+	@test -n "$(SUMS)" || { echo "usage: make verify-build SUMS=<...-bin.sha256 from the release>"; exit 2; }
+	@mkdir -p $(BIN)
+	go build -trimpath -ldflags '-s -w -X main.version=$(DRYDOCK_VERSION)' -o $(BIN)/brokerd ./cmd/brokerd
+	go build -trimpath -ldflags '-s -w -X main.version=$(DRYDOCK_VERSION)' -o $(BIN)/drydock ./cmd/drydock
+	shasum -a 256 -c $(SUMS)
+	@echo "==> reproducible: binaries match $(SUMS)"

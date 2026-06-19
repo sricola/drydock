@@ -86,10 +86,13 @@ Actions OIDC (`actions/attest-build-provenance`). No certificate cost
 Generate with `syft` over Go modules **and** the sandbox image's apt/npm
 packages; attach SPDX/CycloneDX to each GitHub release.
 
-### 2.4 Reproducible builds
-`-trimpath` is already set. Pin the Go toolchain (go.mod `go` directive +
-documented version), document the exact build env, and add `make verify-build`
-(rebuild → compare to the published sha256).
+### 2.4 Reproducible builds — *landed*
+The release **binaries are byte-for-byte reproducible** (`-trimpath` + the
+`go 1.26.4` toolchain on darwin/arm64). Each release publishes a per-binary
+`*-bin.sha256`, and `make verify-build SUMS=…` rebuilds and checks against it —
+see SECURITY.md "Verifying a release". The tarball itself is not byte-stable
+(tar/gzip metadata); making the archive deterministic is a possible follow-up,
+but the binaries inside it — what actually runs — are verifiable.
 
 ### 2.5 Dependency-pinning policy — *landed*
 **Pin policy:** every external input is pinned and bumped deliberately —

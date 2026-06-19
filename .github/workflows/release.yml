@@ -65,4 +65,5 @@ jobs:
             dist/drydock-*-darwin-arm64.tar.gz.sha256
             dist/drydock-*-darwin-arm64.tar.gz.sig
             dist/drydock-*-darwin-arm64.tar.gz.pem
+            dist/drydock-*-darwin-arm64-bin.sha256
             dist/drydock.cdx.json
