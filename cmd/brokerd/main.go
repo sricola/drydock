@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,27 +27,30 @@ import (
 	"drydock/internal/sockpath"
 )
 
-// initLogging sets the slog default handler. TTY gets a terse text format
+// chooseLogHandler picks the slog handler. A TTY gets a terse text format
 // (no timestamps — the terminal already shows time context); non-TTY (file
 // redirect, launchd, SIEM tail) gets JSON so downstream tools can parse.
-// DRYDOCK_LOG_JSON=1 forces JSON even on a TTY.
-func initLogging() {
+// jsonForced (config log_json / DRYDOCK_LOG_JSON=1) forces JSON even on a TTY.
+func chooseLogHandler(w io.Writer, jsonForced, isTTY bool) slog.Handler {
 	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
-	if os.Getenv("DRYDOCK_LOG_JSON") != "1" {
-		fi, err := os.Stderr.Stat()
-		isTTY := err == nil && (fi.Mode()&os.ModeCharDevice) != 0
-		if isTTY {
-			opts.ReplaceAttr = func(_ []string, a slog.Attr) slog.Attr {
-				if a.Key == slog.TimeKey {
-					return slog.Attr{}
-				}
-				return a
+	if !jsonForced && isTTY {
+		opts.ReplaceAttr = func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				return slog.Attr{}
 			}
-			slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, opts)))
-			return
+			return a
 		}
+		return slog.NewTextHandler(w, opts)
 	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, opts)))
+	return slog.NewJSONHandler(w, opts)
+}
+
+// initLogging sets the slog default handler from the resolved config value
+// (which already folds in the DRYDOCK_LOG_JSON env override).
+func initLogging(jsonForced bool) {
+	fi, err := os.Stderr.Stat()
+	isTTY := err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+	slog.SetDefault(slog.New(chooseLogHandler(os.Stderr, jsonForced, isTTY)))
 }
 
 // die logs an error attr and exits 1. Replaces log.Fatalf without losing
@@ -66,16 +70,19 @@ const supportedContainerMajor = "1"
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
 
 func main() {
-	initLogging()
-	checkContainerVersion()
-	pruneOrphanTasks()
-
 	// Main config: ~/.drydock/config.yaml + env-var overrides. Missing file
-	// is fine — defaults kick in.
+	// is fine — defaults kick in. Loaded first so logging, the version check,
+	// and notifications all honor the resolved config (YAML + env). A failure
+	// here is reported via slog's built-in default handler — initLogging hasn't
+	// run yet, but the error still reaches stderr.
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
 		die("load config", "path", config.DefaultPath(), "err", err)
 	}
+
+	initLogging(cfg.LogJSON)
+	checkContainerVersion(cfg.StrictContainerVersion)
+	pruneOrphanTasks()
 
 	// Egress allowlist: ~/.drydock/egress.yaml is preferred; share/drydock
 	// is the seed template; CWD config/egress.yaml is the dev case.
@@ -214,6 +221,7 @@ func main() {
 		TaskBudget:    cfg.TaskBudgetUSD,
 		MaxConcurrent: cfg.MaxConcurrent,
 		DefaultModel:  cfg.DefaultModel,
+		Notify:        cfg.Notifications,
 	}
 	brk = b // expose to the shutdown handler
 	slog.Info("config",
@@ -311,16 +319,15 @@ func waitBindable(addr string) {
 }
 
 // checkContainerVersion fails closed if the `container` CLI isn't present, and
-// either warns or fails (with DRYDOCK_STRICT_CONTAINER_VERSION=1) when the
-// major version doesn't match what drydock was tested against. Strict mode
-// is for production / launchd deployments where silent drift is worse than
-// a refusal to start.
-func checkContainerVersion() {
+// either warns or fails (strict, via config strict_container_version /
+// DRYDOCK_STRICT_CONTAINER_VERSION=1) when the major version doesn't match
+// what drydock was tested against. Strict mode is for production / launchd
+// deployments where silent drift is worse than a refusal to start.
+func checkContainerVersion(strict bool) {
 	out, err := exec.Command("container", "--version").CombinedOutput()
 	if err != nil {
 		die("container CLI not runnable (apple/container required)", "err", err, "stderr", string(out))
 	}
-	strict := os.Getenv("DRYDOCK_STRICT_CONTAINER_VERSION") == "1"
 	m := containerVersionRE.FindStringSubmatch(strings.TrimSpace(string(out)))
 	if m == nil {
 		if strict {

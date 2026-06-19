@@ -73,6 +73,7 @@ type Broker struct {
 	ProxyPort    int     // squid port (e.g. 3128)
 	TaskBudget   float64 // USD budget per task
 	DefaultModel string  // operator-level default; per-task Task.Model overrides
+	Notify       bool    // fire macOS notifications on approval gates (config notifications)
 
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
@@ -520,7 +521,7 @@ func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []eg
 	slog.Info("task awaiting egress widening",
 		"task_id", taskID, "extras", summary,
 		"hint", "drydock approve "+taskID+" | drydock deny "+taskID)
-	notifyMac("drydock — task wants more egress",
+	b.notifyMac("drydock — task wants more egress",
 		fmt.Sprintf("task %s · %s · drydock approve %s", taskID, summary, taskID))
 
 	select {
@@ -580,7 +581,7 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 	slog.Info("task awaiting approval",
 		"task_id", taskID, "diff_bytes", len(diff), "diff_path", diffPath,
 		"hint", "drydock approve "+taskID+" | drydock deny "+taskID)
-	notifyMac("drydock — task awaiting approval",
+	b.notifyMac("drydock — task awaiting approval",
 		fmt.Sprintf("task %s · %d byte diff · drydock approve %s", taskID, len(diff), taskID))
 
 	select {
@@ -634,12 +635,12 @@ func (b *Broker) HandleTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-// notifyMac fires a macOS notification via osascript. Silent no-op when
-// osascript isn't on PATH (i.e. running on Linux for tests/CI) or when the
-// operator opts out with DRYDOCK_NO_NOTIFY=1. We swallow errors: a missing
-// notification must never block the approval gate.
-func notifyMac(title, body string) {
-	if os.Getenv("DRYDOCK_NO_NOTIFY") == "1" {
+// notifyMac fires a macOS notification via osascript. Silent no-op when the
+// operator opts out (config notifications: false / DRYDOCK_NO_NOTIFY=1) or
+// when osascript isn't on PATH (i.e. running on Linux for tests/CI). We
+// swallow errors: a missing notification must never block the approval gate.
+func (b *Broker) notifyMac(title, body string) {
+	if !b.Notify {
 		return
 	}
 	if _, err := exec.LookPath("osascript"); err != nil {
