@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 )
 
 // runKill cancels a task. Preferred path is POST /admin/kill, which fires
@@ -55,22 +56,9 @@ func runKill(id string) {
 // shape so we don't surface a noisy error when the task already exited.
 func isNoSuchContainer(out string) bool {
 	for _, marker := range []string{"not found", "no such", "does not exist"} {
-		if contains(out, marker) {
+		if strings.Contains(out, marker) {
 			return true
 		}
 	}
 	return false
-}
-
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }

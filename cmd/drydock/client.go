@@ -151,8 +151,6 @@ func formatExtras(extras []domain) string {
 func shorten(s string, max int) string {
 	if i := strings.LastIndex(s, ":"); i >= 0 && i+1 < len(s) {
 		s = s[i+1:]
-	} else if i := strings.LastIndex(s, "/owner/"); i >= 0 {
-		// no-op; keep the suffix
 	}
 	if len(s) > max {
 		return s[:max-1] + "…"

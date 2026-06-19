@@ -109,11 +109,11 @@ func TestEnvOverridesWinOverFile(t *testing.T) {
 
 func TestValidate_Rejects(t *testing.T) {
 	cases := map[string]string{
-		"network: \"\"\ngateway_ip: 1.2.3.4\n":                                 "network",
-		"network: x\ngateway_ip: \"\"\n":                                       "gateway_ip",
-		"network: x\ngateway_ip: 1.2.3.4\nmax_concurrent_tasks: 0\n":           "max_concurrent_tasks",
-		"network: x\ngateway_ip: 1.2.3.4\ntask_budget_usd: 0\n":                "task_budget_usd",
-		"network: x\ngateway_ip: 1.2.3.4\ntask_timeout: 0s\n":                  "task_timeout",
+		"network: \"\"\ngateway_ip: 1.2.3.4\n":                       "network",
+		"network: x\ngateway_ip: \"\"\n":                             "gateway_ip",
+		"network: x\ngateway_ip: 1.2.3.4\nmax_concurrent_tasks: 0\n": "max_concurrent_tasks",
+		"network: x\ngateway_ip: 1.2.3.4\ntask_budget_usd: 0\n":      "task_budget_usd",
+		"network: x\ngateway_ip: 1.2.3.4\ntask_timeout: 0s\n":        "task_timeout",
 	}
 	for yaml, wantSubstr := range cases {
 		path := filepath.Join(t.TempDir(), "c.yaml")

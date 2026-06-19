@@ -11,9 +11,9 @@ import (
 
 // auditDir returns the audit root brokerd writes to. Mirrors brokerd's default
 // so the CLI can find the same files without a config dance. Resolution order:
-//   1. AUDIT_ROOT env override
-//   2. ~/.drydock/audit (current default; matches config.Defaults())
-//   3. /tmp/broker/audit (legacy fallback — see below)
+//  1. AUDIT_ROOT env override
+//  2. ~/.drydock/audit (current default; matches config.Defaults())
+//  3. /tmp/broker/audit (legacy fallback — see below)
 //
 // The legacy fallback exists so an operator who upgraded from drydock < v0.1.4
 // can still run `drydock tasks` / `drydock logs` against their old history

@@ -4,9 +4,9 @@
 // scripts that set DRYDOCK_* keep working.
 //
 // Resolution order for every field:
-//   1. The env var (DRYDOCK_NETWORK, DRYDOCK_GW_IP, etc.)
-//   2. ~/.drydock/config.yaml (or the path passed to Load)
-//   3. The struct default (Defaults()).
+//  1. The env var (DRYDOCK_NETWORK, DRYDOCK_GW_IP, etc.)
+//  2. ~/.drydock/config.yaml (or the path passed to Load)
+//  3. The struct default (Defaults()).
 //
 // ANTHROPIC_API_KEY is intentionally not in this struct — it never goes
 // to disk by design.
