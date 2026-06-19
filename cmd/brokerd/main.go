@@ -122,7 +122,9 @@ func main() {
 
 	// Graceful shutdown: stop squid and remove the anchor.
 	cleanup := func() {
-		_ = squid.Stop()
+		if serr := squid.Stop(); serr != nil {
+			slog.Warn("squid stop failed; port 3128 may still be held", "err", serr)
+		}
 		_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
 	}
 	sigCh := make(chan os.Signal, 1)
@@ -145,7 +147,7 @@ func main() {
 	go func() {
 		l := listenWhenReady(gwAddr)
 		slog.Info("gateway listening", "addr", gwAddr)
-		if serr := http.Serve(l, gw); serr != nil {
+		if serr := hardenedServer(gw).Serve(l); serr != nil {
 			die("gateway serve failed", "err", serr)
 		}
 	}()
@@ -211,12 +213,28 @@ func main() {
 // between bind and chmod). cfg.Broker.Addr ≠ "" opts into TCP with a
 // loud startup banner — any process that can reach the port can submit
 // and approve tasks, so it's for operator awareness, not security.
+// hardenedServer wraps a handler with conservative header/idle timeouts to
+// blunt slow-loris and idle-keepalive abuse. We deliberately do NOT set
+// ReadTimeout/WriteTimeout: POST /tasks legitimately blocks for the whole task
+// run + human approval, and the gateway streams long-lived agent responses —
+// a body/response timeout would sever both. ReadHeaderTimeout bounds the time
+// to send request headers; IdleTimeout reaps idle keep-alive connections.
+func hardenedServer(h http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
 func serve(mux *http.ServeMux, cfg *config.Config, gwAddr, proxyAddr string) {
 	if tcpAddr := cfg.Broker.Addr; tcpAddr != "" {
 		slog.Warn("listening on TCP — any process that can reach this port can submit and approve tasks",
 			"addr", tcpAddr)
 		slog.Info("brokerd listening", "addr", tcpAddr, "gateway", gwAddr, "squid", proxyAddr)
-		if err := http.ListenAndServe(tcpAddr, mux); err != nil {
+		srv := hardenedServer(mux)
+		srv.Addr = tcpAddr
+		if err := srv.ListenAndServe(); err != nil {
 			die("listen and serve failed", "err", err)
 		}
 		return
@@ -243,7 +261,7 @@ func serve(mux *http.ServeMux, cfg *config.Config, gwAddr, proxyAddr string) {
 		die("chmod failed", "sock", sock, "err", err)
 	}
 	slog.Info("brokerd listening", "addr", "unix://"+sock, "gateway", gwAddr, "squid", proxyAddr)
-	if err := http.Serve(l, mux); err != nil {
+	if err := hardenedServer(mux).Serve(l); err != nil {
 		die("serve failed", "err", err)
 	}
 }

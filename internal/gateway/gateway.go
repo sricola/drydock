@@ -62,7 +62,11 @@ func (g *Gateway) Mint(vendor string, budgetUSD float64, ttl time.Duration) (str
 		return "", fmt.Errorf("gateway: no backend for vendor %q", vendor)
 	}
 	b := make([]byte, 18)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// A predictable bearer token would let a co-tenant forge gateway calls.
+		// No entropy is unrecoverable; fail closed rather than mint zeros.
+		panic("drydock: crypto/rand failed — cannot mint gateway tokens: " + err.Error())
+	}
 	tok := "tok_" + hex.EncodeToString(b)
 	g.mu.Lock()
 	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD, Expiry: time.Now().Add(ttl)}
