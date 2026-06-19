@@ -262,6 +262,23 @@ func (b *Broker) unregisterTask(id string) {
 	delete(b.cancellers, id)
 }
 
+// CancelAll cancels every in-flight task. Each task's own HandleTask then tears
+// down its VM (force-delete) and returns a cancelled response — so a graceful
+// brokerd shutdown doesn't orphan running VMs or drop clients at the gate. The
+// cancels are collected under the lock and invoked outside it (the cancel paths
+// reacquire pendingMu via the gates/unregister).
+func (b *Broker) CancelAll() {
+	b.pendingMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(b.cancellers))
+	for _, c := range b.cancellers {
+		cancels = append(cancels, c)
+	}
+	b.pendingMu.Unlock()
+	for _, c := range cancels {
+		c()
+	}
+}
+
 // MaxTaskBodyBytes caps the size of POST /tasks bodies. Generous enough for
 // long instructions but small enough that local-DoS via 1GB instruction
 // strings (or TCP-listener attacks when BROKER_ADDR is set) can't burn

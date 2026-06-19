@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -120,16 +121,41 @@ func main() {
 		slog.Info("squid listening", "addr", proxyAddr)
 	}
 
-	// Graceful shutdown: stop squid and remove the anchor.
+	// Stop squid and remove the anchor. Used both on signal and on a fatal
+	// boot error.
 	cleanup := func() {
 		if serr := squid.Stop(); serr != nil {
 			slog.Warn("squid stop failed; port 3128 may still be held", "err", serr)
 		}
 		_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
 	}
+
+	// Assigned once the broker + HTTP server exist; the signal handler reads
+	// them nil-guarded so a signal during boot still tears squid/anchor down.
+	var (
+		brk      *broker.Broker
+		srv      *http.Server
+		sockToRm string
+	)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() { <-sigCh; cleanup(); os.Exit(0) }()
+	go func() {
+		<-sigCh
+		slog.Info("shutting down — cancelling in-flight tasks")
+		if brk != nil {
+			brk.CancelAll() // each task force-deletes its own VM and responds
+		}
+		if srv != nil {
+			ctx, c := context.WithTimeout(context.Background(), 20*time.Second)
+			_ = srv.Shutdown(ctx) // drain the cancelled handlers' responses
+			c()
+		}
+		cleanup()
+		if sockToRm != "" {
+			_ = os.Remove(sockToRm)
+		}
+		os.Exit(0)
+	}()
 
 	// Credential gateway: real key host-only; the VM gets a bearer token.
 	var backends []gateway.Backend
@@ -189,6 +215,7 @@ func main() {
 		MaxConcurrent: cfg.MaxConcurrent,
 		DefaultModel:  cfg.DefaultModel,
 	}
+	brk = b // expose to the shutdown handler
 	slog.Info("config",
 		"network", cfg.Network,
 		"max_concurrent_tasks", cfg.MaxConcurrent,
@@ -204,15 +231,16 @@ func main() {
 	mux.HandleFunc("GET /admin/tasks", b.HandleTasks)
 	mux.HandleFunc("GET /healthz", b.HandleHealth)
 
-	serve(mux, cfg, gwAddr, proxyAddr)
+	srv = hardenedServer(mux)
+	l, sock := listen(cfg, gwAddr, proxyAddr)
+	sockToRm = sock
+	// Blocks until the signal handler calls srv.Shutdown (clean) or the
+	// listener errors.
+	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
+		die("serve failed", "err", err)
+	}
 }
 
-// serve listens on a Unix socket by default. The socket lives inside a
-// per-uid parent dir at 0700; brokerd narrows the umask before listen() so
-// the socket file itself is created at 0600 atomically (no TOCTOU window
-// between bind and chmod). cfg.Broker.Addr ≠ "" opts into TCP with a
-// loud startup banner — any process that can reach the port can submit
-// and approve tasks, so it's for operator awareness, not security.
 // hardenedServer wraps a handler with conservative header/idle timeouts to
 // blunt slow-loris and idle-keepalive abuse. We deliberately do NOT set
 // ReadTimeout/WriteTimeout: POST /tasks legitimately blocks for the whole task
@@ -227,17 +255,22 @@ func hardenedServer(h http.Handler) *http.Server {
 	}
 }
 
-func serve(mux *http.ServeMux, cfg *config.Config, gwAddr, proxyAddr string) {
+// listen creates the broker's listener: a per-uid Unix socket by default
+// (0600, parent dir 0700, created atomically under a narrowed umask — no
+// TOCTOU between bind and chmod), or a TCP socket when cfg.Broker.Addr is set
+// (with a loud banner — any process that can reach the port can submit and
+// approve tasks). Returns the listener and the socket path to remove on
+// shutdown ("" for TCP).
+func listen(cfg *config.Config, gwAddr, proxyAddr string) (net.Listener, string) {
 	if tcpAddr := cfg.Broker.Addr; tcpAddr != "" {
 		slog.Warn("listening on TCP — any process that can reach this port can submit and approve tasks",
 			"addr", tcpAddr)
-		slog.Info("brokerd listening", "addr", tcpAddr, "gateway", gwAddr, "squid", proxyAddr)
-		srv := hardenedServer(mux)
-		srv.Addr = tcpAddr
-		if err := srv.ListenAndServe(); err != nil {
-			die("listen and serve failed", "err", err)
+		l, err := net.Listen("tcp", tcpAddr)
+		if err != nil {
+			die("listen failed", "addr", tcpAddr, "err", err)
 		}
-		return
+		slog.Info("brokerd listening", "addr", tcpAddr, "gateway", gwAddr, "squid", proxyAddr)
+		return l, ""
 	}
 	sock := cfg.Broker.Socket
 	if sock == "" {
@@ -261,9 +294,7 @@ func serve(mux *http.ServeMux, cfg *config.Config, gwAddr, proxyAddr string) {
 		die("chmod failed", "sock", sock, "err", err)
 	}
 	slog.Info("brokerd listening", "addr", "unix://"+sock, "gateway", gwAddr, "squid", proxyAddr)
-	if err := hardenedServer(mux).Serve(l); err != nil {
-		die("serve failed", "err", err)
-	}
+	return l, sock
 }
 
 // waitBindable blocks until addr can be bound (the anchor brings the vmnet
