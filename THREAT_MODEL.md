@@ -81,6 +81,12 @@ outside drydock:
 
 ## Attacks drydock defends against
 
+Each claim below is backed by a test that runs the attack and asserts it
+fails. **Reproduce:** `make redteam` executes the host-side attacks (A3–A6) and
+watches them fail; the VM-backed claims (A1, A2, A7) run via
+`make test-integration` on macOS / Apple silicon. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for the full coverage map.
+
 ### A1. Agent reads a vendor API key from environment, config file, or memory
 
 The VM is started with no copy of the real key — for either vendor. The
@@ -142,7 +148,8 @@ host commits with hooks disabled and pushes; the agent cannot intercept.
 
 **Implementation:** `internal/broker/broker.go::gatePush` plus
 `cmd/drydock` (the operator CLI). `Task.AutoApprove` must be true on the
-incoming JSON to skip the gate.
+incoming JSON to skip the gate. **Verified by**
+`TestRedteam_A5_GateBlocksUnapprovedPush`.
 
 ### A6. Agent attempts to widen its own egress for the current task
 
@@ -157,7 +164,8 @@ squid with the extras. Setting `requires_approval: false` in the YAML
 opts you out of the gate explicitly — the operator-trust-everything
 mode for batch runs.
 
-**Implementation:** `internal/broker/broker.go::gateEgressWiden`.
+**Implementation:** `internal/broker/broker.go::gateEgressWiden`. **Verified
+by** `TestRedteam_A6_EgressWidenDenied`.
 
 ### A7. Task state persists between tasks
 
