@@ -63,6 +63,16 @@ func TestCostCell_Subscription(t *testing.T) {
 	}
 }
 
+// TestCostCell_APIKey asserts that when subscription is false, costCell formats
+// the USD value as "$x.xxxx" (four decimal places).
+func TestCostCell_APIKey(t *testing.T) {
+	got := costCell(false, 0.0338)
+	want := "$0.0338"
+	if got != want {
+		t.Errorf("costCell=%q, want %q", got, want)
+	}
+}
+
 // Without a terminal `result` event the row stays "running?" — this is the
 // regression guard for the case the synthetic event is added to address.
 func TestSummarize_NoResultStaysRunning(t *testing.T) {

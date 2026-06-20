@@ -23,9 +23,13 @@ import "time"
 // breakage fast).
 const (
 	anthropicOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	anthropicOAuthTokenURL = "https://console.anthropic.com/v1/oauth/token"
 	anthropicOAuthBeta     = "oauth-2025-04-20"
 )
+
+// anthropicOAuthTokenURL is the Anthropic OAuth token endpoint. Declared as a
+// var (not const) so tests can redirect to a local httptest server without
+// hitting the real endpoint. The value is never mutated outside of tests.
+var anthropicOAuthTokenURL = "https://console.anthropic.com/v1/oauth/token"
 
 // oauthRefreshMargin is how close to expiry the gateway refreshes the access
 // token. The credential file stores expiry; OAuthCred.Current refreshes when
