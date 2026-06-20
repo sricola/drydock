@@ -3,18 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>drydock — untrusted coding agents, hardware-isolated</title>
+<title>drydock — sandbox Claude Code &amp; Codex on your Mac</title>
 <meta name="description" content="A sandbox for autonomous coding agents on macOS. Per-task hardware-isolated VMs, credential gateway, deny-by-default egress, human-gated diff push.">
+<link rel="canonical" href="https://sricola.github.io/drydock/">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="alternate icon" href="favicon-32.png">
 <!-- Open Graph / Twitter card -->
-<meta property="og:title" content="drydock — untrusted coding agents, hardware-isolated">
+<meta property="og:title" content="drydock — run Claude Code &amp; Codex without trusting them">
 <meta property="og:description" content="Run coding agents (Claude Code or Codex) on your repos in per-task, hardware-isolated VMs on your Mac. The agent never sees your real API key; only a diff you approve gets out.">
 <meta property="og:image" content="https://sricola.github.io/drydock/og-image.png">
+<meta property="og:image:alt" content="drydock — a hardware-isolated sandbox for Claude Code and Codex on macOS">
 <meta property="og:url" content="https://sricola.github.io/drydock/">
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="drydock">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="drydock — run Claude Code &amp; Codex without trusting them">
+<meta name="twitter:description" content="Run coding agents on your repos in a per-task, hardware-isolated sandbox on your Mac. The agent never sees your real API key; only a diff you approve gets out.">
 <meta name="twitter:image" content="https://sricola.github.io/drydock/og-image.png">
+<meta name="twitter:image:alt" content="drydock — a hardware-isolated sandbox for Claude Code and Codex on macOS">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "drydock",
+  "description": "A hardware-isolated sandbox for running coding agents (Claude Code or OpenAI Codex) on your own repos, on macOS. The agent never sees your real API key, egress is deny-by-default, and only a diff you approve reaches your code.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS 26+, Apple silicon",
+  "url": "https://sricola.github.io/drydock/",
+  "downloadUrl": "https://github.com/sricola/drydock",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Person", "name": "sricola" }
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
