@@ -39,6 +39,7 @@ func runInit() {
 	ensureNetwork()
 	ensureImage()
 	ensureUserConfig()
+	nudgeStaleSandboxImage()
 
 	fmt.Println()
 	fmt.Println("ready. next:")
@@ -328,9 +329,42 @@ func ensureNetwork() {
 	step("network drydock-egress", true, "created (192.168.66.0/24)")
 }
 
+// defaultSandboxImage is the sandbox image init builds and tags. Keep in sync
+// with the ensureImage call below; the nudge compares the operator's configured
+// sandbox_image against it.
+const defaultSandboxImage = "drydock-sandbox:latest"
+
 func ensureImage() {
 	ensureNamedImage("drydock-sandbox", "image", "first build can take a few minutes")
 	ensureNamedImage("drydock-anchor", "image/anchor", "minimal — usually quick")
+}
+
+// nudgeStaleSandboxImage warns when the operator's configured sandbox_image
+// differs from the image init just built. The usual cause is a config seeded
+// before the v0.1.5 claude-sandbox -> drydock-sandbox rename: init builds the
+// new image, but tasks keep pointing at the stale name (and lose Codex). We
+// never edit the operator's config — just point at the one-line fix.
+func nudgeStaleSandboxImage() {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return // config load errors surface on `drydock start`, not here
+	}
+	if warn, msg := sandboxImageNudge(cfg.SandboxImage, defaultSandboxImage); warn {
+		fmt.Println()
+		fmt.Println(msg)
+	}
+}
+
+// sandboxImageNudge returns the warning to print when the configured sandbox
+// image isn't the one init builds. Empty (use-default) and an exact match are
+// silent. A pure helper so the decision is testable without a real config.
+func sandboxImageNudge(configured, built string) (bool, string) {
+	if configured == "" || configured == built {
+		return false, ""
+	}
+	return true, "  ! ~/.drydock/config.yaml sets sandbox_image: " + configured + "\n" +
+		"    but init built " + built + " — tasks will use " + configured + ".\n" +
+		"    If that's a pre-v0.1.5 image (e.g. claude-sandbox), set it to " + built + "."
 }
 
 func ensureNamedImage(name, subdir, note string) {

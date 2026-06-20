@@ -8,6 +8,37 @@ import (
 	"testing"
 )
 
+func TestSandboxImageNudge(t *testing.T) {
+	const built = "drydock-sandbox:latest"
+	cases := []struct {
+		name       string
+		configured string
+		wantWarn   bool
+		wantSub    string // substring the message must contain when warning
+	}{
+		{"matches built default", built, false, ""},
+		{"empty falls back to default", "", false, ""},
+		{"stale claude-sandbox name", "claude-sandbox:latest", true, "claude-sandbox:latest"},
+		{"intentional custom image", "my-sandbox:dev", true, "my-sandbox:dev"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			warn, msg := sandboxImageNudge(c.configured, built)
+			if warn != c.wantWarn {
+				t.Fatalf("warn=%v, want %v", warn, c.wantWarn)
+			}
+			if warn {
+				if !strings.Contains(msg, c.wantSub) {
+					t.Errorf("msg %q missing %q", msg, c.wantSub)
+				}
+				if !strings.Contains(msg, built) {
+					t.Errorf("msg %q should name the built image %q as the fix", msg, built)
+				}
+			}
+		})
+	}
+}
+
 func TestFindImageDir_RespectsEnvOverride(t *testing.T) {
 	root := t.TempDir()
 	imageDir := filepath.Join(root, "image")

@@ -17,6 +17,14 @@ Honesty constraint (unchanged): no overclaiming. Credibility comes from
 A1–A7 / N1–N6 split and the SECURITY.md residuals are the model, and this
 roadmap deepens them rather than papering over them.
 
+**Scope (deliberate non-goal):** drydock is a containment runtime for **coding
+agents on your repos** — clone → isolated run → a diff you approve → push.
+Generalizing to non-coding agents (browser / computer-use, DevOps, arbitrary
+tool execution) is a **post-1.0 non-goal**. The credential-gateway + egress +
+per-task-VM substrate would carry over, but the task model (a repo in, a diff
+out) is git-shaped by design, so "any agent" is an architectural lift, not a
+copy change. Own the coding niche first.
+
 ---
 
 ## Phase 1 — Provable containment
