@@ -209,19 +209,35 @@ token) into the diff itself — file names, whitespace patterns,
 comment text. drydock makes this visible to the operator at review
 time, but does not detect it programmatically.
 
-### N4. Cost exhaustion within budget
+### N4. Cost exhaustion and runaway tasks
 
-The budget caps spend but does not cap usefulness. An agent that burns
-$2 on no-op API calls hits the cap and produces no diff. Operators
-should monitor `costUSD` in `<task>.jsonl` and treat repeated zero-diff
-runs as a flag.
+**`api_key` mode (default).** The per-task USD ceiling (`task_budget_usd` /
+`DRYDOCK_TASK_BUDGET_USD`) caps spend but does not cap usefulness. An agent
+that burns $2 on no-op API calls hits the cap and produces no diff. Operators
+should monitor `costUSD` in `<task>.jsonl` and treat repeated zero-diff runs
+as a flag.
 
-`DRYDOCK_TASK_BUDGET_USD` is a **soft cap**: the gateway meters a request's
-cost only once its response completes, so a single in-flight request can
-overshoot by its own cost before the next one is refused (`402`). Within a
-task the agent calls the API sequentially, so the overshoot is bounded by one
-call — but a single deliberately oversized call can exceed the budget in one
-shot. Set the budget with that headroom in mind.
+`task_budget_usd` is a **soft cap**: the gateway meters a request's cost only
+once its response completes, so a single in-flight request can overshoot by
+its own cost before the next one is refused (`402`). Within a task the agent
+calls the API sequentially, so the overshoot is bounded by one call — but a
+single deliberately oversized call can exceed the budget in one shot. Set the
+budget with that headroom in mind.
+
+**`subscription` mode.** When `anthropic_auth: subscription` is set, drydock
+routes through the operator's personal Claude Pro/Max subscription. The
+credential gateway holds the OAuth access and refresh tokens host-side and
+issues per-task bearers as usual (A1 still holds), but **the USD budget cap
+does not apply** — there is no spend to meter. The runaway controls are:
+
+- `task_max_requests` — hard ceiling on the number of API round-trips the
+  gateway will allow for a single task before returning `429`. Set this
+  explicitly; there is no equivalent to the API-key budget sentinel.
+- `task_timeout` — wall-clock ceiling (default `30m`), unchanged.
+
+Without `task_max_requests` a subscription task can burn through a large
+fraction of the subscription's rate limit before `task_timeout` fires.
+Operators running batch jobs should set both.
 
 ### N5. Compromise of the host's git remote credentials
 

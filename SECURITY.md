@@ -154,6 +154,38 @@ to `0.0.0.0` on a shared network is a vulnerability, not a feature.
   the macOS surface; treat the body as untrusted input if you ever
   route it through a webhook adapter.
 
+### Subscription auth — host-held full-account OAuth credential
+
+When `anthropic_auth: subscription` is set, drydock stores a copy of the
+Claude Pro/Max OAuth credential at `~/.drydock/claude-oauth.json` (mode
+`0600`). This file holds a full-account OAuth access token **and** refresh
+token; the gateway uses them to issue per-task bearers, and the credential
+itself never enters the VM (A1 holds).
+
+The blast radius is broader than a scoped API key in two ways:
+
+- **Not per-task revocable.** A minted bearer expires with the task. The
+  OAuth credential at `~/.drydock/claude-oauth.json` does not. If the host
+  is compromised, an attacker obtains a long-lived refresh token tied to the
+  full Anthropic account — not just a budget-limited bearer.
+- **Not narrowly scoped.** A dedicated `ANTHROPIC_API_KEY` can be created
+  with limited permissions or revoked independently. A personal OAuth token
+  carries the same permissions as an interactive browser session.
+
+This is a deliberate trade-off for the operator who does not want to maintain
+a paid API key. Protect `~/.drydock/claude-oauth.json` the same way you
+would any credential file. Revocation means re-authenticating via
+`claude login` (which rotates the token in Anthropic's system) and running
+`drydock auth claude` again to update the stored copy.
+
+**ToS and rate-limit caveat.** Automating a personal subscription headlessly
+may brush against Anthropic's terms of service for Claude Pro/Max accounts,
+and subscription rate limits are lower than API rate limits — a batch job
+will exhaust them faster than interactive use would. drydock makes no claim
+that this usage mode is sanctioned by Anthropic. The operator assumes that
+risk. See [`THREAT_MODEL.md` § N4](THREAT_MODEL.md#n4-cost-exhaustion-and-runaway-tasks)
+for how to control subscription task runaway with `task_max_requests`.
+
 - **Apple notarization still pending.** Each tagged release now ships a
   CycloneDX SBOM, a keyless **cosign** signature, and **SLSA build
   provenance** (the tarball was built by the release workflow from the
