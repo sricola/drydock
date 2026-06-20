@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"drydock/internal/config"
+	"drydock/internal/gateway"
 )
 
 // runDoctor is the no-API-spend smoke. It catches the failure modes that
@@ -97,6 +99,29 @@ func runDoctor() {
 	default:
 		step("egress pin enforces", false, "non-allowlisted host reachable: "+got)
 		failed = true
+	}
+
+	// 4. When the operator is using Claude subscription auth, validate the
+	// stored OAuth token by calling Current() once. This also refreshes the
+	// token if it is near expiry — no API budget spend beyond the refresh.
+	// Skipped entirely in api_key mode.
+	if cfg.AnthropicAuth == "subscription" {
+		credPath := filepath.Join(config.Dir(), "claude-oauth.json")
+		store := gateway.FileCredStore(credPath)
+		snap, err := store.Load()
+		if err != nil {
+			step("claude subscription", false, "load creds: "+err.Error())
+			failed = true
+		} else {
+			cred := gateway.NewOAuthCred(snap, store)
+			_, err := cred.Current()
+			if err != nil {
+				step("claude subscription", false, err.Error())
+				failed = true
+			} else {
+				step("claude subscription", true, "token valid")
+			}
+		}
 	}
 
 	fmt.Println()

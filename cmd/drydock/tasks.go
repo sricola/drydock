@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"drydock/internal/config"
 )
 
 // auditResult is the single line at the end of each <id>.jsonl that
@@ -32,6 +34,16 @@ type taskRow struct {
 	outcome string
 }
 
+// costCell formats the cost column for the tasks table. When subscription is
+// true it returns the literal "subscription" regardless of the USD amount.
+// Otherwise it formats the dollar value as "$x.xxxx".
+func costCell(subscription bool, usd float64) string {
+	if subscription {
+		return "subscription"
+	}
+	return fmt.Sprintf("$%.4f", usd)
+}
+
 // runTasks lists recent runs by scanning AUDIT_ROOT. brokerd doesn't keep
 // a registry of past task ids — the audit dir IS the registry.
 func runTasks() {
@@ -45,6 +57,13 @@ func runTasks() {
 		die("read audit dir %s: %v", dir, err)
 	}
 
+	// Determine auth mode from config so the cost column can display
+	// "subscription" instead of a dollar amount for subscription-auth runs.
+	subscription := false
+	if cfg, err := config.Load(config.DefaultPath()); err == nil {
+		subscription = cfg.AnthropicAuth == "subscription"
+	}
+
 	rows := make([]taskRow, 0, len(entries))
 	for _, e := range entries {
 		name := e.Name()
@@ -56,7 +75,7 @@ func runTasks() {
 		if err != nil {
 			continue
 		}
-		rows = append(rows, summarize(id, filepath.Join(dir, name), info))
+		rows = append(rows, summarize(id, filepath.Join(dir, name), info, subscription))
 	}
 	if len(rows) == 0 {
 		fmt.Println("(no tasks yet)")
@@ -75,7 +94,7 @@ func runTasks() {
 	}
 }
 
-func summarize(id, path string, info os.FileInfo) taskRow {
+func summarize(id, path string, info os.FileInfo, subscription bool) taskRow {
 	r := taskRow{id: id, mtime: info.ModTime(), age: relAge(info.ModTime()), dur: "-", cost: "-", outcome: "running?"}
 
 	last, ok := lastResult(path, info.Size())
@@ -83,7 +102,7 @@ func summarize(id, path string, info os.FileInfo) taskRow {
 		return r
 	}
 	r.dur = shortDur(last.DurationMs)
-	r.cost = fmt.Sprintf("$%.4f", last.TotalCostUSD)
+	r.cost = costCell(subscription, last.TotalCostUSD)
 	switch {
 	case last.IsError:
 		r.outcome = "error"

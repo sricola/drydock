@@ -21,7 +21,7 @@ func TestSummarize_SyntheticErrorIsReadAsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(path)
-	got := summarize("task-x", path, info)
+	got := summarize("task-x", path, info, false)
 	if got.outcome != "error" {
 		t.Errorf("outcome = %q, want %q (synthetic terminal event must resolve to error, not running?)", got.outcome, "error")
 	}
@@ -46,12 +46,20 @@ func TestSummarize_FindsResultPastTailSeek(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(path)
-	got := summarize("task-big", path, info)
+	got := summarize("task-big", path, info, false)
 	if got.outcome != "ok (3 turn)" {
 		t.Errorf("outcome = %q, want %q (tail read must find the final result line)", got.outcome, "ok (3 turn)")
 	}
 	if got.cost != "$0.0500" {
 		t.Errorf("cost = %q, want $0.0500", got.cost)
+	}
+}
+
+// TestCostCell_Subscription asserts that costCell returns the literal string
+// "subscription" when the subscription flag is true, regardless of the USD value.
+func TestCostCell_Subscription(t *testing.T) {
+	if got := costCell(true /*subscription*/, 0); got != "subscription" {
+		t.Errorf("costCell=%q want subscription", got)
 	}
 }
 
@@ -64,7 +72,7 @@ func TestSummarize_NoResultStaysRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(path)
-	got := summarize("task-y", path, info)
+	got := summarize("task-y", path, info, false)
 	if got.outcome != "running?" {
 		t.Errorf("outcome = %q, want %q", got.outcome, "running?")
 	}
