@@ -158,7 +158,14 @@ drydock tasks                 # recent runs: id, age, duration, cost, outcome
 drydock logs <id> [-f]        # stream-json audit (use -f to follow)
 drydock kill <id>             # cancel the in-flight task (VM down + gate unblocked)
 drydock doctor                # smoke-test the sandbox setup (no API spend)
+drydock redteam               # run live containment attacks on your own sandbox (no API spend)
 ```
+
+`drydock redteam` is the proof you can run yourself: it boots throwaway VMs on
+your Mac and runs the real attacks behind A1 (the vendor key never enters the
+VM), A2 (egress to non-allowlisted hosts is blocked), and A7 (no state survives
+between tasks), printing a pass/fail table. Don't trust the threat model —
+check it.
 
 ### Submit variations
 
