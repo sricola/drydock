@@ -179,6 +179,12 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 	}
 }
 
+func TestNew_RejectsNilCred(t *testing.T) {
+	if _, err := New(Backend{Vendor: AnthropicVendor()}); err == nil {
+		t.Fatal("New with nil Cred should error")
+	}
+}
+
 func TestGateway_MintUnknownVendorErrors(t *testing.T) {
 	g := newGW(t, "http://unused")
 	if _, err := g.Mint("nope", 100, time.Minute); err == nil {

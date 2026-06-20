@@ -53,6 +53,9 @@ type ctxKey struct{}
 func New(backends ...Backend) (*Gateway, error) {
 	g := &Gateway{leases: map[string]*Lease{}, vendors: map[string]vendorRT{}}
 	for _, b := range backends {
+		if b.Cred == nil {
+			return nil, fmt.Errorf("gateway: backend %q has nil Cred", b.Vendor.Name)
+		}
 		u, err := url.Parse(b.Vendor.BaseURL)
 		if err != nil {
 			return nil, err

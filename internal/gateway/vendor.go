@@ -24,7 +24,7 @@ func (k StaticKey) Current() (string, error) { return string(k), nil }
 // Backend pairs a Vendor with the credential the gateway resolves per request (host-only).
 type Backend struct {
 	Vendor Vendor
-	Cred   Credential // was: RealKey string
+	Cred   Credential
 }
 
 // AnthropicVendor is the api.anthropic.com upstream: X-Api-Key auth +
