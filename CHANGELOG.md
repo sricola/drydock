@@ -5,6 +5,37 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.1.10 — 2026-06-19
+
+### Added
+
+- **`drydock setup`** — one command from install to ready. It installs the
+  Homebrew prerequisites (Apple `container`, squid), prompting before each
+  (`--yes` to skip), then runs `drydock init`. Previously `init` only *checked*
+  the prerequisites and exited if they were missing, so the happy path is now
+  `brew install drydock` → `drydock setup` instead of a multi-step prerequisite
+  hunt. Without a TTY and without `--yes`, it prints the install command and
+  stops rather than silently modifying the system.
+
+### Changed
+
+- `drydock doctor` gives an **actionable message when Codex is missing** from
+  the sandbox image: it names the offending image and points at the fix (run
+  `drydock init` to rebuild, or correct a stale `sandbox_image`) instead of
+  dumping a raw `/bin/sh: codex: not found`. The usual cause is a config that
+  predates the v0.1.5 `claude-sandbox` → `drydock-sandbox` rename.
+
+### Fixed
+
+- Website: selected text is legible inside the dark terminal/code blocks. The
+  global `::selection` rule had forced selected text to the dark page color,
+  rendering it invisible (dark-on-dark) when highlighted in a terminal block.
+
+### Docs
+
+- README: a real `drydock redteam` screenshot beside the command, showing the
+  A1/A2/A7 containment attacks passing live against the sandbox.
+
 ## v0.1.9 — 2026-06-19
 
 ### Added
