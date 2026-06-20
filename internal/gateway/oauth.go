@@ -46,7 +46,11 @@ func (f *fileStore) Save(s CredSnapshot) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(f.path, data, 0600)
+	tmp := f.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, f.path)
 }
 
 // OAuthCred implements Credential for a Claude subscription OAuth token.
@@ -103,7 +107,8 @@ func refreshAnthropic(refreshToken string) (CredSnapshot, error) {
 		return CredSnapshot{}, err
 	}
 
-	resp, err := http.Post(anthropicOAuthTokenURL, "application/json", bytes.NewReader(body)) //nolint:noctx
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Post(anthropicOAuthTokenURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return CredSnapshot{}, fmt.Errorf("oauth: token request failed: %w", err)
 	}
@@ -120,6 +125,10 @@ func refreshAnthropic(refreshToken string) (CredSnapshot, error) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return CredSnapshot{}, fmt.Errorf("oauth: decode response: %w", err)
+	}
+
+	if result.AccessToken == "" {
+		return CredSnapshot{}, fmt.Errorf("oauth: refresh response had no access_token")
 	}
 
 	return CredSnapshot{
