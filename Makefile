@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test redteam redteam-vm sbom verify-build vet image network init clean help
+.PHONY: all build install uninstall test redteam redteam-vm demo sbom verify-build vet image network init clean help
 
 all: build
 
@@ -23,6 +23,7 @@ help:
 	@echo "  test        go test -race ./..."
 	@echo "  redteam     run the host-side adversarial containment suite (A3-A6)"
 	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7); macOS + container runtime"
+	@echo "  demo        run the narrated breach demo (real attacks; add VM=1 for A1/A2/A7)"
 	@echo "  sbom        write a CycloneDX SBOM to dist/drydock.cdx.json"
 	@echo "  verify-build  rebuild the binaries and check them against SUMS=<release bin.sha256>"
 	@echo "  vet         go vet ./..."
@@ -82,6 +83,13 @@ redteam:
 redteam-vm: build
 	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7) =="
 	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
+
+# demo runs the narrated breach demo: the same red-team attacks, presented as a
+# recordable 60-second story. Host-side by default (no VM, no API spend); set
+# VM=1 to also run A1/A2/A7 in the sandbox. demo/breach.sh records nothing —
+# wrap it in `asciinema rec` to capture a cast.
+demo:
+	@./demo/breach.sh $(if $(VM),--vm,)
 
 # sbom writes a CycloneDX SBOM of the module + its dependencies to dist/, beside
 # the release tarball. Go-native (no external binary); the version is pinned for

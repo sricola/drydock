@@ -27,6 +27,12 @@ dependency, a prompt-injection that turns a fetched URL into a shell command)
 can't reach your key, your filesystem, your push credentials, or the open
 internet — regardless of what it tries.
 
+<p align="center">
+  <img src="demo/breach.gif" alt="drydock running four real attacks from its threat model — each is contained live" width="820">
+</p>
+
+<p align="center"><sub><b>Don't take the threat model's word for it.</b> Every green above is a real <code>go&nbsp;test</code> red-team case that runs the actual attack and asserts it fails. Reproduce them yourself: <code>make&nbsp;redteam</code> — or watch all seven, including live VM isolation, with <code>make&nbsp;demo&nbsp;VM=1</code>.</sub></p>
+
 > **Status: working alpha (v0.1.8).** The full task lifecycle works
 > end-to-end — submit → isolated VM → gated diff → push — and drydock ships
 > through a Homebrew tap. It is pre-1.0 and single-maintainer: only `main` is
