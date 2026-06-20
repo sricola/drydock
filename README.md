@@ -4,7 +4,7 @@
 
 # drydock
 
-<p align="center"><b>Run coding agents on your repos like you assume they're already hacked — only a diff you approve gets out.</b></p>
+<p align="center"><b>Let a coding agent run wild on your repo — without trusting it.</b></p>
 
 <p align="center">
   <img alt="status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
@@ -14,13 +14,20 @@
 </p>
 
 
-drydock runs autonomous coding agents (**Claude Code** or **OpenAI Codex**,
-per-task selectable) against **your own repos**, on **your own Mac** — not
-someone's cloud — each task sealed in its own **hardware-isolated VM**. It starts from the assumption that
-the agent is already compromised: your real API key **never enters the sandbox**
-(a host-side gateway hands it short-lived, budget-capped tokens), egress is
-**deny-by-default**, and the only thing that crosses back out is a `git diff`
-you approve before it reaches origin.
+drydock runs **Claude Code** or **OpenAI Codex** full-throttle on your own
+repos, on your own Mac — no permission prompts, no babysitting. Each task runs
+sealed in a throwaway VM, so the agent **can't touch your API key, can't reach
+the open internet, and can't write to anything but a disposable copy**. The only
+thing that ever comes back is a `git diff` — and nothing reaches your real code
+until you approve it.
+
+- **It never gets your key.** Your real API key stays on the host; the agent
+  only ever sees a short-lived, budget-capped token.
+- **It can't smuggle anything out.** The internet is deny-by-default — no
+  exfiltrating your code, no calling home (you allow the package registries it
+  needs, nothing else).
+- **Nothing touches your repo until you say so.** You read the diff and approve
+  it before it ever reaches `origin`.
 
 Most agent tooling tries to keep the agent *well-behaved* — permission
 prompts, output filters, policy. drydock takes the opposite stance: **contain

@@ -89,6 +89,10 @@ h1 .t{color:var(--grn)}
 .lede b{font-weight:600;color:var(--ink)}
 .herostatus{margin-top:22px;max-width:54ch;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--mut)}
 .herostatus b{color:var(--ink);font-weight:600}
+.vstack{list-style:none;margin:24px 0 0;padding:0;max-width:62ch;display:grid;gap:11px}
+.vstack li{position:relative;padding-left:24px;font-size:14.5px;line-height:1.55;color:var(--mut)}
+.vstack li::before{content:"→";position:absolute;left:0;top:0;color:var(--grn);font-weight:700}
+.vstack b{color:var(--ink);font-weight:600}
 .statustag{display:inline-block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
   color:var(--amber);background:rgba(168,102,0,.08);border:1px solid rgba(168,102,0,.28);
   border-radius:3px;padding:2px 8px;margin-right:8px;vertical-align:1px}
@@ -271,8 +275,13 @@ footer .mk path{stroke:var(--faint)}
 <header class="hero">
   <div class="wrap">
     <div class="kicker reveal"><span class="bar"></span>macos · local · coding agents on your repos, never the cloud</div>
-    <h1 class="reveal">Untrusted coding agents on your repos —<br>only <span class="t">a diff you approve</span> gets out.</h1>
-    <p class="lede reveal">drydock runs autonomous coding agents (<b>Claude Code</b> or <b>OpenAI Codex</b>, per-task selectable) against <b>your own repos</b>, on <b>your own Mac</b> — not someone's cloud — each task sealed in its own <b>hardware-isolated VM</b>. It assumes the agent is already compromised: your real API key <b>never enters the sandbox</b> (a host-side gateway hands it short-lived, budget-capped tokens), egress is <b>deny-by-default</b>, and the only thing that crosses back out is a <span class="ic">git diff</span> you approve before it reaches origin.</p>
+    <h1 class="reveal">Let a coding agent run wild on your repo —<br><span class="t">without trusting it.</span></h1>
+    <p class="lede reveal">drydock runs <b>Claude Code</b> or <b>OpenAI Codex</b> full-throttle on your own repos, on your own Mac — no permission prompts, no babysitting. Each task runs sealed in a throwaway VM, so the agent <b>can't touch your API key, can't reach the open internet, and can't write to anything but a disposable copy</b>. The only thing that ever comes back is a <span class="ic">git diff</span> — and nothing reaches your real code until you approve it.</p>
+    <ul class="vstack reveal">
+      <li><b>It never gets your key.</b> Your real API key stays on the host — the agent only ever sees a short-lived, budget-capped token.</li>
+      <li><b>It can't smuggle anything out.</b> The internet is deny-by-default — no exfiltrating your code, no calling home.</li>
+      <li><b>Nothing touches your repo until you say so.</b> You read the diff and approve it before it ever reaches origin.</li>
+    </ul>
     <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.10</span> The full lifecycle works end-to-end; pre-1.0 and single-maintainer, no third-party security audit, behavior may change between versions, and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
     <figure class="demo reveal">
       <img src="breach.gif" alt="drydock running four real attacks from its threat model — each one is contained live" loading="lazy" width="860">
