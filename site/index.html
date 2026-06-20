@@ -269,12 +269,8 @@ footer .mk path{stroke:var(--faint)}
       </svg>drydock
     </div>
     <nav class="nav">
-      <a href="#why">why</a>
-      <a href="#arch">architecture</a>
-      <a href="#guarantees">guarantees</a>
+      <a href="#how">how it works</a>
       <a href="#limits">limits</a>
-      <a href="#flow">credentials</a>
-      <a href="#git">git</a>
       <a href="https://github.com/sricola/drydock">github</a>
     </nav>
   </div>
@@ -294,7 +290,7 @@ footer .mk path{stroke:var(--faint)}
       <a class="btn" href="https://github.com/sricola/drydock">Star on GitHub</a>
       <a class="btn-ghost" href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">Read the threat model</a>
     </div>
-    <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.10</span> The full lifecycle works end-to-end; pre-1.0 and single-maintainer, no third-party security audit, behavior may change between versions, and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
+    <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.10</span> Single-maintainer, no third-party security audit yet — read the threat model and decide for yourself. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
     <figure class="demo reveal">
       <img src="breach.gif" alt="drydock running four real attacks from its threat model — each one is contained live" loading="lazy" width="860">
       <figcaption><b>Real attacks, contained live.</b> Every green is an actual <code>go test</code> red-team case that runs the attack and asserts it fails — reproduce with <code>make redteam</code>, or watch all seven (incl. live VM isolation) via <code>make demo VM=1</code>. <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">See the threat model&nbsp;→</a></figcaption>
@@ -333,258 +329,44 @@ drydock start</pre>
         <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">threat model</a>
       </div>
     </div>
-
-    <div class="chips reveal">
-      <span class="chip">Apple&nbsp;<b>silicon</b></span>
-      <span class="chip">apple/container&nbsp;<b>1.0</b></span>
-      <span class="chip">per-VM&nbsp;<b>vmnet</b></span>
-      <span class="chip">Go&nbsp;<b>broker</b></span>
-      <span class="chip">human-gated&nbsp;<b>push</b></span>
-    </div>
   </div>
 </header>
 
 <div class="wrap">
 
-<section id="why">
-  <div class="seclabel reveal"><span class="n">01</span> Why</div>
-  <h2 class="reveal">Assume the VM is already hostile.</h2>
-  <div class="prose reveal">
-    <p>Most agent setups try to keep the agent <em>well-behaved</em> — permission prompts, output filters, policy. drydock takes the opposite stance: assume it is already compromised and make that survivable. The agent runs in bypass mode — every tool call executes with no confirmation — because the threat was never the agent misbehaving; it is the <b>code it runs</b>: a malicious dependency, a poisoned repository, a prompt-injection that turns a fetched URL into a shell command. drydock treats the sandbox as compromised by default and contains the blast radius with two boundaries that don't depend on the agent's good behavior: hardware isolation on one axis, deny-by-default egress on the other.</p>
-    <p>Exactly one thing crosses <em>inward</em> (a per-task token + the instruction) and exactly one crosses <em>outward</em> (a diff a human approves). The agent produces <b>data</b>, never a command the host executes on its behalf.</p>
-  </div>
-  <table class="tbl reveal">
-    <thead><tr><th>Threat</th><th>Primary control</th><th>Backstop</th></tr></thead>
-    <tbody>
-      <tr><td data-l="Threat">Read host filesystem / secrets</td><td data-l="Primary control">Nothing host-side is mounted; no <span class="ic">~/.ssh</span>, no cloud creds</td><td data-l="Backstop"><span class="tag host">per-VM HW isolation</span></td></tr>
-      <tr><td data-l="Threat">Exfiltrate the API key</td><td data-l="Primary control">Real key never enters the VM — gateway holds it host-side</td><td data-l="Backstop"><span class="tag host">egress deny-by-default</span></td></tr>
-      <tr><td data-l="Threat">Steal git push credentials</td><td data-l="Primary control">Push runs on the host; <span class="ic">.git</span> is never mounted</td><td data-l="Backstop"><span class="tag host">human approves the diff</span></td></tr>
-      <tr><td data-l="Threat">Runaway tokens / cost</td><td data-l="Primary control">Per-task USD budget metered at the gateway</td><td data-l="Backstop"><span class="tag host">wall-clock timeout</span></td></tr>
-      <tr><td data-l="Threat">Persist across tasks</td><td data-l="Primary control">Ephemeral per-task VM, torn down after</td><td data-l="Backstop"><span class="tag host">git diff is the only output</span></td></tr>
-      <tr><td data-l="Threat">VM / hypervisor escape</td><td data-l="Primary control">Apple's per-container lightweight VM</td><td data-l="Backstop"><span class="tag oos">out of scope</span></td></tr>
-    </tbody>
-  </table>
-</section>
-
-<section id="guarantees">
-  <div class="seclabel reveal"><span class="n">02</span> Three guarantees</div>
-  <h2 class="reveal">What the containment actually buys.</h2>
+<section id="how">
+  <div class="seclabel reveal">How it works</div>
+  <h2 class="reveal">Three steps. The agent never gets the keys to your machine.</h2>
   <div class="cards">
     <div class="card reveal">
       <div class="idx">/ 01</div>
-      <h3>The key is never in the VM</h3>
-      <p>The sandbox holds only a per-task <b>bearer token</b>. An in-broker reverse proxy validates it and swaps in the real <b>upstream key</b> host-side (Anthropic or OpenAI, whichever the task uses). Leak the token: works only through your gateway, capped by budget, revoked at task end.</p>
+      <h3>Point it at a repo</h3>
+      <p>Give drydock a repo and a task. It spins up a fresh, throwaway VM and drops the agent in with a copy of your code — and nothing else.</p>
     </div>
     <div class="card reveal">
       <div class="idx">/ 02</div>
-      <h3>Egress is deny-by-default</h3>
-      <p>An in-VM <b>nft pin</b> allows exactly two host ports — gateway and proxy — and <b>drops DNS</b>. A host-side squid resolves names and allows registries <b>by hostname</b>. The allowlist lives in the host, not in the territory the attacker controls.</p>
+      <h3>It runs sealed</h3>
+      <p>No API key, no access to your machine, no open internet. The agent works full-throttle inside the box, reaching only the package registries you allow.</p>
     </div>
     <div class="card reveal">
       <div class="idx">/ 03</div>
-      <h3>No diff lands without you</h3>
-      <p><span style="font-family:var(--mono);font-size:.85em">.git</span> is <b>host-only</b>; only the work tree is mounted. brokerd captures the diff, persists it, and <b>blocks the original request until you run <span style="font-family:var(--mono);font-size:.85em">drydock approve</span></b>. Planted hooks never execute on the host; <span style="font-family:var(--mono);font-size:.85em">auto_approve</span> must be opted into explicitly.</p>
+      <h3>You approve the diff</h3>
+      <p>It hands back a <span class="ic">git diff</span>. Read it, run <span class="ic">drydock approve</span>, and it lands — nothing reaches your real repo until you say so.</p>
     </div>
   </div>
 </section>
 
-<section id="arch">
-  <div class="seclabel reveal"><span class="n">03</span> Architecture</div>
-  <h2 class="reveal">One broker, two host proxies, a sealed VM.</h2>
 
-  <div class="archdiag reveal">
-    <svg viewBox="0 0 1400 520" xmlns="http://www.w3.org/2000/svg"
-         font-family="'IBM Plex Mono', ui-monospace, Menlo, monospace" aria-labelledby="archtitle">
-      <title id="archtitle">drydock system architecture: operator drives brokerd, agent data flows left to right through the host trust boundary out to the internet</title>
-
-      <defs>
-        <marker id="t-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-          <path d="M 0 2 L 9 5 L 0 8 z" fill="#9aa1a8"/>
-        </marker>
-        <marker id="t-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-          <path d="M 0 2 L 9 5 L 0 8 z" fill="#c92c2c"/>
-        </marker>
-        <marker id="t-grn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-          <path d="M 0 2 L 9 5 L 0 8 z" fill="#0d8d5e"/>
-        </marker>
-      </defs>
-
-      <!-- Zone labels — tiny, tracked, very muted -->
-      <text x="80"   y="36" font-size="9.5" letter-spacing="4" fill="#98a0a8" font-weight="600">OPERATOR</text>
-      <text x="280"  y="36" font-size="9.5" letter-spacing="4" fill="#c92c2c" font-weight="600">SANDBOX VM</text>
-      <text x="720"  y="36" font-size="9.5" letter-spacing="4" fill="#0d8d5e" font-weight="600">HOST</text>
-      <text x="1080" y="36" font-size="9.5" letter-spacing="4" fill="#98a0a8" font-weight="600">EXTERNAL</text>
-
-      <!-- Trust boundary — single hairline dashed line, labeled above -->
-      <text x="650" y="36" font-size="9" letter-spacing="3" fill="#9aa1a8" font-weight="600" text-anchor="middle">TRUST BOUNDARY</text>
-      <line x1="650" y1="60" x2="650" y2="480"
-            stroke="#1a1d22" stroke-width="1" stroke-dasharray="3 4" opacity=".35"/>
-
-      <!-- ============ ROW 0 — control plane (operator + brokerd) ============ -->
-      <g>
-        <rect x="60" y="76" width="180" height="56" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="76" y="100" font-size="14" font-weight="600" fill="#1a1d22">operator</text>
-        <text x="76" y="118" font-size="10.5" fill="#6b7480">drydock submit · approve</text>
-      </g>
-
-      <g>
-        <rect x="720" y="76" width="280" height="56" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="740" y="100" font-size="14" font-weight="600" fill="#1a1d22">brokerd</text>
-        <text x="740" y="118" font-size="10.5" fill="#6b7480">stage repo · mint token · run VM</text>
-      </g>
-
-      <!-- operator → brokerd: gentle curve sweeping above the VM column -->
-      <path d="M 240 104 C 380 60 580 60 720 104" stroke="#9aa1a8" stroke-width="1.1"
-            stroke-dasharray="3 4" fill="none" marker-end="url(#t-mut)"/>
-      <text x="478" y="56" font-size="9" letter-spacing="2" fill="#6b7480" font-weight="600" text-anchor="middle">POST /tasks</text>
-
-      <!-- brokerd → VM: thin dashed line down-left to the claude card -->
-      <path d="M 720 132 C 660 148 580 158 520 178" stroke="#c8ced4" stroke-width="1"
-            stroke-dasharray="2 4" fill="none" marker-end="url(#t-mut)"/>
-
-      <!-- ============ ROW 1 — model API path ============ -->
-      <g>
-        <rect x="280" y="180" width="280" height="64" rx="6" fill="#ffffff" stroke="#c92c2c" stroke-width="1.4"/>
-        <text x="300" y="206" font-size="14" font-weight="600" fill="#c92c2c">claude / codex</text>
-        <text x="300" y="226" font-size="10.5" fill="#6b7480">agent · bearer token, no real key</text>
-      </g>
-
-      <g>
-        <rect x="720" y="180" width="280" height="64" rx="6" fill="#ffffff" stroke="#0d8d5e" stroke-width="1.4"/>
-        <text x="740" y="206" font-size="14" font-weight="600" fill="#0d8d5e">credential gateway</text>
-        <text x="740" y="226" font-size="10.5" fill="#6b7480">swaps Bearer tok → real vendor key</text>
-      </g>
-
-      <g>
-        <rect x="1080" y="186" width="260" height="52" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="1098" y="208" font-size="13" font-weight="600" fill="#1a1d22">anthropic.com / openai.com</text>
-        <text x="1098" y="226" font-size="10" fill="#6b7480">real key, host-only</text>
-      </g>
-
-      <path d="M 560 212 L 720 212" stroke="#c92c2c" stroke-width="1.4" fill="none" marker-end="url(#t-red)"/>
-      <text x="640" y="204" font-size="9.5" letter-spacing="1.5" fill="#c92c2c" font-weight="600" text-anchor="middle">BEARER TOK</text>
-
-      <path d="M 1000 212 L 1080 212" stroke="#0d8d5e" stroke-width="1.4" fill="none" marker-end="url(#t-grn)"/>
-      <text x="1040" y="204" font-size="9.5" letter-spacing="1.5" fill="#0d8d5e" font-weight="600" text-anchor="middle">REAL KEY</text>
-
-      <!-- ============ ROW 2 — dependencies ============ -->
-      <g>
-        <rect x="280" y="270" width="280" height="52" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="300" y="292" font-size="13" font-weight="600" fill="#1a1d22">npm · pip · go</text>
-        <text x="300" y="310" font-size="10" fill="#6b7480">HTTPS_PROXY=gw:3128</text>
-      </g>
-
-      <g>
-        <rect x="720" y="270" width="280" height="52" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="740" y="292" font-size="13" font-weight="600" fill="#1a1d22">squid</text>
-        <text x="740" y="310" font-size="10" fill="#6b7480">CONNECT allowlist by hostname</text>
-      </g>
-
-      <g>
-        <rect x="1080" y="274" width="260" height="44" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="1098" y="294" font-size="13" font-weight="600" fill="#1a1d22">registries</text>
-        <text x="1098" y="310" font-size="10" fill="#6b7480">npmjs · pypi · go module proxy</text>
-      </g>
-
-      <path d="M 560 296 L 720 296" stroke="#c92c2c" stroke-width="1.2" fill="none" marker-end="url(#t-red)"/>
-      <text x="640" y="288" font-size="9.5" letter-spacing="1.5" fill="#c92c2c" font-weight="600" text-anchor="middle">CONNECT</text>
-
-      <path d="M 1000 296 L 1080 296" stroke="#0d8d5e" stroke-width="1.2" fill="none" marker-end="url(#t-grn)"/>
-
-      <!-- ============ ROW 3 — diff & push ============ -->
-      <g>
-        <rect x="280" y="350" width="280" height="52" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="300" y="372" font-size="13" font-weight="600" fill="#1a1d22">/work (bind mount)</text>
-        <text x="300" y="390" font-size="10" fill="#6b7480">agent writes a diff · <tspan fill="#c92c2c" font-weight="600">never .git</tspan></text>
-      </g>
-
-      <g>
-        <rect x="720" y="350" width="280" height="52" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="740" y="372" font-size="13" font-weight="600" fill="#1a1d22">approval gate</text>
-        <text x="740" y="390" font-size="10" fill="#6b7480">push waits on drydock approve</text>
-      </g>
-
-      <g>
-        <rect x="1080" y="354" width="260" height="44" rx="6" fill="#ffffff" stroke="rgba(20,25,30,.10)"/>
-        <text x="1098" y="374" font-size="13" font-weight="600" fill="#1a1d22">git remote</text>
-        <text x="1098" y="390" font-size="10" fill="#6b7480">github · gitlab · gitea</text>
-      </g>
-
-      <path d="M 560 376 L 720 376" stroke="#0d8d5e" stroke-width="1.4" fill="none" marker-end="url(#t-grn)"/>
-      <text x="640" y="368" font-size="9.5" letter-spacing="1.5" fill="#0d8d5e" font-weight="600" text-anchor="middle">GIT DIFF</text>
-
-      <path d="M 1000 376 L 1080 376" stroke="#0d8d5e" stroke-width="1.2" fill="none" marker-end="url(#t-grn)"/>
-      <text x="1040" y="368" font-size="9.5" letter-spacing="1.5" fill="#0d8d5e" font-weight="600" text-anchor="middle">PUSH</text>
-
-      <!-- Footer caption — one quiet line, no card -->
-      <text x="280" y="468" font-size="10" fill="#9aa1a8">
-        <tspan font-weight="600" fill="#6b7480">nft pin</tspan>
-        — sandbox egress is hard-pinned to gw:8088 and gw:3128. DNS dropped. Everything else
-        <tspan font-weight="600" fill="#c92c2c">DROPPED</tspan>.
-      </text>
-    </svg>
-  </div>
-
-  <p class="archnote reveal">Four flows cross the trust boundary, all labeled.
-    The agent — <b>Claude Code</b> or <b>OpenAI Codex</b>, selected per task — gets a bearer token (never the real key); the gateway swaps in
-    the real vendor credential only on the host side; squid resolves
-    and CONNECTs allowlisted hosts; everything else is dropped by the in-VM
-    <span class="ic">nft</span> pin. The single artifact that crosses back is
-    a captured <span class="ic">git diff</span>, and it doesn't reach origin
-    without your approval.</p>
-</section>
 
 <section id="limits">
-  <div class="seclabel reveal"><span class="n">04</span> Limits</div>
+  <div class="seclabel reveal">Honest limits</div>
   <h2 class="reveal">What it deliberately doesn't defend.</h2>
   <div class="prose reveal">
-    <p>Containments fail quietly when they overclaim. The full <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a> is the contract; here are the residuals an operator should know about <em>before</em> installing.</p>
-  </div>
-  <table class="tbl reveal">
-    <thead><tr><th>Out of scope</th><th>Why drydock can't stop it</th></tr></thead>
-    <tbody>
-      <tr><td data-l="Out of scope">Operator approves a malicious diff</td><td data-l="Why">The gate makes review possible, not automatic. A subtle backdoor in 200 lines of plausible code lands if you click through. Diff like you would for an external contributor.</td></tr>
-      <tr><td data-l="Out of scope">Prompt injection from staged repo files</td><td data-l="Why">A hostile <span class="ic">AGENTS.md</span>, <span class="ic">.cursorrules</span>, or docstring inside the cloned repo can steer the agent for that task. drydock doesn't filter staged content — the diff gate is the backstop.</td></tr>
-      <tr><td data-l="Out of scope">Side-channel exfil via the diff itself</td><td data-l="Why">A clever agent can encode bytes in file names, whitespace, or comment text. drydock makes this <em>visible</em> at review; it doesn't detect it programmatically.</td></tr>
-      <tr><td data-l="Out of scope">Host compromise</td><td data-l="Why">Malware on the Mac running brokerd reads keys, mounts sockets, edits binaries. drydock assumes the host is trusted.</td></tr>
-      <tr><td data-l="Out of scope">Guest-to-host escape in Apple <span class="ic">container</span></td><td data-l="Why">A VM-stack 0day defeats every claim above. drydock pins the tested version and warns on drift; the escape itself is upstream.</td></tr>
-      <tr><td data-l="Out of scope">Operator's GitHub/GitLab credentials</td><td data-l="Why">drydock pushes via the host's <span class="ic">gh</span> / <span class="ic">glab</span>. Whoever can run <span class="ic">drydock approve</span> can push to anything those tokens can reach.</td></tr>
-      <tr><td data-l="Out of scope">Cost exhaustion <em>within</em> the budget</td><td data-l="Why">The USD cap stops runaway spend, not runaway uselessness. An agent that burns $2 on no-op calls hits the cap and returns no diff.</td></tr>
-    </tbody>
-  </table>
-</section>
-
-<section id="flow">
-  <div class="seclabel reveal"><span class="n">05</span> The credential path</div>
-  <h2 class="reveal">A token goes in. A real key never comes back.</h2>
-  <div class="prose reveal">
-    <p>The gateway is the only component that ever holds the real key. It validates the bearer against an in-memory lease, swaps the credential, forwards over TLS, and meters response usage against the task's USD budget. Revocation is a single map delete; a broker crash invalidates every token for free.</p>
-  </div>
-  <div class="term reveal">
-    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">gateway — request path</span></div>
-<pre><span class="c"># inside the VM (claude task) — all it ever holds</span>
-ANTHROPIC_BASE_URL = <span class="k">http://192.168.66.1:8088</span>
-ANTHROPIC_AUTH_TOKEN = <span class="r">tok_9f3c…a17b</span>   <span class="c"># per-task, revocable</span>
-
-<span class="c"># at the gateway (host TCB) — never logged, never returned to the VM</span>
-<span class="a">validate</span>(tok) → lease{ budget: <span class="g">$2.00</span>, spent: <span class="g">$0.41</span> }
-strip  <span class="r">Authorization: Bearer tok_…</span>
-set    <span class="g">X-Api-Key: sk-ant-…REAL</span>
-<span class="a">forward</span> → <span class="g">https://api.anthropic.com</span>   <span class="c"># real TLS, host→Anthropic</span>
-<span class="c"># a codex task is symmetric: OPENAI_* token in → Authorization: Bearer sk-…REAL → api.openai.com</span>
-meter  usage → spent += cost(model, in, out)
-<span class="c"># task ends → Revoke(tok) → 401 forever after</span></pre>
+    <p>A containment that overclaims fails quietly, so here's the honest edge: drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. And it trusts the Mac it runs on. The full <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a> is the contract — read it before you trust it.</p>
   </div>
 </section>
 
-<section id="git">
-  <div class="seclabel reveal"><span class="n">06</span> The git trap</div>
-  <h2 class="reveal">A diff is data. <span style="color:var(--mut)">.git is a weapon.</span></h2>
-  <div class="prose reveal">
-    <p>Mount a normal clone into the VM and then run <span class="ic">git commit</span>/<span class="ic">push</span> on the host against that same repo: a malicious agent can drop <span class="ic">.git/hooks/pre-commit</span> or poison <span class="ic">.git/config</span> — and those execute <b>on the host</b>, with the host's credentials. RCE straight through the trust boundary.</p>
-    <p>drydock clones on the host, moves <span class="ic">.git</span> out of the mounted path, mounts <b>only the work tree</b>, and runs host git with <span class="ic">core.hooksPath=/dev/null</span>. The diff — and nothing else — crosses back. <span style="color:var(--grn)">Regression-tested.</span></p>
-  </div>
-</section>
+
 
 
 </div>
