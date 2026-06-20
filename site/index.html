@@ -93,6 +93,12 @@ h1 .t{color:var(--grn)}
 .vstack li{position:relative;padding-left:24px;font-size:14.5px;line-height:1.55;color:var(--mut)}
 .vstack li::before{content:"→";position:absolute;left:0;top:0;color:var(--grn);font-weight:700}
 .vstack b{color:var(--ink);font-weight:600}
+.herocta{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}
+.herocta a{display:inline-block;padding:11px 20px;border-radius:6px;font-weight:600;font-size:14px;text-decoration:none}
+.herocta .btn{background:var(--grn);color:#fff;border:1px solid var(--grn)}
+.herocta .btn:hover{filter:brightness(1.07)}
+.herocta .btn-ghost{background:transparent;color:var(--ink);border:1px solid var(--line2)}
+.herocta .btn-ghost:hover{border-color:var(--ink)}
 .statustag{display:inline-block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
   color:var(--amber);background:rgba(168,102,0,.08);border:1px solid rgba(168,102,0,.28);
   border-radius:3px;padding:2px 8px;margin-right:8px;vertical-align:1px}
@@ -267,6 +273,8 @@ footer .mk path{stroke:var(--faint)}
       <a href="#arch">architecture</a>
       <a href="#guarantees">guarantees</a>
       <a href="#limits">limits</a>
+      <a href="#flow">credentials</a>
+      <a href="#git">git</a>
       <a href="https://github.com/sricola/drydock">github</a>
     </nav>
   </div>
@@ -282,6 +290,10 @@ footer .mk path{stroke:var(--faint)}
       <li><b>It can't smuggle anything out.</b> The internet is deny-by-default — no exfiltrating your code, no calling home.</li>
       <li><b>Nothing touches your repo until you say so.</b> You read the diff and approve it before it ever reaches origin.</li>
     </ul>
+    <div class="herocta reveal">
+      <a class="btn" href="https://github.com/sricola/drydock">Star on GitHub</a>
+      <a class="btn-ghost" href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">Read the threat model</a>
+    </div>
     <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.10</span> The full lifecycle works end-to-end; pre-1.0 and single-maintainer, no third-party security audit, behavior may change between versions, and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
     <figure class="demo reveal">
       <img src="breach.gif" alt="drydock running four real attacks from its threat model — each one is contained live" loading="lazy" width="860">
@@ -354,8 +366,30 @@ drydock start</pre>
   </table>
 </section>
 
+<section id="guarantees">
+  <div class="seclabel reveal"><span class="n">02</span> Three guarantees</div>
+  <h2 class="reveal">What the containment actually buys.</h2>
+  <div class="cards">
+    <div class="card reveal">
+      <div class="idx">/ 01</div>
+      <h3>The key is never in the VM</h3>
+      <p>The sandbox holds only a per-task <b>bearer token</b>. An in-broker reverse proxy validates it and swaps in the real <b>upstream key</b> host-side (Anthropic or OpenAI, whichever the task uses). Leak the token: works only through your gateway, capped by budget, revoked at task end.</p>
+    </div>
+    <div class="card reveal">
+      <div class="idx">/ 02</div>
+      <h3>Egress is deny-by-default</h3>
+      <p>An in-VM <b>nft pin</b> allows exactly two host ports — gateway and proxy — and <b>drops DNS</b>. A host-side squid resolves names and allows registries <b>by hostname</b>. The allowlist lives in the host, not in the territory the attacker controls.</p>
+    </div>
+    <div class="card reveal">
+      <div class="idx">/ 03</div>
+      <h3>No diff lands without you</h3>
+      <p><span style="font-family:var(--mono);font-size:.85em">.git</span> is <b>host-only</b>; only the work tree is mounted. brokerd captures the diff, persists it, and <b>blocks the original request until you run <span style="font-family:var(--mono);font-size:.85em">drydock approve</span></b>. Planted hooks never execute on the host; <span style="font-family:var(--mono);font-size:.85em">auto_approve</span> must be opted into explicitly.</p>
+    </div>
+  </div>
+</section>
+
 <section id="arch">
-  <div class="seclabel reveal"><span class="n">02</span> Architecture</div>
+  <div class="seclabel reveal"><span class="n">03</span> Architecture</div>
   <h2 class="reveal">One broker, two host proxies, a sealed VM.</h2>
 
   <div class="archdiag reveal">
@@ -498,28 +532,6 @@ drydock start</pre>
     <span class="ic">nft</span> pin. The single artifact that crosses back is
     a captured <span class="ic">git diff</span>, and it doesn't reach origin
     without your approval.</p>
-</section>
-
-<section id="guarantees">
-  <div class="seclabel reveal"><span class="n">03</span> Three guarantees</div>
-  <h2 class="reveal">What the containment actually buys.</h2>
-  <div class="cards">
-    <div class="card reveal">
-      <div class="idx">/ 01</div>
-      <h3>The key is never in the VM</h3>
-      <p>The sandbox holds only a per-task <b>bearer token</b>. An in-broker reverse proxy validates it and swaps in the real <b>upstream key</b> host-side (Anthropic or OpenAI, whichever the task uses). Leak the token: works only through your gateway, capped by budget, revoked at task end.</p>
-    </div>
-    <div class="card reveal">
-      <div class="idx">/ 02</div>
-      <h3>Egress is deny-by-default</h3>
-      <p>An in-VM <b>nft pin</b> allows exactly two host ports — gateway and proxy — and <b>drops DNS</b>. A host-side squid resolves names and allows registries <b>by hostname</b>. The allowlist lives in the host, not in the territory the attacker controls.</p>
-    </div>
-    <div class="card reveal">
-      <div class="idx">/ 03</div>
-      <h3>No diff lands without you</h3>
-      <p><span style="font-family:var(--mono);font-size:.85em">.git</span> is <b>host-only</b>; only the work tree is mounted. brokerd captures the diff, persists it, and <b>blocks the original request until you run <span style="font-family:var(--mono);font-size:.85em">drydock approve</span></b>. Planted hooks never execute on the host; <span style="font-family:var(--mono);font-size:.85em">auto_approve</span> must be opted into explicitly.</p>
-    </div>
-  </div>
 </section>
 
 <section id="limits">
