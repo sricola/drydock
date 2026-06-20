@@ -49,7 +49,7 @@ func TestRedteam_A1_RealKeyNeverInVM(t *testing.T) {
 	requireContainer(t)
 	const sentinel = "sk-ant-SENTINEL-DO-NOT-LEAK-9f3c"
 
-	gw, err := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), RealKey: sentinel})
+	gw, err := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey(sentinel)})
 	if err != nil {
 		t.Fatal(err)
 	}

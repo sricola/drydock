@@ -13,10 +13,18 @@ type Vendor struct {
 	Prices     map[string]Price
 }
 
-// Backend pairs a Vendor with the real upstream key (host-only).
+// Credential is the host-held secret the gateway injects upstream. Never seen by the VM.
+type Credential interface{ Current() (string, error) }
+
+// StaticKey is a fixed API key (the existing path).
+type StaticKey string
+
+func (k StaticKey) Current() (string, error) { return string(k), nil }
+
+// Backend pairs a Vendor with the credential the gateway resolves per request (host-only).
 type Backend struct {
-	Vendor  Vendor
-	RealKey string
+	Vendor Vendor
+	Cred   Credential // was: RealKey string
 }
 
 // AnthropicVendor is the api.anthropic.com upstream: X-Api-Key auth +

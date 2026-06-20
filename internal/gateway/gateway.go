@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -31,8 +32,13 @@ type Lease struct {
 
 type vendorRT struct {
 	v        Vendor
-	realKey  string
+	cred     Credential
 	upstream *url.URL
+}
+
+type reqCtx struct {
+	lease  *Lease
+	secret string
 }
 
 type Gateway struct {
@@ -51,7 +57,7 @@ func New(backends ...Backend) (*Gateway, error) {
 		if err != nil {
 			return nil, err
 		}
-		g.vendors[b.Vendor.Name] = vendorRT{v: b.Vendor, realKey: b.RealKey, upstream: u}
+		g.vendors[b.Vendor.Name] = vendorRT{v: b.Vendor, cred: b.Cred, upstream: u}
 	}
 	g.proxy = &httputil.ReverseProxy{Director: g.director, ModifyResponse: g.meter}
 	return g, nil
@@ -122,32 +128,38 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
-	ctx := contextWith(r, lease)
+	vt := g.vendors[lease.Vendor]
+	secret, err := vt.cred.Current()
+	if err != nil {
+		http.Error(w, "credential unavailable", http.StatusBadGateway)
+		return
+	}
+	ctx := context.WithValue(r.Context(), ctxKey{}, &reqCtx{lease: lease, secret: secret})
 	g.proxy.ServeHTTP(w, r.WithContext(ctx))
 }
 
 func (g *Gateway) director(req *http.Request) {
-	lease, _ := req.Context().Value(ctxKey{}).(*Lease)
-	if lease == nil {
+	rc, _ := req.Context().Value(ctxKey{}).(*reqCtx)
+	if rc == nil {
 		return
 	}
-	vt, ok := g.vendors[lease.Vendor]
+	vt, ok := g.vendors[rc.lease.Vendor]
 	if !ok {
 		return
 	}
 	req.URL.Scheme = vt.upstream.Scheme
 	req.URL.Host = vt.upstream.Host
 	req.Host = vt.upstream.Host
-	vt.v.Inject(req, vt.realKey)
+	vt.v.Inject(req, rc.secret)
 }
 
 // meter tees the response body and, on completion, adds its cost to the lease.
 func (g *Gateway) meter(resp *http.Response) error {
-	lease, _ := resp.Request.Context().Value(ctxKey{}).(*Lease)
-	if lease == nil {
+	rc, _ := resp.Request.Context().Value(ctxKey{}).(*reqCtx)
+	if rc == nil {
 		return nil
 	}
-	vt, ok := g.vendors[lease.Vendor]
+	vt, ok := g.vendors[rc.lease.Vendor]
 	if !ok {
 		return nil
 	}
@@ -155,7 +167,7 @@ func (g *Gateway) meter(resp *http.Response) error {
 	resp.Body = &usageReader{rc: resp.Body, onDone: func(body []byte) {
 		if model, in, out, ok := vt.v.ParseUsage(body, ct); ok {
 			g.mu.Lock()
-			lease.SpentUSD += cost(vt.v.Prices, model, in, out)
+			rc.lease.SpentUSD += cost(vt.v.Prices, model, in, out)
 			g.mu.Unlock()
 		}
 	}}

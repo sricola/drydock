@@ -33,7 +33,7 @@ func newGW(t *testing.T, up string) *Gateway {
 		ParseUsage: parseAnthropicUsage,
 		Prices:     map[string]Price{"claude-x": {InputPer1M: 3, OutputPer1M: 15}},
 	}
-	g, err := New(Backend{Vendor: v, RealKey: "REAL"})
+	g, err := New(Backend{Vendor: v, Cred: StaticKey("REAL")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 
 	av := Vendor{Name: "anthropic", BaseURL: anthropicUp.URL, Inject: AnthropicVendor().Inject, ParseUsage: parseAnthropicUsage, Prices: AnthropicPrices()}
 	ov := Vendor{Name: "openai", BaseURL: openaiUp.URL, Inject: OpenAIVendor().Inject, ParseUsage: parseOpenAIUsage, Prices: OpenAIPrices()}
-	g, err := New(Backend{Vendor: av, RealKey: "REAL_ANTHROPIC"}, Backend{Vendor: ov, RealKey: "REAL_OPENAI"})
+	g, err := New(Backend{Vendor: av, Cred: StaticKey("REAL_ANTHROPIC")}, Backend{Vendor: ov, Cred: StaticKey("REAL_OPENAI")})
 	if err != nil {
 		t.Fatal(err)
 	}

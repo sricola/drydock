@@ -167,10 +167,10 @@ func main() {
 	// Credential gateway: real key host-only; the VM gets a bearer token.
 	var backends []gateway.Backend
 	if anthropicKey != "" {
-		backends = append(backends, gateway.Backend{Vendor: gateway.AnthropicVendor(), RealKey: anthropicKey})
+		backends = append(backends, gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey(anthropicKey)})
 	}
 	if openaiKey != "" {
-		backends = append(backends, gateway.Backend{Vendor: gateway.OpenAIVendor(), RealKey: openaiKey})
+		backends = append(backends, gateway.Backend{Vendor: gateway.OpenAIVendor(), Cred: gateway.StaticKey(openaiKey)})
 	}
 	gw, err := gateway.New(backends...)
 	if err != nil {

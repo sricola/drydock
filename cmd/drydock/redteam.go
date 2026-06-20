@@ -57,7 +57,7 @@ func redteamA1(img string) bool {
 	const label = "A1  real key never enters VM"
 	const sentinel = "sk-ant-SENTINEL-REDTEAM-DO-NOT-LEAK"
 
-	gw, err := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), RealKey: sentinel})
+	gw, err := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey(sentinel)})
 	if err != nil {
 		step(label, false, "gateway init: "+err.Error())
 		return false
