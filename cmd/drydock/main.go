@@ -11,6 +11,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `drydock — local containment for autonomous coding agents
 
 Setup:
+  drydock setup                  one command: install prerequisites (container, squid) + init
   drydock init                   one-time setup: container service, network, image, smoke
   drydock start                  run brokerd in the foreground (expects ANTHROPIC_API_KEY and/or OPENAI_API_KEY)
   drydock status                 brokerd up?, pending count, recent tasks
@@ -53,6 +54,7 @@ var version = "dev"
 // before consuming any positional args, so `drydock approve --help` can
 // never accidentally approve a task literally named "--help".
 var subHelp = map[string]string{
+	"setup":   "one-shot first run: install Homebrew prerequisites (container, squid), then run init. --yes to skip prompts.",
 	"init":    "first-time setup: container service, network, sandbox image, ~/.drydock seed. Idempotent.",
 	"start":   "run brokerd in the foreground. Requires ANTHROPIC_API_KEY and/or OPENAI_API_KEY in env. ^C to stop.",
 	"status":  "brokerd up?, in-flight stage breakdown, recent task counts.",
@@ -91,6 +93,8 @@ func main() {
 	cmd := os.Args[1]
 	subArgs := os.Args[2:]
 	switch cmd {
+	case "setup":
+		runSetup(subArgs)
 	case "init":
 		consumeHelpFlag(cmd, subArgs)
 		runInit()

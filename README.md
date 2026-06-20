@@ -62,26 +62,26 @@ Website: https://sricola.github.io/drydock/
 >   || echo "not yet — drydock needs macOS 26+ on Apple silicon"
 > ```
 
-```bash
-# Prerequisites (anything you don't already have)
-brew install --cask container
-brew install squid
-```
-
-The PR/MR adapters call `gh`, `glab`, or `tea` — install whichever your
-repos use, and run their respective `auth login` before submitting a task.
-
 ### Option A — Homebrew (recommended)
 
 ```bash
 brew tap sricola/drydock
 brew trust sricola/drydock     # personal taps require explicit trust
 brew install drydock
-drydock init
+drydock setup                  # installs container + squid, then runs init
 ```
 
-Pulls a pre-built Apple-silicon binary from the latest tagged release
-(currently `v0.1.9`); no Go toolchain required.
+`drydock setup` installs the two prerequisites (Apple's `container` runtime and
+squid — prompting before each; pass `--yes` to skip), then runs `drydock init`
+(container service, network, sandbox image, `~/.drydock` seed). Pulls a
+pre-built Apple-silicon binary from the latest tagged release (currently
+`v0.1.9`); no Go toolchain required.
+
+Prefer to install the prerequisites yourself? `brew install --cask container`
+and `brew install squid`, then `drydock init`.
+
+The PR/MR adapters call `gh`, `glab`, or `tea` — install whichever your repos
+use, and run their respective `auth login` before submitting a task.
 
 ### Option B — Build from source
 
