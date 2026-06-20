@@ -5,17 +5,34 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"drydock/internal/config"
 )
+
+// agentCredentialAvailable reports whether brokerd will have at least one
+// usable agent credential, so `drydock start` can fail fast with a clear
+// message instead of exec'ing a brokerd that just dies. Mirrors brokerd's own
+// boot guard: the Anthropic side is satisfied by either an API key OR
+// subscription auth; OpenAI by its key.
+func agentCredentialAvailable(anthropicAuth, anthropicKey, openaiKey string) bool {
+	anthropicReady := anthropicAuth == "subscription" || anthropicKey != ""
+	return anthropicReady || openaiKey != ""
+}
 
 // runStart finds brokerd on PATH (or alongside drydock if installed via
 // `make install`) and execs it. drydock and brokerd are intentionally
 // separate binaries so the CLI can talk to a long-running brokerd; `start`
 // is a convenience for the foreground case.
 func runStart() {
-	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "" {
-		fmt.Fprintln(os.Stderr, "drydock start: set at least one vendor key in this shell.")
-		fmt.Fprintln(os.Stderr, "  export ANTHROPIC_API_KEY=sk-ant-...   # for Claude Code")
-		fmt.Fprintln(os.Stderr, "  export OPENAI_API_KEY=sk-...          # for OpenAI Codex")
+	anthropicAuth := "api_key"
+	if cfg, err := config.Load(config.DefaultPath()); err == nil {
+		anthropicAuth = cfg.AnthropicAuth
+	}
+	if !agentCredentialAvailable(anthropicAuth, os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("OPENAI_API_KEY")) {
+		fmt.Fprintln(os.Stderr, "drydock start: no usable agent credential.")
+		fmt.Fprintln(os.Stderr, "  export ANTHROPIC_API_KEY=sk-ant-...        # Claude Code (API key)")
+		fmt.Fprintln(os.Stderr, "  export OPENAI_API_KEY=sk-...               # OpenAI Codex")
+		fmt.Fprintln(os.Stderr, "  or set anthropic_auth: subscription        # use your Claude subscription (run `drydock auth claude` first)")
 		os.Exit(1)
 	}
 	path, err := findBrokerd()
