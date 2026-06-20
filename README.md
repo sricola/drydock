@@ -4,6 +4,8 @@
 
 # drydock
 
+<p align="center"><b>Run coding agents on your own Mac like you assume they're already hacked.</b></p>
+
 <p align="center">
   <img alt="status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
   <img alt="version" src="https://img.shields.io/github/v/tag/sricola/drydock?label=release&color=brightgreen">
@@ -49,6 +51,16 @@ Roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md) (security-credibility focus).
 Website: https://sricola.github.io/drydock/  
 
 ## Install
+
+> **Are you eligible?** drydock runs **locally, on your own Mac** — not a cloud
+> VM — so it needs **macOS 26+ on Apple silicon** (it builds on Apple's
+> `container` runtime, which ships nowhere else). Check in one line:
+>
+> ```bash
+> [ "$(uname -m)" = arm64 ] && [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 26 ] \
+>   && echo "eligible — Apple silicon, macOS 26+" \
+>   || echo "not yet — drydock needs macOS 26+ on Apple silicon"
+> ```
 
 ```bash
 # Prerequisites (anything you don't already have)
