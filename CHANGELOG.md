@@ -5,6 +5,38 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.1.9 — 2026-06-19
+
+### Added
+
+- **`drydock redteam`** runs drydock's live containment attacks against your
+  own sandbox — on your own Mac, on your actual image — and prints a pass/fail
+  table, so you can verify containment yourself instead of trusting the threat
+  model. It runs the VM-backed attacks behind **A1** (the real vendor key never
+  enters the VM), **A2** (egress to non-allowlisted hosts is blocked), and
+  **A7** (no state persists between tasks). No API spend — the attacks inspect
+  the VM env, egress, and filesystem; they never call a model.
+- **Breach demo** — `demo/breach.sh` (`make demo`, `make demo VM=1`) is a
+  narrated runner that executes the real `THREAT_MODEL.md` red-team tests and
+  shows them contain actual attacks; every green is a live `go test` pass, not a
+  scripted print. Recorded GIFs ship in `demo/` and lead the README and website.
+
+### Fixed
+
+- The `log_json`, `strict_container_version`, and `notifications` keys in
+  `~/.drydock/config.yaml` were parsed but never honored — brokerd read each
+  one's `DRYDOCK_*` env var directly at the point of use, so setting the YAML
+  key did nothing. Config is now loaded first and drives logging, the
+  container-version check, and notifications. The env vars keep working (config
+  still folds them on top, env winning), so precedence is unchanged.
+
+### Changed
+
+- Front-door copy leads with the local-first stance — *run coding agents on your
+  own Mac like you assume they're already hacked* — across the README tagline
+  and the site hero. The README install now opens with a one-line macOS-26 /
+  Apple-silicon eligibility self-check so users self-qualify in seconds.
+
 ## v0.1.8 — 2026-06-19
 
 A hardening release: reliability, performance, and supply-chain work from an

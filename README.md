@@ -35,7 +35,7 @@ internet — regardless of what it tries.
 
 <p align="center"><sub><b>Don't take the threat model's word for it.</b> Every green above is a real <code>go&nbsp;test</code> red-team case that runs the actual attack and asserts it fails. Reproduce them yourself: <code>make&nbsp;redteam</code> — or watch all seven, including live VM isolation, with <code>make&nbsp;demo&nbsp;VM=1</code>.</sub></p>
 
-> **Status: working alpha (v0.1.8).** The full task lifecycle works
+> **Status: working alpha (v0.1.9).** The full task lifecycle works
 > end-to-end — submit → isolated VM → gated diff → push — and drydock ships
 > through a Homebrew tap. It is pre-1.0 and single-maintainer: only `main` is
 > supported, behavior and config can change between minor versions, and it
@@ -81,7 +81,7 @@ drydock init
 ```
 
 Pulls a pre-built Apple-silicon binary from the latest tagged release
-(currently `v0.1.8`); no Go toolchain required.
+(currently `v0.1.9`); no Go toolchain required.
 
 ### Option B — Build from source
 
