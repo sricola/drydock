@@ -76,6 +76,66 @@ func TestRedteam_A1_RealKeyNeverInVM(t *testing.T) {
 	}
 }
 
+// noopStore satisfies gateway.CredStore without persisting anything.
+// The far-future Expiry on the OAuthCred means Current() never triggers a
+// refresh, so Load/Save are never called — the type exists only to satisfy
+// the interface.
+type noopStore struct{}
+
+func (noopStore) Load() (gateway.CredSnapshot, error) { return gateway.CredSnapshot{}, nil }
+func (noopStore) Save(gateway.CredSnapshot) error      { return nil }
+
+// A1 (OAuth variant) — OAuth access and refresh tokens never enter the VM.
+// We build the EXACT env the broker injects using the OAuth backend with
+// sentinel token values, then inspect that env from inside the VM. Both
+// sentinels must be absent; only the per-task bearer token may be present.
+func TestRedteam_A1_OAuthTokensNeverInVM(t *testing.T) {
+	requireContainer(t)
+	const (
+		accessSentinel  = "sk-ant-oat-SENTINEL-ACCESS"
+		refreshSentinel = "sk-ant-oat-SENTINEL-REFRESH"
+	)
+
+	gw, err := gateway.New(gateway.Backend{
+		Vendor: gateway.AnthropicOAuthVendor(),
+		Cred: gateway.NewOAuthCred(
+			gateway.CredSnapshot{
+				Access:  accessSentinel,
+				Refresh: refreshSentinel,
+				Expiry:  time.Now().Add(time.Hour),
+			},
+			noopStore{},
+		),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", Budget: 1, TTL: time.Minute}
+	grant, err := prov.Mint(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer grant.Revoke()
+
+	args := []string{"run", "--rm", "--entrypoint", "/bin/bash"}
+	for _, e := range grant.EnvVars() {
+		args = append(args, "--env", e)
+	}
+	args = append(args, sandboxImage(), "-lc",
+		"env; echo '---PROC---'; tr '\\0' '\\n' < /proc/self/environ")
+
+	out := containerRun(t, args...)
+	if strings.Contains(out, accessSentinel) {
+		t.Fatalf("A1 BREACH: OAuth access token leaked into the VM environment:\n%s", out)
+	}
+	if strings.Contains(out, refreshSentinel) {
+		t.Fatalf("A1 BREACH: OAuth refresh token leaked into the VM environment:\n%s", out)
+	}
+	if !strings.Contains(out, "tok_") {
+		t.Errorf("expected the per-task bearer token (tok_) in the VM env; got:\n%s", out)
+	}
+}
+
 // A2 — the agent cannot reach a hostile or unintended host. Apply the in-VM
 // firewall pin, then try three escapes: HTTPS to a non-allowlisted host, raw
 // DNS, and a direct-IP connect. All must be blocked.
