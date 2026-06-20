@@ -239,6 +239,7 @@ func main() {
 		MaxConcurrent: cfg.MaxConcurrent,
 		DefaultModel:  cfg.DefaultModel,
 		Notify:        cfg.Notifications,
+		AnthropicAuth: cfg.AnthropicAuth,
 	}
 	brk = b // expose to the shutdown handler
 	slog.Info("config",

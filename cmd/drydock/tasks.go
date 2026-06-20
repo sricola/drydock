@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -10,8 +11,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"drydock/internal/config"
 )
 
 // auditResult is the single line at the end of each <id>.jsonl that
@@ -23,6 +22,34 @@ type auditResult struct {
 	DurationMs   int64   `json:"duration_ms"`
 	TotalCostUSD float64 `json:"total_cost_usd"`
 	NumTurns     int     `json:"num_turns"`
+}
+
+// auditMeta is the drydock-written first line of each <id>.jsonl recording how
+// the task actually ran. A distinct "type" so it never collides with a Claude
+// Code stream event.
+type auditMeta struct {
+	Type         string `json:"type"`
+	Subscription bool   `json:"subscription"`
+}
+
+// firstMeta reports whether the task ran on a Claude subscription, read from the
+// drydock_meta line the broker writes first. Legacy tasks (no meta line) report
+// false. Reads only the first line, not the whole trace.
+func firstMeta(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	line, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return false
+	}
+	var m auditMeta
+	if json.Unmarshal(bytes.TrimSpace(line), &m) != nil {
+		return false
+	}
+	return m.Type == "drydock_meta" && m.Subscription
 }
 
 type taskRow struct {
@@ -57,13 +84,6 @@ func runTasks() {
 		die("read audit dir %s: %v", dir, err)
 	}
 
-	// Determine auth mode from config so the cost column can display
-	// "subscription" instead of a dollar amount for subscription-auth runs.
-	subscription := false
-	if cfg, err := config.Load(config.DefaultPath()); err == nil {
-		subscription = cfg.AnthropicAuth == "subscription"
-	}
-
 	rows := make([]taskRow, 0, len(entries))
 	for _, e := range entries {
 		name := e.Name()
@@ -75,7 +95,7 @@ func runTasks() {
 		if err != nil {
 			continue
 		}
-		rows = append(rows, summarize(id, filepath.Join(dir, name), info, subscription))
+		rows = append(rows, summarize(id, filepath.Join(dir, name), info))
 	}
 	if len(rows) == 0 {
 		fmt.Println("(no tasks yet)")
@@ -94,7 +114,7 @@ func runTasks() {
 	}
 }
 
-func summarize(id, path string, info os.FileInfo, subscription bool) taskRow {
+func summarize(id, path string, info os.FileInfo) taskRow {
 	r := taskRow{id: id, mtime: info.ModTime(), age: relAge(info.ModTime()), dur: "-", cost: "-", outcome: "running?"}
 
 	last, ok := lastResult(path, info.Size())
@@ -102,7 +122,7 @@ func summarize(id, path string, info os.FileInfo, subscription bool) taskRow {
 		return r
 	}
 	r.dur = shortDur(last.DurationMs)
-	r.cost = costCell(subscription, last.TotalCostUSD)
+	r.cost = costCell(firstMeta(path), last.TotalCostUSD)
 	switch {
 	case last.IsError:
 		r.outcome = "error"
