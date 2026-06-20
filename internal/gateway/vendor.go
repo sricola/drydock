@@ -11,6 +11,11 @@ type Vendor struct {
 	Inject     func(r *http.Request, realKey string)
 	ParseUsage func(body []byte, contentType string) (model string, in, out int, ok bool)
 	Prices     map[string]Price
+	// StripFields are top-level JSON request fields the gateway removes before
+	// forwarding. The OAuth/subscription endpoint strict-validates the request
+	// and 400s on "extra inputs" that Claude Code sends in API mode (e.g.
+	// context_management); the API-key endpoint accepts them. Empty = no rewrite.
+	StripFields []string
 }
 
 // Credential is the host-held secret the gateway injects upstream. Never seen by the VM.
@@ -58,6 +63,11 @@ func AnthropicOAuthVendor() Vendor {
 			r.Header.Set("anthropic-version", "2023-06-01")
 		}
 	}
+	// Claude Code (API mode) sends context_management, which the OAuth endpoint
+	// rejects ("Extra inputs are not permitted"); strip it for subscription
+	// requests. Validated against a real Max account: removing this one field
+	// flips the request from 400 to 200.
+	v.StripFields = []string{"context_management"}
 	return v
 }
 

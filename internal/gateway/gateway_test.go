@@ -259,3 +259,32 @@ func TestGrant_SpentReflectsMeteredCost(t *testing.T) {
 		t.Errorf("Spent() = %v, gateway.spent() = %v, want equal", got, lease)
 	}
 }
+
+func TestStripJSONObjectFields(t *testing.T) {
+	// Top-level field removed; every other field preserved verbatim. (This is the
+	// real fix: the OAuth endpoint 400s on context_management Claude Code sends.)
+	in := []byte(`{"model":"m","max_tokens":16,"context_management":{"edits":[1]},"messages":[{"role":"user","content":"hi"}]}`)
+	out, changed := stripJSONObjectFields(in, []string{"context_management"})
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+	if strings.Contains(string(out), "context_management") {
+		t.Errorf("context_management not removed: %s", out)
+	}
+	for _, must := range []string{`"model":"m"`, `"max_tokens":16`, `"content":"hi"`} {
+		if !strings.Contains(string(out), must) {
+			t.Errorf("expected %s preserved in %s", must, out)
+		}
+	}
+
+	// Field absent -> unchanged, byte-identical.
+	in2 := []byte(`{"model":"m","messages":[]}`)
+	if out2, changed2 := stripJSONObjectFields(in2, []string{"context_management"}); changed2 || string(out2) != string(in2) {
+		t.Errorf("expected unchanged; changed=%v out=%s", changed2, out2)
+	}
+
+	// Non-object JSON -> unchanged.
+	if _, changed3 := stripJSONObjectFields([]byte(`[1,2,3]`), []string{"context_management"}); changed3 {
+		t.Error("non-object body should be unchanged")
+	}
+}

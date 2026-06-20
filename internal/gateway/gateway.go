@@ -9,11 +9,14 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -143,8 +146,59 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "credential unavailable", http.StatusBadGateway)
 		return
 	}
+	if len(vt.v.StripFields) > 0 {
+		stripRequestFields(r, vt.v.StripFields)
+	}
 	ctx := context.WithValue(r.Context(), ctxKey{}, &reqCtx{lease: lease, secret: secret})
 	g.proxy.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// stripRequestFields rewrites a JSON request body to remove top-level fields
+// the upstream rejects (see Vendor.StripFields). It buffers the request body
+// (small — a messages request, not the streamed response), so it runs only for
+// vendors that declare StripFields. No-op unless the body is a JSON object and
+// a listed field is present.
+func stripRequestFields(r *http.Request, fields []string) {
+	if r.Body == nil || !strings.Contains(r.Header.Get("Content-Type"), "json") {
+		return
+	}
+	raw, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if err != nil {
+		return
+	}
+	body := raw
+	if out, changed := stripJSONObjectFields(raw, fields); changed {
+		body = out
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+}
+
+// stripJSONObjectFields removes the named top-level keys from a JSON object,
+// preserving every other key's value verbatim (json.RawMessage). Returns
+// (raw, false) when the body is not a JSON object or no named field was present.
+func stripJSONObjectFields(raw []byte, fields []string) ([]byte, bool) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw, false
+	}
+	changed := false
+	for _, f := range fields {
+		if _, ok := m[f]; ok {
+			delete(m, f)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
 }
 
 func (g *Gateway) director(req *http.Request) {
