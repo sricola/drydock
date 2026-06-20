@@ -167,6 +167,10 @@ VM), A2 (egress to non-allowlisted hosts is blocked), and A7 (no state survives
 between tasks), printing a pass/fail table. Don't trust the threat model —
 check it.
 
+<p align="center">
+  <img src="demo/img/redteam.png" alt="drydock redteam — A1/A2/A7 containment attacks run live against the sandbox and all pass" width="760">
+</p>
+
 ### Submit variations
 
 ```bash
