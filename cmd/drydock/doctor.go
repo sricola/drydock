@@ -61,14 +61,19 @@ func runDoctor() {
 		step("sandbox boot", true, claudeVersionLine(string(out)))
 	}
 
-	// 2b. Codex CLI must also be installed (the image hosts both agents).
+	// 2b. Codex CLI must also be installed (the image hosts both agents). A
+	// "not found" here almost always means cfg.SandboxImage predates the v0.1.5
+	// rename (claude-sandbox -> drydock-sandbox, which added Codex), so point
+	// the operator at the fix instead of dumping a raw shell error.
 	out, err = exec.Command("container", "run", "--rm", "--entrypoint", "/bin/sh",
 		cfg.SandboxImage, "-c", "codex --version 2>&1").CombinedOutput()
-	if err != nil {
-		step("codex present", false, "codex --version failed: "+strings.TrimSpace(string(out)))
-		failed = true
-	} else {
+	if codexPresent(string(out), err) {
 		step("codex present", true, strings.TrimSpace(lastLine(string(out))))
+	} else {
+		step("codex present", false, "not found in "+cfg.SandboxImage)
+		fmt.Println("    → that image likely predates Codex (pre-v0.1.5). Fix: run `drydock init`")
+		fmt.Println("      to rebuild, or set `sandbox_image: drydock-sandbox:latest` in ~/.drydock/config.yaml")
+		failed = true
 	}
 
 	// 3. The nft egress pin must default-deny output. We install the pin
@@ -100,6 +105,14 @@ func runDoctor() {
 		os.Exit(1)
 	}
 	fmt.Println("all checks passed — your sandbox is ready for `drydock submit`")
+}
+
+// codexPresent reports whether `codex --version` indicates a working Codex
+// CLI. A missing binary surfaces as a non-zero exit and/or a "not found"
+// message (the shell can't resolve `codex` on PATH) — almost always a
+// sandbox_image that predates Codex.
+func codexPresent(out string, runErr error) bool {
+	return runErr == nil && !strings.Contains(out, "not found")
 }
 
 // lastLine returns the last non-empty line of s, trimmed. Used for version
