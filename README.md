@@ -4,7 +4,7 @@
 
 # drydock
 
-<p align="center"><b>Run coding agents on your own Mac like you assume they're already hacked.</b></p>
+<p align="center"><b>Run coding agents on your repos like you assume they're already hacked — only a diff you approve gets out.</b></p>
 
 <p align="center">
   <img alt="status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
@@ -15,8 +15,8 @@
 
 
 drydock runs autonomous coding agents (**Claude Code** or **OpenAI Codex**,
-per-task selectable) on **your own Mac** — not someone's cloud — each task
-sealed in its own **hardware-isolated VM**. It starts from the assumption that
+per-task selectable) against **your own repos**, on **your own Mac** — not
+someone's cloud — each task sealed in its own **hardware-isolated VM**. It starts from the assumption that
 the agent is already compromised: your real API key **never enters the sandbox**
 (a host-side gateway hands it short-lived, budget-capped tokens), egress is
 **deny-by-default**, and the only thing that crosses back out is a `git diff`

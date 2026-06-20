@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>drydock — untrusted agents, hardware-isolated</title>
+<title>drydock — untrusted coding agents, hardware-isolated</title>
 <meta name="description" content="A sandbox for autonomous coding agents on macOS. Per-task hardware-isolated VMs, credential gateway, deny-by-default egress, human-gated diff push.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="alternate icon" href="favicon-32.png">
 <!-- Open Graph / Twitter card -->
 <meta property="og:title" content="drydock — untrusted agents, hardware-isolated">
-<meta property="og:description" content="A sandbox for autonomous coding agents (Claude Code or OpenAI Codex) on macOS. The agent never sees your real API key.">
+<meta property="og:description" content="Run coding agents (Claude Code or Codex) on your repos in per-task, hardware-isolated VMs on your Mac. The agent never sees your real API key; only a diff you approve gets out.">
 <meta property="og:image" content="https://sricola.github.io/drydock/og-image.png">
 <meta property="og:url" content="https://sricola.github.io/drydock/">
 <meta property="og:type" content="website">
@@ -270,9 +270,9 @@ footer .mk path{stroke:var(--faint)}
 
 <header class="hero">
   <div class="wrap">
-    <div class="kicker reveal"><span class="bar"></span>macos · local · coding agents on your machine, never the cloud</div>
-    <h1 class="reveal">Untrusted agents, hardware-isolated —<br><span class="t">on your own Mac.</span></h1>
-    <p class="lede reveal">drydock runs autonomous coding agents (<b>Claude Code</b> or <b>OpenAI Codex</b>, per-task selectable) on <b>your own Mac</b> — not someone's cloud — each task sealed in its own <b>hardware-isolated VM</b>. It assumes the agent is already compromised: your real API key <b>never enters the sandbox</b> (a host-side gateway hands it short-lived, budget-capped tokens), egress is <b>deny-by-default</b>, and the only thing that crosses back out is a <span class="ic">git diff</span> you approve before it reaches origin.</p>
+    <div class="kicker reveal"><span class="bar"></span>macos · local · coding agents on your repos, never the cloud</div>
+    <h1 class="reveal">Untrusted coding agents on your repos —<br>only <span class="t">a diff you approve</span> gets out.</h1>
+    <p class="lede reveal">drydock runs autonomous coding agents (<b>Claude Code</b> or <b>OpenAI Codex</b>, per-task selectable) against <b>your own repos</b>, on <b>your own Mac</b> — not someone's cloud — each task sealed in its own <b>hardware-isolated VM</b>. It assumes the agent is already compromised: your real API key <b>never enters the sandbox</b> (a host-side gateway hands it short-lived, budget-capped tokens), egress is <b>deny-by-default</b>, and the only thing that crosses back out is a <span class="ic">git diff</span> you approve before it reaches origin.</p>
     <p class="herostatus reveal"><span class="statustag">working alpha · v0.1.10</span> The full lifecycle works end-to-end; pre-1.0 and single-maintainer, no third-party security audit, behavior may change between versions, and it hasn't been hardened by broad use yet. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
     <figure class="demo reveal">
       <img src="breach.gif" alt="drydock running four real attacks from its threat model — each one is contained live" loading="lazy" width="860">
