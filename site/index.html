@@ -295,14 +295,12 @@ footer .mk path{stroke:var(--faint)}
             <span class="copy-label">copy</span>
           </button>
         </div>
-<pre id="install-pre"><span class="c"># prerequisites (skip whichever you already have)</span>
-brew install --cask container
+<pre id="install-pre"><span class="c"># install drydock, then one command sets up the rest</span>
 brew install sricola/drydock/drydock
+drydock setup   <span class="c"># installs container + squid, then init</span>
 
 <span class="c"># set at least one vendor key — Claude Code and/or OpenAI Codex</span>
 export <span class="a">ANTHROPIC_API_KEY</span>=<span class="r">sk-ant-…</span>
-export <span class="a">OPENAI_API_KEY</span>=<span class="r">sk-…</span>
-drydock init
 drydock start</pre>
       </div>
       <div class="install-foot">
