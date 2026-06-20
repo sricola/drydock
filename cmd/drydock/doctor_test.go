@@ -1,6 +1,31 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
+
+func TestCodexPresent(t *testing.T) {
+	cases := []struct {
+		name   string
+		out    string
+		err    error
+		wantOK bool
+	}{
+		{"healthy version", "codex-cli 0.140.0", nil, true},
+		{"healthy with progress preamble", "[6/6] Starting container [0s]\ncodex-cli 0.140.0\n", nil, true},
+		{"not found (nonzero exit)", "/bin/sh: 1: codex: not found", errors.New("exit status 127"), false},
+		{"not found (zero exit, defensive)", "/bin/sh: 1: codex: not found", nil, false},
+		{"container run error", "", errors.New("container run failed"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := codexPresent(c.out, c.err); got != c.wantOK {
+				t.Errorf("codexPresent(%q, %v) = %v, want %v", c.out, c.err, got, c.wantOK)
+			}
+		})
+	}
+}
 
 func TestClaudeVersionLine_StripsContainerProgress(t *testing.T) {
 	noisy := `[0/6] [0s]
