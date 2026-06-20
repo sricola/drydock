@@ -52,7 +52,7 @@ func TestGateway_ValidTokenProxiesAndMeters(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 100, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
 
 	rec := do(g, tok)
 	if rec.Code != http.StatusOK {
@@ -81,7 +81,7 @@ func TestGateway_MetersStreamingWithoutBufferingBody(t *testing.T) {
 	defer up.Close()
 
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 100, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
 	if rec := do(g, tok); rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -100,7 +100,7 @@ func TestGateway_UnknownToken401(t *testing.T) {
 
 func TestGateway_ExpiredToken401(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok, _ := g.Mint("anthropic", 100, -time.Second) // already expired
+	tok, _ := g.Mint("anthropic", 100, 0, -time.Second) // already expired
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rec.Code)
 	}
@@ -110,7 +110,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 1.0, time.Minute) // budget 1.0; one call spends ~18 → next call 402
+	tok, _ := g.Mint("anthropic", 1.0, 0, time.Minute) // budget 1.0; one call spends ~18 → next call 402
 	do(g, tok)
 	if rec := do(g, tok); rec.Code != http.StatusPaymentRequired {
 		t.Errorf("status = %d, want 402", rec.Code)
@@ -119,7 +119,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 
 func TestGateway_RevokeInvalidates(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok, _ := g.Mint("anthropic", 100, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
 	g.Revoke(tok)
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d after revoke, want 401", rec.Code)
@@ -162,8 +162,8 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	atok, _ := g.Mint("anthropic", 100, time.Minute)
-	otok, _ := g.Mint("openai", 100, time.Minute)
+	atok, _ := g.Mint("anthropic", 100, 0, time.Minute)
+	otok, _ := g.Mint("openai", 100, 0, time.Minute)
 
 	if rec := do(g, atok); rec.Code != http.StatusOK {
 		t.Fatalf("anthropic token: status=%d body=%s", rec.Code, rec.Body.String())
@@ -179,6 +179,30 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 	}
 }
 
+func TestRequestCap_RejectsOverLimit(t *testing.T) {
+	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
+	tok, _ := g.Mint("anthropic", 100, 2, time.Hour) // maxRequests = 2
+	if _, s := g.check(tok); s != 0 {
+		t.Fatalf("req1 rejected: %d", s)
+	}
+	if _, s := g.check(tok); s != 0 {
+		t.Fatalf("req2 rejected: %d", s)
+	}
+	if _, s := g.check(tok); s != http.StatusTooManyRequests {
+		t.Fatalf("req3 status = %d, want 429", s)
+	}
+}
+
+func TestRequestCap_ZeroMeansUnlimited(t *testing.T) {
+	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
+	tok, _ := g.Mint("anthropic", 100, 0, time.Hour) // 0 = unlimited
+	for i := 0; i < 50; i++ {
+		if _, s := g.check(tok); s != 0 {
+			t.Fatalf("req %d rejected: %d", i, s)
+		}
+	}
+}
+
 func TestNew_RejectsNilCred(t *testing.T) {
 	if _, err := New(Backend{Vendor: AnthropicVendor()}); err == nil {
 		t.Fatal("New with nil Cred should error")
@@ -187,7 +211,7 @@ func TestNew_RejectsNilCred(t *testing.T) {
 
 func TestGateway_MintUnknownVendorErrors(t *testing.T) {
 	g := newGW(t, "http://unused")
-	if _, err := g.Mint("nope", 100, time.Minute); err == nil {
+	if _, err := g.Mint("nope", 100, 0, time.Minute); err == nil {
 		t.Error("Mint for a vendor with no backend should error")
 	}
 }

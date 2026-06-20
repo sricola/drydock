@@ -9,11 +9,12 @@ import (
 // Provider issues creds.Grants backed by gateway tokens. The real key never
 // leaves the host; the VM only ever sees a bearer token + the base URL.
 type Provider struct {
-	GW      *Gateway
-	Vendor  string
-	BaseURL string        // e.g. http://192.168.64.1:8088
-	Budget  float64       // default budget when Mint's arg is 0
-	TTL     time.Duration // safety-net expiry (= task timeout + margin)
+	GW          *Gateway
+	Vendor      string
+	BaseURL     string        // e.g. http://192.168.64.1:8088
+	Budget      float64       // default budget when Mint's arg is 0
+	TTL         time.Duration // safety-net expiry (= task timeout + margin)
+	MaxRequests int           // 0 = unlimited; primary runaway cap for subscription auth
 }
 
 type grant struct {
@@ -32,7 +33,7 @@ func (p *Provider) Mint(budgetUSD float64) (creds.Grant, error) {
 	if ttl == 0 {
 		ttl = time.Hour
 	}
-	tok, err := p.GW.Mint(p.Vendor, b, ttl)
+	tok, err := p.GW.Mint(p.Vendor, b, p.MaxRequests, ttl)
 	if err != nil {
 		return nil, err
 	}
