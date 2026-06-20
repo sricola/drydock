@@ -45,6 +45,22 @@ func AnthropicVendor() Vendor {
 	}
 }
 
+// AnthropicOAuthVendor is the api.anthropic.com upstream using Claude subscription
+// OAuth auth: Bearer auth + anthropic-beta header, removes X-Api-Key, Claude usage
+// shapes and prices (reused from AnthropicVendor).
+func AnthropicOAuthVendor() Vendor {
+	v := AnthropicVendor()
+	v.Inject = func(r *http.Request, secret string) {
+		r.Header.Del("X-Api-Key")
+		r.Header.Set("Authorization", "Bearer "+secret)
+		r.Header.Set("anthropic-beta", anthropicOAuthBeta)
+		if r.Header.Get("anthropic-version") == "" {
+			r.Header.Set("anthropic-version", "2023-06-01")
+		}
+	}
+	return v
+}
+
 // OpenAIVendor is the api.openai.com upstream: bearer auth, OpenAI usage
 // shapes (Responses + Chat Completions), OpenAI prices.
 func OpenAIVendor() Vendor {
