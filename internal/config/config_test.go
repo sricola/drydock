@@ -259,3 +259,25 @@ func TestValidate_RejectsBadAgent(t *testing.T) {
 		t.Errorf("want default_agent validation error, got %v", err)
 	}
 }
+
+func TestConfig_AnthropicAuthAndMaxRequests(t *testing.T) {
+	t.Setenv("DRYDOCK_ANTHROPIC_AUTH", "subscription")
+	t.Setenv("DRYDOCK_TASK_MAX_REQUESTS", "150")
+	c, err := Load("/nonexistent.yaml") // defaults + env
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AnthropicAuth != "subscription" {
+		t.Errorf("AnthropicAuth=%q", c.AnthropicAuth)
+	}
+	if c.TaskMaxRequests != 150 {
+		t.Errorf("TaskMaxRequests=%d", c.TaskMaxRequests)
+	}
+}
+
+func TestConfig_AnthropicAuthDefaultsToApiKey(t *testing.T) {
+	c, _ := Load("/nonexistent.yaml")
+	if c.AnthropicAuth != "api_key" {
+		t.Errorf("default AnthropicAuth=%q, want api_key", c.AnthropicAuth)
+	}
+}
