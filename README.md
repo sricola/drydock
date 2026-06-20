@@ -140,7 +140,10 @@ drydock start
 subscription mode — there is no spend to meter. To prevent a runaway task
 from consuming your subscription's rate limit, set `task_max_requests` in
 `~/.drydock/config.yaml`.
-`task_timeout` still applies as a wall-clock backstop.
+`task_timeout` still applies as a wall-clock backstop. Note: the cap stops
+*inference* the moment it's hit (the gateway returns HTTP&nbsp;429), but Claude
+Code retries a rejected request with backoff before giving up — so a capped
+task can spin for a minute or two before it exits with an error.
 
 The credential stored at `~/.drydock/claude-oauth.json` is a full-account
 OAuth token — broader than a scoped API key and not per-task revocable. It
