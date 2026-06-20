@@ -139,7 +139,7 @@ drydock start
 **Important limits.** The USD budget (`task_budget_usd`) does not apply in
 subscription mode — there is no spend to meter. To prevent a runaway task
 from consuming your subscription's rate limit, set `task_max_requests` in
-`~/.drydock/config.yaml` (or pass `--max-requests N` to `drydock submit`).
+`~/.drydock/config.yaml`.
 `task_timeout` still applies as a wall-clock backstop.
 
 The credential stored at `~/.drydock/claude-oauth.json` is a full-account
