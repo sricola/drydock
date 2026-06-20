@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://sricola.github.io/drydock/sitemap.xml
