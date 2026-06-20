@@ -83,7 +83,7 @@ func TestRedteam_A1_RealKeyNeverInVM(t *testing.T) {
 type noopStore struct{}
 
 func (noopStore) Load() (gateway.CredSnapshot, error) { return gateway.CredSnapshot{}, nil }
-func (noopStore) Save(gateway.CredSnapshot) error      { return nil }
+func (noopStore) Save(gateway.CredSnapshot) error     { return nil }
 
 // A1 (OAuth variant) — OAuth access and refresh tokens never enter the VM.
 // We build the EXACT env the broker injects using the OAuth backend with
