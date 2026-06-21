@@ -193,7 +193,7 @@ ChatGPT OAuth credential at `~/.drydock/codex-oauth.json` (mode `0600`).
 This file holds a full-account OAuth access token, refresh token, **and**
 account id; the gateway uses them to issue per-task bearers, and the
 credential itself never enters the VM (A1 holds — the red-team
-`TestRedteam_A1_RealKeyNeverInVM` test covers this path).
+`TestRedteam_A1_CodexOAuthNeverInVM` test covers this path).
 
 The blast radius is broader than a scoped API key in two ways:
 
