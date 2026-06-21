@@ -53,7 +53,7 @@ func runSubmit(args []string) {
 		agent       = fs.String("agent", "", "sandbox agent: claude | codex (default: broker's default_agent)")
 		sensitive   = fs.Bool("sensitive", false, "mark the task sensitive in the audit trail")
 		jsonOut     = fs.Bool("json", false, "print the raw response JSON instead of a pretty summary")
-		quiet       = fs.Bool("quiet", false, "only print the final result line (no live progress)")
+		quiet       = fs.Bool("quiet", false, "suppress live progress; print only the final outcome")
 		egress      repeatedFlag
 	)
 	fs.Var(&egress, "egress-extra", "extra egress host:port[,port] (repeatable)")
@@ -232,6 +232,8 @@ func postSubmit(req taskRequest, jsonOut, quiet bool) error {
 		// Raw passthrough — works for the NDJSON stream or a legacy object,
 		// and streams live so scripts see events as they arrive.
 		_, _ = io.Copy(os.Stdout, resp.Body)
+		// StatusCode comes from the response headers (received before the body),
+		// so checking it after the copy still reflects the real status.
 		if resp.StatusCode >= 400 {
 			os.Exit(1)
 		}
@@ -242,7 +244,7 @@ func postSubmit(req taskRequest, jsonOut, quiet bool) error {
 	// never started). Surface them directly.
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stderr, "drydock submit: %s\n", strings.TrimSpace(string(body)))
+		fmt.Fprintf(os.Stderr, "drydock submit: HTTP %d: %s\n", resp.StatusCode, strings.TrimSpace(string(body)))
 		os.Exit(1)
 	}
 
