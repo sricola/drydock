@@ -66,3 +66,21 @@ func TestAuditCost_LastResultLine(t *testing.T) {
 		t.Errorf("auditCost = %v, want 0.11", c)
 	}
 }
+
+// codex prints incidental output (a token count) after its real error line;
+// reasonFromAudit must surface the error, not the trailing count.
+func TestReasonFromAudit_PrefersErrorOverTrailingNoise(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.jsonl")
+	content := `{"type":"drydock_meta","subscription":true}` + "\n" +
+		"ERROR: exceeded retry limit, last status: 429 Too Many Requests\n" +
+		"1,633\n" +
+		`{"type":"result","subtype":"error","is_error":true}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reasonFromAudit(path)
+	want := "ERROR: exceeded retry limit, last status: 429 Too Many Requests"
+	if !ok || got != want {
+		t.Errorf("reasonFromAudit = %q,%v; want %q,true", got, ok, want)
+	}
+}
