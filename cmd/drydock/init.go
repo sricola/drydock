@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -407,13 +409,42 @@ func ensureNamedImage(name, subdir, note string) {
 	}
 	fmt.Printf("  · building %s:latest from %s (%s)…\n", name, ctxDir, noteOut)
 	cmd := exec.Command("container", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Tee the build output to a buffer so we can recognise known failure modes
+	// (e.g. Apple container shipping an empty build context) and add guidance.
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 	if err := cmd.Run(); err != nil {
 		step(label, false, err.Error())
+		if hint := imageBuildHint(buf.String()); hint != "" {
+			fmt.Printf("    → %s\n", hint)
+		}
 		os.Exit(1)
 	}
 	step(label, true, "built")
+}
+
+// imageBuildHint returns operator guidance when a `container build` failure
+// matches the signature of Apple container's empty-build-context bug: the local
+// files never reach the builder ("transferring context: 2B"), so a COPY fails
+// on files that are present on disk. Empty when the output doesn't match, so the
+// caller falls back to the raw error for genuine Dockerfile/registry problems.
+func imageBuildHint(buildOutput string) string {
+	o := strings.ToLower(buildOutput)
+	emptyContext := strings.Contains(o, "transferring context: 2b")
+	copyMiss := strings.Contains(o, "failed to compute cache key") ||
+		(strings.Contains(o, "calculate checksum") && strings.Contains(o, "not found"))
+	if !emptyContext && !copyMiss {
+		return ""
+	}
+	return strings.Join([]string{
+		"the build context didn't reach the builder — a known Apple `container` runtime issue, not a drydock problem.",
+		"      the COPY'd files exist on disk but `container build` shipped an empty context. Try, in order:",
+		"        1. container system stop && container system start",
+		"        2. reboot (clears the builder VM's context sharing)",
+		"        3. check/downgrade `container` if it was recently upgraded",
+		"      an already-built image still works; you only need this to (re)build it.",
+	}, "\n")
 }
 
 // findImageDir locates the Dockerfile build context. Search order:
