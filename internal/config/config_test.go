@@ -281,3 +281,28 @@ func TestConfig_AnthropicAuthDefaultsToApiKey(t *testing.T) {
 		t.Errorf("default AnthropicAuth=%q, want api_key", c.AnthropicAuth)
 	}
 }
+
+func TestConfig_OpenAIAuth(t *testing.T) {
+	t.Setenv("DRYDOCK_OPENAI_AUTH", "subscription")
+	c, err := Load("/nonexistent.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.OpenAIAuth != "subscription" {
+		t.Errorf("OpenAIAuth=%q", c.OpenAIAuth)
+	}
+}
+
+func TestConfig_OpenAIAuthDefaultsToApiKey(t *testing.T) {
+	c, _ := Load("/nonexistent.yaml")
+	if c.OpenAIAuth != "api_key" {
+		t.Errorf("default OpenAIAuth=%q, want api_key", c.OpenAIAuth)
+	}
+}
+
+func TestConfig_OpenAIAuthRejectsGarbage(t *testing.T) {
+	t.Setenv("DRYDOCK_OPENAI_AUTH", "bogus")
+	if _, err := Load("/nonexistent.yaml"); err == nil {
+		t.Error("want validate error for openai_auth=bogus")
+	}
+}
