@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="site/logo-512.png" alt="drydock" width="160">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/logo-512-dark.png">
+    <img src="site/logo-512.png" alt="drydock" width="160">
+  </picture>
 </p>
 
 # drydock
