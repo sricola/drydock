@@ -61,19 +61,20 @@ type Task struct {
 }
 
 type Broker struct {
-	Cfg          egress.Config
-	Providers    map[string]creds.Provider // vendor -> provider
-	DefaultAgent string                    // "" -> "claude"
-	ImageRef     string
-	StageRoot    string
-	AuditRoot    string
-	Timeout      time.Duration
-	Network      string  // stable egress network name (e.g. drydock-egress)
-	GatewayIP    string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
-	ProxyPort    int     // squid port (e.g. 3128)
-	TaskBudget   float64 // USD budget per task
-	DefaultModel string  // operator-level default; per-task Task.Model overrides
-	Notify       bool    // fire macOS notifications on approval gates (config notifications)
+	Cfg           egress.Config
+	Providers     map[string]creds.Provider // vendor -> provider
+	DefaultAgent  string                    // "" -> "claude"
+	ImageRef      string
+	StageRoot     string
+	AuditRoot     string
+	Timeout       time.Duration
+	Network       string  // stable egress network name (e.g. drydock-egress)
+	GatewayIP     string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
+	ProxyPort     int     // squid port (e.g. 3128)
+	TaskBudget    float64 // USD budget per task
+	DefaultModel  string  // operator-level default; per-task Task.Model overrides
+	Notify        bool    // fire macOS notifications on approval gates (config notifications)
+	AnthropicAuth string  // "api_key" | "subscription"; recorded per task for `drydock tasks`
 
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
@@ -393,6 +394,14 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer logf.Close()
+
+	// Record this task's auth mode as the first audit line so `drydock tasks`
+	// labels subscription runs accurately (instead of inferring from the
+	// operator's current config at display time). It is not a `result` event,
+	// so it never affects outcome/cost parsing.
+	taskVendor, _ := agent.Vendor(agentName)
+	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t}`+"\n",
+		taskVendor == "anthropic" && b.AnthropicAuth == "subscription")
 
 	env := append([]string{}, grant.EnvVars()...)
 	env = append(env,

@@ -55,6 +55,24 @@ func TestSummarize_FindsResultPastTailSeek(t *testing.T) {
 	}
 }
 
+// TestCostCell_Subscription asserts that costCell returns the literal string
+// "subscription" when the subscription flag is true, regardless of the USD value.
+func TestCostCell_Subscription(t *testing.T) {
+	if got := costCell(true /*subscription*/, 0); got != "subscription" {
+		t.Errorf("costCell=%q want subscription", got)
+	}
+}
+
+// TestCostCell_APIKey asserts that when subscription is false, costCell formats
+// the USD value as "$x.xxxx" (four decimal places).
+func TestCostCell_APIKey(t *testing.T) {
+	got := costCell(false, 0.0338)
+	want := "$0.0338"
+	if got != want {
+		t.Errorf("costCell=%q, want %q", got, want)
+	}
+}
+
 // Without a terminal `result` event the row stays "running?" — this is the
 // regression guard for the case the synthetic event is added to address.
 func TestSummarize_NoResultStaysRunning(t *testing.T) {
@@ -67,5 +85,49 @@ func TestSummarize_NoResultStaysRunning(t *testing.T) {
 	got := summarize("task-y", path, info)
 	if got.outcome != "running?" {
 		t.Errorf("outcome = %q, want %q", got.outcome, "running?")
+	}
+}
+
+// firstMeta reads the per-task drydock_meta line so the cost column reflects how
+// the task ACTUALLY ran, not the operator's current config.
+func TestFirstMeta(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	sub := write("sub.jsonl", `{"type":"drydock_meta","subscription":true}`+"\n"+`{"type":"result","subtype":"success"}`+"\n")
+	if !firstMeta(sub) {
+		t.Error("subscription meta should report true")
+	}
+	key := write("key.jsonl", `{"type":"drydock_meta","subscription":false}`+"\n")
+	if firstMeta(key) {
+		t.Error("api_key meta should report false")
+	}
+	legacy := write("legacy.jsonl", `{"type":"stream_event"}`+"\n")
+	if firstMeta(legacy) {
+		t.Error("legacy task (no meta line) should report false")
+	}
+	if firstMeta(filepath.Join(dir, "missing.jsonl")) {
+		t.Error("missing file should report false")
+	}
+}
+
+// A task recorded as subscription shows "subscription" regardless of current
+// config — the label is now per-task, not display-time.
+func TestSummarize_SubscriptionTaskShowsSubscription(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub.jsonl")
+	body := `{"type":"drydock_meta","subscription":true}` + "\n" +
+		`{"type":"result","subtype":"success","duration_ms":1000,"total_cost_usd":0.0237,"num_turns":3}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	if got := summarize("sub", path, info); got.cost != "subscription" {
+		t.Errorf("cost = %q, want subscription (per-task meta must drive the label)", got.cost)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,34 @@ type auditResult struct {
 	NumTurns     int     `json:"num_turns"`
 }
 
+// auditMeta is the drydock-written first line of each <id>.jsonl recording how
+// the task actually ran. A distinct "type" so it never collides with a Claude
+// Code stream event.
+type auditMeta struct {
+	Type         string `json:"type"`
+	Subscription bool   `json:"subscription"`
+}
+
+// firstMeta reports whether the task ran on a Claude subscription, read from the
+// drydock_meta line the broker writes first. Legacy tasks (no meta line) report
+// false. Reads only the first line, not the whole trace.
+func firstMeta(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	line, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return false
+	}
+	var m auditMeta
+	if json.Unmarshal(bytes.TrimSpace(line), &m) != nil {
+		return false
+	}
+	return m.Type == "drydock_meta" && m.Subscription
+}
+
 type taskRow struct {
 	id      string
 	mtime   time.Time
@@ -30,6 +59,16 @@ type taskRow struct {
 	dur     string
 	cost    string
 	outcome string
+}
+
+// costCell formats the cost column for the tasks table. When subscription is
+// true it returns the literal "subscription" regardless of the USD amount.
+// Otherwise it formats the dollar value as "$x.xxxx".
+func costCell(subscription bool, usd float64) string {
+	if subscription {
+		return "subscription"
+	}
+	return fmt.Sprintf("$%.4f", usd)
 }
 
 // runTasks lists recent runs by scanning AUDIT_ROOT. brokerd doesn't keep
@@ -83,7 +122,7 @@ func summarize(id, path string, info os.FileInfo) taskRow {
 		return r
 	}
 	r.dur = shortDur(last.DurationMs)
-	r.cost = fmt.Sprintf("$%.4f", last.TotalCostUSD)
+	r.cost = costCell(firstMeta(path), last.TotalCostUSD)
 	switch {
 	case last.IsError:
 		r.outcome = "error"

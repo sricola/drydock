@@ -33,7 +33,7 @@ func newGW(t *testing.T, up string) *Gateway {
 		ParseUsage: parseAnthropicUsage,
 		Prices:     map[string]Price{"claude-x": {InputPer1M: 3, OutputPer1M: 15}},
 	}
-	g, err := New(Backend{Vendor: v, RealKey: "REAL"})
+	g, err := New(Backend{Vendor: v, Cred: StaticKey("REAL")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestGateway_ValidTokenProxiesAndMeters(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 100, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
 
 	rec := do(g, tok)
 	if rec.Code != http.StatusOK {
@@ -81,7 +81,7 @@ func TestGateway_MetersStreamingWithoutBufferingBody(t *testing.T) {
 	defer up.Close()
 
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 100, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
 	if rec := do(g, tok); rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -100,7 +100,7 @@ func TestGateway_UnknownToken401(t *testing.T) {
 
 func TestGateway_ExpiredToken401(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok, _ := g.Mint("anthropic", 100, -time.Second) // already expired
+	tok, _ := g.Mint("anthropic", 100, 0, -time.Second) // already expired
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rec.Code)
 	}
@@ -110,7 +110,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 1.0, time.Minute) // budget 1.0; one call spends ~18 → next call 402
+	tok, _ := g.Mint("anthropic", 1.0, 0, time.Minute) // budget 1.0; one call spends ~18 → next call 402
 	do(g, tok)
 	if rec := do(g, tok); rec.Code != http.StatusPaymentRequired {
 		t.Errorf("status = %d, want 402", rec.Code)
@@ -119,7 +119,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 
 func TestGateway_RevokeInvalidates(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok, _ := g.Mint("anthropic", 100, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
 	g.Revoke(tok)
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d after revoke, want 401", rec.Code)
@@ -157,13 +157,13 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 
 	av := Vendor{Name: "anthropic", BaseURL: anthropicUp.URL, Inject: AnthropicVendor().Inject, ParseUsage: parseAnthropicUsage, Prices: AnthropicPrices()}
 	ov := Vendor{Name: "openai", BaseURL: openaiUp.URL, Inject: OpenAIVendor().Inject, ParseUsage: parseOpenAIUsage, Prices: OpenAIPrices()}
-	g, err := New(Backend{Vendor: av, RealKey: "REAL_ANTHROPIC"}, Backend{Vendor: ov, RealKey: "REAL_OPENAI"})
+	g, err := New(Backend{Vendor: av, Cred: StaticKey("REAL_ANTHROPIC")}, Backend{Vendor: ov, Cred: StaticKey("REAL_OPENAI")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	atok, _ := g.Mint("anthropic", 100, time.Minute)
-	otok, _ := g.Mint("openai", 100, time.Minute)
+	atok, _ := g.Mint("anthropic", 100, 0, time.Minute)
+	otok, _ := g.Mint("openai", 100, 0, time.Minute)
 
 	if rec := do(g, atok); rec.Code != http.StatusOK {
 		t.Fatalf("anthropic token: status=%d body=%s", rec.Code, rec.Body.String())
@@ -179,9 +179,39 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 	}
 }
 
+func TestRequestCap_RejectsOverLimit(t *testing.T) {
+	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
+	tok, _ := g.Mint("anthropic", 100, 2, time.Hour) // maxRequests = 2
+	if _, s := g.check(tok); s != 0 {
+		t.Fatalf("req1 rejected: %d", s)
+	}
+	if _, s := g.check(tok); s != 0 {
+		t.Fatalf("req2 rejected: %d", s)
+	}
+	if _, s := g.check(tok); s != http.StatusTooManyRequests {
+		t.Fatalf("req3 status = %d, want 429", s)
+	}
+}
+
+func TestRequestCap_ZeroMeansUnlimited(t *testing.T) {
+	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
+	tok, _ := g.Mint("anthropic", 100, 0, time.Hour) // 0 = unlimited
+	for i := 0; i < 50; i++ {
+		if _, s := g.check(tok); s != 0 {
+			t.Fatalf("req %d rejected: %d", i, s)
+		}
+	}
+}
+
+func TestNew_RejectsNilCred(t *testing.T) {
+	if _, err := New(Backend{Vendor: AnthropicVendor()}); err == nil {
+		t.Fatal("New with nil Cred should error")
+	}
+}
+
 func TestGateway_MintUnknownVendorErrors(t *testing.T) {
 	g := newGW(t, "http://unused")
-	if _, err := g.Mint("nope", 100, time.Minute); err == nil {
+	if _, err := g.Mint("nope", 100, 0, time.Minute); err == nil {
 		t.Error("Mint for a vendor with no backend should error")
 	}
 }
@@ -227,5 +257,34 @@ func TestGrant_SpentReflectsMeteredCost(t *testing.T) {
 	// Also verify it matches the underlying gateway lease.
 	if lease := g.spent(tok); got != lease {
 		t.Errorf("Spent() = %v, gateway.spent() = %v, want equal", got, lease)
+	}
+}
+
+func TestStripJSONObjectFields(t *testing.T) {
+	// Top-level field removed; every other field preserved verbatim. (This is the
+	// real fix: the OAuth endpoint 400s on context_management Claude Code sends.)
+	in := []byte(`{"model":"m","max_tokens":16,"context_management":{"edits":[1]},"messages":[{"role":"user","content":"hi"}]}`)
+	out, changed := stripJSONObjectFields(in, []string{"context_management"})
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+	if strings.Contains(string(out), "context_management") {
+		t.Errorf("context_management not removed: %s", out)
+	}
+	for _, must := range []string{`"model":"m"`, `"max_tokens":16`, `"content":"hi"`} {
+		if !strings.Contains(string(out), must) {
+			t.Errorf("expected %s preserved in %s", must, out)
+		}
+	}
+
+	// Field absent -> unchanged, byte-identical.
+	in2 := []byte(`{"model":"m","messages":[]}`)
+	if out2, changed2 := stripJSONObjectFields(in2, []string{"context_management"}); changed2 || string(out2) != string(in2) {
+		t.Errorf("expected unchanged; changed=%v out=%s", changed2, out2)
+	}
+
+	// Non-object JSON -> unchanged.
+	if _, changed3 := stripJSONObjectFields([]byte(`[1,2,3]`), []string{"context_management"}); changed3 {
+		t.Error("non-object body should be unchanged")
 	}
 }

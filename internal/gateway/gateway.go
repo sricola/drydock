@@ -5,14 +5,18 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,17 +26,24 @@ type Lease struct {
 	// constant-time equality against the bearer the caller presented;
 	// even if Go's map lookup ever changes to a timing-sensitive shape,
 	// the defense-in-depth comparison stops timing-side-channel leakage.
-	Token     string
-	Vendor    string
-	BudgetUSD float64
-	SpentUSD  float64
-	Expiry    time.Time
+	Token       string
+	Vendor      string
+	BudgetUSD   float64
+	SpentUSD    float64
+	Expiry      time.Time
+	MaxRequests int // 0 = unlimited
+	Requests    int // number of requests served so far
 }
 
 type vendorRT struct {
 	v        Vendor
-	realKey  string
+	cred     Credential
 	upstream *url.URL
+}
+
+type reqCtx struct {
+	lease  *Lease
+	secret string
 }
 
 type Gateway struct {
@@ -47,17 +58,20 @@ type ctxKey struct{}
 func New(backends ...Backend) (*Gateway, error) {
 	g := &Gateway{leases: map[string]*Lease{}, vendors: map[string]vendorRT{}}
 	for _, b := range backends {
+		if b.Cred == nil {
+			return nil, fmt.Errorf("gateway: backend %q has nil Cred", b.Vendor.Name)
+		}
 		u, err := url.Parse(b.Vendor.BaseURL)
 		if err != nil {
 			return nil, err
 		}
-		g.vendors[b.Vendor.Name] = vendorRT{v: b.Vendor, realKey: b.RealKey, upstream: u}
+		g.vendors[b.Vendor.Name] = vendorRT{v: b.Vendor, cred: b.Cred, upstream: u}
 	}
 	g.proxy = &httputil.ReverseProxy{Director: g.director, ModifyResponse: g.meter}
 	return g, nil
 }
 
-func (g *Gateway) Mint(vendor string, budgetUSD float64, ttl time.Duration) (string, error) {
+func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, ttl time.Duration) (string, error) {
 	if _, ok := g.vendors[vendor]; !ok {
 		return "", fmt.Errorf("gateway: no backend for vendor %q", vendor)
 	}
@@ -69,7 +83,7 @@ func (g *Gateway) Mint(vendor string, budgetUSD float64, ttl time.Duration) (str
 	}
 	tok := "tok_" + hex.EncodeToString(b)
 	g.mu.Lock()
-	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD, Expiry: time.Now().Add(ttl)}
+	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD, MaxRequests: maxRequests, Expiry: time.Now().Add(ttl)}
 	g.mu.Unlock()
 	return tok, nil
 }
@@ -109,6 +123,10 @@ func (g *Gateway) check(token string) (*Lease, int) {
 	if l.SpentUSD >= l.BudgetUSD {
 		return nil, http.StatusPaymentRequired
 	}
+	if l.MaxRequests > 0 && l.Requests >= l.MaxRequests {
+		return nil, http.StatusTooManyRequests
+	}
+	l.Requests++
 	return l, 0
 }
 
@@ -122,32 +140,91 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
-	ctx := contextWith(r, lease)
+	vt := g.vendors[lease.Vendor]
+	secret, err := vt.cred.Current()
+	if err != nil {
+		http.Error(w, "credential unavailable", http.StatusBadGateway)
+		return
+	}
+	if len(vt.v.StripFields) > 0 {
+		stripRequestFields(r, vt.v.StripFields)
+	}
+	ctx := context.WithValue(r.Context(), ctxKey{}, &reqCtx{lease: lease, secret: secret})
 	g.proxy.ServeHTTP(w, r.WithContext(ctx))
 }
 
-func (g *Gateway) director(req *http.Request) {
-	lease, _ := req.Context().Value(ctxKey{}).(*Lease)
-	if lease == nil {
+// stripRequestFields rewrites a JSON request body to remove top-level fields
+// the upstream rejects (see Vendor.StripFields). It buffers the request body
+// (small — a messages request, not the streamed response), so it runs only for
+// vendors that declare StripFields. No-op unless the body is a JSON object and
+// a listed field is present.
+func stripRequestFields(r *http.Request, fields []string) {
+	if r.Body == nil || !strings.Contains(r.Header.Get("Content-Type"), "json") {
 		return
 	}
-	vt, ok := g.vendors[lease.Vendor]
+	raw, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if err != nil {
+		return
+	}
+	body := raw
+	if out, changed := stripJSONObjectFields(raw, fields); changed {
+		body = out
+	}
+	// GetBody is intentionally left unset: the reverse proxy doesn't replay this
+	// request, so redirect/retry body-replay is not supported here.
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+}
+
+// stripJSONObjectFields removes the named top-level keys from a JSON object,
+// preserving every other key's value verbatim (json.RawMessage). Returns
+// (raw, false) when the body is not a JSON object or no named field was present.
+func stripJSONObjectFields(raw []byte, fields []string) ([]byte, bool) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw, false
+	}
+	changed := false
+	for _, f := range fields {
+		if _, ok := m[f]; ok {
+			delete(m, f)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
+}
+
+func (g *Gateway) director(req *http.Request) {
+	rc, _ := req.Context().Value(ctxKey{}).(*reqCtx)
+	if rc == nil {
+		return
+	}
+	vt, ok := g.vendors[rc.lease.Vendor]
 	if !ok {
 		return
 	}
 	req.URL.Scheme = vt.upstream.Scheme
 	req.URL.Host = vt.upstream.Host
 	req.Host = vt.upstream.Host
-	vt.v.Inject(req, vt.realKey)
+	vt.v.Inject(req, rc.secret)
 }
 
 // meter tees the response body and, on completion, adds its cost to the lease.
 func (g *Gateway) meter(resp *http.Response) error {
-	lease, _ := resp.Request.Context().Value(ctxKey{}).(*Lease)
-	if lease == nil {
+	rc, _ := resp.Request.Context().Value(ctxKey{}).(*reqCtx)
+	if rc == nil {
 		return nil
 	}
-	vt, ok := g.vendors[lease.Vendor]
+	vt, ok := g.vendors[rc.lease.Vendor]
 	if !ok {
 		return nil
 	}
@@ -155,7 +232,7 @@ func (g *Gateway) meter(resp *http.Response) error {
 	resp.Body = &usageReader{rc: resp.Body, onDone: func(body []byte) {
 		if model, in, out, ok := vt.v.ParseUsage(body, ct); ok {
 			g.mu.Lock()
-			lease.SpentUSD += cost(vt.v.Prices, model, in, out)
+			rc.lease.SpentUSD += cost(vt.v.Prices, model, in, out)
 			g.mu.Unlock()
 		}
 	}}

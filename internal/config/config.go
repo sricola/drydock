@@ -45,6 +45,12 @@ type Config struct {
 	// "claude" or "codex".
 	DefaultAgent string `yaml:"default_agent"`
 
+	// AnthropicAuth selects authentication mode: "api_key" or "subscription".
+	AnthropicAuth string `yaml:"anthropic_auth"`
+
+	// TaskMaxRequests is a per-task request cap (0 = unlimited).
+	TaskMaxRequests int `yaml:"task_max_requests"`
+
 	// Where state lives
 	StageRoot   string `yaml:"stage_root"`
 	AuditRoot   string `yaml:"audit_root"`
@@ -74,6 +80,8 @@ func Defaults() *Config {
 		MaxConcurrent:          2,
 		TaskTimeout:            30 * time.Minute,
 		DefaultAgent:           "claude",
+		AnthropicAuth:          "api_key",
+		TaskMaxRequests:        0,
 		StageRoot:              defaultStateDir("stage"),
 		AuditRoot:              defaultStateDir("audit"),
 		SquidRunDir:            defaultStateDir("squid"),
@@ -206,6 +214,14 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("DRYDOCK_DEFAULT_AGENT"); v != "" {
 		c.DefaultAgent = v
 	}
+	if v := os.Getenv("DRYDOCK_ANTHROPIC_AUTH"); v != "" {
+		c.AnthropicAuth = v
+	}
+	if v := os.Getenv("DRYDOCK_TASK_MAX_REQUESTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.TaskMaxRequests = n
+		}
+	}
 	if v := os.Getenv("STAGE_ROOT"); v != "" {
 		c.StageRoot = v
 	}
@@ -251,6 +267,9 @@ func (c *Config) validate() error {
 	if c.DefaultAgent != "claude" && c.DefaultAgent != "codex" {
 		return fmt.Errorf("config: default_agent must be claude or codex, got %q", c.DefaultAgent)
 	}
+	if c.AnthropicAuth != "api_key" && c.AnthropicAuth != "subscription" {
+		return fmt.Errorf("config: anthropic_auth must be api_key or subscription, got %q", c.AnthropicAuth)
+	}
 	return nil
 }
 
@@ -275,6 +294,8 @@ max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
 default_model:          ""             # claude --model fallback (e.g. claude-sonnet-4-6); empty = claude picks. Per-task --model overrides.
 default_agent:          claude         # sandbox CLI: claude | codex. Per-task --agent overrides.
+anthropic_auth:         api_key        # authentication mode: api_key | subscription
+task_max_requests:      0              # per-task request cap (0 = unlimited)
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

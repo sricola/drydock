@@ -115,6 +115,43 @@ export OPENAI_API_KEY=sk-...          # required for Codex tasks
 drydock start              # foreground; ^C to stop. backgrounds via & or your launchd plist.
 ```
 
+### Use your Claude subscription (no API key)
+
+If you have a **Claude Pro or Max subscription**, you can run Claude Code
+tasks without an `ANTHROPIC_API_KEY`. macOS only; requires the `claude` CLI.
+
+```bash
+# 1. Log in to your Claude account (opens a browser)
+claude login
+
+# 2. Copy the credential into drydock's store (~/.drydock/claude-oauth.json, mode 0600)
+drydock auth claude
+
+# 3. Tell drydock to use subscription auth — either in config.yaml:
+#      anthropic_auth: subscription
+#    or as an env override:
+export DRYDOCK_ANTHROPIC_AUTH=subscription
+
+# 4. Start the broker
+drydock start
+```
+
+**Important limits.** The USD budget (`task_budget_usd`) does not apply in
+subscription mode — there is no spend to meter. To prevent a runaway task
+from consuming your subscription's rate limit, set `task_max_requests` in
+`~/.drydock/config.yaml`.
+`task_timeout` still applies as a wall-clock backstop. Note: the cap stops
+*inference* the moment it's hit (the gateway returns HTTP&nbsp;429), but Claude
+Code retries a rejected request with backoff before giving up — so a capped
+task can spin for a minute or two before it exits with an error.
+
+The credential stored at `~/.drydock/claude-oauth.json` is a full-account
+OAuth token — broader than a scoped API key and not per-task revocable. It
+never enters the VM, but keep it protected. See [SECURITY.md](SECURITY.md)
+for the full blast-radius note. Headless use of a personal subscription may
+also brush against Anthropic's terms of service and hit rate limits sooner
+than interactive use; the operator assumes that risk.
+
 Quick liveness:
 
 ```bash
@@ -299,12 +336,14 @@ init` with the defaults below as a commented template. Edit and re-run
 |---|---|---|---|
 | — | `ANTHROPIC_API_KEY` | *(at least one required)* | Real Anthropic key; **host-only**, never goes to disk |
 | — | `OPENAI_API_KEY` | *(at least one required)* | Real OpenAI key; **host-only**, never goes to disk |
+| `anthropic_auth` | `DRYDOCK_ANTHROPIC_AUTH` | `api_key` | How to authenticate to Anthropic; `api_key` (default) uses `ANTHROPIC_API_KEY`; `subscription` uses the OAuth credential at `~/.drydock/claude-oauth.json` — run `drydock auth claude` first |
 | `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent to use when `--agent` is not passed; allowed values: `claude` \| `codex` |
 | `network` | `DRYDOCK_NETWORK` | `drydock-egress` | vmnet network name |
 | `gateway_ip` | `DRYDOCK_GW_IP` | `192.168.66.1` | gateway + squid bind here |
 | `sandbox_image` | `SANDBOX_IMAGE` | `drydock-sandbox:latest` | per-task agent VM image |
 | `anchor_image` | `DRYDOCK_ANCHOR_IMAGE` | `drydock-anchor:latest` | minimal sleep-forever image holding the vmnet gateway IP |
-| `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | per-task USD ceiling |
+| `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | per-task USD ceiling (`api_key` mode only; not used in `subscription` mode) |
+| `task_max_requests` | `DRYDOCK_TASK_MAX_REQUESTS` | *(none)* | hard ceiling on API round-trips per task; the primary runaway control in `subscription` mode |
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | excess POSTs to `/tasks` get HTTP 503 |
 | `task_timeout` | — | `30m` | wall-clock per task |
 | `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | agent `--model` fallback for tasks that don't pass `--model` (passed to `claude --model` or `codex exec --model`); empty = the agent picks |
