@@ -168,6 +168,14 @@ section{padding:56px 0;border-top:1px solid var(--line)}
 @media(max-width:680px){section{padding:40px 0}}
 .seclabel{font-family:var(--mono);font-size:11.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);margin-bottom:14px;display:flex;align-items:baseline;gap:14px}
 .seclabel .n{color:var(--grn)}
+/* "Works with" capability strip — agents × auth, kept tight. */
+#works .seclabel{justify-content:center}
+.works{text-align:center;max-width:660px;margin:0 auto;padding:4px 0 2px}
+.works-agents{font-family:var(--mono);font-weight:600;font-size:clamp(17px,2.6vw,21px);color:var(--ink);display:flex;gap:18px;justify-content:center;align-items:baseline;flex-wrap:wrap;margin-bottom:14px}
+.works-agents em{color:var(--faint);font-style:normal;font-weight:400;font-size:12.5px;letter-spacing:.02em}
+.works-agents .sep{color:var(--line2);font-weight:400}
+.works-note{font-size:15px;color:var(--mut);line-height:1.6;margin:0 auto;max-width:560px}
+.works-note b{color:var(--ink);font-weight:600}
 h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);letter-spacing:-.01em;margin:0 0 18px;line-height:1.15}
 .prose{max-width:64ch;color:var(--mut)}
 .prose p{margin:0 0 16px}
@@ -339,10 +347,11 @@ footer .mk path{stroke:var(--faint)}
 brew install sricola/drydock/drydock
 drydock setup   <span class="c"># installs container + squid, then init</span>
 
-<span class="c"># set at least one vendor key — Claude Code and/or OpenAI Codex</span>
+<span class="c"># set a vendor key — Claude Code and/or OpenAI Codex</span>
 export <span class="a">ANTHROPIC_API_KEY</span>=<span class="r">sk-ant-…</span>
-<span class="c"># …or run on your Claude Pro/Max subscription, no key:</span>
-<span class="c">#   claude login &amp;&amp; drydock auth claude   (anthropic_auth: subscription)</span>
+<span class="c"># …or skip keys and use a subscription, no API key:</span>
+<span class="c">#   drydock auth claude   (anthropic_auth: subscription)</span>
+<span class="c">#   drydock auth codex    (openai_auth: subscription)</span>
 drydock start</pre>
       </div>
       <div class="install-foot">
@@ -357,6 +366,18 @@ drydock start</pre>
 </header>
 
 <div class="wrap">
+
+<section id="works">
+  <div class="seclabel reveal">Works with</div>
+  <div class="works reveal">
+    <div class="works-agents">
+      <span>Claude&nbsp;Code <em>· Anthropic</em></span>
+      <span class="sep">/</span>
+      <span>OpenAI&nbsp;Codex <em>· OpenAI</em></span>
+    </div>
+    <p class="works-note">Bring an <b>API key</b> — or skip keys entirely and run on your existing <b>Claude&nbsp;Pro/Max</b> or <b>ChatGPT</b> subscription. Either way the credential stays on your Mac, never in the VM. Pick the agent per task with <span class="ic">--agent claude|codex</span>.</p>
+  </div>
+</section>
 
 <section id="how">
   <div class="seclabel reveal">How it works</div>
