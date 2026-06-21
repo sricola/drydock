@@ -151,6 +151,43 @@ func consume(r io.Reader, w io.Writer, mode renderMode) int {
 	return 1
 }
 
+// consumeJSON streams the raw NDJSON body to w (for --json: one JSON object per
+// line, untouched) while tracking the terminal event so the exit code still
+// reflects task success/failure. A streamed failure is HTTP 200 + an `error`
+// event, so the caller cannot key the exit code on the HTTP status alone.
+// Returns 0 on a `result` (or a legacy single-object response), 1 on an `error`
+// event or if the stream ends with no terminal event (brokerd died mid-task).
+func consumeJSON(r io.Reader, w io.Writer) int {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	exit := 1 // no terminal event seen ⇒ treat as failure
+	for sc.Scan() {
+		line := sc.Text()
+		fmt.Fprintln(w, line) // raw passthrough — preserve the exact NDJSON
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		var ev map[string]any
+		if json.Unmarshal([]byte(trimmed), &ev) != nil {
+			continue
+		}
+		if _, ok := ev["event"]; !ok {
+			return 0 // legacy single-object response from an old brokerd (200 = success)
+		}
+		switch ev["event"] {
+		case "result":
+			exit = 0
+		case "error":
+			exit = 1
+		}
+	}
+	if sc.Err() != nil {
+		return 1
+	}
+	return exit
+}
+
 // --- small formatting helpers ---
 
 func short(id string) string {

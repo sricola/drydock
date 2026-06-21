@@ -121,3 +121,38 @@ func TestConsume_NonPushOutcomes(t *testing.T) {
 		}
 	}
 }
+
+// --json must key its exit code on the terminal event, not the HTTP status: a
+// streamed *failure* is HTTP 200 + an `error` event, and the raw NDJSON must
+// still pass through untouched.
+func TestConsumeJSON_ExitReflectsTerminalEvent(t *testing.T) {
+	var out strings.Builder
+
+	// error terminal → exit 1, raw line preserved.
+	out.Reset()
+	errStream := `{"event":"accepted","task_id":"abc"}` + "\n" + `{"event":"error","reason":"boom"}` + "\n"
+	if exit := consumeJSON(strings.NewReader(errStream), &out); exit != 1 {
+		t.Errorf("error stream exit=%d, want 1", exit)
+	}
+	if !strings.Contains(out.String(), `"event":"error"`) {
+		t.Errorf("raw NDJSON not passed through: %q", out.String())
+	}
+
+	// result terminal → exit 0.
+	out.Reset()
+	if exit := consumeJSON(strings.NewReader(`{"event":"result","outcome":"pushed"}`+"\n"), &out); exit != 0 {
+		t.Errorf("result stream exit=%d, want 0", exit)
+	}
+
+	// truncated (no terminal event) → exit 1.
+	out.Reset()
+	if exit := consumeJSON(strings.NewReader(`{"event":"stage","stage":"running"}`+"\n"), &out); exit != 1 {
+		t.Errorf("truncated stream exit=%d, want 1", exit)
+	}
+
+	// legacy single object (no "event" field) on a 200 → exit 0.
+	out.Reset()
+	if exit := consumeJSON(strings.NewReader(`{"task_id":"x","pushed":true}`+"\n"), &out); exit != 0 {
+		t.Errorf("legacy object exit=%d, want 0", exit)
+	}
+}

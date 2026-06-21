@@ -229,15 +229,16 @@ func postSubmit(req taskRequest, jsonOut, quiet bool) error {
 	defer resp.Body.Close()
 
 	if jsonOut {
-		// Raw passthrough — works for the NDJSON stream or a legacy object,
-		// and streams live so scripts see events as they arrive.
-		_, _ = io.Copy(os.Stdout, resp.Body)
-		// StatusCode comes from the response headers (received before the body),
-		// so checking it after the copy still reflects the real status.
+		// Pre-accept failures (HTTP >= 400) carry a plain error body, not a
+		// stream — surface it and fail.
 		if resp.StatusCode >= 400 {
+			_, _ = io.Copy(os.Stdout, resp.Body)
 			os.Exit(1)
 		}
-		return nil
+		// 200: stream the raw NDJSON live so scripts see events as they arrive,
+		// but key the exit code on the terminal event — a streamed *failure* is
+		// HTTP 200 + an `error` event, so the status alone would mask it.
+		os.Exit(consumeJSON(resp.Body, os.Stdout))
 	}
 
 	// Pre-accept failures keep an HTTP error status + plain body (the stream
