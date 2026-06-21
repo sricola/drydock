@@ -224,11 +224,12 @@ calls the API sequentially, so the overshoot is bounded by one call — but a
 single deliberately oversized call can exceed the budget in one shot. Set the
 budget with that headroom in mind.
 
-**`subscription` mode.** When `anthropic_auth: subscription` is set, drydock
-routes through the operator's personal Claude Pro/Max subscription. The
-credential gateway holds the OAuth access and refresh tokens host-side and
-issues per-task bearers as usual (A1 still holds), but **the USD budget cap
-does not apply** — there is no spend to meter. The runaway controls are:
+**`subscription` mode (`anthropic_auth: subscription`).** When
+`anthropic_auth: subscription` is set, drydock routes through the operator's
+personal Claude Pro/Max subscription. The credential gateway holds the OAuth
+access and refresh tokens host-side and issues per-task bearers as usual (A1
+still holds), but **the USD budget cap does not apply** — there is no spend to
+meter. The runaway controls are:
 
 - `task_max_requests` — hard ceiling on the number of API round-trips the
   gateway will allow for a single task before returning `429`. Set this
@@ -236,6 +237,23 @@ does not apply** — there is no spend to meter. The runaway controls are:
 - `task_timeout` — wall-clock ceiling (default `30m`), unchanged.
 
 Without `task_max_requests` a subscription task can burn through a large
+fraction of the subscription's rate limit before `task_timeout` fires.
+Operators running batch jobs should set both.
+
+**`subscription` mode (`openai_auth: subscription`).** When
+`openai_auth: subscription` is set, drydock routes Codex tasks through the
+operator's personal ChatGPT subscription via the Codex backend
+(`chatgpt.com/backend-api/codex`). The credential gateway holds the OAuth
+access token, refresh token, and account id host-side and issues per-task
+bearers as usual (A1 still holds), but **the USD budget cap does not apply** —
+there is no spend to meter. The runaway controls are identical:
+
+- `task_max_requests` — hard ceiling on the number of API round-trips the
+  gateway will allow for a single task before returning `429`. Set this
+  explicitly when using subscription mode.
+- `task_timeout` — wall-clock ceiling (default `30m`), unchanged.
+
+Without `task_max_requests` a Codex subscription task can burn through a large
 fraction of the subscription's rate limit before `task_timeout` fires.
 Operators running batch jobs should set both.
 
