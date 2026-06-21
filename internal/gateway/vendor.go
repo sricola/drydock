@@ -16,6 +16,10 @@ type Vendor struct {
 	// and 400s on "extra inputs" that Claude Code sends in API mode (e.g.
 	// context_management); the API-key endpoint accepts them. Empty = no rewrite.
 	StripFields []string
+	// BasePath is non-empty only for the Codex subscription backend; the director
+	// joins it onto the inbound path. Empty (the default) means the path is
+	// forwarded byte-identical, preserving existing Anthropic and OpenAI behaviour.
+	BasePath string
 }
 
 // Credential is the host-held secret the gateway injects upstream. Never seen by the VM.
@@ -84,4 +88,21 @@ func OpenAIVendor() Vendor {
 		ParseUsage: parseOpenAIUsage,
 		Prices:     OpenAIPrices(),
 	}
+}
+
+// OpenAIOAuthVendor is the ChatGPT-subscription Codex backend: Bearer OAuth +
+// chatgpt-account-id, served at chatgpt.com/backend-api/codex. accountID is
+// captured once at bootstrap and is constant across token refreshes. The VM's
+// real Codex CLI supplies originator/User-Agent and store:false/stream:true;
+// this vendor must not disturb them.
+func OpenAIOAuthVendor(accountID string) Vendor {
+	v := OpenAIVendor()
+	v.BaseURL = codexBackendBaseURL
+	v.BasePath = codexBackendBasePath
+	v.Inject = func(r *http.Request, secret string) {
+		r.Header.Del("X-Api-Key")
+		r.Header.Set("Authorization", "Bearer "+secret)
+		r.Header.Set("chatgpt-account-id", accountID)
+	}
+	return v
 }

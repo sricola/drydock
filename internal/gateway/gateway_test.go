@@ -260,6 +260,20 @@ func TestGrant_SpentReflectsMeteredCost(t *testing.T) {
 	}
 }
 
+func TestSingleJoiningSlash(t *testing.T) {
+	cases := []struct{ a, b, want string }{
+		{"/backend-api/codex", "/responses", "/backend-api/codex/responses"},
+		{"/backend-api/codex", "responses", "/backend-api/codex/responses"},
+		{"/backend-api/codex/", "/responses", "/backend-api/codex/responses"},
+		{"", "/v1/messages", "/v1/messages"}, // non-codex vendors unaffected
+	}
+	for _, c := range cases {
+		if got := singleJoiningSlash(c.a, c.b); got != c.want {
+			t.Errorf("singleJoiningSlash(%q,%q)=%q want %q", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestStripJSONObjectFields(t *testing.T) {
 	// Top-level field removed; every other field preserved verbatim. (This is the
 	// real fix: the OAuth endpoint 400s on context_management Claude Code sends.)
