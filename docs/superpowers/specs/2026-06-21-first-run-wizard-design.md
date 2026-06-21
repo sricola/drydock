@@ -33,10 +33,18 @@ OpenAI Codex × API key / subscription); none of that is surfaced interactively.
 
 1. **Entry point:** the wizard *is* `drydock setup`. `drydock init` stays the
    low-level, non-interactive primitive (scriptable; unchanged behavior).
-2. **API-key handling:** env-only. The wizard records the *choice* (`api_key`)
-   and verifies/reminds about the env var; it **never writes an API key to
-   disk** (upholds drydock's "real key stays host-side, never persisted"
-   stance). Only the subscription OAuth token is stored (as today, 0600).
+2. **API-key handling:** stored host-side, consistent with the OAuth tokens.
+   The wizard writes the key to a **dedicated 0600 file** at
+   `~/.drydock/api-keys.env` (NOT into `config.yaml`, which is the
+   user-editable/shareable surface). The broker loads that file at start, so
+   the key survives shells/reboots and the broker no longer depends on the
+   shell env. An exported `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` still wins
+   (CI/advanced override). The real invariant is unchanged and load-bearing:
+   **the credential never enters the VM** — drydock already stores the broader
+   full-account OAuth token on disk, so a scoped, revocable API key beside it is
+   strictly less exposure. The "API keys never go to disk" copy in
+   README/SECURITY/THREAT_MODEL is retired and reframed to "credentials stay
+   host-side (env or `~/.drydock/` 0600), never in the VM."
 3. **Implementation style:** plain numbered stdin prompts reusing the existing
    color/`step()` formatting. **No TUI framework / no new dependency** — keeps
    the supply-chain surface (SBOM + cosign-signed releases) clean. The "wizard"
@@ -70,10 +78,13 @@ and behave exactly as today (so CI and `drydock init` are unaffected).
 
 | Unit | Responsibility |
 |---|---|
-| `cmd/drydock/wizard.go` (new) | The `configure` orchestration (`runWizard`) + **pure** prompt helpers: `promptChoice(in io.Reader, out io.Writer, q string, opts []string, dflt int) int`, `promptYesNo(in, out, q string, dflt bool) bool`. Helpers read/write injected streams so they're unit-testable. |
+| `cmd/drydock/wizard.go` (new) | The `configure` orchestration (`runWizard`) + **pure** prompt helpers: `promptChoice(in io.Reader, out io.Writer, q string, opts []string, dflt int) int`, `promptYesNo(in, out, q string, dflt bool) bool`, `promptSecret(...)` (reads the API key, echo disabled when stdin is a TTY via stdlib termios — macOS-only, **no new dependency**). Helpers read/write injected streams so they're unit-testable. |
 | `renderConfig(choices) string` (new, in wizard.go or config seam) | Renders the full comment-rich `config.yaml` body with the chosen `default_agent`/`anthropic_auth`/`openai_auth`; all other keys keep the existing template defaults. |
+| API-key store (new) | `~/.drydock/api-keys.env` — a 0600 `KEY=value` file. A small **loader** (in `internal/config` or a tiny `creds` helper): `LoadAPIKeys(path) map[string]string`, parsing `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` lines (ignore blanks/`#` comments). A **writer** the wizard uses to upsert a single key at 0600 (atomic temp+rename), preserving any other key already in the file. |
+| `cmd/brokerd/main.go` (modify) | Before reading the API keys, load `~/.drydock/api-keys.env` as defaults; an exported env var overrides a file value. The downstream backend wiring is unchanged (`StaticKey(key)` → gateway). |
 | `runSetup` (modify) | Decide interactive vs non-interactive (TTY + first-run / `--reconfigure`); run prereqs + infra; on interactive, call `runWizard`; else today's path. |
 | auth cores (modify) | Extract the callable core of `drydock auth claude` / `auth codex` into functions the wizard can invoke and branch on (e.g. `bootstrapClaudeCred() error`, `bootstrapCodexCred() error`). The existing `drydock auth claude|codex` subcommands call the same core. |
+| docs (modify) | `README.md` / `SECURITY.md` / `THREAT_MODEL.md`: retire "API keys never go to disk"; reframe to "credentials stay host-side (env or `~/.drydock/` 0600), never in the VM"; document `~/.drydock/api-keys.env`. |
 
 ## Wizard flow (detail)
 
@@ -89,9 +100,11 @@ and behave exactly as today (so CI and `drydock init` are unaffected).
      check (the same `OAuthCred.Current()` the doctor uses) → `✓ token valid`.
      If the CLI is missing or not logged in → print the exact
      `claude login` / `codex login` line; **non-fatal**.
-   - **API key:** if `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is set → `✓`; else
-     print `export ANTHROPIC_API_KEY=sk-ant-…` (the exact var) as a reminder to
-     run before `drydock start`. **Never stores the key.**
+   - **API key:** store it host-side at `~/.drydock/api-keys.env` (0600).
+     If the env var is already exported, offer to persist it (`✓ stored`); else
+     prompt for the key with `promptSecret` (no terminal echo) and write it.
+     The key is upserted (any other key in the file is preserved). The wizard
+     reflects only that a key was stored — it never prints the key value.
 4. **Write config.** Render `~/.drydock/config.yaml` with the choices. If a
    config already exists and the user is reconfiguring, overwrite; the egress
    file is left untouched (seeded by init as today).
@@ -99,16 +112,36 @@ and behave exactly as today (so CI and `drydock init` are unaffected).
    `start: drydock start` and a `drydock submit` example. Recommend
    `drydock doctor` to verify.
 
+## API-key store (`~/.drydock/api-keys.env`)
+
+A dedicated secret file, deliberately separate from `config.yaml`:
+
+- **Format:** plain `KEY=value` lines, e.g. `ANTHROPIC_API_KEY=sk-ant-…` /
+  `OPENAI_API_KEY=sk-…`. Blank lines and `#` comments ignored. Only the two
+  vendor keys are recognized.
+- **Mode:** `0600`, written atomically (temp + rename), like the OAuth json.
+- **Precedence (broker):** load the file first as defaults; an exported env var
+  of the same name overrides it. So scripted/CI use (`export …`) is unchanged,
+  and an interactive operator gets persistence for free.
+- **Security:** the broker reads it host-side and still mints a per-task token —
+  the raw key never enters the VM (A1 invariant unchanged). It is NOT in
+  `config.yaml` (the file people edit/screenshot/paste into issues). It is the
+  api_key-mode peer of the OAuth-token json files; both live host-side at 0600.
+
 ## Error handling
 
 - **Invalid prompt input** (out-of-range / non-numeric) → re-prompt with a short
   "enter 1–N"; empty input → the default.
 - **Not a TTY** → never enter the wizard (the gate); EOF on stdin can't hang it.
-- **Credential not ready** (CLI missing / not logged in / env var unset) →
-  clear, **non-fatal** guidance; config is still written so the user can finish
-  out-of-band and `drydock start`.
-- **Config write failure** (permissions) → surfaced via `step(..., false, err)`
-  and a non-zero exit, consistent with the rest of `init`.
+- **Credential not ready** (subscription CLI missing / not logged in; or the
+  user skips pasting an API key) → clear, **non-fatal** guidance; the config is
+  still written so the user can finish out-of-band (`claude login` /
+  `drydock auth claude`, or add the key to `~/.drydock/api-keys.env`) and
+  `drydock start`.
+- **Config / api-keys.env write failure** (permissions) → surfaced via
+  `step(..., false, err)` and a non-zero exit, consistent with the rest of
+  `init`. `promptSecret` reads with terminal echo disabled when stdin is a TTY;
+  on a non-TTY it never runs (the wizard gate).
 
 ## Testing
 
@@ -119,6 +152,10 @@ and behave exactly as today (so CI and `drydock init` are unaffected).
   `config.yaml` parses (via `config.Load` on a temp file) and carries the right
   `default_agent` / `anthropic_auth` / `openai_auth`, with other keys at their
   defaults.
+- **API-key store** — `LoadAPIKeys` parses valid lines / ignores blanks+comments;
+  the writer upserts one key while preserving the other and writes 0600 (mode
+  asserted); brokerd precedence test: env var overrides a file value, file value
+  used when env is unset.
 - **`runWizard`** — driven with a scripted stdin reader + captured stdout and
   the infra/credential steps stubbed (injected funcs), asserting the flow
   selects the right config and prints the expected summary; subscription
@@ -129,7 +166,8 @@ and behave exactly as today (so CI and `drydock init` are unaffected).
 ## Out of scope
 
 - A full-screen / arrow-key TUI (explicitly rejected — dependency cost).
-- Persisting API keys anywhere (explicitly rejected — never to disk).
+- Putting secrets in `config.yaml` (the API key goes in the separate
+  `~/.drydock/api-keys.env`; OAuth tokens keep their own json files).
 - Prompting for egress / budget / model / timeouts (template defaults; advanced
   users edit `config.yaml`).
 - Changing `drydock init`'s non-interactive behavior or `drydock auth`'s CLI
