@@ -5,6 +5,39 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Added
+
+- **Live progress streaming for `drydock submit`.** Instead of blocking silently
+  for the whole run, the submit shell now streams phase updates in real time:
+  `preparing → running → awaiting approval → pushing`. Each phase prints a
+  one-liner as it starts; no polling needed.
+- **Visible approval gate.** When the agent finishes and the diff is ready, the
+  submit shell prints the diff size and the exact commands to act on it
+  (`drydock review <id>` / `drydock approve <id>` / `drydock deny <id>`), so
+  you no longer have to switch shells and guess.
+- **Actionable boot-failure output.** A sandbox that fails to boot now reports
+  the real error (e.g. `entrypoint.sh: DRYDOCK_GW_IP: missing gateway ip`) and
+  suggests `drydock doctor`, instead of the opaque `task failed: exit status 1`.
+- **Richer completion summary.** The final line now shows branch, platform,
+  diffstat (files, insertions, deletions), wall-clock duration, and cost —
+  e.g. `✓ pushed agent/7f3a… (github) · 4 files +120/-8 · 2m18s · $0.11`.
+- **`--quiet` flag for `drydock submit`.** Suppresses all progress output and
+  prints only the final outcome line — useful in scripts that capture the result
+  but don't want interleaved status noise.
+- **`--json` now streams raw NDJSON events** as the task runs (one JSON object
+  per line), replacing the previous single-object response. Pipe to `jq -c` to
+  process events incrementally or filter the terminal `result` event for the
+  branch name.
+
+### Notes
+
+- **Version-skew caveat.** An old `drydock submit` binary (pre-streaming)
+  talking to a new brokerd will print raw NDJSON to the terminal instead of
+  rendered progress. Because brokerd and the CLI ship as one binary, this only
+  affects a stale separate install; `drydock version` should match on both sides.
+
 ## v0.2.0 — 2026-06-21
 
 ### Added
