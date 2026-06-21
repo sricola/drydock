@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 )
 
 type renderMode int
@@ -18,13 +17,12 @@ const (
 )
 
 // renderer turns a stream of broker events into terminal output. It holds the
-// little state TTY rendering needs (task id, start time); piped/quiet modes are
-// stateless line printers and are what the tests exercise.
+// task id needed for summary and error lines; piped/quiet modes are stateless
+// line printers and are what the tests exercise.
 type renderer struct {
-	w     io.Writer
-	mode  renderMode
-	id    string
-	start time.Time
+	w    io.Writer
+	mode renderMode
+	id   string
 }
 
 func newRenderer(w io.Writer, mode renderMode) *renderer {
@@ -59,7 +57,6 @@ func (r *renderer) handle(ev map[string]any) (exit int, done bool) {
 	switch ev["event"] {
 	case "accepted":
 		r.id, _ = ev["task_id"].(string)
-		r.start = time.Now()
 		r.progress("task " + short(r.id) + " accepted")
 	case "stage":
 		r.stage(ev)
@@ -145,6 +142,10 @@ func consume(r io.Reader, w io.Writer, mode renderMode) int {
 			return exit
 		}
 	}
+	if err := sc.Err(); err != nil {
+		rnd.persist("✗ stream error: " + err.Error())
+		return 1
+	}
 	// Stream ended with no terminal event — brokerd likely died mid-task.
 	rnd.persist("✗ connection closed before the task finished")
 	return 1
@@ -176,7 +177,7 @@ func durStr(v any) string {
 	if ms <= 0 {
 		return "0s"
 	}
-	return (time.Duration(ms) * time.Millisecond).Truncate(time.Second).String()
+	return shortDur(int64(ms))
 }
 
 func costStr(v any) string {

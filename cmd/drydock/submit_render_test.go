@@ -88,3 +88,36 @@ func TestConsume_QuietPrintsOnlyResult(t *testing.T) {
 		t.Errorf("quiet mode dropped the result:\n%s", got)
 	}
 }
+
+func TestConsume_PrematureEOF(t *testing.T) {
+	// Stream ends with no terminal result/error event — brokerd died mid-task.
+	stream := `{"event":"accepted","task_id":"7f3a0000"}` + "\n" +
+		`{"event":"stage","stage":"running","agent":"claude"}` + "\n"
+	var out strings.Builder
+	exit := consume(strings.NewReader(stream), &out, modePiped)
+	if exit != 1 {
+		t.Errorf("exit=%d, want 1", exit)
+	}
+	if !strings.Contains(out.String(), "connection closed") {
+		t.Errorf("expected premature-EOF message, got:\n%s", out.String())
+	}
+}
+
+func TestConsume_NonPushOutcomes(t *testing.T) {
+	cases := map[string]string{
+		`{"event":"result","outcome":"no_diff"}`:   "no changes",
+		`{"event":"result","outcome":"denied"}`:    "denied",
+		`{"event":"result","outcome":"cancelled"}`: "cancelled",
+	}
+	for line, want := range cases {
+		stream := `{"event":"accepted","task_id":"7f3a0000"}` + "\n" + line + "\n"
+		var out strings.Builder
+		exit := consume(strings.NewReader(stream), &out, modePiped)
+		if exit != 0 {
+			t.Errorf("%s: exit=%d, want 0", line, exit)
+		}
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("%s: output %q missing %q", line, out.String(), want)
+		}
+	}
+}
