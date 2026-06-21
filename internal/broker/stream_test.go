@@ -39,6 +39,22 @@ func TestReasonFromAudit_NoMeaningfulLine(t *testing.T) {
 	}
 }
 
+func TestReasonFromAudit_SkipsJSONArray(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.jsonl")
+	// A plain-text error followed by a trailing JSON-array line: the array must
+	// be skipped so the real error is what surfaces.
+	content := "container failed to start: no route to host\n" +
+		`["progress","starting"]` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reasonFromAudit(path)
+	want := "container failed to start: no route to host"
+	if !ok || got != want {
+		t.Errorf("reasonFromAudit = %q,%v; want %q,true", got, ok, want)
+	}
+}
+
 func TestAuditCost_LastResultLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "a.jsonl")
 	body := `{"type":"result","total_cost_usd":0.05}` + "\n" +

@@ -50,7 +50,7 @@ func reasonFromAudit(path string) (line string, ok bool) {
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		ln := strings.TrimSpace(lines[i])
-		if ln == "" || strings.HasPrefix(ln, "{") || progressLine.MatchString(ln) {
+		if ln == "" || strings.HasPrefix(ln, "{") || strings.HasPrefix(ln, "[") || progressLine.MatchString(ln) {
 			continue
 		}
 		return ln, true
