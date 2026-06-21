@@ -5,6 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 )
 
 // CompileSquidConf renders a squid.conf that binds bindAddr and allows CONNECT
@@ -33,7 +36,8 @@ via off
 
 // Squid is a handle to a running userspace squid process.
 type Squid struct {
-	cmd *exec.Cmd
+	cmd    *exec.Cmd
+	runDir string
 }
 
 // FindSquid locates the squid binary (Homebrew layout or PATH).
@@ -67,17 +71,31 @@ func StartSquid(binPath, bindAddr, allowlist, runDir string) (*Squid, error) {
 	if err := os.WriteFile(confPath, []byte(CompileSquidConf(bindAddr, allowPath, runDir)), 0o644); err != nil {
 		return nil, err
 	}
+	// A broker that was hard-killed (SIGKILL, crash) leaves squid's pid file
+	// behind; squid then refuses to start ("already running"). Clear a stale
+	// one first so a restart self-heals.
+	if err := reapStaleSquid(runDir); err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(binPath, "-N", "-f", confPath)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("netfw: start squid: %w", err)
 	}
-	return &Squid{cmd: cmd}, nil
+	return &Squid{cmd: cmd, runDir: runDir}, nil
 }
 
 // Stop terminates the squid process and reaps it.
 func (s *Squid) Stop() error {
-	if s == nil || s.cmd == nil || s.cmd.Process == nil {
+	if s == nil {
+		return nil
+	}
+	// Remove the pid file even when there's no live process, so a hard-killed
+	// squid (which can't clean up after itself) doesn't block the next start.
+	if s.runDir != "" {
+		_ = os.Remove(filepath.Join(s.runDir, "squid.pid"))
+	}
+	if s.cmd == nil || s.cmd.Process == nil {
 		return nil
 	}
 	if err := s.cmd.Process.Kill(); err != nil {
@@ -87,4 +105,40 @@ func (s *Squid) Stop() error {
 	// error is just the "signal: killed" status; ignore it.
 	_ = s.cmd.Wait()
 	return nil
+}
+
+// reapStaleSquid clears a leftover squid.pid in runDir. The pid file is removed
+// when its PID is dead, unparseable, or belongs to some unrelated live process
+// (PID reuse) — i.e. whenever it isn't actually a running squid. If a real squid
+// is still bound to this run dir, it returns an error rather than killing it,
+// since that usually means another broker is already running.
+func reapStaleSquid(runDir string) error {
+	pidPath := filepath.Join(runDir, "squid.pid")
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return nil // no pid file (or unreadable) — nothing to reap
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err == nil && pid > 0 && processAlive(pid) && processIsSquid(pid) {
+		return fmt.Errorf("netfw: a squid is already running (pid %d) for %s — "+
+			"another drydock broker may be active; stop it first (or `kill %d`)", pid, runDir, pid)
+	}
+	return os.Remove(pidPath)
+}
+
+// processAlive reports whether pid names a live process. signal 0 performs the
+// existence/permission check without delivering a signal.
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM // EPERM = alive but not ours to signal
+}
+
+// processIsSquid reports whether pid's executable is squid, guarding against
+// PID reuse before we'd ever treat a live process as a real squid.
+func processIsSquid(pid int) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(out)), "squid")
 }
