@@ -253,28 +253,28 @@ func postSubmit(req taskRequest, jsonOut bool) error {
 		os.Stdout.Write(respBody)
 		return nil
 	}
-	printPretty(out)
+	printPretty(os.Stdout, out)
 	return nil
 }
 
-func printPretty(out map[string]any) {
+func printPretty(w io.Writer, out map[string]any) {
 	id, _ := out["task_id"].(string)
 	switch {
 	case out["cancelled"] == true:
-		fmt.Printf("task %s: cancelled\n", id)
+		fmt.Fprintf(w, "task %s: cancelled\n", id)
 		if diff, _ := out["diff"].(string); diff != "" {
-			fmt.Printf("  diff captured (%d bytes); inspect %s\n", len(diff), diffPath(id))
+			fmt.Fprintf(w, "  diff captured (%d bytes); inspect %s\n", len(diff), diffPath(id))
 		}
 	case out["pushed"] == true:
 		branch, _ := out["branch"].(string)
 		platform, _ := out["platform"].(string)
-		fmt.Printf("task %s: pushed %s (%s)\n", id, branch, platform)
+		fmt.Fprintf(w, "task %s: pushed %s (%s)\n", id, branch, platform)
 	default:
-		fmt.Printf("task %s: not pushed\n", id)
+		fmt.Fprintf(w, "task %s: not pushed\n", id)
 		if diff, _ := out["diff"].(string); diff != "" {
-			fmt.Printf("  diff captured (%d bytes); inspect %s\n", len(diff), diffPath(id))
+			fmt.Fprintf(w, "  diff captured (%d bytes); inspect %s\n", len(diff), diffPath(id))
 		} else {
-			fmt.Println("  agent returned no diff")
+			fmt.Fprintln(w, "  agent returned no diff")
 		}
 	}
 }
