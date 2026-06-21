@@ -48,14 +48,35 @@ func reasonFromAudit(path string) (line string, ok bool) {
 		return "", false
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	lastMeaningful := ""
 	for i := len(lines) - 1; i >= 0; i-- {
 		ln := strings.TrimSpace(lines[i])
 		if ln == "" || strings.HasPrefix(ln, "{") || strings.HasPrefix(ln, "[") || progressLine.MatchString(ln) {
 			continue
 		}
-		return ln, true
+		// Prefer the most recent line that actually reads as an error: some
+		// agents (e.g. codex) print incidental trailing output after the real
+		// failure — `ERROR: exceeded retry limit …` followed by a bare token
+		// count — and the bare count is useless as an operator-facing reason.
+		if looksLikeError(ln) {
+			return ln, true
+		}
+		if lastMeaningful == "" {
+			lastMeaningful = ln // fallback when no line reads as an error
+		}
+	}
+	if lastMeaningful != "" {
+		return lastMeaningful, true
 	}
 	return "", false
+}
+
+// looksLikeError reports whether a line reads as a failure message, so
+// reasonFromAudit can prefer it over an incidental trailing line.
+func looksLikeError(ln string) bool {
+	l := strings.ToLower(ln)
+	return strings.Contains(l, "error") || strings.Contains(l, "fatal") ||
+		strings.Contains(l, "panic") || strings.Contains(l, "failed")
 }
 
 // auditCost returns total_cost_usd of the last result line in the audit log —
