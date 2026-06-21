@@ -1,8 +1,6 @@
 package broker
 
 import (
-	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
@@ -40,10 +38,9 @@ func TestRedteam_A5_GateBlocksUnapprovedPush(t *testing.T) {
 		t.Fatal("HandleTask did not return after deny")
 	}
 
-	var out map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	if out["pushed"] != false {
-		t.Errorf("A5 BREACH: pushed=%v after deny — the diff gate did not contain the change", out["pushed"])
+	_, term := parseEvents(rec.Body.String())
+	if term["event"] != "result" || term["outcome"] != "denied" {
+		t.Errorf("A5 BREACH: terminal=%v after deny — the diff gate did not contain the change", term)
 	}
 	if st.pushed {
 		t.Error("A5 BREACH: stage.Push was called despite the operator denying the diff")
@@ -87,8 +84,9 @@ func TestRedteam_A6_EgressWidenDenied(t *testing.T) {
 		t.Fatal("HandleTask did not return after deny")
 	}
 
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("A6: status=%d, want 403 (egress widening denied)", rec.Code)
+	_, term := parseEvents(rec.Body.String())
+	if term["event"] != "error" || term["reason"] != "egress widening denied" {
+		t.Errorf("A6: terminal=%v, want error/egress widening denied", term)
 	}
 	if staged.Load() {
 		t.Error("A6 BREACH: task reached staging after egress widening was denied — extras could reach squid")

@@ -327,20 +327,30 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	sw := newStream(w)
+	sw.emit(map[string]any{"event": "accepted", "task_id": taskID, "repo": t.RepoRef})
+
 	// Egress widening: block at the same kind of human-driven gate as the
 	// diff push. Without this the requires_approval flag is a lie —
 	// auto-approve would let any task ask for any host.
 	if len(t.EgressExtra) > 0 && b.Cfg.PerTaskWidening.RequiresApproval {
 		b.setStage(taskID, StageAwaitingEgress)
+		sw.emit(map[string]any{
+			"event": "stage", "stage": "awaiting_egress", "task_id": taskID,
+			"extras":  summariseExtras(t.EgressExtra),
+			"approve": "drydock approve " + taskID,
+			"deny":    "drydock deny " + taskID,
+		})
 		b.setEgressExtra(taskID, t.EgressExtra)
 		ok := b.gateEgressWiden(taskCtx, taskID, t.EgressExtra)
 		b.setEgressExtra(taskID, nil)
 		if !ok {
 			if taskCtx.Err() != nil {
-				writeJSON(w, map[string]any{"task_id": taskID, "cancelled": true, "pushed": false})
+				sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": taskID})
 				return
 			}
-			http.Error(w, "egress widening denied", http.StatusForbidden)
+			sw.emit(errorEvent(taskID, "egress widening denied", ""))
 			return
 		}
 		b.setStage(taskID, StageRunning)
@@ -352,27 +362,28 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	if prepare == nil {
 		prepare = defaultPrepareStage
 	}
+	sw.emit(map[string]any{"event": "stage", "stage": "preparing", "task_id": taskID})
 	st, err := prepare(stageDir, t.RepoRef)
 	if err != nil {
-		http.Error(w, "clone failed", http.StatusBadGateway)
+		sw.emit(errorEvent(taskID, "clone failed", "check the repo URL and that brokerd can reach it"))
 		return
 	}
 	defer st.Cleanup() // wipe the host scratch (work tree + host-only git dir)
 
 	allowlist := egress.CompileAllowlist(b.Cfg, t.EgressExtra)
 	if err := st.WriteTaskFiles(t.Instruction, allowlist); err != nil {
-		http.Error(w, "stage failed", http.StatusInternalServerError)
+		sw.emit(errorEvent(taskID, "stage failed", ""))
 		return
 	}
 
 	agentName, prov, status, msg := b.resolveAgent(t.Agent)
 	if status != 0 {
-		http.Error(w, msg, status)
+		sw.emit(errorEvent(taskID, msg, ""))
 		return
 	}
 	grant, err := prov.Mint(b.TaskBudget)
 	if err != nil {
-		http.Error(w, "credential mint failed", http.StatusInternalServerError)
+		sw.emit(errorEvent(taskID, "credential mint failed", ""))
 		return
 	}
 	defer grant.Revoke()
@@ -382,7 +393,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// the diff, the prompt, and the full stream-json trace — none of it
 	// should be world-readable.
 	if err := os.MkdirAll(b.AuditRoot, 0o700); err != nil {
-		http.Error(w, "audit dir failed", http.StatusInternalServerError)
+		sw.emit(errorEvent(taskID, "audit setup failed", ""))
 		return
 	}
 	// 0o600 on the audit log: same reasoning. os.Create would create at
@@ -391,7 +402,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		filepath.Join(b.AuditRoot, taskID+".jsonl"),
 		os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		http.Error(w, "audit file failed", http.StatusInternalServerError)
+		sw.emit(errorEvent(taskID, "audit setup failed", ""))
 		return
 	}
 	defer logf.Close()
@@ -434,6 +445,14 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	if run == nil {
 		run = runContainer
 	}
+	b.setStage(taskID, StageRunning)
+	runningEv := map[string]any{"event": "stage", "stage": "running", "task_id": taskID, "agent": agentName}
+	if m := t.Model; m != "" {
+		runningEv["model"] = m
+	} else if b.DefaultModel != "" {
+		runningEv["model"] = b.DefaultModel
+	}
+	sw.emit(runningEv)
 	taskStart := time.Now()
 	if err := run(runCtx, args, io.MultiWriter(logf, os.Stdout), logf); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
@@ -444,7 +463,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		}
 		if taskCtx.Err() != nil {
 			// Operator killed it, or the client went away. Be explicit.
-			writeJSON(w, map[string]any{"task_id": taskID, "cancelled": true, "pushed": false})
+			sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": taskID})
 			return
 		}
 		// If claude never wrote a `result` event (e.g. the entrypoint died
@@ -454,7 +473,18 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(logf,
 			`{"type":"result","subtype":"error","is_error":true,"duration_ms":%d,"total_cost_usd":0,"num_turns":0}`+"\n",
 			time.Since(taskStart).Milliseconds())
-		http.Error(w, "task failed: "+safeErr(err), http.StatusInternalServerError)
+		auditPath := filepath.Join(b.AuditRoot, taskID+".jsonl")
+		reason := "task failed: " + safeErr(err)
+		ev := map[string]any{"event": "error", "task_id": taskID,
+			"audit": auditPath, "duration_ms": time.Since(taskStart).Milliseconds()}
+		if line, ok := reasonFromAudit(auditPath); ok {
+			// The distilled line is the agent's own output — sanitize it like
+			// any other operator-reflected, attacker-influenceable text.
+			reason = safeStr(line)
+			ev["hint"] = "run `drydock doctor` to check the sandbox image"
+		}
+		ev["reason"] = reason
+		sw.emit(ev)
 		return
 	}
 
@@ -470,33 +500,51 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	diff, err := st.CaptureDiff()
 	if err != nil {
-		http.Error(w, "diff capture failed", http.StatusInternalServerError)
+		sw.emit(errorEvent(taskID, "diff capture failed", ""))
 		return
 	}
+	auditPath := filepath.Join(b.AuditRoot, taskID+".jsonl")
 	if diff == "" {
-		writeJSON(w, map[string]any{"task_id": taskID, "diff": "", "pushed": false})
+		sw.emit(map[string]any{"event": "result", "outcome": "no_diff",
+			"task_id": taskID, "duration_ms": time.Since(taskStart).Milliseconds(),
+			"cost_usd": auditCost(auditPath)})
 		return
 	}
+
+	files, insertions, deletions := diffStat(diff)
 	b.setStage(taskID, StagePending)
+	// Only announce the approval gate when there's actually a human gate to
+	// wait on. Auto-approve pushes immediately, so an "awaiting_approval"
+	// stage would be a misleading blip in the stream.
+	if !t.AutoApprove {
+		sw.emit(map[string]any{"event": "stage", "stage": "awaiting_approval",
+			"task_id": taskID, "diff_bytes": len(diff), "files": files,
+			"approve": "drydock approve " + taskID,
+			"deny":    "drydock deny " + taskID,
+			"review":  "drydock review " + taskID})
+	}
 	if !b.gatePush(taskCtx, taskID, diff, t.AutoApprove) {
-		// Distinguish "killed" from "denied" in the response so the operator
-		// (and audit consumers) know what happened.
+		outcome := "denied"
 		if taskCtx.Err() != nil {
-			writeJSON(w, map[string]any{"task_id": taskID, "diff": diff, "cancelled": true, "pushed": false})
-			return
+			outcome = "cancelled"
 		}
-		writeJSON(w, map[string]any{"task_id": taskID, "diff": diff, "pushed": false})
+		sw.emit(map[string]any{"event": "result", "outcome": outcome,
+			"task_id": taskID, "diff_bytes": len(diff)})
 		return
 	}
 
 	b.setStage(taskID, StagePushing)
 	branch := "agent/" + taskID
 	adapter := remote.AdapterFor(t.RepoRef, t.Platform)
+	sw.emit(map[string]any{"event": "stage", "stage": "pushing", "task_id": taskID, "branch": branch})
 	if err := st.Push(adapter, branch, "agent: "+firstLine(t.Instruction)); err != nil {
-		http.Error(w, "push failed: "+safeErr(err), http.StatusBadGateway)
+		sw.emit(errorEvent(taskID, "push failed: "+safeErr(err), "check the remote and push credentials"))
 		return
 	}
-	writeJSON(w, map[string]any{"task_id": taskID, "branch": branch, "platform": adapter.Name(), "pushed": true})
+	sw.emit(map[string]any{"event": "result", "outcome": "pushed",
+		"task_id": taskID, "branch": branch, "platform": adapter.Name(),
+		"files": files, "insertions": insertions, "deletions": deletions,
+		"duration_ms": time.Since(taskStart).Milliseconds(), "cost_usd": auditCost(auditPath)})
 }
 
 // gateEgressWiden blocks until POST /admin/approve/{id} or /admin/deny/{id}
@@ -769,7 +817,14 @@ func safeErr(err error) string {
 	if err == nil {
 		return ""
 	}
-	s := err.Error()
+	return safeStr(err.Error())
+}
+
+// safeStr strips non-printable bytes from operator-reflected text. Any output
+// that traces back to the agent (its stdout/stderr, a distilled audit line) can
+// carry attacker-influenced bytes; reflecting them raw lets a clever agent
+// inject ANSI escapes into operator terminals. Strip non-printables and cap.
+func safeStr(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
@@ -787,6 +842,15 @@ func safeErr(err error) string {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// errorEvent builds a terminal error event. hint may be empty.
+func errorEvent(taskID, reason, hint string) map[string]any {
+	ev := map[string]any{"event": "error", "task_id": taskID, "reason": reason}
+	if hint != "" {
+		ev["hint"] = hint
+	}
+	return ev
 }
 
 // modelEnv resolves the model passthrough for a task: the per-task value wins,

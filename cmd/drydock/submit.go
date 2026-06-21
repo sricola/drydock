@@ -53,6 +53,7 @@ func runSubmit(args []string) {
 		agent       = fs.String("agent", "", "sandbox agent: claude | codex (default: broker's default_agent)")
 		sensitive   = fs.Bool("sensitive", false, "mark the task sensitive in the audit trail")
 		jsonOut     = fs.Bool("json", false, "print the raw response JSON instead of a pretty summary")
+		quiet       = fs.Bool("quiet", false, "suppress live progress; print only the final outcome")
 		egress      repeatedFlag
 	)
 	fs.Var(&egress, "egress-extra", "extra egress host:port[,port] (repeatable)")
@@ -109,7 +110,7 @@ sockpath.Default().`)
 		Model:       *model,
 		Agent:       *agent,
 	}
-	if err := postSubmit(req, *jsonOut); err != nil {
+	if err := postSubmit(req, *jsonOut, *quiet); err != nil {
 		die("%v", err)
 	}
 }
@@ -179,7 +180,7 @@ func parseEgressExtras(raw []string) ([]reqDomain, error) {
 // 30+ minutes plus operator approval), POSTs /tasks, and prints the
 // response. SIGINT propagates as a context cancel — brokerd treats that
 // as a task kill, so ^C is a clean abort.
-func postSubmit(req taskRequest, jsonOut bool) error {
+func postSubmit(req taskRequest, jsonOut, quiet bool) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err
@@ -227,54 +228,58 @@ func postSubmit(req taskRequest, jsonOut bool) error {
 	}
 	defer resp.Body.Close()
 
-	respBody, rerr := io.ReadAll(resp.Body)
-	if rerr != nil {
-		return fmt.Errorf("read brokerd response: %w", rerr)
-	}
 	if jsonOut {
-		os.Stdout.Write(respBody)
-		if len(respBody) == 0 || respBody[len(respBody)-1] != '\n' {
-			fmt.Println()
-		}
+		// Pre-accept failures (HTTP >= 400) carry a plain error body, not a
+		// stream — surface it and fail.
 		if resp.StatusCode >= 400 {
+			_, _ = io.Copy(os.Stdout, resp.Body)
 			os.Exit(1)
 		}
-		return nil
+		// 200: stream the raw NDJSON live so scripts see events as they arrive,
+		// but key the exit code on the terminal event — a streamed *failure* is
+		// HTTP 200 + an `error` event, so the status alone would mask it.
+		os.Exit(consumeJSON(resp.Body, os.Stdout))
 	}
 
-	// Pretty output.
+	// Pre-accept failures keep an HTTP error status + plain body (the stream
+	// never started). Surface them directly.
 	if resp.StatusCode >= 400 {
-		fmt.Fprintf(os.Stderr, "drydock submit: HTTP %d: %s\n", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "drydock submit: HTTP %d: %s\n", resp.StatusCode, strings.TrimSpace(string(body)))
 		os.Exit(1)
 	}
-	var out map[string]any
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		// Brokerd returned a non-JSON body on success? Just print it raw.
-		os.Stdout.Write(respBody)
-		return nil
+
+	mode := modePiped
+	if tty { // package-level, defined in init.go
+		mode = modeTTY
 	}
-	printPretty(out)
+	if quiet {
+		mode = modeQuiet
+	}
+	if exit := consume(resp.Body, os.Stdout, mode); exit != 0 {
+		os.Exit(exit)
+	}
 	return nil
 }
 
-func printPretty(out map[string]any) {
+func printPretty(w io.Writer, out map[string]any) {
 	id, _ := out["task_id"].(string)
 	switch {
 	case out["cancelled"] == true:
-		fmt.Printf("task %s: cancelled\n", id)
+		fmt.Fprintf(w, "task %s: cancelled\n", id)
 		if diff, _ := out["diff"].(string); diff != "" {
-			fmt.Printf("  diff captured (%d bytes); inspect %s\n", len(diff), diffPath(id))
+			fmt.Fprintf(w, "  diff captured (%d bytes); inspect %s\n", len(diff), diffPath(id))
 		}
 	case out["pushed"] == true:
 		branch, _ := out["branch"].(string)
 		platform, _ := out["platform"].(string)
-		fmt.Printf("task %s: pushed %s (%s)\n", id, branch, platform)
+		fmt.Fprintf(w, "task %s: pushed %s (%s)\n", id, branch, platform)
 	default:
-		fmt.Printf("task %s: not pushed\n", id)
+		fmt.Fprintf(w, "task %s: not pushed\n", id)
 		if diff, _ := out["diff"].(string); diff != "" {
-			fmt.Printf("  diff captured (%d bytes); inspect %s\n", len(diff), diffPath(id))
+			fmt.Fprintf(w, "  diff captured (%d bytes); inspect %s\n", len(diff), diffPath(id))
 		} else {
-			fmt.Println("  agent returned no diff")
+			fmt.Fprintln(w, "  agent returned no diff")
 		}
 	}
 }

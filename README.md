@@ -256,10 +256,16 @@ less ~/.drydock/audit/<id>.diff
 drydock approve <id>          # … or: drydock deny <id>
 ```
 
-The submit shell unblocks with the push outcome:
+The submit shell streams live progress while the task runs, shows the approval
+gate with the exact commands to act on it, and prints a rich completion summary:
 
 ```
-task ab12cd34: pushed agent/ab12cd34 (github)
+task ab12cd34 accepted
+  preparing · cloning repo
+  running · claude working
+  ⏸ awaiting approval · 1.2 KB diff (4 files)
+     approve: drydock approve ab12cd34     review: drydock review ab12cd34
+✓ pushed agent/ab12cd34 (github) · 4 files +120/-8 · 2m18s · $0.11
 ```
 
 ### Operator surface (other shell)
@@ -306,8 +312,11 @@ drydock submit --repo … --instruction "…" \
   --egress-extra internal.example.com:443 \
   --egress-extra files.example.com:443,8443
 
-# Scripting — emit the raw response shape
-drydock submit --repo … --instruction "…" --json | jq .branch
+# Suppress progress output; print only the final outcome line (useful in scripts)
+drydock submit --repo … --instruction "…" --quiet
+
+# Scripting — stream raw NDJSON events (one JSON object per line)
+drydock submit --repo … --instruction "…" --json | jq -c 'select(.event=="result")'
 ```
 
 If you'd rather hit the HTTP API directly:
