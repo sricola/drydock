@@ -53,6 +53,7 @@ func runSubmit(args []string) {
 		agent       = fs.String("agent", "", "sandbox agent: claude | codex (default: broker's default_agent)")
 		sensitive   = fs.Bool("sensitive", false, "mark the task sensitive in the audit trail")
 		jsonOut     = fs.Bool("json", false, "print the raw response JSON instead of a pretty summary")
+		quiet       = fs.Bool("quiet", false, "only print the final result line (no live progress)")
 		egress      repeatedFlag
 	)
 	fs.Var(&egress, "egress-extra", "extra egress host:port[,port] (repeatable)")
@@ -109,7 +110,7 @@ sockpath.Default().`)
 		Model:       *model,
 		Agent:       *agent,
 	}
-	if err := postSubmit(req, *jsonOut); err != nil {
+	if err := postSubmit(req, *jsonOut, *quiet); err != nil {
 		die("%v", err)
 	}
 }
@@ -179,7 +180,7 @@ func parseEgressExtras(raw []string) ([]reqDomain, error) {
 // 30+ minutes plus operator approval), POSTs /tasks, and prints the
 // response. SIGINT propagates as a context cancel — brokerd treats that
 // as a task kill, so ^C is a clean abort.
-func postSubmit(req taskRequest, jsonOut bool) error {
+func postSubmit(req taskRequest, jsonOut, quiet bool) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err
@@ -227,33 +228,34 @@ func postSubmit(req taskRequest, jsonOut bool) error {
 	}
 	defer resp.Body.Close()
 
-	respBody, rerr := io.ReadAll(resp.Body)
-	if rerr != nil {
-		return fmt.Errorf("read brokerd response: %w", rerr)
-	}
 	if jsonOut {
-		os.Stdout.Write(respBody)
-		if len(respBody) == 0 || respBody[len(respBody)-1] != '\n' {
-			fmt.Println()
-		}
+		// Raw passthrough — works for the NDJSON stream or a legacy object,
+		// and streams live so scripts see events as they arrive.
+		_, _ = io.Copy(os.Stdout, resp.Body)
 		if resp.StatusCode >= 400 {
 			os.Exit(1)
 		}
 		return nil
 	}
 
-	// Pretty output.
+	// Pre-accept failures keep an HTTP error status + plain body (the stream
+	// never started). Surface them directly.
 	if resp.StatusCode >= 400 {
-		fmt.Fprintf(os.Stderr, "drydock submit: HTTP %d: %s\n", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "drydock submit: %s\n", strings.TrimSpace(string(body)))
 		os.Exit(1)
 	}
-	var out map[string]any
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		// Brokerd returned a non-JSON body on success? Just print it raw.
-		os.Stdout.Write(respBody)
-		return nil
+
+	mode := modePiped
+	if tty { // package-level, defined in init.go
+		mode = modeTTY
 	}
-	printPretty(os.Stdout, out)
+	if quiet {
+		mode = modeQuiet
+	}
+	if exit := consume(resp.Body, os.Stdout, mode); exit != 0 {
+		os.Exit(exit)
+	}
 	return nil
 }
 
