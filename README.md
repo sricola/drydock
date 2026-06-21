@@ -109,12 +109,29 @@ per-step status. Idempotent — re-run any time.
 
 ## Run
 
-At least one vendor key is required. Both are host-only — they never go to
-disk and never enter the VM:
+drydock runs two agents — **Claude Code** (Anthropic) and **OpenAI Codex**
+(OpenAI) — and each works with either an API key or your existing
+subscription. Pick the agent per task with `--agent claude|codex` (or set
+`default_agent` in config). Whichever you choose, the real credential stays
+host-side and **never enters the VM** — the sandbox only ever sees a
+per-task token.
+
+| Agent | API key | Subscription (no key) |
+|---|---|---|
+| **Claude Code** (Anthropic) | `ANTHROPIC_API_KEY` | Claude Pro/Max — `drydock auth claude` + `anthropic_auth: subscription` |
+| **OpenAI Codex** (OpenAI) | `OPENAI_API_KEY` | ChatGPT plan — `drydock auth codex` + `openai_auth: subscription` |
+
+An API key is the quickest path; the subscription path lets you reuse a plan
+you already pay for (macOS only; needs the vendor's `claude`/`codex` CLI).
+
+### Quickest start — an API key
+
+Set at least one vendor key. Both are host-only — they never go to disk and
+never enter the VM:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...   # required for Claude Code tasks
-export OPENAI_API_KEY=sk-...          # required for Codex tasks
+export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code tasks
+export OPENAI_API_KEY=sk-...          # OpenAI Codex tasks
 drydock start              # foreground; ^C to stop. backgrounds via & or your launchd plist.
 ```
 
