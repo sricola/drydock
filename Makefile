@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test redteam redteam-vm demo sbom verify-build vet image network init clean help
+.PHONY: all build install uninstall test redteam redteam-vm demo sbom verify-build vet lint image network init clean help
 
 all: build
 
@@ -27,6 +27,7 @@ help:
 	@echo "  sbom        write a CycloneDX SBOM to dist/drydock.cdx.json"
 	@echo "  verify-build  rebuild the binaries and check them against SUMS=<release bin.sha256>"
 	@echo "  vet         go vet ./..."
+	@echo "  lint        staticcheck ./... (deeper static analysis)"
 	@echo "  image       container build -t drydock-sandbox:latest image/"
 	@echo "  network     create the drydock-egress vmnet network if missing"
 	@echo "  init        run \`drydock init\` to do first-time setup end-to-end"
@@ -103,6 +104,13 @@ sbom:
 
 vet:
 	go vet ./...
+
+# Deeper static analysis than `go vet` (unused code, simplifications, bug
+# patterns). Go-native via pinned `go run`, matching the SBOM tool pattern;
+# no global install needed. CI runs this on every PR.
+STATICCHECK_VERSION := v0.7.0
+lint:
+	go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
 
 image: image-sandbox image-anchor
 
