@@ -478,7 +478,9 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		ev := map[string]any{"event": "error", "task_id": taskID,
 			"audit": auditPath, "duration_ms": time.Since(taskStart).Milliseconds()}
 		if line, ok := reasonFromAudit(auditPath); ok {
-			reason = line
+			// The distilled line is the agent's own output — sanitize it like
+			// any other operator-reflected, attacker-influenceable text.
+			reason = safeStr(line)
 			ev["hint"] = "run `drydock doctor` to check the sandbox image"
 		}
 		ev["reason"] = reason
@@ -815,7 +817,14 @@ func safeErr(err error) string {
 	if err == nil {
 		return ""
 	}
-	s := err.Error()
+	return safeStr(err.Error())
+}
+
+// safeStr strips non-printable bytes from operator-reflected text. Any output
+// that traces back to the agent (its stdout/stderr, a distilled audit line) can
+// carry attacker-influenced bytes; reflecting them raw lets a clever agent
+// inject ANSI escapes into operator terminals. Strip non-printables and cap.
+func safeStr(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {

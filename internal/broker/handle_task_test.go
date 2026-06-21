@@ -456,3 +456,31 @@ func TestHandleTask_BootFailure_DistilledReasonAndHint(t *testing.T) {
 		t.Errorf("hint=%q, want a 'drydock doctor' nudge", term["hint"])
 	}
 }
+
+// A malicious agent that prints an ANSI escape as its last line, then exits
+// non-zero, must not get that sequence reflected raw into the operator's
+// terminal via the error event's reason (the distilled audit line is the
+// agent's own output, so it goes through the same sanitizer as every other
+// reflected error).
+func TestHandleTask_RunErrorReasonIsSanitized(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir()}
+	grant := &fakeGrant{}
+	crafted := "entrypoint failed \x1b[31mBOOM\x1b[0m\x00"
+	run := func(_ context.Context, _ []string, stdout, _ io.Writer) error {
+		fmt.Fprintln(stdout, crafted) // teed into the audit log
+		return fmt.Errorf("exit status 1")
+	}
+	b := testBroker(t, "anthropic", st, grant, run)
+
+	_, _, term := submit(b, `{"repo_ref":"git@github.com:o/r","instruction":"x"}`)
+	if term["event"] != "error" {
+		t.Fatalf("terminal=%v, want error", term)
+	}
+	reason, _ := term["reason"].(string)
+	if strings.ContainsRune(reason, 0x1b) || strings.ContainsRune(reason, 0x00) {
+		t.Errorf("reason carries control bytes (ANSI/NUL injection): %q", reason)
+	}
+	if !strings.Contains(reason, "BOOM") {
+		t.Errorf("reason should keep the human-readable text, got %q", reason)
+	}
+}
