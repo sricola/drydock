@@ -70,6 +70,7 @@ event — `result` or `error`):
 {"event":"accepted","task_id":"7f3a…","repo":"…"}                       // always first
 {"event":"stage","stage":"awaiting_egress","extras":"host:443",
    "approve":"drydock approve 7f3a…","deny":"drydock deny 7f3a…"}        // only if widening
+{"event":"stage","stage":"preparing"}                                   // cloning repo + staging work tree
 {"event":"stage","stage":"running","agent":"claude","model":"…"}        // container up, agent working
 {"event":"stage","stage":"awaiting_approval","diff_bytes":1234,"files":4,
    "diff_path":"…","approve":"drydock approve 7f3a…","deny":"drydock deny 7f3a…"}
@@ -85,7 +86,9 @@ event — `result` or `error`):
 **HTTP semantics:** once `accepted` is emitted, the status is `200`; the
 *outcome* is read from the terminal event, not the status code. Pre-accept
 failures (bad request, bad repo URL, slot full → `503`, invalid egress) stay as
-`4xx/503` + plain body.
+`4xx/503` + plain body. **Invariant:** after `accepted`, *every* return path
+emits exactly one terminal event (`result` or `error`) — no post-accept exit may
+use `http.Error`, since the `200` status is already committed.
 
 **Exit codes:** `error` → `1`; every other outcome (`pushed`, `no_diff`,
 `denied`, `cancelled`) → `0`. (`denied` deliberately exits `0` — an operator
@@ -96,6 +99,11 @@ object (`json.NewEncoder().Encode` → one newline-terminated line) with **no**
 `event` field. The client reads line-by-line; a line lacking `event` is treated
 as the legacy final result and rendered through the existing `printPretty`. So
 new-client↔old-brokerd still works; new↔new gets the full stream.
+
+The reverse skew — **old-client↔new-brokerd** — is a known, accepted limitation
+(decision F1): the old client `ReadAll`s + single-`Unmarshal`s and would dump raw
+NDJSON to stdout. We accept it rather than content-negotiate, because brokerd and
+the CLI ship as one binary and move together; only a stale second install hits it.
 
 ## Server changes (`internal/broker/`)
 
@@ -115,45 +123,71 @@ rewrite.
 |---|---|
 | after validation (~L330), before egress gate / clone | `newStream` + `accepted` |
 | `setStage(StageAwaitingEgress)` L334 | + `stage:awaiting_egress` (extras summary, approve/deny hints) |
+| egress denied / cancelled L339–344 | terminal `error` (denied) / `cancelled` result |
+| before clone (~L355) | + `stage:preparing` |
+| clone failed L357 | terminal `error` (reason "clone failed", hint repo/credentials) |
+| stage write failed L364 | terminal `error` (reason "stage failed") |
+| agent resolve failed L370 | terminal `error` (reason = msg) |
+| credential mint failed L375 | terminal `error` (reason "credential mint failed") |
+| audit dir/file failed L385 / L394 | terminal `error` (reason "audit setup failed") |
 | before run (~L437) | + `stage:running` (resolved agent + model) |
 | run error L445–457 | terminal `error` (distilled reason + hint) or `cancelled` result |
 | no diff L477 | terminal `result outcome=no_diff` |
 | `setStage(StagePending)` L480 | + `stage:awaiting_approval` (diff_bytes, files, diff_path, hints) |
+| denied / cancelled L485 / L488 | terminal `result outcome=denied\|cancelled` |
 | `setStage(StagePushing)` L492 | + `stage:pushing` (branch) |
 | push fail L496 | terminal `error` (reason=safeErr, hint="check the remote and push credentials") |
 | pushed L499 | terminal `result outcome=pushed` (diffstat, duration, cost) |
 
-Pre-accept failures (L294–329: bad request, bad repo, slot full, invalid egress)
-stay as `http.Error` — they're before the stream starts.
+Only the **pre-accept** failures (L294–329: bad request, bad repo, slot full,
+invalid egress) stay as `http.Error` — they're before the stream starts. Every
+exit below the `accepted` emit is a terminal event (the invariant above).
 
-**Failure distillation** (the actionable-error facet): for the boot-fail case,
-set `reason` from the **last non-progress line of the audit `.jsonl`**, reusing
-the `lastLine`/`claudeVersionLine` pattern from `cmd/drydock/doctor.go` (strips
-the `[n/6]` image-pull preamble). That turns `exit status 1` into the real
-entrypoint message. Set `hint = "run `drydock doctor` to check the sandbox
-image"` when the container died before emitting a real `result` success event
-(the broker already synthesizes a synthetic error `result` at L454, so "never
-produced a real result" is a known signal). `safeErr` bounds are preserved —
-last line only, never the whole log.
+**Failure distillation** (the actionable-error facet): the **boot-failure
+signal** is "the container exited before emitting a real `result` success event"
+— detectable because the broker already synthesizes a synthetic error `result`
+at L454. *Only* in that case do we distill `reason` from the **last non-progress
+line of the audit `.jsonl`** (reusing the `lastLine`/`claudeVersionLine` pattern
+from `cmd/drydock/doctor.go`, which strips the `[n/6]` image-pull preamble) and
+set `hint = "run `drydock doctor` to check the sandbox image"`. That last line
+is an infra/entrypoint message (e.g. the missing-gateway-ip error), not agent
+output. For every **other** failure, `reason = safeErr(err)` and `audit` = the
+log path — we never echo arbitrary audit content, so the `0600` log stays the
+sole home of full detail.
 
 **Data sources, all already present:**
 
-- `duration_ms` = `time.Since(taskStart)` (taskStart at L437).
-- `cost_usd` = `grant.Spent()` (the gateway-metered spend; codex already uses it
-  at L468 — authoritative and uniform across agents).
+- `duration_ms` = `time.Since(taskStart)` (taskStart at L437) — wall-clock.
+- `cost_usd` = read from the audit's **terminal result line** — the same source
+  `drydock tasks` uses (`tasks.go:lastResult`). Claude writes its own
+  `total_cost_usd`; the broker synthesizes the equivalent line for codex with
+  `grant.Spent()` at L467. Reading it back keeps the submit summary and `drydock
+  tasks` in agreement (using `grant.Spent()` directly would disagree for claude).
 - `files`/`insertions`/`deletions` = a small, testable `diffStat(diff string)`
-  over the diff string already captured by `CaptureDiff` (L471).
+  over the diff string already captured by `CaptureDiff` (L471). Approximate for
+  binary files / renames — acceptable for a summary line.
 
 The raw agent stream-json is **not** teed to the client in core (verbose); the
 client shows phase + locally-tracked elapsed time.
+
+**Streaming constraints (must hold):** `HandleTask` must receive the real,
+flushable `http.ResponseWriter` — do **not** add `ResponseWriter`-wrapping
+middleware that fails to forward `Flush()`, and do **not** set a `WriteTimeout`
+on `hardenedServer`; either would buffer or sever the stream. Neither exists
+today (the `hardenedServer` comment at main.go:285 already records the
+no-`WriteTimeout` requirement).
 
 ## Client changes (`cmd/drydock/submit.go`)
 
 `submit.go` becomes a stream consumer — replace the `ReadAll` + `printPretty`
 block (L230–257) with a `bufio.Scanner` loop decoding each line and dispatching
-on `event`. The dispatch core is a **pure function**
-`render(ev map[string]any, mode) (lines []string, done bool, exit int)` so it
-unit-tests without a TTY; the spinner/carriage-return is a thin TTY-only wrapper.
+on `event`. The dispatch core is a small **renderer struct** holding the state
+TTY rendering needs (start time for elapsed, current stage, spinner frame,
+whether the approval block was already printed); its `handle(ev) (out string,
+done bool, exit int)` method is fed events and is table-testable without a TTY.
+The spinner/carriage-return is a thin TTY-only wrapper. Keep events small (no
+diffs or full logs — those stay in the audit) so the scanner's 64 KB line limit
+is never a concern.
 
 **Render modes:**
 
@@ -186,9 +220,9 @@ error, exit 1.
   sequence (httptest recorder, split body on `\n`): push / no_diff / denied /
   cancelled / auto-approve (skips the approval stage) / boot-failure (asserts the
   `error` event carries the distilled reason + the `drydock doctor` hint).
-- **Client:** table-test the pure `render`: event sequences → asserted piped
-  output; a legacy single object → `printPretty` path; an `error` event →
-  message + exit 1.
+- **Client:** table-test the renderer: event sequences → asserted piped output;
+  a legacy single object → `printPretty` path; an `error` event → message +
+  exit 1.
 - **Helper:** unit-test `diffStat` on a known unified diff.
 
 ## Scope
@@ -209,3 +243,10 @@ backward compatibility; tests.
 
 - **`--quiet` flag:** included.
 - **`denied` exit code:** `0` (operator decision, not an error).
+- **Version skew (F1):** stream unconditionally; accept the
+  old-client↔new-brokerd regression rather than content-negotiate (brokerd + CLI
+  ship as one binary).
+- **Spec review (2026-06-21):** applied F2 (post-accept terminal-event invariant
+  + `preparing` stage + full error-path coverage in the emit table), F3 (cost
+  from the audit result line, matching `drydock tasks`), F4 (reason distillation
+  scoped to boot failures).
