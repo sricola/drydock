@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -257,6 +258,48 @@ func TestGrant_SpentReflectsMeteredCost(t *testing.T) {
 	// Also verify it matches the underlying gateway lease.
 	if lease := g.spent(tok); got != lease {
 		t.Errorf("Spent() = %v, gateway.spent() = %v, want equal", got, lease)
+	}
+}
+
+func TestSingleJoiningSlash(t *testing.T) {
+	cases := []struct{ a, b, want string }{
+		{"/backend-api/codex", "/responses", "/backend-api/codex/responses"},
+		{"/backend-api/codex", "responses", "/backend-api/codex/responses"},
+		{"/backend-api/codex/", "/responses", "/backend-api/codex/responses"},
+		{"", "/v1/messages", "/v1/messages"}, // non-codex vendors unaffected
+	}
+	for _, c := range cases {
+		if got := singleJoiningSlash(c.a, c.b); got != c.want {
+			t.Errorf("singleJoiningSlash(%q,%q)=%q want %q", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// The Codex BasePath remap rewrites req.URL.Path; the query string must survive
+// untouched (the startup `GET /models?client_version=…` probe carries one).
+func TestDirector_CodexRemapPreservesQuery(t *testing.T) {
+	g, err := New(Backend{Vendor: OpenAIOAuthVendor("acct-1"), Cred: StaticKey("x")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ inURL, wantPath, wantQuery string }{
+		{"http://gw/responses?foo=bar&baz=1", "/backend-api/codex/responses", "foo=bar&baz=1"},
+		{"http://gw/models?client_version=0.141.0", "/backend-api/codex/models", "client_version=0.141.0"},
+		{"http://gw/v1/responses?x=1", "/backend-api/codex/responses", "x=1"}, // /v1 form maps the same
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest("POST", c.inURL, nil)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, &reqCtx{lease: &Lease{Vendor: "openai"}, secret: "x"}))
+		g.director(req)
+		if req.URL.Path != c.wantPath {
+			t.Errorf("%s: Path = %q, want %q", c.inURL, req.URL.Path, c.wantPath)
+		}
+		if req.URL.RawQuery != c.wantQuery {
+			t.Errorf("%s: RawQuery = %q, want %q (query must survive the path remap)", c.inURL, req.URL.RawQuery, c.wantQuery)
+		}
+		if req.URL.Host != "chatgpt.com" {
+			t.Errorf("%s: Host = %q, want chatgpt.com", c.inURL, req.URL.Host)
+		}
 	}
 }
 

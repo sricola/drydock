@@ -75,6 +75,7 @@ type Broker struct {
 	DefaultModel  string  // operator-level default; per-task Task.Model overrides
 	Notify        bool    // fire macOS notifications on approval gates (config notifications)
 	AnthropicAuth string  // "api_key" | "subscription"; recorded per task for `drydock tasks`
+	OpenAIAuth    string  // "api_key" | "subscription"; recorded per task for `drydock tasks`
 
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
@@ -400,8 +401,9 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// operator's current config at display time). It is not a `result` event,
 	// so it never affects outcome/cost parsing.
 	taskVendor, _ := agent.Vendor(agentName)
-	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t}`+"\n",
-		taskVendor == "anthropic" && b.AnthropicAuth == "subscription")
+	subscription := (taskVendor == "anthropic" && b.AnthropicAuth == "subscription") ||
+		(taskVendor == "openai" && b.OpenAIAuth == "subscription")
+	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t}`+"\n", subscription)
 
 	env := append([]string{}, grant.EnvVars()...)
 	env = append(env,

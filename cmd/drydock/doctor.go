@@ -124,6 +124,24 @@ func runDoctor() {
 		}
 	}
 
+	if cfg.OpenAIAuth == "subscription" {
+		credPath := filepath.Join(config.Dir(), "codex-oauth.json")
+		store := gateway.NewCodexStore(credPath)
+		snap, err := store.Load()
+		if err != nil {
+			step("codex subscription", false, "load creds: "+err.Error())
+			failed = true
+		} else {
+			cred := gateway.NewOAuthCredCodex(snap, store)
+			if _, err := cred.Current(); err != nil {
+				step("codex subscription", false, err.Error())
+				failed = true
+			} else {
+				step("codex subscription", true, "token valid")
+			}
+		}
+	}
+
 	fmt.Println()
 	if failed {
 		fmt.Println("one or more checks failed — see above")

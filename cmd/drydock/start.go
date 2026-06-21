@@ -13,10 +13,11 @@ import (
 // usable agent credential, so `drydock start` can fail fast with a clear
 // message instead of exec'ing a brokerd that just dies. Mirrors brokerd's own
 // boot guard: the Anthropic side is satisfied by either an API key OR
-// subscription auth; OpenAI by its key.
-func agentCredentialAvailable(anthropicAuth, anthropicKey, openaiKey string) bool {
+// subscription auth; OpenAI by its key or subscription auth.
+func agentCredentialAvailable(anthropicAuth, openaiAuth, anthropicKey, openaiKey string) bool {
 	anthropicReady := anthropicAuth == "subscription" || anthropicKey != ""
-	return anthropicReady || openaiKey != ""
+	openaiReady := openaiAuth == "subscription" || openaiKey != ""
+	return anthropicReady || openaiReady
 }
 
 // runStart finds brokerd on PATH (or alongside drydock if installed via
@@ -24,15 +25,16 @@ func agentCredentialAvailable(anthropicAuth, anthropicKey, openaiKey string) boo
 // separate binaries so the CLI can talk to a long-running brokerd; `start`
 // is a convenience for the foreground case.
 func runStart() {
-	anthropicAuth := "api_key"
+	anthropicAuth, openaiAuth := "api_key", "api_key"
 	if cfg, err := config.Load(config.DefaultPath()); err == nil {
-		anthropicAuth = cfg.AnthropicAuth
+		anthropicAuth, openaiAuth = cfg.AnthropicAuth, cfg.OpenAIAuth
 	}
-	if !agentCredentialAvailable(anthropicAuth, os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("OPENAI_API_KEY")) {
+	if !agentCredentialAvailable(anthropicAuth, openaiAuth, os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("OPENAI_API_KEY")) {
 		fmt.Fprintln(os.Stderr, "drydock start: no usable agent credential.")
 		fmt.Fprintln(os.Stderr, "  export ANTHROPIC_API_KEY=sk-ant-...        # Claude Code (API key)")
 		fmt.Fprintln(os.Stderr, "  export OPENAI_API_KEY=sk-...               # OpenAI Codex")
 		fmt.Fprintln(os.Stderr, "  or set anthropic_auth: subscription        # use your Claude subscription (run `drydock auth claude` first)")
+		fmt.Fprintln(os.Stderr, "  or set openai_auth: subscription           # use your ChatGPT/Codex subscription (run `drydock auth codex` first)")
 		os.Exit(1)
 	}
 	path, err := findBrokerd()

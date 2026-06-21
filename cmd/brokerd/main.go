@@ -98,9 +98,11 @@ func main() {
 
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 	openaiKey := os.Getenv("OPENAI_API_KEY")
-	// subscription mode satisfies the Anthropic side without an API key.
-	if cfg.AnthropicAuth != "subscription" && anthropicKey == "" && openaiKey == "" {
-		die("set at least one of ANTHROPIC_API_KEY or OPENAI_API_KEY on the broker host")
+	// subscription mode satisfies either side without an API key.
+	haveAnthropic := cfg.AnthropicAuth == "subscription" || anthropicKey != ""
+	haveOpenAI := cfg.OpenAIAuth == "subscription" || openaiKey != ""
+	if !haveAnthropic && !haveOpenAI {
+		die("set at least one of ANTHROPIC_API_KEY or OPENAI_API_KEY, or an auth subscription mode, on the broker host")
 	}
 
 	gwPort, proxyPort := 8088, 3128
@@ -181,8 +183,18 @@ func main() {
 			backends = append(backends, gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey(anthropicKey)})
 		}
 	}
-	if openaiKey != "" {
-		backends = append(backends, gateway.Backend{Vendor: gateway.OpenAIVendor(), Cred: gateway.StaticKey(openaiKey)})
+	switch cfg.OpenAIAuth {
+	case "subscription":
+		store := gateway.NewCodexStore(filepath.Join(config.Dir(), "codex-oauth.json"))
+		snap, err := store.Load()
+		if err != nil {
+			die("openai_auth=subscription but no usable credentials — run `drydock auth codex`", "err", err)
+		}
+		backends = append(backends, gateway.Backend{Vendor: gateway.OpenAIOAuthVendor(store.AccountID()), Cred: gateway.NewOAuthCredCodex(snap, store)})
+	default: // api_key
+		if openaiKey != "" {
+			backends = append(backends, gateway.Backend{Vendor: gateway.OpenAIVendor(), Cred: gateway.StaticKey(openaiKey)})
+		}
 	}
 	gw, err := gateway.New(backends...)
 	if err != nil {
@@ -200,7 +212,9 @@ func main() {
 	providers := map[string]creds.Provider{}
 	for _, b := range backends {
 		budget := cfg.TaskBudgetUSD
-		if cfg.AnthropicAuth == "subscription" && b.Vendor.Name == "anthropic" {
+		subAnthropic := cfg.AnthropicAuth == "subscription" && b.Vendor.Name == "anthropic"
+		subOpenAI := cfg.OpenAIAuth == "subscription" && b.Vendor.Name == "openai"
+		if subAnthropic || subOpenAI {
 			budget = math.MaxFloat64
 		}
 		providers[b.Vendor.Name] = &gateway.Provider{
@@ -212,7 +226,7 @@ func main() {
 			MaxRequests: cfg.TaskMaxRequests,
 		}
 	}
-	slog.Info("agents available", "anthropic", anthropicKey != "" || cfg.AnthropicAuth == "subscription", "openai", openaiKey != "")
+	slog.Info("agents available", "anthropic", anthropicKey != "" || cfg.AnthropicAuth == "subscription", "openai", openaiKey != "" || cfg.OpenAIAuth == "subscription")
 	// Fail-loud at boot if the operator default points at a vendor with no
 	// key: brokerd still starts (other agents may work), but every task that
 	// doesn't pass --agent would be rejected with a 400, which is confusing
@@ -240,6 +254,7 @@ func main() {
 		DefaultModel:  cfg.DefaultModel,
 		Notify:        cfg.Notifications,
 		AnthropicAuth: cfg.AnthropicAuth,
+		OpenAIAuth:    cfg.OpenAIAuth,
 	}
 	brk = b // expose to the shutdown handler
 	slog.Info("config",

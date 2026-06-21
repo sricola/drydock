@@ -215,7 +215,27 @@ func (g *Gateway) director(req *http.Request) {
 	req.URL.Scheme = vt.upstream.Scheme
 	req.URL.Host = vt.upstream.Host
 	req.Host = vt.upstream.Host
+	if vt.v.BasePath != "" {
+		// The VM's Codex posts to {gateway}/responses (api-key mode); the Codex
+		// subscription backend serves it under /backend-api/codex. Tolerate an
+		// optional /v1 prefix so either OPENAI_BASE_URL form maps correctly.
+		req.URL.Path = singleJoiningSlash(vt.v.BasePath, strings.TrimPrefix(req.URL.Path, "/v1"))
+	}
 	vt.v.Inject(req, rc.secret)
+}
+
+func singleJoiningSlash(a, b string) string {
+	aslash, bslash := strings.HasSuffix(a, "/"), strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		if a == "" {
+			return b
+		}
+		return a + "/" + b
+	}
+	return a + b
 }
 
 // meter tees the response body and, on completion, adds its cost to the lease.

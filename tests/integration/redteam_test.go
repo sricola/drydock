@@ -136,6 +136,62 @@ func TestRedteam_A1_OAuthTokensNeverInVM(t *testing.T) {
 	}
 }
 
+// A1 (Codex OAuth variant) — OAuth access token, refresh token, AND the
+// chatgpt-account-id header value never enter the VM. We build the EXACT env
+// the broker injects using the Codex OAuth backend with sentinel values, then
+// inspect that env from inside the VM. All three sentinels must be absent;
+// only the per-task bearer token may be present.
+func TestRedteam_A1_CodexOAuthNeverInVM(t *testing.T) {
+	requireContainer(t)
+	const (
+		access  = "sk-codex-SENTINEL-ACCESS"
+		refresh = "sk-codex-SENTINEL-REFRESH"
+		account = "acct-SENTINEL-ID"
+	)
+
+	gw, err := gateway.New(gateway.Backend{
+		Vendor: gateway.OpenAIOAuthVendor(account),
+		Cred: gateway.NewOAuthCredCodex(
+			gateway.CredSnapshot{
+				Access:  access,
+				Refresh: refresh,
+				Expiry:  time.Now().Add(time.Hour),
+			},
+			noopStore{},
+		),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := &gateway.Provider{GW: gw, Vendor: "openai", BaseURL: "http://10.0.0.1:8088", Budget: 1, TTL: time.Minute}
+	grant, err := prov.Mint(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer grant.Revoke()
+
+	args := []string{"run", "--rm", "--entrypoint", "/bin/bash"}
+	for _, e := range grant.EnvVars() {
+		args = append(args, "--env", e)
+	}
+	args = append(args, sandboxImage(), "-lc",
+		"env; echo '---PROC---'; tr '\\0' '\\n' < /proc/self/environ")
+
+	out := containerRun(t, args...)
+	if strings.Contains(out, access) {
+		t.Fatalf("A1 BREACH: Codex OAuth access token leaked into the VM environment:\n%s", out)
+	}
+	if strings.Contains(out, refresh) {
+		t.Fatalf("A1 BREACH: Codex OAuth refresh token leaked into the VM environment:\n%s", out)
+	}
+	if strings.Contains(out, account) {
+		t.Fatalf("A1 BREACH: chatgpt-account-id leaked into the VM environment:\n%s", out)
+	}
+	if !strings.Contains(out, "tok_") {
+		t.Errorf("expected the per-task bearer token (tok_) in the VM env; got:\n%s", out)
+	}
+}
+
 // A2 — the agent cannot reach a hostile or unintended host. Apply the in-VM
 // firewall pin, then try three escapes: HTTPS to a non-allowlisted host, raw
 // DNS, and a direct-IP connect. All must be blocked.

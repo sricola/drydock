@@ -17,7 +17,7 @@ Setup:
   drydock status                 brokerd up?, pending count, recent tasks
   drydock doctor                 smoke-test the sandbox setup (no API spend)
   drydock redteam                run live containment attacks on your sandbox (no API spend)
-  drydock auth claude            bootstrap Claude subscription credentials for brokerd
+  drydock auth claude|codex      bootstrap Claude or ChatGPT/Codex subscription credentials for brokerd
 
 Tasks:
   drydock submit <flags>         POST a new task; blocks until approval/completion
@@ -69,7 +69,7 @@ var subHelp = map[string]string{
 	"deny":    "<id> — deny the pending push (diff captured, not pushed).",
 	"doctor":  "smoke-test the sandbox setup: image freshness, VM boot, egress pin. No API spend.",
 	"redteam": "run live containment attacks (A1 key-exfil, A2 egress, A7 ephemerality) against your sandbox. No API spend.",
-	"auth":    "auth claude [--status] — bootstrap Claude subscription creds into ~/.drydock/claude-oauth.json.",
+	"auth":    "auth claude|codex [--status] — bootstrap Claude or ChatGPT/Codex subscription creds into ~/.drydock/.",
 	"submit":  "POST a new task; see `drydock submit -h` for the full flag list.",
 	"version": "print drydock version.",
 }

@@ -186,6 +186,39 @@ that this usage mode is sanctioned by Anthropic. The operator assumes that
 risk. See [`THREAT_MODEL.md` § N4](THREAT_MODEL.md#n4-cost-exhaustion-and-runaway-tasks)
 for how to control subscription task runaway with `task_max_requests`.
 
+### Subscription auth — Codex (ChatGPT OAuth credential)
+
+When `openai_auth: subscription` is set, drydock stores a copy of the
+ChatGPT OAuth credential at `~/.drydock/codex-oauth.json` (mode `0600`).
+This file holds a full-account OAuth access token, refresh token, **and**
+account id; the gateway uses them to issue per-task bearers, and the
+credential itself never enters the VM (A1 holds — the red-team
+`TestRedteam_A1_CodexOAuthNeverInVM` test covers this path).
+
+The blast radius is broader than a scoped API key in two ways:
+
+- **Not per-task revocable.** A minted bearer expires with the task. The
+  OAuth credential at `~/.drydock/codex-oauth.json` does not. If the host
+  is compromised, an attacker obtains a long-lived refresh token tied to the
+  full ChatGPT account — not just a budget-limited bearer.
+- **Not narrowly scoped.** A dedicated `OPENAI_API_KEY` can be created with
+  limited permissions or revoked independently. A personal ChatGPT OAuth token
+  carries the same permissions as an interactive browser session.
+
+This is a deliberate trade-off for the operator who does not want to maintain
+a paid API key. Protect `~/.drydock/codex-oauth.json` the same way you would
+any credential file. Revocation means re-authenticating via `codex login`
+(which rotates the token in OpenAI's system) and running `drydock auth codex`
+again to update the stored copy.
+
+**ToS and rate-limit caveat.** Automating a personal ChatGPT subscription
+headlessly may brush against OpenAI's terms of service, and subscription rate
+limits are lower than API rate limits — a batch job will exhaust them faster
+than interactive use would. drydock makes no claim that this usage mode is
+sanctioned by OpenAI. The operator assumes that risk. See
+[`THREAT_MODEL.md` § N4](THREAT_MODEL.md#n4-cost-exhaustion-and-runaway-tasks)
+for how to control subscription task runaway with `task_max_requests`.
+
 - **Apple notarization still pending.** Each tagged release now ships a
   CycloneDX SBOM, a keyless **cosign** signature, and **SLSA build
   provenance** (the tarball was built by the release workflow from the
