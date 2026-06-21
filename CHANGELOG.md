@@ -5,6 +5,49 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.2.0 — 2026-06-21
+
+### Added
+
+- **Run Claude Code on your Claude subscription — no API key.** With a Claude
+  Pro or Max plan: `claude login` → `drydock auth claude` →
+  `anthropic_auth: subscription`. The OAuth credential is held host-side
+  (`~/.drydock/claude-oauth.json`, mode 0600), kept fresh by the gateway, and
+  **never enters the VM** — the sandbox still sees only a per-task token. A live
+  red-team test asserts the access and refresh tokens are absent from the VM
+  environment.
+- **Run OpenAI Codex on your ChatGPT subscription — no API key.** The parallel
+  path: `codex login` → `drydock auth codex` → `openai_auth: subscription`. The
+  gateway injects the real OAuth token plus the `chatgpt-account-id` header and
+  routes to the Codex backend; the access token, refresh token, and account id
+  all stay host-side and never reach the VM (covered by a live red-team test).
+- **Per-task request cap (`task_max_requests`).** The USD budget doesn't apply
+  in subscription mode, so this caps how many upstream requests one task may
+  make — the gateway returns HTTP 429 once the cap is hit. Works as defense in
+  depth for API-key tasks too.
+- **`drydock auth claude` / `drydock auth codex`** — copy the subscription
+  credential from the vendor CLI's login into drydock's host-only store. Status
+  output is token-free.
+- **`drydock doctor`** validates a configured subscription token (loads it and
+  refreshes if near expiry): `claude subscription` / `codex subscription` →
+  token valid, skipped in API-key mode.
+
+### Changed
+
+- `drydock tasks` labels subscription runs as `subscription` in the cost column
+  (recorded per task at run time) instead of a misleading `$0.0000`.
+- CI now runs `staticcheck` (with a matching `make lint` target), alongside the
+  existing `go vet` and `govulncheck`.
+
+### Docs
+
+- Site and README spell out the agent × auth matrix — Claude Code and OpenAI
+  Codex, each usable with an API key **or** a subscription.
+- README / SECURITY / THREAT_MODEL document the subscription blast radius (a
+  full-account OAuth token, broader than a scoped key and not per-task
+  revocable) and the ToS/rate-limit caveat for headless use.
+- README logo is now visible in GitHub dark mode.
+
 ## v0.1.10 — 2026-06-19
 
 ### Added
