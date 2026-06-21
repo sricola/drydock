@@ -91,9 +91,8 @@ func testBroker(t *testing.T, vendor string, st taskStage, grant *fakeGrant,
 	}
 }
 
-// parseEvents splits an NDJSON (or legacy single-object) body into decoded
-// events. terminal is the last event — the result/error for a streamed task,
-// or the single legacy object from an old code path.
+// parseEvents splits an NDJSON body into decoded events. terminal is the last
+// event — the result or error that ends a streamed task.
 func parseEvents(body string) (events []map[string]any, terminal map[string]any) {
 	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -173,6 +172,10 @@ func TestHandleTask_ClaudeAutoApprove_Pushes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
+	if len(events) == 0 {
+		t.Fatalf("no events in response; body=%s", rec.Body)
+	}
+	// The instruction must be routed to the stage as the agent's prompt.
 	if st.gotPrompt != "do x" {
 		t.Errorf("WriteTaskFiles prompt=%q, want %q", st.gotPrompt, "do x")
 	}
@@ -213,6 +216,9 @@ func TestHandleTask_CodexAutoApprove_SynthesizesResultWithCost(t *testing.T) {
 	rec, events, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"codex","auto_approve":true}`)
 	if rec.Code != http.StatusOK || term["outcome"] != "pushed" {
 		t.Fatalf("code=%d outcome=%v body=%s", rec.Code, term["outcome"], rec.Body)
+	}
+	if len(events) == 0 {
+		t.Fatalf("no events in response; body=%s", rec.Body)
 	}
 	id, _ := events[0]["task_id"].(string)
 	audit := readAudit(t, b.AuditRoot, id)
@@ -259,6 +265,8 @@ func TestHandleTask_AgentRunFails_ErrorEvent(t *testing.T) {
 	if st.pushed {
 		t.Error("stage.Push must not be called when the agent run fails")
 	}
+	// The broker appends a synthetic error result so `drydock tasks` doesn't
+	// show the failed task as `running?` forever.
 	audit := readOnlyAudit(t, b.AuditRoot)
 	if !strings.Contains(audit, `"subtype":"error"`) || !strings.Contains(audit, `"is_error":true`) {
 		t.Errorf("no synthesized error result:\n%s", audit)
@@ -382,8 +390,11 @@ func TestHandleTask_StreamsStageSequence(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
 	grant := &fakeGrant{spent: 0.02}
 	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
-	_, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+	rec, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
 
+	if len(events) == 0 {
+		t.Fatalf("no events in response; body=%s", rec.Body)
+	}
 	got := stages(events)
 	want := []string{"preparing", "running", "pushing"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

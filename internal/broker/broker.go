@@ -337,7 +337,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	if len(t.EgressExtra) > 0 && b.Cfg.PerTaskWidening.RequiresApproval {
 		b.setStage(taskID, StageAwaitingEgress)
 		sw.emit(map[string]any{
-			"event": "stage", "stage": "awaiting_egress",
+			"event": "stage", "stage": "awaiting_egress", "task_id": taskID,
 			"extras":  summariseExtras(t.EgressExtra),
 			"approve": "drydock approve " + taskID,
 			"deny":    "drydock deny " + taskID,
@@ -350,8 +350,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 				sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": taskID})
 				return
 			}
-			sw.emit(map[string]any{"event": "error", "task_id": taskID,
-				"reason": "egress widening denied"})
+			sw.emit(errorEvent(taskID, "egress widening denied", ""))
 			return
 		}
 		b.setStage(taskID, StageRunning)
@@ -363,7 +362,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	if prepare == nil {
 		prepare = defaultPrepareStage
 	}
-	sw.emit(map[string]any{"event": "stage", "stage": "preparing"})
+	sw.emit(map[string]any{"event": "stage", "stage": "preparing", "task_id": taskID})
 	st, err := prepare(stageDir, t.RepoRef)
 	if err != nil {
 		sw.emit(errorEvent(taskID, "clone failed", "check the repo URL and that brokerd can reach it"))
@@ -447,7 +446,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		run = runContainer
 	}
 	b.setStage(taskID, StageRunning)
-	runningEv := map[string]any{"event": "stage", "stage": "running", "agent": agentName}
+	runningEv := map[string]any{"event": "stage", "stage": "running", "task_id": taskID, "agent": agentName}
 	if m := t.Model; m != "" {
 		runningEv["model"] = m
 	} else if b.DefaultModel != "" {
