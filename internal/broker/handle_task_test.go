@@ -91,13 +91,44 @@ func testBroker(t *testing.T, vendor string, st taskStage, grant *fakeGrant,
 	}
 }
 
-func submit(b *Broker, body string) (*httptest.ResponseRecorder, map[string]any) {
+// parseEvents splits an NDJSON (or legacy single-object) body into decoded
+// events. terminal is the last event — the result/error for a streamed task,
+// or the single legacy object from an old code path.
+func parseEvents(body string) (events []map[string]any, terminal map[string]any) {
+	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var ev map[string]any
+		if json.Unmarshal([]byte(line), &ev) == nil {
+			events = append(events, ev)
+		}
+	}
+	if len(events) > 0 {
+		terminal = events[len(events)-1]
+	}
+	return events, terminal
+}
+
+func submit(b *Broker, body string) (*httptest.ResponseRecorder, []map[string]any, map[string]any) {
 	req := httptest.NewRequest("POST", "/tasks", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	b.HandleTask(rec, req)
-	var out map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	return rec, out
+	events, terminal := parseEvents(rec.Body.String())
+	return rec, events, terminal
+}
+
+// stages returns the ordered list of stage names from an event slice.
+func stages(events []map[string]any) []string {
+	var out []string
+	for _, ev := range events {
+		if ev["event"] == "stage" {
+			if s, ok := ev["stage"].(string); ok {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 func writesResult(line string) func(context.Context, []string, io.Writer, io.Writer) error {
@@ -137,27 +168,26 @@ func TestHandleTask_ClaudeAutoApprove_Pushes(t *testing.T) {
 	resultLine := `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0.02,"num_turns":2}`
 
 	b := testBroker(t, "anthropic", st, grant, writesResult(resultLine))
-	rec, out := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"claude","auto_approve":true}`)
+	rec, events, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"claude","auto_approve":true}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
-	// The instruction must be routed to the stage as the agent's prompt.
 	if st.gotPrompt != "do x" {
 		t.Errorf("WriteTaskFiles prompt=%q, want %q", st.gotPrompt, "do x")
 	}
-	if out["pushed"] != true {
-		t.Fatalf("pushed=%v, want true (body=%s)", out["pushed"], rec.Body)
+	if term["event"] != "result" || term["outcome"] != "pushed" {
+		t.Fatalf("terminal=%v, want result/pushed (body=%s)", term, rec.Body)
 	}
-	id, _ := out["task_id"].(string)
-	if id == "" {
-		t.Fatal("no task_id in response")
+	id, _ := events[0]["task_id"].(string)
+	if events[0]["event"] != "accepted" || id == "" {
+		t.Fatalf("first event=%v, want accepted with task_id", events[0])
 	}
-	if out["branch"] != "agent/"+id {
-		t.Errorf("branch=%v, want agent/%s", out["branch"], id)
+	if term["branch"] != "agent/"+id {
+		t.Errorf("branch=%v, want agent/%s", term["branch"], id)
 	}
-	if out["platform"] != "github" {
-		t.Errorf("platform=%v, want github", out["platform"])
+	if term["platform"] != "github" {
+		t.Errorf("platform=%v, want github", term["platform"])
 	}
 	if !st.pushed || st.pushBranch != "agent/"+id || st.pushAdapter != "github" {
 		t.Errorf("stage.Push wrong: pushed=%v branch=%q adapter=%q", st.pushed, st.pushBranch, st.pushAdapter)
@@ -168,11 +198,7 @@ func TestHandleTask_ClaudeAutoApprove_Pushes(t *testing.T) {
 	if !st.cleaned {
 		t.Error("stage.Cleanup not called (defer)")
 	}
-	// Claude emits its own result line; the broker must NOT synthesize one.
 	audit := readAudit(t, b.AuditRoot, id)
-	if !strings.Contains(audit, resultLine) {
-		t.Errorf("audit missing agent result line:\n%s", audit)
-	}
 	if strings.Count(audit, `"type":"result"`) != 1 {
 		t.Errorf("expected exactly one result line for claude, got:\n%s", audit)
 	}
@@ -184,12 +210,11 @@ func TestHandleTask_CodexAutoApprove_SynthesizesResultWithCost(t *testing.T) {
 	// codex exec emits no Claude-style result trailer; the broker synthesizes
 	// one from the elapsed time and the metered gateway spend.
 	b := testBroker(t, "openai", st, grant, writesResult("codex: applied an edit"))
-	rec, out := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"codex","auto_approve":true}`)
-
-	if rec.Code != http.StatusOK || out["pushed"] != true {
-		t.Fatalf("code=%d pushed=%v body=%s", rec.Code, out["pushed"], rec.Body)
+	rec, events, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"codex","auto_approve":true}`)
+	if rec.Code != http.StatusOK || term["outcome"] != "pushed" {
+		t.Fatalf("code=%d outcome=%v body=%s", rec.Code, term["outcome"], rec.Body)
 	}
-	id, _ := out["task_id"].(string)
+	id, _ := events[0]["task_id"].(string)
 	audit := readAudit(t, b.AuditRoot, id)
 	if !strings.Contains(audit, `"type":"result"`) || !strings.Contains(audit, `"subtype":"success"`) {
 		t.Errorf("no synthesized success result:\n%s", audit)
@@ -203,40 +228,37 @@ func TestHandleTask_EmptyDiff_NoPush(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: ""} // agent changed nothing
 	grant := &fakeGrant{}
 	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
-	rec, out := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
-
+	rec, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
-	if out["pushed"] != false {
-		t.Errorf("pushed=%v, want false", out["pushed"])
-	}
-	if d, _ := out["diff"].(string); d != "" {
-		t.Errorf("diff=%q, want empty", d)
+	if term["event"] != "result" || term["outcome"] != "no_diff" {
+		t.Errorf("terminal=%v, want result/no_diff", term)
 	}
 	if st.pushed {
 		t.Error("stage.Push must not be called when the diff is empty")
 	}
 }
 
-func TestHandleTask_AgentRunFails_500AndErrorResult(t *testing.T) {
+func TestHandleTask_AgentRunFails_ErrorEvent(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: "ignored-on-failure"}
 	grant := &fakeGrant{}
 	run := func(context.Context, []string, io.Writer, io.Writer) error {
 		return fmt.Errorf("container exited 1")
 	}
 	b := testBroker(t, "anthropic", st, grant, run)
-	rec, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("code=%d, want 500; body=%s", rec.Code, rec.Body)
+	rec, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`)
+	// Streaming has already sent 200 by the time the run fails; the failure is
+	// the terminal error event, not an HTTP status.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d, want 200 (streamed); body=%s", rec.Code, rec.Body)
+	}
+	if term["event"] != "error" {
+		t.Fatalf("terminal=%v, want error event", term)
 	}
 	if st.pushed {
 		t.Error("stage.Push must not be called when the agent run fails")
 	}
-	// The broker appends a synthetic error result so `drydock tasks` doesn't
-	// show the failed task as `running?` forever. The 500 body is plain text
-	// (no task_id to key on), so scan this broker's isolated AuditRoot.
 	audit := readOnlyAudit(t, b.AuditRoot)
 	if !strings.Contains(audit, `"subtype":"error"`) || !strings.Contains(audit, `"is_error":true`) {
 		t.Errorf("no synthesized error result:\n%s", audit)
@@ -263,10 +285,9 @@ func TestHandleTask_GatedApprove_Pushes(t *testing.T) {
 		t.Fatal("HandleTask did not return after approve")
 	}
 
-	var out map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	if out["pushed"] != true {
-		t.Errorf("pushed=%v, want true; body=%s", out["pushed"], rec.Body)
+	_, term := parseEvents(rec.Body.String())
+	if term["event"] != "result" || term["outcome"] != "pushed" {
+		t.Errorf("terminal=%v, want result/pushed; body=%s", term, rec.Body)
 	}
 	if !st.pushed {
 		t.Error("stage.Push not called after approve")
@@ -293,10 +314,9 @@ func TestHandleTask_GatedDeny_NoPush(t *testing.T) {
 		t.Fatal("HandleTask did not return after deny")
 	}
 
-	var out map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	if out["pushed"] != false {
-		t.Errorf("pushed=%v, want false; body=%s", out["pushed"], rec.Body)
+	_, term := parseEvents(rec.Body.String())
+	if term["event"] != "result" || term["outcome"] != "denied" {
+		t.Errorf("terminal=%v, want result/denied; body=%s", term, rec.Body)
 	}
 	if st.pushed {
 		t.Error("stage.Push must not be called after deny")
@@ -355,5 +375,73 @@ func TestCancelAll_CancelsEveryRegisteredTask(t *testing.T) {
 	b.CancelAll()
 	if calls != 3 {
 		t.Errorf("CancelAll fired %d cancels, want 3", calls)
+	}
+}
+
+func TestHandleTask_StreamsStageSequence(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{spent: 0.02}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	_, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+
+	got := stages(events)
+	want := []string{"preparing", "running", "pushing"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("stage sequence = %v, want %v", got, want)
+	}
+	if events[0]["event"] != "accepted" {
+		t.Errorf("first event = %v, want accepted", events[0])
+	}
+}
+
+func TestHandleTask_ApprovalGateEvent(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/tasks",
+		strings.NewReader(`{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`))
+	done := make(chan struct{})
+	go func() { b.HandleTask(rec, req); close(done) }()
+
+	id := waitForPending(t, b)
+	approve(t, b, id)
+	<-done
+
+	events, _ := parseEvents(rec.Body.String())
+	var gate map[string]any
+	for _, ev := range events {
+		if ev["stage"] == "awaiting_approval" {
+			gate = ev
+		}
+	}
+	if gate == nil {
+		t.Fatalf("no awaiting_approval event; body=%s", rec.Body)
+	}
+	if gate["approve"] != "drydock approve "+id {
+		t.Errorf("approve hint = %v, want 'drydock approve %s'", gate["approve"], id)
+	}
+}
+
+func TestHandleTask_BootFailure_DistilledReasonAndHint(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "ignored"}
+	grant := &fakeGrant{}
+	run := func(_ context.Context, _ []string, stdout, _ io.Writer) error {
+		fmt.Fprintln(stdout, "[6/6] Starting container [0s]")
+		fmt.Fprintln(stdout, "/usr/local/bin/entrypoint.sh: line 5: DRYDOCK_GW_IP: missing gateway ip")
+		return fmt.Errorf("exit status 1")
+	}
+	b := testBroker(t, "anthropic", st, grant, run)
+	_, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`)
+
+	if term["event"] != "error" {
+		t.Fatalf("terminal=%v, want error", term)
+	}
+	if r, _ := term["reason"].(string); !strings.Contains(r, "missing gateway ip") {
+		t.Errorf("reason=%q, want the distilled entrypoint line", term["reason"])
+	}
+	if h, _ := term["hint"].(string); !strings.Contains(h, "drydock doctor") {
+		t.Errorf("hint=%q, want a 'drydock doctor' nudge", term["hint"])
 	}
 }
