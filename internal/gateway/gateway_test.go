@@ -266,7 +266,8 @@ func TestSingleJoiningSlash(t *testing.T) {
 		{"/backend-api/codex", "/responses", "/backend-api/codex/responses"},
 		{"/backend-api/codex", "responses", "/backend-api/codex/responses"},
 		{"/backend-api/codex/", "/responses", "/backend-api/codex/responses"},
-		{"", "/v1/messages", "/v1/messages"}, // non-codex vendors unaffected
+		{"/backend-api/codex/", "responses", "/backend-api/codex/responses"}, // a-trailing, b-no-leading
+		{"", "/v1/messages", "/v1/messages"},                                 // non-codex vendors unaffected
 	}
 	for _, c := range cases {
 		if got := singleJoiningSlash(c.a, c.b); got != c.want {

@@ -98,17 +98,25 @@ func (c *OAuthCred) Current() (string, error) {
 // refreshAnthropic exchanges a refresh token for a new CredSnapshot using the
 // Anthropic OAuth token endpoint. The exact wire shape was validated in Task 1.
 func refreshAnthropic(refreshToken string) (CredSnapshot, error) {
+	return refreshOAuthToken(anthropicOAuthTokenURL, anthropicOAuthClientID, refreshToken)
+}
+
+// refreshOAuthToken performs the OAuth refresh-token grant shared by every
+// subscription vendor: POST {grant_type, refresh_token, client_id} as JSON to
+// tokenURL and parse {access_token, refresh_token, expires_in}. It never
+// interpolates the token into an error.
+func refreshOAuthToken(tokenURL, clientID, refreshToken string) (CredSnapshot, error) {
 	body, err := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
-		"client_id":     anthropicOAuthClientID,
+		"client_id":     clientID,
 	})
 	if err != nil {
 		return CredSnapshot{}, err
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(anthropicOAuthTokenURL, "application/json", bytes.NewReader(body))
+	resp, err := client.Post(tokenURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return CredSnapshot{}, fmt.Errorf("oauth: token request failed: %w", err)
 	}

@@ -179,7 +179,7 @@ func runAuthCodex(args []string) {
 	if len(args) > 0 {
 		switch args[0] {
 		case "-h", "--help", "help":
-			fmt.Println("drydock auth codex — copy your ChatGPT/Codex login into drydock's store")
+			fmt.Printf("drydock auth codex — %s\n", subHelp["auth"])
 			os.Exit(0)
 		}
 	}
@@ -197,7 +197,11 @@ func runAuthCodex(args []string) {
 		return
 	}
 
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "auth: could not determine home directory:", err)
+		os.Exit(1)
+	}
 	raw, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "auth: could not read ~/.codex/auth.json — run `codex login` first")

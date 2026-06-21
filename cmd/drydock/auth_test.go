@@ -67,3 +67,47 @@ func TestJWTExpiry_Malformed(t *testing.T) {
 		t.Error("want error for non-JWT")
 	}
 }
+
+// jwtWithPayload builds a 3-segment token whose middle segment is the
+// base64url-encoded payload — exercising the decode/parse branches of jwtExpiry.
+func jwtWithPayload(payloadJSON string) string {
+	return "h." + base64.RawURLEncoding.EncodeToString([]byte(payloadJSON)) + ".s"
+}
+
+func TestJWTExpiry_BadBase64(t *testing.T) {
+	if _, err := jwtExpiry("h.@@@not-base64@@@.s"); err == nil {
+		t.Error("want error when the payload segment is not valid base64url")
+	}
+}
+
+func TestJWTExpiry_PayloadNotJSON(t *testing.T) {
+	if _, err := jwtExpiry(jwtWithPayload("definitely not json")); err == nil {
+		t.Error("want error when the decoded payload is not JSON")
+	}
+}
+
+func TestJWTExpiry_NoExpClaim(t *testing.T) {
+	if _, err := jwtExpiry(jwtWithPayload(`{"chatgpt_account_id":"x"}`)); err == nil {
+		t.Error("want error when the JWT carries no exp claim")
+	}
+}
+
+func TestParseClaudeCreds_MalformedJSON(t *testing.T) {
+	if _, err := parseClaudeCreds([]byte(`{not valid json`)); err == nil {
+		t.Error("want error for malformed keychain JSON")
+	}
+}
+
+func TestParseCodexCreds_MalformedJSON(t *testing.T) {
+	if _, _, err := parseCodexCreds([]byte(`{not valid json`)); err == nil {
+		t.Error("want error for malformed auth.json")
+	}
+}
+
+// A present-but-non-JWT access token must surface jwtExpiry's error, not panic.
+func TestParseCodexCreds_AccessTokenNotJWT(t *testing.T) {
+	raw := []byte(`{"tokens":{"access_token":"plain-opaque-token","refresh_token":"r","account_id":"a"}}`)
+	if _, _, err := parseCodexCreds(raw); err == nil {
+		t.Error("want error when access_token is not a decodable JWT")
+	}
+}
