@@ -171,6 +171,8 @@ func stripRequestFields(r *http.Request, fields []string) {
 	if out, changed := stripJSONObjectFields(raw, fields); changed {
 		body = out
 	}
+	// GetBody is intentionally left unset: the reverse proxy doesn't replay this
+	// request, so redirect/retry body-replay is not supported here.
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
