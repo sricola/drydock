@@ -82,6 +82,16 @@ func resolveAPIKey(name string, fileKeys map[string]string) string {
 }
 
 func main() {
+	// Hidden subcommand: squid invokes this same binary as its basic-auth
+	// helper (auth_param basic program <brokerd> __squid-authhelper <tokenfile>).
+	if len(os.Args) >= 3 && os.Args[1] == "__squid-authhelper" {
+		if err := runSquidAuthHelper(os.Args[2], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "squid-authhelper:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Main config: ~/.drydock/config.yaml + env-var overrides. Missing file
 	// is fine — defaults kick in. Loaded first so logging, the version check,
 	// and notifications all honor the resolved config (YAML + env). A failure
