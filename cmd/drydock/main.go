@@ -55,7 +55,7 @@ var version = "dev"
 // before consuming any positional args, so `drydock approve --help` can
 // never accidentally approve a task literally named "--help".
 var subHelp = map[string]string{
-	"setup":   "one-shot first run: install Homebrew prerequisites (container, squid), then run init. --yes to skip prompts.",
+	"setup":   "first run: install prerequisites (container, squid), then the setup wizard. --reconfigure re-runs the wizard; --yes to skip install prompts.",
 	"init":    "first-time setup: container service, network, sandbox image, ~/.drydock seed. Idempotent.",
 	"start":   "run brokerd in the foreground. Requires ANTHROPIC_API_KEY and/or OPENAI_API_KEY in env. ^C to stop.",
 	"status":  "brokerd up?, in-flight stage breakdown, recent task counts.",

@@ -7,8 +7,17 @@ import (
 	"os/exec"
 	"strings"
 
+	"drydock/internal/config"
 	"drydock/internal/netfw"
 )
+
+// firstRunBeforeInit reports whether ~/.drydock/config.yaml is absent. It MUST
+// be called before runInit(), which seeds that file — otherwise the answer is
+// always false and the wizard never fires on a genuine first run.
+func firstRunBeforeInit(cfgPath string) bool {
+	_, err := os.Stat(cfgPath)
+	return os.IsNotExist(err)
+}
 
 // runSetup is the one-shot first-run path: install the Homebrew prerequisites
 // drydock needs (Apple `container`, squid), then run init, then init prints
@@ -21,15 +30,24 @@ import (
 // silently modifying the system.
 func runSetup(args []string) {
 	yes := false
+	reconfigure := false
 	for _, a := range args {
 		switch a {
 		case "-y", "--yes":
 			yes = true
+		case "--reconfigure":
+			reconfigure = true
 		case "-h", "--help", "help":
 			fmt.Printf("drydock setup — %s\n", subHelp["setup"])
 			os.Exit(0)
 		}
 	}
+
+	// Sample firstRun BEFORE runInit() — runInit seeds config.yaml via
+	// ensureUserConfig/seedConfig, so os.Stat would always find the file
+	// afterwards and firstRun would always be false. See firstRunBeforeInit.
+	cfgPath := config.DefaultPath()
+	firstRun := firstRunBeforeInit(cfgPath)
 
 	fmt.Println("drydock setup — install prerequisites, then first-time setup")
 	fmt.Println()
@@ -63,6 +81,21 @@ func runSetup(args []string) {
 	fmt.Println("prerequisites ready — running drydock init…")
 	fmt.Println()
 	runInit()
+
+	// First-run / explicit reconfigure → interactive wizard. Non-TTY or an
+	// existing config without --reconfigure keeps init's static seed + "next:".
+	// firstRun was sampled above, before runInit seeded the config file.
+	if tty && stdinIsTTY() && (firstRun || reconfigure) {
+		fmt.Println()
+		fmt.Println("── configure ───────────────────────────────")
+		runWizard(&wizardDeps{
+			in:              os.Stdin,
+			out:             os.Stdout,
+			bootstrapClaude: bootstrapClaudeCred,
+			bootstrapCodex:  bootstrapCodexCred,
+			configPath:      cfgPath,
+		})
+	}
 }
 
 // ensurePrereq installs one Homebrew package, prompting first unless yes is
