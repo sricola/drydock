@@ -11,18 +11,22 @@ import (
 )
 
 // CompileSquidConf renders a squid.conf that binds bindAddr and allows CONNECT
-// to :443 (and plain GET) only for hosts in allowlistPath (a dstdomain file).
-// No TLS interception; squid resolves names host-side. Logs/pid go under runDir
-// so squid needs no privileged default paths.
-func CompileSquidConf(bindAddr, allowlistPath, runDir string) string {
+// to :443 (and plain GET) for hosts in allowlistPath (default dstdomain file),
+// with no auth. Per-task widening fragments are pulled in via the trailing
+// include; each fragment authorizes a single task's extra hosts behind a
+// proxy_auth ACL. helperCmd is the full "program ..." value for the basic-auth
+// auth_param (the brokerd binary re-invoked as __squid-authhelper <tokenfile>).
+func CompileSquidConf(bindAddr, allowlistPath, runDir, helperCmd string) string {
 	return fmt.Sprintf(`http_port %s
-acl allowed dstdomain "%s"
+auth_param basic program %s
+auth_param basic children 2 startup=0 idle=1
+acl default_dst dstdomain "%s"
 acl SSL_ports port 443
 acl CONNECT method CONNECT
 http_access deny CONNECT !SSL_ports
-http_access deny CONNECT !allowed
-http_access allow CONNECT allowed SSL_ports
-http_access allow allowed
+http_access allow CONNECT default_dst SSL_ports
+http_access allow default_dst
+include %s/task-acls/*.conf
 http_access deny all
 dns_nameservers 1.1.1.1 8.8.8.8
 cache deny all
@@ -31,7 +35,20 @@ access_log none
 pid_filename %s/squid.pid
 forwarded_for delete
 via off
-`, bindAddr, allowlistPath, runDir, runDir)
+`, bindAddr, helperCmd, allowlistPath, runDir, runDir, runDir)
+}
+
+// ResetTaskState clears per-task widening artifacts (ACL fragments + token
+// file) left by a hard-killed prior broker, so a fresh start begins with only
+// the default allowlist. Mirrors reapStaleSquid for the pid file.
+func ResetTaskState(runDir string) error {
+	if err := os.RemoveAll(filepath.Join(runDir, "task-acls")); err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(runDir, "task-tokens")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Squid is a handle to a running userspace squid process.
@@ -59,7 +76,7 @@ func FindSquid() (string, error) {
 
 // StartSquid writes the allowlist + conf into runDir and launches squid in the
 // foreground (-N) bound to bindAddr (e.g. 192.168.66.1:3128).
-func StartSquid(binPath, bindAddr, allowlist, runDir string) (*Squid, error) {
+func StartSquid(binPath, bindAddr, allowlist, runDir, helperCmd string) (*Squid, error) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -68,7 +85,11 @@ func StartSquid(binPath, bindAddr, allowlist, runDir string) (*Squid, error) {
 	if err := os.WriteFile(allowPath, []byte(allowlist), 0o644); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(confPath, []byte(CompileSquidConf(bindAddr, allowPath, runDir)), 0o644); err != nil {
+	if err := os.WriteFile(confPath, []byte(CompileSquidConf(bindAddr, allowPath, runDir, helperCmd)), 0o644); err != nil {
+		return nil, err
+	}
+	// Clear stale per-task widening state from a prior hard-killed broker.
+	if err := ResetTaskState(runDir); err != nil {
 		return nil, err
 	}
 	// A broker that was hard-killed (SIGKILL, crash) leaves squid's pid file

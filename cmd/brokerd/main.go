@@ -147,7 +147,12 @@ func main() {
 		slog.Warn("registry egress disabled", "err", ferr)
 	} else {
 		waitBindable(proxyAddr)
-		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(egCfg), cfg.SquidRunDir)
+		self, herr := os.Executable()
+		if herr != nil {
+			die("resolve brokerd path for squid auth helper", "err", herr)
+		}
+		helperCmd := fmt.Sprintf("%s __squid-authhelper %s", self, filepath.Join(cfg.SquidRunDir, "task-tokens"))
+		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(egCfg), cfg.SquidRunDir, helperCmd)
 		if err != nil {
 			die("squid start failed", "err", err)
 		}

@@ -37,11 +37,10 @@ func TestCompileSquidAllowlist_ExcludesModelAPI(t *testing.T) {
 }
 
 func TestCompileSquidConf(t *testing.T) {
-	out := CompileSquidConf("192.168.66.1:3128", "/run/allow.txt", "/run")
+	out := CompileSquidConf("192.168.66.1:3128", "/run/allow.txt", "/run", "/usr/bin/brokerd __squid-authhelper /run/task-tokens")
 	for _, want := range []string{
 		"http_port 192.168.66.1:3128",
-		`acl allowed dstdomain "/run/allow.txt"`,
-		"http_access deny CONNECT !allowed",
+		`acl default_dst dstdomain "/run/allow.txt"`,
 		"http_access deny all",
 	} {
 		if !strings.Contains(out, want) {
@@ -100,14 +99,13 @@ func TestCompileSquidAllowlist_OneHostPerLineNoPorts(t *testing.T) {
 }
 
 func TestCompileSquidConf_DefaultDenyShape(t *testing.T) {
-	out := CompileSquidConf("192.168.66.1:3128", "/tmp/allow", "/tmp/run")
-	// The order of the four http_access lines is the actual access policy.
+	out := CompileSquidConf("192.168.66.1:3128", "/tmp/allow", "/tmp/run", "/usr/bin/brokerd __squid-authhelper /tmp/run/task-tokens")
+	// The order of the http_access lines is the actual access policy.
 	// Reorder them and the proxy opens up — guard the order explicitly.
 	wantOrder := []string{
 		"http_access deny CONNECT !SSL_ports",
-		"http_access deny CONNECT !allowed",
-		"http_access allow CONNECT allowed SSL_ports",
-		"http_access allow allowed",
+		"http_access allow CONNECT default_dst SSL_ports",
+		"http_access allow default_dst",
 		"http_access deny all",
 	}
 	prev := -1
@@ -156,7 +154,7 @@ func TestStartSquid_WritesConfAndAllowlist(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	allowlist := "registry.npmjs.org\npypi.org\n"
-	s, err := StartSquid(trueBin, "127.0.0.1:13128", allowlist, runDir)
+	s, err := StartSquid(trueBin, "127.0.0.1:13128", allowlist, runDir, "/usr/bin/brokerd __squid-authhelper "+runDir+"/task-tokens")
 	if err != nil {
 		t.Fatalf("StartSquid: %v", err)
 	}
@@ -180,7 +178,7 @@ func TestStartSquid_WritesConfAndAllowlist(t *testing.T) {
 }
 
 func TestStartSquid_BadBinFails(t *testing.T) {
-	_, err := StartSquid("/does/not/exist", "127.0.0.1:13128", "", t.TempDir())
+	_, err := StartSquid("/does/not/exist", "127.0.0.1:13128", "", t.TempDir(), "/usr/bin/brokerd __squid-authhelper /tmp/task-tokens")
 	if err == nil {
 		t.Error("want err for non-existent binary")
 	}
