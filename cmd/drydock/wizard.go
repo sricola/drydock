@@ -6,10 +6,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	ossignal "os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"drydock/internal/config"
 )
@@ -67,7 +69,27 @@ func promptYesNo(in io.Reader, out io.Writer, q string, dflt bool) bool {
 func promptSecret(prompt string) (string, error) {
 	fmt.Fprint(os.Stdout, prompt)
 	_ = exec.Command("stty", "-echo").Run()
-	defer func() { _ = exec.Command("stty", "echo").Run(); fmt.Fprintln(os.Stdout) }()
+	restore := func() { _ = exec.Command("stty", "echo").Run() }
+	// A bare defer won't run if a signal kills the process mid-read, which
+	// would leave the terminal echo-off. Restore on SIGINT/SIGTERM too.
+	sigCh := make(chan os.Signal, 1)
+	ossignal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-sigCh:
+			restore()
+			fmt.Fprintln(os.Stdout)
+			os.Exit(130)
+		case <-done:
+		}
+	}()
+	defer func() {
+		ossignal.Stop(sigCh)
+		close(done)
+		restore()
+		fmt.Fprintln(os.Stdout)
+	}()
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
 		return "", err

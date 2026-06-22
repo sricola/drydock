@@ -11,6 +11,14 @@ import (
 	"drydock/internal/netfw"
 )
 
+// firstRunBeforeInit reports whether ~/.drydock/config.yaml is absent. It MUST
+// be called before runInit(), which seeds that file — otherwise the answer is
+// always false and the wizard never fires on a genuine first run.
+func firstRunBeforeInit(cfgPath string) bool {
+	_, err := os.Stat(cfgPath)
+	return os.IsNotExist(err)
+}
+
 // runSetup is the one-shot first-run path: install the Homebrew prerequisites
 // drydock needs (Apple `container`, squid), then run init, then init prints
 // what to do next. `drydock init` only *checks* these and exits if they're
@@ -22,15 +30,24 @@ import (
 // silently modifying the system.
 func runSetup(args []string) {
 	yes := false
+	reconfigure := false
 	for _, a := range args {
 		switch a {
 		case "-y", "--yes":
 			yes = true
+		case "--reconfigure":
+			reconfigure = true
 		case "-h", "--help", "help":
 			fmt.Printf("drydock setup — %s\n", subHelp["setup"])
 			os.Exit(0)
 		}
 	}
+
+	// Sample firstRun BEFORE runInit() — runInit seeds config.yaml via
+	// ensureUserConfig/seedConfig, so os.Stat would always find the file
+	// afterwards and firstRun would always be false. See firstRunBeforeInit.
+	cfgPath := config.DefaultPath()
+	firstRun := firstRunBeforeInit(cfgPath)
 
 	fmt.Println("drydock setup — install prerequisites, then first-time setup")
 	fmt.Println()
@@ -67,15 +84,7 @@ func runSetup(args []string) {
 
 	// First-run / explicit reconfigure → interactive wizard. Non-TTY or an
 	// existing config without --reconfigure keeps init's static seed + "next:".
-	reconfigure := false
-	for _, a := range args {
-		if a == "--reconfigure" {
-			reconfigure = true
-		}
-	}
-	cfgPath := config.DefaultPath()
-	_, statErr := os.Stat(cfgPath)
-	firstRun := os.IsNotExist(statErr)
+	// firstRun was sampled above, before runInit seeded the config file.
 	if tty && stdinIsTTY() && (firstRun || reconfigure) {
 		fmt.Println()
 		fmt.Println("── configure ───────────────────────────────")
