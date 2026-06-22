@@ -33,18 +33,29 @@ OpenAI Codex × API key / subscription); none of that is surfaced interactively.
 
 1. **Entry point:** the wizard *is* `drydock setup`. `drydock init` stays the
    low-level, non-interactive primitive (scriptable; unchanged behavior).
-2. **API-key handling:** stored host-side, consistent with the OAuth tokens.
-   The wizard writes the key to a **dedicated 0600 file** at
-   `~/.drydock/api-keys.env` (NOT into `config.yaml`, which is the
-   user-editable/shareable surface). The broker loads that file at start, so
-   the key survives shells/reboots and the broker no longer depends on the
-   shell env. An exported `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` still wins
-   (CI/advanced override). The real invariant is unchanged and load-bearing:
-   **the credential never enters the VM** — drydock already stores the broader
-   full-account OAuth token on disk, so a scoped, revocable API key beside it is
-   strictly less exposure. The "API keys never go to disk" copy in
-   README/SECURITY/THREAT_MODEL is retired and reframed to "credentials stay
-   host-side (env or `~/.drydock/` 0600), never in the VM."
+2. **API-key handling:** the wizard can persist the key host-side, but only with
+   **explicit consent** — never as a silent side-effect. Today's README repeats
+   "API keys never go to disk" as a selling point, so a silent write would
+   change a documented property out from under a user who chose drydock partly
+   for it. The API-key step prompts: *"store this key at `~/.drydock/api-keys.env`
+   (0600) so the broker finds it across shells? [Y/n] — or keep it in your shell
+   env only."* Storing is the recommended default (better UX; fixes the
+   broker-can't-see-the-shell-env-key class of bug), but **env-only is a
+   first-class, preserved path**. The file is a **dedicated 0600 file**, NOT
+   `config.yaml`. The broker loads it at start; an exported
+   `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` still overrides it (CI/advanced).
+
+   Honest security framing: the load-bearing, unchanged invariant is **the
+   credential never enters the VM** (the A1 red-team test). On-disk exposure is
+   **comparable** to the OAuth token already at 0600 — both are long-lived
+   host-side secrets; they differ in how each is revoked (API key in the vendor
+   console / by rotation; OAuth token by re-login). It is **not** "strictly
+   less" exposure: a raw `ANTHROPIC_API_KEY` is often org-wide and doesn't
+   auto-expire, and SECURITY.md already notes it isn't per-task-revocable.
+   README/SECURITY/THREAT_MODEL retire "API keys never go to disk" and reframe
+   to: credentials stay host-side (env or `~/.drydock/` 0600) and **never enter
+   the VM**; the wizard *offers* to persist the key, and you may decline to keep
+   it env-only.
 3. **Implementation style:** plain numbered stdin prompts reusing the existing
    color/`step()` formatting. **No TUI framework / no new dependency** — keeps
    the supply-chain surface (SBOM + cosign-signed releases) clean. The "wizard"
@@ -84,7 +95,17 @@ and behave exactly as today (so CI and `drydock init` are unaffected).
 | `cmd/brokerd/main.go` (modify) | Before reading the API keys, load `~/.drydock/api-keys.env` as defaults; an exported env var overrides a file value. The downstream backend wiring is unchanged (`StaticKey(key)` → gateway). |
 | `runSetup` (modify) | Decide interactive vs non-interactive (TTY + first-run / `--reconfigure`); run prereqs + infra; on interactive, call `runWizard`; else today's path. |
 | auth cores (modify) | Extract the callable core of `drydock auth claude` / `auth codex` into functions the wizard can invoke and branch on (e.g. `bootstrapClaudeCred() error`, `bootstrapCodexCred() error`). The existing `drydock auth claude|codex` subcommands call the same core. |
-| docs (modify) | `README.md` / `SECURITY.md` / `THREAT_MODEL.md`: retire "API keys never go to disk"; reframe to "credentials stay host-side (env or `~/.drydock/` 0600), never in the VM"; document `~/.drydock/api-keys.env`. |
+| `cmd/drydock/doctor.go` (modify) | Report the active API-key source per vendor (`env` / `~/.drydock/api-keys.env` / `none`), so the key's provenance is never a silent surprise. |
+| docs (modify) | `README.md` / `SECURITY.md` / `THREAT_MODEL.md`: retire "API keys never go to disk"; reframe to "credentials stay host-side (env or `~/.drydock/` 0600), never in the VM"; document `~/.drydock/api-keys.env` and that the wizard *offers* (consented) to persist the key. |
+
+**Implementation sequencing (two stages).** The security-reviewable core — the
+`api-keys.env` store + `LoadAPIKeys` + the brokerd precedence + the
+SECURITY/THREAT_MODEL/README reframe — is independently testable and shippable,
+and is where the real security review belongs. Build and ship it **first**
+(stage 1); the wizard (stage 2) is UX that consumes it. This de-risks the
+posture change (it gets reviewed on its own) and unblocks the wizard from the
+docs discussion. The implementation plan should reflect these as two stages
+(and likely two PRs).
 
 ## Wizard flow (detail)
 
@@ -100,11 +121,14 @@ and behave exactly as today (so CI and `drydock init` are unaffected).
      check (the same `OAuthCred.Current()` the doctor uses) → `✓ token valid`.
      If the CLI is missing or not logged in → print the exact
      `claude login` / `codex login` line; **non-fatal**.
-   - **API key:** store it host-side at `~/.drydock/api-keys.env` (0600).
-     If the env var is already exported, offer to persist it (`✓ stored`); else
-     prompt for the key with `promptSecret` (no terminal echo) and write it.
-     The key is upserted (any other key in the file is preserved). The wizard
-     reflects only that a key was stored — it never prints the key value.
+   - **API key:** prompt for consent — *"store at `~/.drydock/api-keys.env`
+     (0600) so the broker finds it across shells? [Y/n] — or keep it env-only."*
+     If yes: if the env var is already exported, persist that value (no
+     re-entry — avoids the key landing in shell scrollback); else read it with
+     `promptSecret` (no terminal echo) and write it. The key is upserted (any
+     other key in the file is preserved); the value is never printed. If the
+     user declines (env-only): if the env var is set → `✓`; else print the exact
+     `export ANTHROPIC_API_KEY=…` reminder. Nothing is written to disk.
 4. **Write config.** Render `~/.drydock/config.yaml` with the choices. If a
    config already exists and the user is reconfiguring, overwrite; the egress
    file is left untouched (seeded by init as today).
@@ -120,9 +144,14 @@ A dedicated secret file, deliberately separate from `config.yaml`:
   `OPENAI_API_KEY=sk-…`. Blank lines and `#` comments ignored. Only the two
   vendor keys are recognized.
 - **Mode:** `0600`, written atomically (temp + rename), like the OAuth json.
-- **Precedence (broker):** load the file first as defaults; an exported env var
-  of the same name overrides it. So scripted/CI use (`export …`) is unchanged,
-  and an interactive operator gets persistence for free.
+- **Precedence (broker):** load the file first as defaults; a **non-empty**
+  exported env var of the same name overrides it. An env var set to `""` does
+  NOT override a good file value (it falls through to the file), symmetric with
+  ignoring a blank line in the file. So scripted/CI use (`export …`) is
+  unchanged, and an interactive operator gets persistence for free.
+- **Visibility:** `drydock doctor` reports which source is active per vendor —
+  `key: env` / `key: ~/.drydock/api-keys.env` / `key: none` — so a stale file or
+  an unset env never causes silent surprise.
 - **Security:** the broker reads it host-side and still mints a per-task token —
   the raw key never enters the VM (A1 invariant unchanged). It is NOT in
   `config.yaml` (the file people edit/screenshot/paste into issues). It is the
@@ -154,8 +183,10 @@ A dedicated secret file, deliberately separate from `config.yaml`:
   defaults.
 - **API-key store** — `LoadAPIKeys` parses valid lines / ignores blanks+comments;
   the writer upserts one key while preserving the other and writes 0600 (mode
-  asserted); brokerd precedence test: env var overrides a file value, file value
-  used when env is unset.
+  asserted). Brokerd precedence: a non-empty env var overrides the file; an env
+  var set to `""` falls through to the file value; the file value is used when
+  env is unset. Doctor source-reporting: returns `env` / file-path / `none` for
+  each of the three states.
 - **`runWizard`** — driven with a scripted stdin reader + captured stdout and
   the infra/credential steps stubbed (injected funcs), asserting the flow
   selects the right config and prints the expected summary; subscription
