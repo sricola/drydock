@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -105,4 +106,79 @@ func renderConfig(c wizardChoices) string {
 func setYAMLKey(body, key, value string) string {
 	re := regexp.MustCompile(`(?m)^(` + regexp.QuoteMeta(key) + `:\s*)\S+`)
 	return re.ReplaceAllString(body, "${1}"+value)
+}
+
+type wizardDeps struct {
+	in              io.Reader
+	out             io.Writer
+	bootstrapClaude func() error
+	bootstrapCodex  func() error
+	configPath      string
+}
+
+// runWizard drives the interactive config flow and writes config.yaml.
+func runWizard(d *wizardDeps) wizardChoices {
+	// Wrap d.in in a single bufio.Reader so all prompt helpers share the same
+	// buffer. bufio.NewReader is a no-op if d.in is already a *bufio.Reader.
+	d.in = bufio.NewReader(d.in)
+	var c wizardChoices
+
+	agent := promptChoice(d.in, d.out, "Which coding agent?",
+		[]string{"Claude Code (Anthropic)", "OpenAI Codex", "both"}, 1)
+	wantClaude := agent == 1 || agent == 3
+	wantCodex := agent == 2 || agent == 3
+	if agent == 2 {
+		c.DefaultAgent = "codex"
+	} else {
+		c.DefaultAgent = "claude" // 1 or 3 ("both" defaults to claude)
+	}
+
+	if wantClaude {
+		c.AnthropicAuth = authStep(d, "Claude Code", "claude login", "ANTHROPIC_API_KEY", d.bootstrapClaude)
+	}
+	if wantCodex {
+		c.OpenAIAuth = authStep(d, "OpenAI Codex", "codex login", "OPENAI_API_KEY", d.bootstrapCodex)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(d.configPath), 0o700); err == nil {
+		_ = os.WriteFile(d.configPath, []byte(renderConfig(c)), 0o644)
+	}
+	fmt.Fprintf(d.out, "\nwrote %s · default_agent: %s\n", d.configPath, c.DefaultAgent)
+	fmt.Fprintln(d.out, "start:  drydock start      first task:  drydock submit --repo <url> --instruction \"…\"")
+	return c
+}
+
+// authStep asks the auth mode for one agent and bootstraps the credential.
+// Returns "subscription" or "api_key". All credential failures are non-fatal.
+func authStep(d *wizardDeps, label, loginCmd, envName string, bootstrap func() error) string {
+	mode := promptChoice(d.in, d.out, "How will "+label+" authenticate?",
+		[]string{"subscription — no API key", "API key (" + envName + ")"}, 1)
+	if mode == 1 {
+		if err := bootstrap(); err != nil {
+			fmt.Fprintf(d.out, "  ! %v — run `%s`, then re-run `drydock setup`\n", err, loginCmd)
+		} else {
+			fmt.Fprintf(d.out, "  ✓ %s credential stored\n", label)
+		}
+		return "subscription"
+	}
+	// API key: consented persistence; env-only preserved.
+	if promptYesNo(d.in, d.out, "Store the API key at ~/.drydock/api-keys.env (0600) so the broker finds it across shells?", true) {
+		val := os.Getenv(envName)
+		if val == "" {
+			v, err := promptSecret("  paste " + envName + ": ")
+			if err == nil {
+				val = v
+			}
+		}
+		if val != "" {
+			if err := config.WriteAPIKey(config.APIKeysPath(), envName, val); err != nil {
+				fmt.Fprintf(d.out, "  ! could not store key: %v\n", err)
+			} else {
+				fmt.Fprintf(d.out, "  ✓ stored %s\n", envName)
+			}
+		}
+	} else if os.Getenv(envName) == "" {
+		fmt.Fprintf(d.out, "  ! before `drydock start`: export %s=…\n", envName)
+	}
+	return "api_key"
 }

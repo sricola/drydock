@@ -9,6 +9,50 @@ import (
 	"drydock/internal/config"
 )
 
+func TestRunWizard_ClaudeSubscription(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir) // APIKeysPath/config.Dir resolve under here
+	var bootstrapped bool
+	deps := &wizardDeps{
+		in:              strings.NewReader("1\n1\n"), // agent: Claude, auth: subscription
+		out:             &strings.Builder{},
+		bootstrapClaude: func() error { bootstrapped = true; return nil },
+		bootstrapCodex:  func() error { return nil },
+		configPath:      filepath.Join(dir, ".drydock", "config.yaml"),
+	}
+	got := runWizard(deps)
+	if got.DefaultAgent != "claude" || got.AnthropicAuth != "subscription" {
+		t.Fatalf("choices = %+v", got)
+	}
+	if !bootstrapped {
+		t.Error("subscription path should call the claude bootstrap core")
+	}
+	if _, err := config.Load(deps.configPath); err != nil {
+		t.Errorf("config not written/parseable: %v", err)
+	}
+}
+
+func TestRunWizard_CodexApiKeyConsentStores(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("OPENAI_API_KEY", "sk-from-env")
+	deps := &wizardDeps{
+		in:              strings.NewReader("2\n2\ny\n"), // agent: Codex, auth: API key, persist? yes
+		out:             &strings.Builder{},
+		bootstrapClaude: func() error { return nil },
+		bootstrapCodex:  func() error { return nil },
+		configPath:      filepath.Join(dir, ".drydock", "config.yaml"),
+	}
+	got := runWizard(deps)
+	if got.DefaultAgent != "codex" || got.OpenAIAuth != "api_key" {
+		t.Fatalf("choices = %+v", got)
+	}
+	// Consented persist of an already-exported env key → stored, no re-prompt.
+	if config.LoadAPIKeys(config.APIKeysPath())["OPENAI_API_KEY"] != "sk-from-env" {
+		t.Error("consented API key not persisted to api-keys.env")
+	}
+}
+
 func TestPromptChoice(t *testing.T) {
 	opts := []string{"Claude Code", "OpenAI Codex", "both"}
 	cases := []struct {
