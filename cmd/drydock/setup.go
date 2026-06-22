@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"drydock/internal/config"
 	"drydock/internal/netfw"
 )
 
@@ -63,6 +64,29 @@ func runSetup(args []string) {
 	fmt.Println("prerequisites ready — running drydock init…")
 	fmt.Println()
 	runInit()
+
+	// First-run / explicit reconfigure → interactive wizard. Non-TTY or an
+	// existing config without --reconfigure keeps init's static seed + "next:".
+	reconfigure := false
+	for _, a := range args {
+		if a == "--reconfigure" {
+			reconfigure = true
+		}
+	}
+	cfgPath := config.DefaultPath()
+	_, statErr := os.Stat(cfgPath)
+	firstRun := os.IsNotExist(statErr)
+	if tty && stdinIsTTY() && (firstRun || reconfigure) {
+		fmt.Println()
+		fmt.Println("── configure ───────────────────────────────")
+		runWizard(&wizardDeps{
+			in:              os.Stdin,
+			out:             os.Stdout,
+			bootstrapClaude: bootstrapClaudeCred,
+			bootstrapCodex:  bootstrapCodexCred,
+			configPath:      cfgPath,
+		})
+	}
 }
 
 // ensurePrereq installs one Homebrew package, prompting first unless yes is
