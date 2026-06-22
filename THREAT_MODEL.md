@@ -97,6 +97,12 @@ the task uses) and issues a short-lived bearer token bound to a USD budget.
 The VM sees only the bearer. Even if the agent exfiltrates the bearer, it
 expires with the task and is capped by `DRYDOCK_TASK_BUDGET_USD`.
 
+The real key can reach the gateway from two sources: the shell env
+(`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) **or** the stored file
+`~/.drydock/api-keys.env` (mode `0600`), which the broker reads at startup.
+Neither source is ever passed into the VM — the A1 control is unchanged
+regardless of which source the broker loaded the key from.
+
 The gateway now fronts two upstreams: `api.anthropic.com` (Claude Code tasks)
 and `api.openai.com` (Codex tasks). The real key for whichever vendor stays
 host-only in both cases. No new trust assumptions are introduced by the second
