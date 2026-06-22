@@ -70,6 +70,17 @@ const supportedContainerMajor = "1"
 
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
 
+// resolveAPIKey returns the effective key for env-var name. A non-empty
+// exported value wins (so CI `export …` is unchanged); otherwise the value from
+// the host-side api-keys.env store; else "". An env var set to "" deliberately
+// falls through to the file rather than blanking a good stored key.
+func resolveAPIKey(name string, fileKeys map[string]string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fileKeys[name]
+}
+
 func main() {
 	// Main config: ~/.drydock/config.yaml + env-var overrides. Missing file
 	// is fine — defaults kick in. Loaded first so logging, the version check,
@@ -96,8 +107,9 @@ func main() {
 		die("load egress config", "path", egressPath, "err", err)
 	}
 
-	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
-	openaiKey := os.Getenv("OPENAI_API_KEY")
+	fileKeys := config.LoadAPIKeys(config.APIKeysPath())
+	anthropicKey := resolveAPIKey("ANTHROPIC_API_KEY", fileKeys)
+	openaiKey := resolveAPIKey("OPENAI_API_KEY", fileKeys)
 	// subscription mode satisfies either side without an API key.
 	haveAnthropic := cfg.AnthropicAuth == "subscription" || anthropicKey != ""
 	haveOpenAI := cfg.OpenAIAuth == "subscription" || openaiKey != ""

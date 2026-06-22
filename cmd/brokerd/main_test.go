@@ -39,3 +39,25 @@ func typeName(h slog.Handler) string {
 		return "unknown"
 	}
 }
+
+func TestResolveAPIKey_Precedence(t *testing.T) {
+	file := map[string]string{"ANTHROPIC_API_KEY": "from-file"}
+
+	t.Run("non-empty env overrides file", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "from-env")
+		if got := resolveAPIKey("ANTHROPIC_API_KEY", file); got != "from-env" {
+			t.Errorf("got %q, want from-env", got)
+		}
+	})
+	t.Run("empty env falls through to file", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		if got := resolveAPIKey("ANTHROPIC_API_KEY", file); got != "from-file" {
+			t.Errorf("got %q, want from-file", got)
+		}
+	})
+	t.Run("unset env + no file entry yields empty", func(t *testing.T) {
+		if got := resolveAPIKey("OPENAI_API_KEY", file); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+}
