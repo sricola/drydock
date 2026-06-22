@@ -219,6 +219,30 @@ sanctioned by OpenAI. The operator assumes that risk. See
 [`THREAT_MODEL.md` § N4](THREAT_MODEL.md#n4-cost-exhaustion-and-runaway-tasks)
 for how to control subscription task runaway with `task_max_requests`.
 
+### Stored API key — `~/.drydock/api-keys.env`
+
+When `drydock init` (or the setup wizard) offers to persist an API key for you,
+it writes the key to `~/.drydock/api-keys.env` (mode `0600`). The broker reads
+this file at startup and treats it identically to the same key arriving via
+shell env — the key stays host-side and never enters the VM (A1 holds).
+
+The exposure is **comparable** to the OAuth tokens already stored in
+`~/.drydock/claude-oauth.json` / `~/.drydock/codex-oauth.json`:
+
+- **Long-lived host-side secret.** A raw `ANTHROPIC_API_KEY` or
+  `OPENAI_API_KEY` does not auto-expire. An attacker with read access to the
+  host obtains a credential that remains valid until you manually revoke it in
+  the vendor console.
+- **Not per-task revocable.** Unlike the short-lived bearer tokens the gateway
+  issues into the VM, the key in `api-keys.env` has no task-scoped lifecycle.
+  Revoke it by removing the key from the vendor console and deleting or updating
+  `~/.drydock/api-keys.env`.
+- **Often org-wide.** Many API keys carry broad permissions (all projects, all
+  models). A dedicated, narrowly-scoped key is preferable to an org-admin key.
+
+If you prefer not to write a key to disk, skip the wizard offer and export the
+key in your shell env instead — the broker accepts either source.
+
 - **Apple notarization still pending.** Each tagged release now ships a
   CycloneDX SBOM, a keyless **cosign** signature, and **SLSA build
   provenance** (the tarball was built by the release workflow from the

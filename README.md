@@ -126,8 +126,11 @@ you already pay for (macOS only; needs the vendor's `claude`/`codex` CLI).
 
 ### Quickest start — an API key
 
-Set at least one vendor key. Both are host-only — they never go to disk and
-never enter the VM:
+Set at least one vendor key. Both stay **host-side** and **never enter the VM**
+— the sandbox only ever sees a short-lived, budget-capped token. You can keep a
+key in your shell env (as below) or let `drydock init` store it at
+`~/.drydock/api-keys.env` (mode `0600`); either way it never crosses the VM
+boundary:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code tasks
@@ -361,8 +364,9 @@ Both files are seeded from defaults the first time; `drydock init` never
 overwrites them. Env vars still win over file values (e.g.
 `BROKER_ADDR=…` in the shell overrides `broker.addr` in the YAML), so
 existing scripts keep working. The vendor keys (`ANTHROPIC_API_KEY` /
-`OPENAI_API_KEY`) are intentionally **not** in either file — by design,
-they never go to disk.
+`OPENAI_API_KEY`) are intentionally **not** in `config.yaml` or `egress.yaml`.
+They live in your shell env, or (if you choose) at `~/.drydock/api-keys.env`
+(mode `0600`) — read host-side by the broker, never passed into the VM.
 
 ## Egress policy
 
@@ -411,8 +415,8 @@ init` with the defaults below as a commented template. Edit and re-run
 
 | Field (`config.yaml`) | Env override | Default | Meaning |
 |---|---|---|---|
-| — | `ANTHROPIC_API_KEY` | *(at least one required)* | Real Anthropic key; **host-only**, never goes to disk |
-| — | `OPENAI_API_KEY` | *(at least one required)* | Real OpenAI key; **host-only**, never goes to disk |
+| — | `ANTHROPIC_API_KEY` | *(at least one required)* | Real Anthropic key; **host-only** (shell env or `~/.drydock/api-keys.env` 0600); never enters the VM |
+| — | `OPENAI_API_KEY` | *(at least one required)* | Real OpenAI key; **host-only** (shell env or `~/.drydock/api-keys.env` 0600); never enters the VM |
 | `anthropic_auth` | `DRYDOCK_ANTHROPIC_AUTH` | `api_key` | How to authenticate to Anthropic; `api_key` (default) uses `ANTHROPIC_API_KEY`; `subscription` uses the OAuth credential at `~/.drydock/claude-oauth.json` — run `drydock auth claude` first |
 | `openai_auth` | `DRYDOCK_OPENAI_AUTH` | `api_key` | How to authenticate to OpenAI; `api_key` (default) uses `OPENAI_API_KEY`; `subscription` uses the OAuth credential at `~/.drydock/codex-oauth.json` — run `drydock auth codex` first |
 | `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent to use when `--agent` is not passed; allowed values: `claude` \| `codex` |
