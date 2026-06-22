@@ -63,13 +63,33 @@ func promptYesNo(in io.Reader, out io.Writer, q string, dflt bool) bool {
 	}
 }
 
+// ttyEchoCmd builds the `stty` invocation that toggles terminal echo. Stdin
+// MUST be wired to os.Stdin (the controlling terminal): os/exec defaults a nil
+// Stdin to /dev/null, and `stty` operating on /dev/null errors ("stdin isn't a
+// terminal") and silently no-ops — which would leave a pasted secret echoing on
+// screen. The terminal we want to mute is the one promptSecret reads from.
+func ttyEchoCmd(on bool) *exec.Cmd {
+	arg := "-echo"
+	if on {
+		arg = "echo"
+	}
+	c := exec.Command("stty", arg)
+	c.Stdin = os.Stdin
+	return c
+}
+
 // promptSecret reads one line from stdin with terminal echo disabled, so a
 // pasted API key doesn't render on screen. Uses the system `stty` (no new
 // dependency); echo is restored even on error.
 func promptSecret(prompt string) (string, error) {
 	fmt.Fprint(os.Stdout, prompt)
-	_ = exec.Command("stty", "-echo").Run()
-	restore := func() { _ = exec.Command("stty", "echo").Run() }
+	// Refuse to read a secret in plaintext: if echo can't be disabled, returning
+	// an error is safer than silently echoing the key (the bug this guards).
+	if err := ttyEchoCmd(false).Run(); err != nil {
+		fmt.Fprintln(os.Stdout)
+		return "", fmt.Errorf("could not disable terminal echo: %w — refusing to read key in plaintext", err)
+	}
+	restore := func() { _ = ttyEchoCmd(true).Run() }
 	// A bare defer won't run if a signal kills the process mid-read, which
 	// would leave the terminal echo-off. Restore on SIGINT/SIGTERM too.
 	sigCh := make(chan os.Signal, 1)
@@ -156,10 +176,10 @@ func runWizard(d *wizardDeps) wizardChoices {
 	}
 
 	if wantClaude {
-		c.AnthropicAuth = authStep(d, "Claude Code", "claude login", "ANTHROPIC_API_KEY", d.bootstrapClaude)
+		c.AnthropicAuth = authStep(d, "Claude Code", "ANTHROPIC_API_KEY", d.bootstrapClaude)
 	}
 	if wantCodex {
-		c.OpenAIAuth = authStep(d, "OpenAI Codex", "codex login", "OPENAI_API_KEY", d.bootstrapCodex)
+		c.OpenAIAuth = authStep(d, "OpenAI Codex", "OPENAI_API_KEY", d.bootstrapCodex)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(d.configPath), 0o700); err == nil {
@@ -172,12 +192,14 @@ func runWizard(d *wizardDeps) wizardChoices {
 
 // authStep asks the auth mode for one agent and bootstraps the credential.
 // Returns "subscription" or "api_key". All credential failures are non-fatal.
-func authStep(d *wizardDeps, label, loginCmd, envName string, bootstrap func() error) string {
+// The bootstrap error already names the login command to run, so the hint only
+// adds the re-run step.
+func authStep(d *wizardDeps, label, envName string, bootstrap func() error) string {
 	mode := promptChoice(d.in, d.out, "How will "+label+" authenticate?",
 		[]string{"subscription — no API key", "API key (" + envName + ")"}, 1)
 	if mode == 1 {
 		if err := bootstrap(); err != nil {
-			fmt.Fprintf(d.out, "  ! %v — run `%s`, then re-run `drydock setup`\n", err, loginCmd)
+			fmt.Fprintf(d.out, "  ! %v, then re-run `drydock setup`\n", err)
 		} else {
 			fmt.Fprintf(d.out, "  ✓ %s credential stored\n", label)
 		}
@@ -188,7 +210,9 @@ func authStep(d *wizardDeps, label, loginCmd, envName string, bootstrap func() e
 		val := os.Getenv(envName)
 		if val == "" {
 			v, err := promptSecret("  paste " + envName + ": ")
-			if err == nil {
+			if err != nil {
+				fmt.Fprintf(d.out, "  ! %v\n", err)
+			} else {
 				val = v
 			}
 		}

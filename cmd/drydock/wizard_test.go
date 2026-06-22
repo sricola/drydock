@@ -9,6 +9,25 @@ import (
 	"drydock/internal/config"
 )
 
+// TestTTYEchoCmd_UsesTerminalStdin guards the no-echo regression: stty must run
+// against the controlling terminal (os.Stdin), not exec's default /dev/null —
+// otherwise it errors and a pasted secret echoes on screen.
+func TestTTYEchoCmd_UsesTerminalStdin(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		c := ttyEchoCmd(on)
+		if c.Stdin != os.Stdin {
+			t.Errorf("ttyEchoCmd(%v): Stdin must be os.Stdin (the tty), got %v", on, c.Stdin)
+		}
+		want := "-echo"
+		if on {
+			want = "echo"
+		}
+		if got := c.Args[len(c.Args)-1]; got != want {
+			t.Errorf("ttyEchoCmd(%v): last arg = %q, want %q", on, got, want)
+		}
+	}
+}
+
 func TestRunWizard_ClaudeSubscription(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir) // APIKeysPath/config.Dir resolve under here
