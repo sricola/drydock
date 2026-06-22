@@ -64,6 +64,21 @@ func runAuth(args []string) {
 	}
 }
 
+// bootstrapClaudeCred copies the Claude subscription credential from the macOS
+// Keychain into drydock's store. Returns an error (never exits) so callers —
+// the auth subcommand and the setup wizard — can react.
+func bootstrapClaudeCred() error {
+	out, err := exec.Command("security", "find-generic-password", "-s", keychainService, "-w").Output()
+	if err != nil {
+		return fmt.Errorf("could not read Claude credentials from Keychain — run `claude login` first")
+	}
+	snap, err := parseClaudeCreds(out)
+	if err != nil {
+		return err
+	}
+	return gateway.FileCredStore(filepath.Join(config.Dir(), "claude-oauth.json")).Save(snap)
+}
+
 // runAuthClaude implements `drydock auth claude [--status]`.
 func runAuthClaude(args []string) {
 	// Handle help flags before anything else.
@@ -78,11 +93,8 @@ func runAuthClaude(args []string) {
 	// --status: report current cred validity without re-copying.
 	statusOnly := len(args) > 0 && (args[0] == "--status" || args[0] == "-status")
 
-	credPath := filepath.Join(config.Dir(), "claude-oauth.json")
-	store := gateway.FileCredStore(credPath)
-
 	if statusOnly {
-		snap, err := store.Load()
+		snap, err := gateway.FileCredStore(filepath.Join(config.Dir(), "claude-oauth.json")).Load()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "auth: no stored credentials —", err)
 			os.Exit(1)
@@ -91,24 +103,11 @@ func runAuthClaude(args []string) {
 		return
 	}
 
-	// Read credentials from the macOS Keychain.
-	out, err := exec.Command("security", "find-generic-password", "-s", keychainService, "-w").Output()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "auth: could not read Claude credentials from Keychain — run `claude login` first")
-		os.Exit(1)
-	}
-
-	snap, err := parseClaudeCreds(out)
-	if err != nil {
+	if err := bootstrapClaudeCred(); err != nil {
 		fmt.Fprintln(os.Stderr, "auth:", err)
 		os.Exit(1)
 	}
-
-	if err := store.Save(snap); err != nil {
-		fmt.Fprintln(os.Stderr, "auth: failed to save credentials:", err)
-		os.Exit(1)
-	}
-
+	snap, _ := gateway.FileCredStore(filepath.Join(config.Dir(), "claude-oauth.json")).Load()
 	printValidity(snap)
 }
 
@@ -174,6 +173,25 @@ func parseCodexCreds(raw []byte) (gateway.CredSnapshot, string, error) {
 	return gateway.CredSnapshot{Access: f.Tokens.AccessToken, Refresh: f.Tokens.RefreshToken, Expiry: exp}, f.Tokens.AccountID, nil
 }
 
+// bootstrapCodexCred copies the ChatGPT/Codex credential from ~/.codex/auth.json
+// into drydock's store. Returns an error (never exits).
+func bootstrapCodexCred() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("could not determine home directory: %w", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
+	if err != nil {
+		return fmt.Errorf("could not read ~/.codex/auth.json — run `codex login` first")
+	}
+	snap, account, err := parseCodexCreds(raw)
+	if err != nil {
+		return err
+	}
+	store := gateway.NewCodexStore(filepath.Join(config.Dir(), "codex-oauth.json"))
+	return store.Put(snap, account)
+}
+
 // runAuthCodex implements `drydock auth codex [--status]`.
 func runAuthCodex(args []string) {
 	if len(args) > 0 {
@@ -184,11 +202,9 @@ func runAuthCodex(args []string) {
 		}
 	}
 	statusOnly := len(args) > 0 && (args[0] == "--status" || args[0] == "-status")
-	credPath := filepath.Join(config.Dir(), "codex-oauth.json")
-	store := gateway.NewCodexStore(credPath)
 
 	if statusOnly {
-		snap, err := store.Load()
+		snap, err := gateway.NewCodexStore(filepath.Join(config.Dir(), "codex-oauth.json")).Load()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "auth: no stored credentials —", err)
 			os.Exit(1)
@@ -197,25 +213,11 @@ func runAuthCodex(args []string) {
 		return
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "auth: could not determine home directory:", err)
-		os.Exit(1)
-	}
-	raw, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "auth: could not read ~/.codex/auth.json — run `codex login` first")
-		os.Exit(1)
-	}
-	snap, account, err := parseCodexCreds(raw)
-	if err != nil {
+	if err := bootstrapCodexCred(); err != nil {
 		fmt.Fprintln(os.Stderr, "auth:", err)
 		os.Exit(1)
 	}
-	if err := store.Put(snap, account); err != nil {
-		fmt.Fprintln(os.Stderr, "auth: failed to save credentials:", err)
-		os.Exit(1)
-	}
+	snap, _ := gateway.NewCodexStore(filepath.Join(config.Dir(), "codex-oauth.json")).Load()
 	printCodexValidity(snap)
 }
 

@@ -111,3 +111,11 @@ func TestParseCodexCreds_AccessTokenNotJWT(t *testing.T) {
 		t.Error("want error when access_token is not a decodable JWT")
 	}
 }
+
+// TestBootstrapCores_Exist verifies that bootstrapClaudeCred and bootstrapCodexCred
+// are defined and callable. In CI (not logged in) they return errors — that is the
+// contract: they must return an error, never call os.Exit.
+func TestBootstrapCores_Exist(t *testing.T) {
+	_ = bootstrapClaudeCred
+	_ = bootstrapCodexCred
+}
