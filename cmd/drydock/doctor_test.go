@@ -58,3 +58,26 @@ func TestClaudeVersionLine_NoMatchFallsBackToTrimmed(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestAPIKeySource(t *testing.T) {
+	file := map[string]string{"OPENAI_API_KEY": "sk-o"}
+
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "sk-ant")
+		if got := apiKeySource("ANTHROPIC_API_KEY", file); got != "env" {
+			t.Errorf("got %q, want env", got)
+		}
+	})
+	t.Run("file", func(t *testing.T) {
+		t.Setenv("OPENAI_API_KEY", "")
+		if got := apiKeySource("OPENAI_API_KEY", file); got != "~/.drydock/api-keys.env" {
+			t.Errorf("got %q, want file path", got)
+		}
+	})
+	t.Run("none", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		if got := apiKeySource("ANTHROPIC_API_KEY", file); got != "none" {
+			t.Errorf("got %q, want none", got)
+		}
+	})
+}

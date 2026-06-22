@@ -142,6 +142,14 @@ func runDoctor() {
 		}
 	}
 
+	fileKeys := config.LoadAPIKeys(config.APIKeysPath())
+	if cfg.AnthropicAuth != "subscription" {
+		step("anthropic api key", true, "source: "+apiKeySource("ANTHROPIC_API_KEY", fileKeys))
+	}
+	if cfg.OpenAIAuth != "subscription" {
+		step("openai api key", true, "source: "+apiKeySource("OPENAI_API_KEY", fileKeys))
+	}
+
 	fmt.Println()
 	if failed {
 		fmt.Println("one or more checks failed — see above")
@@ -178,4 +186,16 @@ func claudeVersionLine(s string) string {
 		}
 	}
 	return strings.TrimSpace(s)
+}
+
+// apiKeySource names where an api_key for envName would come from, so the
+// operator can see whether a stored file or the shell env is in effect.
+func apiKeySource(envName string, fileKeys map[string]string) string {
+	if os.Getenv(envName) != "" {
+		return "env"
+	}
+	if fileKeys[envName] != "" {
+		return "~/.drydock/api-keys.env"
+	}
+	return "none"
 }
