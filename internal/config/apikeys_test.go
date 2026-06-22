@@ -18,6 +18,28 @@ func TestLoadAPIKeys_ParsesAndIgnoresBlanksAndComments(t *testing.T) {
 	}
 }
 
+// TestLoadAPIKeys_IgnoresUnknownKeys pins load/write symmetry: an unrecognized
+// key in the file must be ignored on load, matching WriteAPIKey which only ever
+// writes knownAPIKeys. Otherwise a stray line would be readable one moment and
+// silently dropped the next time the store is rewritten.
+func TestLoadAPIKeys_IgnoresUnknownKeys(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "api-keys.env")
+	body := "ANTHROPIC_API_KEY=sk-ant-x\nGITHUB_TOKEN=ghp_should_be_ignored\nRANDOM=nope\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadAPIKeys(p)
+	if got["ANTHROPIC_API_KEY"] != "sk-ant-x" {
+		t.Errorf("known key not loaded: %v", got)
+	}
+	if _, ok := got["GITHUB_TOKEN"]; ok {
+		t.Errorf("unknown key GITHUB_TOKEN was loaded: %v", got)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected only the one known key, got %v", got)
+	}
+}
+
 func TestLoadAPIKeys_MissingFileIsEmpty(t *testing.T) {
 	if got := LoadAPIKeys(filepath.Join(t.TempDir(), "nope.env")); len(got) != 0 {
 		t.Errorf("missing file should yield empty map, got %v", got)

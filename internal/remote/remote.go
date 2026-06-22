@@ -66,8 +66,10 @@ type nilWriter struct{}
 
 func (nilWriter) Write(p []byte) (int, error) { return len(p), nil }
 
-// runCLI is the shared shell-out shape. Adapters only differ by argv.
-func runCLI(workDir string, env []string, args ...string) error {
+// runCLI is the shared shell-out shape. Adapters only differ by argv. It is a
+// package var (not a plain func) so tests can swap it to capture the argv each
+// adapter builds without invoking the real vendor CLI.
+var runCLI = func(workDir string, env []string, args ...string) error {
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = env

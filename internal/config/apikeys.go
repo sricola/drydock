@@ -10,6 +10,16 @@ import (
 // knownAPIKeys are the only env names the store recognizes.
 var knownAPIKeys = []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
 
+// isKnownAPIKey reports whether name is one the store manages.
+func isKnownAPIKey(name string) bool {
+	for _, k := range knownAPIKeys {
+		if k == name {
+			return true
+		}
+	}
+	return false
+}
+
 // APIKeysPath is the host-only api-key store — the api_key-mode peer of the
 // OAuth json files. Mode 0600; read host-side, never enters the VM. Returns ""
 // when the home directory is unresolvable.
@@ -22,8 +32,10 @@ func APIKeysPath() string {
 }
 
 // LoadAPIKeys reads KEY=value lines from path. Blank lines and # comments are
-// ignored. A missing or unreadable file yields an empty map (the store is
-// optional), not an error.
+// ignored, as are any keys outside knownAPIKeys — load and WriteAPIKey agree on
+// the managed key set, so an unrecognized line can't be loaded one moment and
+// silently dropped on the next rewrite. A missing or unreadable file yields an
+// empty map (the store is optional), not an error.
 func LoadAPIKeys(path string) map[string]string {
 	out := map[string]string{}
 	f, err := os.Open(path)
@@ -41,7 +53,11 @@ func LoadAPIKeys(path string) map[string]string {
 		if !ok {
 			continue
 		}
-		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		k = strings.TrimSpace(k)
+		if !isKnownAPIKey(k) {
+			continue
+		}
+		out[k] = strings.TrimSpace(v)
 	}
 	return out
 }

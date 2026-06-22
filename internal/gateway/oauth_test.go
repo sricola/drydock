@@ -191,6 +191,70 @@ func TestRefreshAnthropic_EmptyAccessToken(t *testing.T) {
 	}
 }
 
+// TestExpiresInDuration_Clamps guards the expiry math against a hostile or
+// buggy token endpoint: a huge expires_in must not overflow the int64-nanosecond
+// Duration (which would wrap the sign and hand back a far-future or past expiry),
+// and a non-positive value must clamp to 0 (already-expired) rather than valid
+// forever.
+func TestExpiresInDuration_Clamps(t *testing.T) {
+	const maxSeconds = int(maxTokenLifetime / time.Second)
+	cases := []struct {
+		name    string
+		seconds int
+		want    time.Duration
+	}{
+		{"normal hour", 3600, time.Hour},
+		{"zero clamps to expired", 0, 0},
+		{"negative clamps to expired", -5, 0},
+		{"at cap", maxSeconds, maxTokenLifetime},
+		{"over cap clamps down", maxSeconds + 1, maxTokenLifetime},
+		{"overflow-scale value clamps, never wraps negative", 1 << 62, maxTokenLifetime},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := expiresInDuration(tc.seconds)
+			if got != tc.want {
+				t.Errorf("expiresInDuration(%d) = %v, want %v", tc.seconds, got, tc.want)
+			}
+			if got < 0 {
+				t.Errorf("expiresInDuration(%d) = %v is negative (overflow wrap)", tc.seconds, got)
+			}
+		})
+	}
+}
+
+// TestRefreshAnthropic_AbsurdExpiresIn confirms the clamp is wired into the real
+// refresh path: a wildly large expires_in yields a bounded, future expiry rather
+// than an overflowed (possibly past) one.
+func TestRefreshAnthropic_AbsurdExpiresIn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "A2",
+			"refresh_token": "R2",
+			"expires_in":    int64(1) << 62,
+		})
+	}))
+	defer srv.Close()
+
+	orig := anthropicOAuthTokenURL
+	anthropicOAuthTokenURL = srv.URL
+	defer func() { anthropicOAuthTokenURL = orig }()
+
+	before := time.Now()
+	snap, err := refreshAnthropic("any-token")
+	if err != nil {
+		t.Fatalf("refreshAnthropic returned error: %v", err)
+	}
+	if !snap.Expiry.After(before) {
+		t.Errorf("Expiry %v is not in the future (overflow wrapped it)", snap.Expiry)
+	}
+	if snap.Expiry.After(before.Add(maxTokenLifetime + 5*time.Second)) {
+		t.Errorf("Expiry %v exceeds the clamp ceiling", snap.Expiry)
+	}
+}
+
 // TestFileCredStore_RoundTripAndPerms writes a snapshot via FileCredStore,
 // loads it back, asserts field equality, and checks the file mode is 0600.
 func TestFileCredStore_RoundTripAndPerms(t *testing.T) {
