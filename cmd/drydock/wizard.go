@@ -83,7 +83,12 @@ func ttyEchoCmd(on bool) *exec.Cmd {
 // dependency); echo is restored even on error.
 func promptSecret(prompt string) (string, error) {
 	fmt.Fprint(os.Stdout, prompt)
-	_ = ttyEchoCmd(false).Run()
+	// Refuse to read a secret in plaintext: if echo can't be disabled, returning
+	// an error is safer than silently echoing the key (the bug this guards).
+	if err := ttyEchoCmd(false).Run(); err != nil {
+		fmt.Fprintln(os.Stdout)
+		return "", fmt.Errorf("could not disable terminal echo: %w — refusing to read key in plaintext", err)
+	}
 	restore := func() { _ = ttyEchoCmd(true).Run() }
 	// A bare defer won't run if a signal kills the process mid-read, which
 	// would leave the terminal echo-off. Restore on SIGINT/SIGTERM too.
@@ -205,7 +210,9 @@ func authStep(d *wizardDeps, label, envName string, bootstrap func() error) stri
 		val := os.Getenv(envName)
 		if val == "" {
 			v, err := promptSecret("  paste " + envName + ": ")
-			if err == nil {
+			if err != nil {
+				fmt.Fprintf(d.out, "  ! %v\n", err)
+			} else {
 				val = v
 			}
 		}
