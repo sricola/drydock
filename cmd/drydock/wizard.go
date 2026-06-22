@@ -6,8 +6,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
+
+	"drydock/internal/config"
 )
 
 // promptChoice prints a numbered menu and returns the chosen 1-based index.
@@ -69,4 +72,37 @@ func promptSecret(prompt string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
+}
+
+type wizardChoices struct {
+	DefaultAgent  string // "claude" | "codex"
+	AnthropicAuth string // "api_key" | "subscription"
+	OpenAIAuth    string // "api_key" | "subscription"
+}
+
+// renderConfig returns a complete config.yaml body: the seeded template with
+// default_agent / anthropic_auth / openai_auth set to the wizard's choices;
+// every other key keeps its template default.
+func renderConfig(c wizardChoices) string {
+	if c.DefaultAgent == "" {
+		c.DefaultAgent = "claude"
+	}
+	if c.AnthropicAuth == "" {
+		c.AnthropicAuth = "api_key"
+	}
+	if c.OpenAIAuth == "" {
+		c.OpenAIAuth = "api_key"
+	}
+	body := config.SeedTemplate
+	body = setYAMLKey(body, "default_agent", c.DefaultAgent)
+	body = setYAMLKey(body, "anthropic_auth", c.AnthropicAuth)
+	body = setYAMLKey(body, "openai_auth", c.OpenAIAuth)
+	return body
+}
+
+// setYAMLKey rewrites the value of a top-level `key:` line, preserving the rest
+// of the line's trailing comment alignment as written in the template.
+func setYAMLKey(body, key, value string) string {
+	re := regexp.MustCompile(`(?m)^(` + regexp.QuoteMeta(key) + `:\s*)\S+`)
+	return re.ReplaceAllString(body, "${1}"+value)
 }
