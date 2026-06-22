@@ -21,8 +21,7 @@ func runReview(id string) {
 	if pager == "" {
 		pager = "less -R"
 	}
-	// `sh -c "$PAGER"` so PAGER can contain flags.
-	cmd := exec.Command("sh", "-c", pager+" "+path)
+	cmd := pagerCommand(pager, path)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -41,4 +40,12 @@ func runReview(id string) {
 		return
 	}
 	signal("deny", id)
+}
+
+// pagerCommand builds `sh -c '<PAGER> "$1"' sh <path>`. PAGER is the (trusted,
+// flag-bearing) script; the diff path is passed as the positional arg $1 rather
+// than interpolated into the script string, so a path containing spaces or shell
+// metacharacters can neither break the command nor inject into it.
+func pagerCommand(pager, path string) *exec.Cmd {
+	return exec.Command("sh", "-c", pager+` "$1"`, "sh", path)
 }

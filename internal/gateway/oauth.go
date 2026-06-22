@@ -142,6 +142,29 @@ func refreshOAuthToken(tokenURL, clientID, refreshToken string) (CredSnapshot, e
 	return CredSnapshot{
 		Access:  result.AccessToken,
 		Refresh: result.RefreshToken,
-		Expiry:  time.Now().Add(time.Duration(result.ExpiresIn) * time.Second),
+		Expiry:  time.Now().Add(expiresInDuration(result.ExpiresIn)),
 	}, nil
+}
+
+// maxTokenLifetime caps the trusted-but-unverified expires_in from the token
+// endpoint. OAuth access tokens are short-lived (minutes to hours); 30 days is
+// generous headroom for any real value.
+const maxTokenLifetime = 30 * 24 * time.Hour
+
+// expiresInDuration converts an expires_in (seconds) into a Duration, clamped on
+// the raw seconds before the multiply. Clamping first is what makes it safe: a
+// hostile or buggy endpoint returning a huge value would otherwise overflow the
+// int64-nanosecond Duration (it wraps past ~292 years, which can flip the sign
+// and yield a far-future or past expiry). A negative or zero value clamps to 0
+// so the token is treated as already expired rather than valid forever.
+func expiresInDuration(seconds int) time.Duration {
+	const maxSeconds = int(maxTokenLifetime / time.Second)
+	switch {
+	case seconds <= 0:
+		return 0
+	case seconds > maxSeconds:
+		return maxTokenLifetime
+	default:
+		return time.Duration(seconds) * time.Second
+	}
 }

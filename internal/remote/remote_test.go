@@ -1,6 +1,9 @@
 package remote
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestAdapterFor(t *testing.T) {
 	cases := []struct {
@@ -51,3 +54,67 @@ func TestPushOnly_NeverErrors(t *testing.T) {
 		t.Errorf("PushOnly must be a no-op success: %v", err)
 	}
 }
+
+// TestAdapterArgv pins the exact vendor-CLI invocation each adapter builds.
+// These argv strings are the contract with gh/glab/tea; a stray edit (dropped
+// --yes, renamed flag, wrong branch position) silently breaks PR/MR creation
+// in production where the CLI actually runs. We swap runCLI to capture argv
+// instead of shelling out.
+func TestAdapterArgv(t *testing.T) {
+	orig := runCLI
+	t.Cleanup(func() { runCLI = orig })
+
+	var gotWorkDir string
+	var gotEnv []string
+	var gotArgs []string
+	runCLI = func(workDir string, env []string, args ...string) error {
+		gotWorkDir, gotEnv, gotArgs = workDir, env, args
+		return nil
+	}
+
+	cases := []struct {
+		name    string
+		adapter Adapter
+		want    []string
+	}{
+		{"github", GitHubAdapter{}, []string{"gh", "pr", "create", "--head", "agent/abc123", "--fill"}},
+		{"gitlab", GitLabAdapter{}, []string{"glab", "mr", "create", "--source-branch", "agent/abc123", "--fill", "--yes"}},
+		{"gitea", GiteaAdapter{}, []string{"tea", "pr", "create", "--head", "agent/abc123"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotWorkDir, gotEnv, gotArgs = "", nil, nil
+			env := []string{"GIT_DIR=/host/git"}
+			if err := tc.adapter.OpenRequest("/work", "agent/abc123", env); err != nil {
+				t.Fatalf("OpenRequest returned error: %v", err)
+			}
+			if !reflect.DeepEqual(gotArgs, tc.want) {
+				t.Errorf("argv = %q, want %q", gotArgs, tc.want)
+			}
+			if gotWorkDir != "/work" {
+				t.Errorf("workDir = %q, want %q", gotWorkDir, "/work")
+			}
+			if !reflect.DeepEqual(gotEnv, env) {
+				t.Errorf("env = %q, want %q (the host git-dir env must reach the CLI)", gotEnv, env)
+			}
+		})
+	}
+}
+
+// TestAdapter_PropagatesError confirms a CLI failure surfaces to the caller
+// (the broker reports PR-open failures rather than silently swallowing them).
+func TestAdapter_PropagatesError(t *testing.T) {
+	orig := runCLI
+	t.Cleanup(func() { runCLI = orig })
+	runCLI = func(string, []string, ...string) error { return errSentinel }
+
+	if err := (GitHubAdapter{}).OpenRequest("/work", "agent/x", nil); err != errSentinel {
+		t.Errorf("OpenRequest err = %v, want sentinel propagated", err)
+	}
+}
+
+var errSentinel = &cliError{"boom"}
+
+type cliError struct{ s string }
+
+func (e *cliError) Error() string { return e.s }
