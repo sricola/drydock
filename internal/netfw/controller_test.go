@@ -83,3 +83,25 @@ func TestSquidController_RemovePreservesOtherTasks(t *testing.T) {
 		t.Errorf("token file after remove = %q", tok)
 	}
 }
+
+// TestSquidController_RemoveMissingIsIdempotent confirms RemoveTask does not
+// error when the per-task artifacts are absent (the !os.IsNotExist guard) — a
+// double-remove or a remove with no prior AddTask is a clean no-op.
+func TestSquidController_RemoveMissingIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	orig := squidReconfigure
+	t.Cleanup(func() { squidReconfigure = orig })
+	squidReconfigure = func(_, _ string) error { return nil }
+
+	c := NewSquidController("/bin/squid", filepath.Join(dir, "squid.conf"), dir)
+	if err := c.RemoveTask("never-added"); err != nil {
+		t.Errorf("RemoveTask on a missing user should be a no-op, got %v", err)
+	}
+	_ = c.AddTask("task-1", "s1", []string{"a.com"})
+	if err := c.RemoveTask("task-1"); err != nil {
+		t.Fatalf("first RemoveTask: %v", err)
+	}
+	if err := c.RemoveTask("task-1"); err != nil {
+		t.Errorf("second RemoveTask (already gone) should be a no-op, got %v", err)
+	}
+}
