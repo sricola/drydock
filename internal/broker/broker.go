@@ -209,7 +209,12 @@ func (b *Broker) setupWidening(taskID string, extras []egress.Domain) (proxyAuth
 	if err := b.Squid.AddTask(user, secret, hosts); err != nil {
 		return "", cleanup, err
 	}
-	return user + ":" + secret + "@", func() { _ = b.Squid.RemoveTask(user) }, nil
+	cleanup = func() {
+		if err := b.Squid.RemoveTask(user); err != nil {
+			slog.Warn("egress widening cleanup failed", "user", user, "err", err)
+		}
+	}
+	return user + ":" + secret + "@", cleanup, nil
 }
 
 // newID returns a hex token with 128 bits of entropy. /admin/approve is
