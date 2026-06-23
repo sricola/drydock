@@ -31,10 +31,12 @@ func NewSquidController(binPath, confPath, runDir string) *SquidController {
 	return &SquidController{binPath: binPath, confPath: confPath, runDir: runDir}
 }
 
-func (c *SquidController) tokenPath() string             { return filepath.Join(c.runDir, "task-tokens") }
-func (c *SquidController) aclDir() string                { return filepath.Join(c.runDir, "task-acls") }
-func (c *SquidController) domainsPath(u string) string   { return filepath.Join(c.aclDir(), u+".domains") }
-func (c *SquidController) fragPath(u string) string      { return filepath.Join(c.aclDir(), u+".conf") }
+func (c *SquidController) tokenPath() string { return filepath.Join(c.runDir, "task-tokens") }
+func (c *SquidController) aclDir() string    { return filepath.Join(c.runDir, "task-acls") }
+func (c *SquidController) domainsPath(u string) string {
+	return filepath.Join(c.aclDir(), u+".domains")
+}
+func (c *SquidController) fragPath(u string) string { return filepath.Join(c.aclDir(), u+".conf") }
 
 // AddTask registers user→secret + the user's allowed domains, writes the ACL
 // fragment, and reconfigures. ACL ordering: fast dstdomain before slow

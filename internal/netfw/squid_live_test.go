@@ -12,7 +12,9 @@
 // representative HTTP client for that path.
 //
 // Run with:
-//   go test -tags squidlive ./internal/netfw/ -run TestSquidProxyAuth_Live -v
+//
+//	go test -tags squidlive ./internal/netfw/ -run TestSquidProxyAuth_Live -v
+//
 // Requires: squid on PATH/Homebrew, outbound network to api.github.com + ietf.org.
 package netfw
 
@@ -76,7 +78,7 @@ func TestSquidProxyAuth_Live(t *testing.T) {
 
 	ctl := NewSquidController(squidBin, confPath, runDir)
 
-	const widened = "api.github.com" // task-1's approved extra host
+	const widened = "api.github.com"  // task-1's approved extra host
 	const otherExtra = "www.ietf.org" // a host no task is allowed to reach
 
 	// Register task-1 with the widened host.

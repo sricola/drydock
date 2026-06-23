@@ -79,11 +79,11 @@ type Broker struct {
 	GatewayIP     string       // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
 	ProxyPort     int          // squid port (e.g. 3128)
 	Squid         SquidControl // per-task egress widening; nil = disabled
-	TaskBudget    float64 // USD budget per task
-	DefaultModel  string  // operator-level default; per-task Task.Model overrides
-	Notify        bool    // fire macOS notifications on approval gates (config notifications)
-	AnthropicAuth string  // "api_key" | "subscription"; recorded per task for `drydock tasks`
-	OpenAIAuth    string  // "api_key" | "subscription"; recorded per task for `drydock tasks`
+	TaskBudget    float64      // USD budget per task
+	DefaultModel  string       // operator-level default; per-task Task.Model overrides
+	Notify        bool         // fire macOS notifications on approval gates (config notifications)
+	AnthropicAuth string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
+	OpenAIAuth    string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
 
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
