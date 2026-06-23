@@ -21,11 +21,11 @@ jobs:
     # Apple's `container` runtime; cross-building elsewhere is not supported.
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # full history so `git describe` resolves the tag
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -41,12 +41,12 @@ jobs:
         run: echo "tarball=$(ls dist/drydock-*-darwin-arm64.tar.gz)" >> "$GITHUB_OUTPUT"
 
       - name: SLSA build provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ steps.art.outputs.tarball }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@v4
 
       - name: Sign the tarball (keyless)
         run: |
@@ -56,7 +56,7 @@ jobs:
             "${{ steps.art.outputs.tarball }}"
 
       - name: Publish release with artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           fail_on_unmatched_files: true
