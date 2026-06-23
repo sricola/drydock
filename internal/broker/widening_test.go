@@ -1,7 +1,7 @@
 package broker
 
 import (
-	"strings"
+	"errors"
 	"testing"
 
 	"drydock/internal/egress"
@@ -12,14 +12,21 @@ type fakeSquid struct {
 	added   []string
 	removed []string
 	domains map[string][]string
+	secrets map[string]string // user -> secret handed to AddTask
+	addErr  error             // when set, AddTask fails (registration error)
 }
 
 func (f *fakeSquid) AddTask(user, secret string, domains []string) error {
+	if f.addErr != nil {
+		return f.addErr
+	}
 	f.added = append(f.added, user)
 	if f.domains == nil {
 		f.domains = map[string][]string{}
+		f.secrets = map[string]string{}
 	}
 	f.domains[user] = domains
+	f.secrets[user] = secret
 	return nil
 }
 func (f *fakeSquid) RemoveTask(user string) error {
@@ -42,9 +49,14 @@ func TestSetupWidening_RegistersAndReturnsAuth(t *testing.T) {
 	if got := fs.domains["task-abc123"]; len(got) != 1 || got[0] != "api.github.com" {
 		t.Errorf("registered domains = %v", got)
 	}
-	// proxyAuth must be "user:secret@" with a non-empty secret.
-	if !strings.HasPrefix(proxyAuth, "task-abc123:") || !strings.HasSuffix(proxyAuth, "@") || len(proxyAuth) <= len("task-abc123:@") {
-		t.Errorf("proxyAuth = %q, want task-abc123:<secret>@", proxyAuth)
+	// proxyAuth must be "user:secret@" with a non-empty secret, and the secret
+	// must be exactly the one handed to AddTask (no scramble/reuse).
+	wantAuth := "task-abc123:" + fs.secrets["task-abc123"] + "@"
+	if fs.secrets["task-abc123"] == "" {
+		t.Errorf("AddTask received an empty secret")
+	}
+	if proxyAuth != wantAuth {
+		t.Errorf("proxyAuth = %q, want %q (secret must match the one given to AddTask)", proxyAuth, wantAuth)
 	}
 	// cleanup deregisters.
 	cleanup()
@@ -66,6 +78,27 @@ func TestSetupWidening_NoExtrasIsNoOp(t *testing.T) {
 	cleanup() // must be safe to call
 	if len(fs.added) != 0 || len(fs.removed) != 0 {
 		t.Errorf("non-widened touched squid: added=%v removed=%v", fs.added, fs.removed)
+	}
+}
+
+func TestSetupWidening_AddTaskErrorFailsClosed(t *testing.T) {
+	fs := &fakeSquid{addErr: errors.New("reconfigure boom")}
+	b := &Broker{Squid: fs}
+	extras := []egress.Domain{{Host: "api.github.com", Ports: []int{443}}}
+
+	proxyAuth, cleanup, err := b.setupWidening("abc123", extras)
+	if err == nil {
+		t.Fatal("setupWidening must return the AddTask error (fail-closed)")
+	}
+	if proxyAuth != "" {
+		t.Errorf("proxyAuth = %q, want empty on registration failure", proxyAuth)
+	}
+	if cleanup == nil {
+		t.Fatal("cleanup must be non-nil even on error (caller defers it)")
+	}
+	cleanup() // must be safe; nothing was registered, so nothing to remove
+	if len(fs.removed) != 0 {
+		t.Errorf("cleanup deregistered %v after a failed AddTask", fs.removed)
 	}
 }
 

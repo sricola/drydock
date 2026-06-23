@@ -50,7 +50,9 @@ func (c *SquidController) AddTask(user, secret string, domains []string) error {
 	if err := c.upsertToken(user, secret); err != nil {
 		return err
 	}
-	if err := os.WriteFile(c.domainsPath(user), []byte(strings.Join(domains, "\n")+"\n"), 0o644); err != nil {
+	// 0o600: per-task squid config read only by the broker-owned squid; no other
+	// local user needs them.
+	if err := os.WriteFile(c.domainsPath(user), []byte(strings.Join(domains, "\n")+"\n"), 0o600); err != nil {
 		return err
 	}
 	frag := fmt.Sprintf(`acl u_%s proxy_auth %s
@@ -58,19 +60,25 @@ acl d_%s dstdomain "%s"
 http_access allow CONNECT SSL_ports d_%s u_%s
 http_access allow d_%s u_%s
 `, user, user, user, c.domainsPath(user), user, user, user, user)
-	if err := os.WriteFile(c.fragPath(user), []byte(frag), 0o644); err != nil {
+	if err := os.WriteFile(c.fragPath(user), []byte(frag), 0o600); err != nil {
 		return err
 	}
 	return squidReconfigure(c.binPath, c.confPath)
 }
 
 // RemoveTask deletes the user's token line, domains file, and fragment, then
-// reconfigures. Missing artifacts are not an error (idempotent cleanup).
+// reconfigures. A missing artifact is not an error (idempotent cleanup), but any
+// other removal failure (e.g. EPERM) is surfaced rather than silently leaving a
+// stale fragment that a later reconfigure would reload.
 func (c *SquidController) RemoveTask(user string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_ = os.Remove(c.fragPath(user))
-	_ = os.Remove(c.domainsPath(user))
+	if err := os.Remove(c.fragPath(user)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(c.domainsPath(user)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if err := c.removeToken(user); err != nil {
 		return err
 	}
