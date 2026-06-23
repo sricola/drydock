@@ -38,17 +38,30 @@ via off
 `, bindAddr, helperCmd, allowlistPath, runDir, runDir, runDir)
 }
 
+// taskACLPlaceholder is a comment-only fragment kept in task-acls/ so squid's
+// `include .../task-acls/*.conf` always matches at least one file. squid FATALs
+// on a glob that matches zero files, which is the normal state (no widened task
+// active, and always at boot) — so the placeholder must always be present.
+const taskACLPlaceholder = "00-placeholder.conf"
+
 // ResetTaskState clears per-task widening artifacts (ACL fragments + token
 // file) left by a hard-killed prior broker, so a fresh start begins with only
-// the default allowlist. Mirrors reapStaleSquid for the pid file.
+// the default allowlist. It leaves task-acls/ present with the comment-only
+// placeholder so squid's include resolves with zero active tasks. Mirrors
+// reapStaleSquid for the pid file.
 func ResetTaskState(runDir string) error {
-	if err := os.RemoveAll(filepath.Join(runDir, "task-acls")); err != nil {
+	aclDir := filepath.Join(runDir, "task-acls")
+	if err := os.RemoveAll(aclDir); err != nil {
 		return err
 	}
 	if err := os.Remove(filepath.Join(runDir, "task-tokens")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return nil
+	if err := os.MkdirAll(aclDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(aclDir, taskACLPlaceholder),
+		[]byte("# placeholder so squid's task-acls/*.conf include always matches a file\n"), 0o644)
 }
 
 // Squid is a handle to a running userspace squid process.
