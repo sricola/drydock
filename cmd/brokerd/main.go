@@ -143,6 +143,7 @@ func main() {
 	// the interface up). Optional: if squid isn't installed, registry egress is
 	// simply unavailable — the model API still works via the gateway.
 	var squid *netfw.Squid
+	var squidCtl *netfw.SquidController
 	if bin, ferr := netfw.FindSquid(); ferr != nil {
 		slog.Warn("registry egress disabled", "err", ferr)
 	} else {
@@ -157,6 +158,8 @@ func main() {
 			die("squid start failed", "err", err)
 		}
 		slog.Info("squid listening", "addr", proxyAddr)
+		confPath := filepath.Join(cfg.SquidRunDir, "squid.conf")
+		squidCtl = netfw.NewSquidController(bin, confPath, cfg.SquidRunDir)
 	}
 
 	// Stop squid and remove the anchor. Used both on signal and on a fatal
@@ -282,6 +285,9 @@ func main() {
 		Notify:        cfg.Notifications,
 		AnthropicAuth: cfg.AnthropicAuth,
 		OpenAIAuth:    cfg.OpenAIAuth,
+	}
+	if squidCtl != nil {
+		b.Squid = squidCtl
 	}
 	brk = b // expose to the shutdown handler
 	slog.Info("config",
