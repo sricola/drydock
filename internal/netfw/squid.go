@@ -90,6 +90,14 @@ func FindSquid() (string, error) {
 // StartSquid writes the allowlist + conf into runDir and launches squid in the
 // foreground (-N) bound to bindAddr (e.g. 192.168.66.1:3128).
 func StartSquid(binPath, bindAddr, allowlist, runDir, helperCmd string) (*Squid, error) {
+	// squid.conf interpolates runDir into unquoted paths (the include glob,
+	// pid_filename, cache_log) and the auth helper command, none of which squid
+	// parses with embedded whitespace — and the include glob can't be quoted
+	// without ceasing to be a glob. Fail fast with a clear message instead of
+	// emitting a squid.conf that FATALs at boot or silently breaks proxy auth.
+	if strings.ContainsAny(runDir, " \t") {
+		return nil, fmt.Errorf("netfw: squid run dir must not contain whitespace: %q", runDir)
+	}
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
 	}

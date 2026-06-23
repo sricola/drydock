@@ -68,6 +68,16 @@ func TestResetTaskState_ClearsStaleButKeepsPlaceholder(t *testing.T) {
 	}
 }
 
+// TestStartSquid_RejectsWhitespaceRunDir guards against a runDir with a space:
+// squid.conf's unquoted include/pid/log paths would FATAL. The check fires
+// before any squid exec, so no squid binary is needed.
+func TestStartSquid_RejectsWhitespaceRunDir(t *testing.T) {
+	_, err := StartSquid("/bin/false", "127.0.0.1:1", "", "/tmp/has space/run", "helper __squid-authhelper /tmp/tok")
+	if err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("expected whitespace error, got %v", err)
+	}
+}
+
 // TestResetTaskState_CleanDirIsIdempotent covers the nothing-to-remove path.
 func TestResetTaskState_CleanDirIsIdempotent(t *testing.T) {
 	dir := t.TempDir()

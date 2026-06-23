@@ -152,6 +152,12 @@ func main() {
 		if herr != nil {
 			die("resolve brokerd path for squid auth helper", "err", herr)
 		}
+		// squid splits `auth_param basic program` on whitespace with no shell, so
+		// a space in the brokerd path would make it exec the wrong binary and
+		// silently fail every proxy-auth check. Fail fast with a clear message.
+		if strings.ContainsAny(self, " \t") {
+			die("brokerd path contains whitespace, which breaks squid's auth_param helper; install brokerd at a path without spaces", "path", self)
+		}
 		helperCmd := fmt.Sprintf("%s __squid-authhelper %s", self, filepath.Join(cfg.SquidRunDir, "task-tokens"))
 		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(egCfg), cfg.SquidRunDir, helperCmd)
 		if err != nil {

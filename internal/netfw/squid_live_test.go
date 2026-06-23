@@ -84,15 +84,25 @@ func TestSquidProxyAuth_Live(t *testing.T) {
 		t.Fatalf("AddTask task-1: %v", err)
 	}
 
+	// `squid -k reconfigure` (fired by AddTask/RemoveTask) is an async SIGHUP —
+	// it returns before the reload finishes. Each assertion polls until the
+	// expected outcome (or a deadline) so the test isn't racing the reload.
+	// The negative cases (3/4/5) assert the EXACT proxy deny code (403): a bare
+	// "not reachable" could be satisfied by squid allowing the CONNECT and the
+	// upstream then failing (curl exits non-zero, code 0) — which would mask an
+	// isolation/revocation breach. Requiring 403 means "the proxy cleanly denied."
+	reachable := func(r curlResult) bool { return r.reachable }
+	wantCode := func(c int) func(curlResult) bool { return func(r curlResult) bool { return r.code == c } }
+
 	// 1) task-1, correct creds, its own extra host → REACHABLE.
-	if got := curl(t, bind, "task-1", "secret1", widened); !got.reachable {
+	if got := expect(t, reachable, bind, "task-1", "secret1", widened); !got.reachable {
 		t.Errorf("[1] task-1 → %s should be reachable, got %s", widened, got)
 	} else {
 		t.Logf("[1] task-1 creds → %s: reachable ✓", widened)
 	}
 
 	// 2) NO creds, the extra host → 407 challenge (not reachable).
-	if got := curl(t, bind, "", "", widened); got.reachable || got.code != 407 {
+	if got := expect(t, wantCode(407), bind, "", "", widened); got.reachable || got.code != 407 {
 		t.Errorf("[2] no-creds → %s should be 407, got %s", widened, got)
 	} else {
 		t.Logf("[2] no creds → %s: 407 challenge ✓", widened)
@@ -100,31 +110,49 @@ func TestSquidProxyAuth_Live(t *testing.T) {
 
 	// 3) task-1 creds, a non-allowlisted host → clean 403 deny (NOT a 407).
 	//    Validates the load-bearing ACL ordering (fast dstdomain before slow proxy_auth).
-	if got := curl(t, bind, "task-1", "secret1", otherExtra); got.reachable || got.code != 403 {
+	if got := expect(t, wantCode(403), bind, "task-1", "secret1", otherExtra); got.code != 403 {
 		t.Errorf("[3] task-1 → %s should be 403 (clean deny, not 407), got %s", otherExtra, got)
 	} else {
 		t.Logf("[3] task-1 creds → %s: 403 clean deny ✓ (ACL ordering correct)", otherExtra)
 	}
 
 	// 4) CROSS-TASK ISOLATION: register task-2 (different host), its creds must
-	//    NOT reach task-1's widened host.
+	//    NOT reach task-1's widened host → clean 403 deny.
 	if err := ctl.AddTask("task-2", "secret2", []string{"example.org"}); err != nil {
 		t.Fatalf("AddTask task-2: %v", err)
 	}
-	if got := curl(t, bind, "task-2", "secret2", widened); got.reachable {
-		t.Errorf("[4] ISOLATION BREACH: task-2 reached task-1's host %s (%s)", widened, got)
+	if got := expect(t, wantCode(403), bind, "task-2", "secret2", widened); got.code != 403 {
+		t.Errorf("[4] ISOLATION: task-2 → task-1's host %s must be a clean 403 deny, got %s", widened, got)
 	} else {
-		t.Logf("[4] task-2 creds → task-1's host %s: blocked (%d) ✓ cross-task isolation holds", widened, got.code)
+		t.Logf("[4] task-2 creds → task-1's host %s: 403 deny ✓ cross-task isolation holds", widened)
 	}
 
-	// 5) After RemoveTask, task-1's credential no longer authenticates → 407.
+	// 5) After RemoveTask, task-1's fragment is gone, so its host falls through to
+	//    `deny all` → clean 403 (the token is also revoked; no proxy_auth ACL is
+	//    left to issue a 407).
 	if err := ctl.RemoveTask("task-1"); err != nil {
 		t.Fatalf("RemoveTask task-1: %v", err)
 	}
-	if got := curl(t, bind, "task-1", "secret1", widened); got.reachable {
-		t.Errorf("[5] task-1 cred still works after RemoveTask: %s reachable (%s)", widened, got)
+	if got := expect(t, wantCode(403), bind, "task-1", "secret1", widened); got.code != 403 {
+		t.Errorf("[5] task-1 after RemoveTask → %s must be a clean 403 deny, got %s", widened, got)
 	} else {
-		t.Logf("[5] task-1 creds after RemoveTask → %s: blocked (%d) ✓ deregister works", widened, got.code)
+		t.Logf("[5] task-1 creds after RemoveTask → %s: 403 deny ✓ deregister works", widened)
+	}
+}
+
+// expect polls curl until pred(result) holds or an 8s deadline, returning the
+// last result. It absorbs squid's async `-k reconfigure` reload so assertions
+// don't race the reload; on a genuine failure pred never holds and the last
+// (failing) result is returned for the caller to assert on.
+func expect(t *testing.T, pred func(curlResult) bool, bind, user, pass, host string) curlResult {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		got := curl(t, bind, user, pass, host)
+		if pred(got) || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(150 * time.Millisecond)
 	}
 }
 
