@@ -7,7 +7,7 @@
 
 # drydock
 
-<p align="center"><b>Let a coding agent run wild on your repo — without trusting it.</b></p>
+<p align="center"><b>Let a coding agent run wild on your Mac — without trusting it.</b></p>
 
 <p align="center">
   <img alt="status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
