@@ -60,6 +60,13 @@ type Task struct {
 	Agent string `json:"agent"`
 }
 
+// SquidControl registers/deregisters per-task egress widening with squid.
+// nil on a Broker disables widening enforcement (non-widened tasks and tests).
+type SquidControl interface {
+	AddTask(user, secret string, domains []string) error
+	RemoveTask(user string) error
+}
+
 type Broker struct {
 	Cfg           egress.Config
 	Providers     map[string]creds.Provider // vendor -> provider
@@ -68,14 +75,15 @@ type Broker struct {
 	StageRoot     string
 	AuditRoot     string
 	Timeout       time.Duration
-	Network       string  // stable egress network name (e.g. drydock-egress)
-	GatewayIP     string  // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
-	ProxyPort     int     // squid port (e.g. 3128)
-	TaskBudget    float64 // USD budget per task
-	DefaultModel  string  // operator-level default; per-task Task.Model overrides
-	Notify        bool    // fire macOS notifications on approval gates (config notifications)
-	AnthropicAuth string  // "api_key" | "subscription"; recorded per task for `drydock tasks`
-	OpenAIAuth    string  // "api_key" | "subscription"; recorded per task for `drydock tasks`
+	Network       string       // stable egress network name (e.g. drydock-egress)
+	GatewayIP     string       // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
+	ProxyPort     int          // squid port (e.g. 3128)
+	Squid         SquidControl // per-task egress widening; nil = disabled
+	TaskBudget    float64      // USD budget per task
+	DefaultModel  string       // operator-level default; per-task Task.Model overrides
+	Notify        bool         // fire macOS notifications on approval gates (config notifications)
+	AnthropicAuth string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
+	OpenAIAuth    string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
 
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
@@ -166,6 +174,48 @@ type TaskState struct {
 }
 
 const instructionSnippetMax = 140
+
+func proxyUser(taskID string) string { return "task-" + taskID }
+
+// mintProxySecret returns a random hex secret for a task's proxy credential.
+func mintProxySecret() (string, error) {
+	var b [18]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// setupWidening registers a per-task squid credential + ACL for the task's
+// extra hosts and returns the "<user>:<secret>@" userinfo to splice into the
+// VM's proxy URL, plus a cleanup that deregisters it. For a non-widened task
+// (no extras) or when squid widening is disabled (b.Squid == nil) it is a
+// no-op: empty proxyAuth and a no-op cleanup (always safe to defer). Fail-closed:
+// a registration error is returned and the caller must abort before the run.
+func (b *Broker) setupWidening(taskID string, extras []egress.Domain) (proxyAuth string, cleanup func(), err error) {
+	cleanup = func() {}
+	if len(extras) == 0 || b.Squid == nil {
+		return "", cleanup, nil
+	}
+	secret, err := mintProxySecret()
+	if err != nil {
+		return "", cleanup, err
+	}
+	user := proxyUser(taskID)
+	hosts := make([]string, 0, len(extras))
+	for _, d := range extras {
+		hosts = append(hosts, d.Host)
+	}
+	if err := b.Squid.AddTask(user, secret, hosts); err != nil {
+		return "", cleanup, err
+	}
+	cleanup = func() {
+		if err := b.Squid.RemoveTask(user); err != nil {
+			slog.Warn("egress widening cleanup failed", "user", user, "err", err)
+		}
+	}
+	return user + ":" + secret + "@", cleanup, nil
+}
 
 // newID returns a hex token with 128 bits of entropy. /admin/approve is
 // directly addressable by ID; with 48 bits a local attacker can race
@@ -356,6 +406,16 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		b.setStage(taskID, StageRunning)
 	}
 
+	// Register per-task egress widening (no-op for non-widened tasks). The
+	// returned userinfo scopes the extra hosts to THIS task's proxy credential;
+	// cleanup deregisters on every exit path. Fail-closed.
+	proxyAuth, widenCleanup, err := b.setupWidening(taskID, t.EgressExtra)
+	if err != nil {
+		sw.emit(errorEvent(taskID, "egress widening setup failed", ""))
+		return
+	}
+	defer widenCleanup()
+
 	stageDir := filepath.Join(b.StageRoot, taskID)
 
 	prepare := b.prepareStage
@@ -418,8 +478,8 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	env := append([]string{}, grant.EnvVars()...)
 	env = append(env,
-		fmt.Sprintf("HTTPS_PROXY=http://%s:%d", b.GatewayIP, b.ProxyPort),
-		fmt.Sprintf("HTTP_PROXY=http://%s:%d", b.GatewayIP, b.ProxyPort),
+		fmt.Sprintf("HTTPS_PROXY=http://%s%s:%d", proxyAuth, b.GatewayIP, b.ProxyPort),
+		fmt.Sprintf("HTTP_PROXY=http://%s%s:%d", proxyAuth, b.GatewayIP, b.ProxyPort),
 		// Bypass squid for the credential gateway itself — squid's allowlist
 		// is hostname-based and would deny a CONNECT to the gateway IP.
 		"NO_PROXY=127.0.0.1,localhost,"+b.GatewayIP,

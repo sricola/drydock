@@ -82,6 +82,16 @@ func resolveAPIKey(name string, fileKeys map[string]string) string {
 }
 
 func main() {
+	// Hidden subcommand: squid invokes this same binary as its basic-auth
+	// helper (auth_param basic program <brokerd> __squid-authhelper <tokenfile>).
+	if len(os.Args) >= 3 && os.Args[1] == "__squid-authhelper" {
+		if err := runSquidAuthHelper(os.Args[2], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "squid-authhelper:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Main config: ~/.drydock/config.yaml + env-var overrides. Missing file
 	// is fine — defaults kick in. Loaded first so logging, the version check,
 	// and notifications all honor the resolved config (YAML + env). A failure
@@ -133,15 +143,29 @@ func main() {
 	// the interface up). Optional: if squid isn't installed, registry egress is
 	// simply unavailable — the model API still works via the gateway.
 	var squid *netfw.Squid
+	var squidCtl *netfw.SquidController
 	if bin, ferr := netfw.FindSquid(); ferr != nil {
 		slog.Warn("registry egress disabled", "err", ferr)
 	} else {
 		waitBindable(proxyAddr)
-		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(egCfg), cfg.SquidRunDir)
+		self, herr := os.Executable()
+		if herr != nil {
+			die("resolve brokerd path for squid auth helper", "err", herr)
+		}
+		// squid splits `auth_param basic program` on whitespace with no shell, so
+		// a space in the brokerd path would make it exec the wrong binary and
+		// silently fail every proxy-auth check. Fail fast with a clear message.
+		if strings.ContainsAny(self, " \t") {
+			die("brokerd path contains whitespace, which breaks squid's auth_param helper; install brokerd at a path without spaces", "path", self)
+		}
+		helperCmd := fmt.Sprintf("%s __squid-authhelper %s", self, filepath.Join(cfg.SquidRunDir, "task-tokens"))
+		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(egCfg), cfg.SquidRunDir, helperCmd)
 		if err != nil {
 			die("squid start failed", "err", err)
 		}
 		slog.Info("squid listening", "addr", proxyAddr)
+		confPath := filepath.Join(cfg.SquidRunDir, "squid.conf")
+		squidCtl = netfw.NewSquidController(bin, confPath, cfg.SquidRunDir)
 	}
 
 	// Stop squid and remove the anchor. Used both on signal and on a fatal
@@ -267,6 +291,9 @@ func main() {
 		Notify:        cfg.Notifications,
 		AnthropicAuth: cfg.AnthropicAuth,
 		OpenAIAuth:    cfg.OpenAIAuth,
+	}
+	if squidCtl != nil {
+		b.Squid = squidCtl
 	}
 	brk = b // expose to the shutdown handler
 	slog.Info("config",

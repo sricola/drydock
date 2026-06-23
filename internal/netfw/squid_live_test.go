@@ -1,0 +1,207 @@
+//go:build squidlive
+
+// Live integration test for per-task egress widening via squid proxy auth.
+// Exercises the REAL shipped code paths end-to-end against a real squid:
+//   - CompileSquidConf (base conf with auth_param + include)
+//   - the brokerd __squid-authhelper basic-auth helper (built fresh here)
+//   - SquidController.AddTask / RemoveTask (+ squid -k reconfigure)
+//
+// It does NOT need the container runtime, the VM image, or model credentials:
+// the agent reaches the model API through the credential gateway (NO_PROXY'd),
+// so squid only ever sees tool egress (curl/git/npm/pip). curl is the
+// representative HTTP client for that path.
+//
+// Run with:
+//
+//	go test -tags squidlive ./internal/netfw/ -run TestSquidProxyAuth_Live -v
+//
+// Requires: squid on PATH/Homebrew, outbound network to api.github.com + ietf.org.
+package netfw
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSquidProxyAuth_Live(t *testing.T) {
+	squidBin, err := FindSquid()
+	if err != nil {
+		t.Skipf("squid not installed: %v", err)
+	}
+
+	runDir := t.TempDir()
+	port := "13128"
+	bind := "127.0.0.1:" + port
+
+	// Build the real brokerd binary to use as squid's basic-auth helper.
+	helperBin := filepath.Join(runDir, "brokerd")
+	build := exec.Command("go", "build", "-o", helperBin, "drydock/cmd/brokerd")
+	build.Stdout, build.Stderr = os.Stdout, os.Stderr
+	if err := build.Run(); err != nil {
+		t.Fatalf("build brokerd helper: %v", err)
+	}
+	tokenPath := filepath.Join(runDir, "task-tokens")
+	helperCmd := fmt.Sprintf("%s __squid-authhelper %s", helperBin, tokenPath)
+
+	// Default allowlist (no auth required) — must NOT include the widened hosts.
+	allowPath := filepath.Join(runDir, "squid-allow.txt")
+	if err := os.WriteFile(allowPath, []byte("example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Base conf via the real CompileSquidConf.
+	confPath := filepath.Join(runDir, "squid.conf")
+	if err := os.WriteFile(confPath, []byte(CompileSquidConf(bind, allowPath, runDir, helperCmd)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the real boot path: ResetTaskState leaves task-acls/ with the
+	// placeholder so squid's include resolves with zero active tasks.
+	if err := ResetTaskState(runDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start squid in the foreground.
+	squid := exec.Command(squidBin, "-N", "-f", confPath)
+	squid.Stdout, squid.Stderr = os.Stdout, os.Stderr
+	if err := squid.Start(); err != nil {
+		t.Fatalf("start squid: %v", err)
+	}
+	t.Cleanup(func() { _ = squid.Process.Kill(); _ = squid.Wait() })
+	if !waitPort(bind, 5*time.Second) {
+		t.Fatalf("squid did not open %s", bind)
+	}
+
+	ctl := NewSquidController(squidBin, confPath, runDir)
+
+	const widened = "api.github.com"  // task-1's approved extra host
+	const otherExtra = "www.ietf.org" // a host no task is allowed to reach
+
+	// Register task-1 with the widened host.
+	if err := ctl.AddTask("task-1", "secret1", []string{widened}); err != nil {
+		t.Fatalf("AddTask task-1: %v", err)
+	}
+
+	// `squid -k reconfigure` (fired by AddTask/RemoveTask) is an async SIGHUP —
+	// it returns before the reload finishes. Each assertion polls until the
+	// expected outcome (or a deadline) so the test isn't racing the reload.
+	// The negative cases (3/4/5) assert the EXACT proxy deny code (403): a bare
+	// "not reachable" could be satisfied by squid allowing the CONNECT and the
+	// upstream then failing (curl exits non-zero, code 0) — which would mask an
+	// isolation/revocation breach. Requiring 403 means "the proxy cleanly denied."
+	reachable := func(r curlResult) bool { return r.reachable }
+	wantCode := func(c int) func(curlResult) bool { return func(r curlResult) bool { return r.code == c } }
+
+	// 1) task-1, correct creds, its own extra host → REACHABLE.
+	if got := expect(t, reachable, bind, "task-1", "secret1", widened); !got.reachable {
+		t.Errorf("[1] task-1 → %s should be reachable, got %s", widened, got)
+	} else {
+		t.Logf("[1] task-1 creds → %s: reachable ✓", widened)
+	}
+
+	// 2) NO creds, the extra host → 407 challenge (not reachable).
+	if got := expect(t, wantCode(407), bind, "", "", widened); got.reachable || got.code != 407 {
+		t.Errorf("[2] no-creds → %s should be 407, got %s", widened, got)
+	} else {
+		t.Logf("[2] no creds → %s: 407 challenge ✓", widened)
+	}
+
+	// 3) task-1 creds, a non-allowlisted host → clean 403 deny (NOT a 407).
+	//    Validates the load-bearing ACL ordering (fast dstdomain before slow proxy_auth).
+	if got := expect(t, wantCode(403), bind, "task-1", "secret1", otherExtra); got.code != 403 {
+		t.Errorf("[3] task-1 → %s should be 403 (clean deny, not 407), got %s", otherExtra, got)
+	} else {
+		t.Logf("[3] task-1 creds → %s: 403 clean deny ✓ (ACL ordering correct)", otherExtra)
+	}
+
+	// 4) CROSS-TASK ISOLATION: register task-2 (different host), its creds must
+	//    NOT reach task-1's widened host → clean 403 deny.
+	if err := ctl.AddTask("task-2", "secret2", []string{"example.org"}); err != nil {
+		t.Fatalf("AddTask task-2: %v", err)
+	}
+	if got := expect(t, wantCode(403), bind, "task-2", "secret2", widened); got.code != 403 {
+		t.Errorf("[4] ISOLATION: task-2 → task-1's host %s must be a clean 403 deny, got %s", widened, got)
+	} else {
+		t.Logf("[4] task-2 creds → task-1's host %s: 403 deny ✓ cross-task isolation holds", widened)
+	}
+
+	// 5) After RemoveTask, task-1's fragment is gone, so its host falls through to
+	//    `deny all` → clean 403 (the token is also revoked; no proxy_auth ACL is
+	//    left to issue a 407).
+	if err := ctl.RemoveTask("task-1"); err != nil {
+		t.Fatalf("RemoveTask task-1: %v", err)
+	}
+	if got := expect(t, wantCode(403), bind, "task-1", "secret1", widened); got.code != 403 {
+		t.Errorf("[5] task-1 after RemoveTask → %s must be a clean 403 deny, got %s", widened, got)
+	} else {
+		t.Logf("[5] task-1 creds after RemoveTask → %s: 403 deny ✓ deregister works", widened)
+	}
+}
+
+// expect polls curl until pred(result) holds or an 8s deadline, returning the
+// last result. It absorbs squid's async `-k reconfigure` reload so assertions
+// don't race the reload; on a genuine failure pred never holds and the last
+// (failing) result is returned for the caller to assert on.
+func expect(t *testing.T, pred func(curlResult) bool, bind, user, pass, host string) curlResult {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		got := curl(t, bind, user, pass, host)
+		if pred(got) || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+type curlResult struct {
+	reachable bool
+	code      int // HTTP status, or the proxy CONNECT response (407/403), 0 if unknown
+}
+
+func (r curlResult) String() string { return fmt.Sprintf("reachable=%v code=%d", r.reachable, r.code) }
+
+// curl issues an HTTPS request through the squid proxy at bind, optionally with
+// proxy basic-auth user:pass, and classifies the outcome. A successful CONNECT
+// + response is "reachable"; a blocked CONNECT is classified by the proxy
+// response code parsed from curl's stderr ("response 407" / "response 403").
+func curl(t *testing.T, bind, user, pass, host string) curlResult {
+	t.Helper()
+	proxy := "http://"
+	if user != "" {
+		proxy += user + ":" + pass + "@"
+	}
+	proxy += bind
+	out, err := exec.Command("curl", "-sS", "-o", "/dev/null",
+		"-w", "%{http_code}", "--max-time", "20",
+		"-x", proxy, "https://"+host+"/").CombinedOutput()
+	s := string(out)
+	if err == nil {
+		code := 0
+		fmt.Sscanf(strings.TrimSpace(s), "%d", &code)
+		return curlResult{reachable: code >= 200 && code < 400, code: code}
+	}
+	// CONNECT failed — parse the proxy response code from "response NNN".
+	for _, marker := range []int{407, 403} {
+		if strings.Contains(s, fmt.Sprintf("response %d", marker)) {
+			return curlResult{reachable: false, code: marker}
+		}
+	}
+	return curlResult{reachable: false, code: 0}
+}
+
+func waitPort(addr string, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
+			_ = c.Close()
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
