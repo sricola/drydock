@@ -7,8 +7,20 @@ entry below corresponds to a Git tag of the same name.
 
 ## Unreleased
 
+## v0.3.0 — 2026-06-22
+
 ### Added
 
+- **First-run setup wizard.** On a fresh install with a TTY, `drydock setup`
+  runs an interactive wizard: pick your agent (Claude Code / OpenAI Codex /
+  both), choose subscription or API-key auth per agent, and optionally store an
+  API key host-side. `--reconfigure` re-runs it; non-TTY runs and existing
+  configs without `--reconfigure` keep the previous static seed behavior.
+- **Host-side API-key store (`~/.drydock/api-keys.env`, mode 0600).** API keys
+  can be persisted host-side so the broker finds them across shells — they are
+  never copied into the sandbox VM. A non-empty environment variable still
+  overrides the stored value, and `drydock doctor` reports each key's source
+  (env / api-keys.env / none).
 - **Live progress streaming for `drydock submit`.** Instead of blocking silently
   for the whole run, the submit shell now streams phase updates in real time:
   `preparing → running → awaiting approval → pushing`. Each phase prints a
@@ -30,6 +42,33 @@ entry below corresponds to a Git tag of the same name.
   per line), replacing the previous single-object response. Pipe to `jq -c` to
   process events incrementally or filter the terminal `result` event for the
   branch name.
+
+### Fixed
+
+- **Per-task egress widening is now actually enforced.** Approved
+  `--egress-extra` hosts previously never became reachable: the host-side squid
+  proxy — the per-domain egress enforcement point — was started once with the
+  default allowlist and never reconfigured, so an operator could approve a host
+  and the agent would still be blocked. Widening now provisions a per-task squid
+  proxy credential (mirroring the credential gateway's per-task token model) that
+  authorizes only that task's extra hosts, with strict isolation from other
+  concurrent tasks. The default (non-widened) egress path is byte-for-byte
+  unchanged, and the squid run dir / broker path are validated to fail fast on
+  whitespace that would silently break the proxy config.
+- **The setup wizard never echoes a pasted secret.** Terminal echo is reliably
+  disabled while reading an API key; if echo cannot be disabled, the wizard
+  refuses to read the key in plaintext rather than risk showing it on screen.
+- **Hardening: pager invocation, OAuth expiry, API-key store.** `drydock review`
+  passes the diff path to `$PAGER` as a positional argument, so a path with
+  spaces or shell metacharacters can neither break nor inject into the command;
+  OAuth `expires_in` is clamped to avoid an int64 duration overflow on a hostile
+  or buggy token endpoint; and the API-key store's load and write now agree on
+  the recognized key set. Adds test coverage for the GitHub/GitLab/Gitea remote
+  adapters.
+- **Squid pid and image-build robustness.** A stale `squid.pid` left by a
+  hard-killed broker is now self-healed on start/stop, and a `container build`
+  that ships an empty context produces an actionable message instead of an
+  opaque failure.
 
 ### Notes
 
