@@ -70,6 +70,9 @@ drydock submit --repo … --instruction "…" \
 # Suppress progress; print only the final outcome line (useful in scripts)
 drydock submit --repo … --instruction "…" --quiet
 
+# Mark the task sensitive in the audit trail
+drydock submit --repo … --instruction "…" --sensitive
+
 # Stream raw NDJSON events (one JSON object per line)
 drydock submit --repo … --instruction "…" --json | jq -c 'select(.event=="result")'
 ```

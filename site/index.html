@@ -55,22 +55,23 @@
         <path d="M 17 19 L 20 19" stroke-width="2" stroke-linecap="round"/>
       </svg>drydock
     </div>
-    <nav class="nav">
+    <nav class="nav" aria-label="Site">
       <a href="#how">how it works</a>
       <a class="hide-sm" href="#architecture">architecture</a>
       <a href="docs/threat-model.html">threat model</a>
-      <a class="hide-sm" href="docs/index.html">docs</a>
-      <a href="https://github.com/sricola/drydock">github</a>
+      <a href="docs/index.html">docs</a>
+      <a class="hide-sm" href="https://github.com/sricola/drydock">github</a>
     </nav>
   </div>
 </div>
 
+<main>
 <header class="hero">
   <div class="wrap">
     <div class="kicker reveal"><span class="bar"></span>macos · local · coding agents on your repos, never the cloud</div>
     <h1 class="reveal">Let a coding agent run wild on your Mac —<br><span class="t">without trusting it.</span></h1>
     <p class="lede reveal">drydock runs <b>Claude Code</b> or <b>OpenAI Codex</b> full-throttle on your own repos, on your own Mac — no permission prompts, no babysitting. Each task runs sealed in a throwaway VM, so the agent <b>can't touch your API key, can't reach the open internet, and can't write to anything but a disposable copy</b>. The only thing that ever comes back is a <span class="ic">git diff</span> — and nothing reaches your real code until you approve it.</p>
-    <ul class="vstack reveal">
+    <ul class="vstack reveal" role="list">
       <li><b>It never gets your key.</b> Your real API key stays on the host — the agent only ever sees a short-lived, budget-capped token.</li>
       <li><b>It can't smuggle anything out.</b> The internet is deny-by-default — no exfiltrating your code, no calling home.</li>
       <li><b>Nothing touches your repo until you say so.</b> You read the diff and approve it before it ever reaches origin.</li>
@@ -124,21 +125,20 @@ drydock start</pre>
 
 <section id="contain">
   <div class="seclabel reveal">The boundary</div>
-  <div class="diagram reveal" style="margin-top:14px">
-    <div class="head">
-      <div class="zone-h vm">sealed VM — assume hostile</div>
-      <div class="zone-h host">host — your machine</div>
+  <h2 class="sr-only">What's contained, and what stays safe</h2>
+  <div class="cstrip reveal">
+    <div class="cz vm">
+      <span class="czl">sealed VM — assume hostile</span>
+      <span class="pill vm">poisoned repo</span>
+      <span class="pill vm">prompt injection</span>
+      <span class="pill vm">the agent, full-throttle</span>
     </div>
-    <div class="grid2">
-      <div class="col vm">
-        <div class="node danger"><div class="nt">poisoned repo · prompt injection</div><div class="nd">whatever the agent tries — exfiltrate, call home, escape — stays in the box.</div></div>
-        <div class="node danger"><div class="nt">the coding agent</div><div class="nd">full-throttle, no permission prompts.</div></div>
-      </div>
-      <div class="seam"></div>
-      <div class="col host">
-        <div class="node key"><div class="nt">your API key — safe</div><div class="nd">never crosses the seam; the agent holds only a budget-capped token.</div></div>
-        <div class="node safe"><div class="nt">your repo &amp; push creds — safe</div><div class="nd">the agent writes only a disposable clone; nothing lands until you approve the diff.</div></div>
-      </div>
+    <div class="cgate"><span class="arr">▶</span>gated</div>
+    <div class="cz host">
+      <span class="czl">host — your machine</span>
+      <span class="pill host">your API key · safe</span>
+      <span class="pill host">your repo &amp; push creds · safe</span>
+      <span class="pill host">only an approved diff gets out</span>
     </div>
   </div>
 </section>
@@ -229,7 +229,7 @@ drydock start</pre>
       </tr>
     </tbody>
   </table>
-  <p class="prose reveal" style="margin-top:18px">The full <a href="docs/threat-model.html" style="color:var(--grn)">threat model</a> is the contract — it enumerates every attack and what drydock does and doesn't defend.</p>
+  <p class="prose reveal" style="margin-top:18px">The full <a href="docs/threat-model.html">threat model</a> is the contract — it enumerates every attack and what drydock does and doesn't defend.</p>
 </section>
 
 <section id="prove">
@@ -238,28 +238,43 @@ drydock start</pre>
   <p class="lede reveal" style="max-width:58ch">Every claim above is a real <span class="ic">go test</span> red-team case that runs the actual attack and asserts it fails. Run them on your own machine — <b>no API key, no spend</b>, about five minutes:</p>
   <div class="install reveal" style="margin-top:18px">
     <div class="term install-term">
-      <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">~/$&nbsp;</span></div>
-<pre><span class="c"># run the live containment attacks — key exfil, egress, ephemerality</span>
+      <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">~/$&nbsp;</span>
+        <button class="copy" type="button" data-copy-target="#redteam-pre" aria-label="copy commands to clipboard">
+          <svg class="copy-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect x="4.5" y="4.5" width="8" height="9" rx="1.2" stroke="currentColor" stroke-width="1.4"/>
+            <path d="M 3 3 V 11.5 H 2 V 3 A 1 1 0 0 1 3 2 H 10 V 3 Z" fill="currentColor"/>
+          </svg>
+          <svg class="copy-check" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M 3 8 L 7 12 L 13 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="copy-label">copy</span>
+        </button>
+      </div>
+<pre id="redteam-pre"><span class="c"># run the live containment attacks — key exfil, egress, ephemerality</span>
 drydock redteam
 <span class="c"># …or watch all seven, including live VM isolation</span>
 make demo VM=1</pre>
     </div>
   </div>
   <figure class="demo reveal" style="margin-top:26px">
-    <img src="breach.gif" alt="drydock running real red-team attacks — each one contained live" loading="lazy" width="860">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="breach-still.png">
+      <img src="breach.gif" alt="drydock running real red-team attacks — each one contained live" loading="lazy" width="860">
+    </picture>
     <figcaption><b>Real attacks, contained live.</b> Every green is an actual <code>go&nbsp;test</code> red-team case. <a href="docs/threat-model.html">See the threat model&nbsp;→</a></figcaption>
   </figure>
 </section>
 
 <section id="works">
   <div class="seclabel reveal">Works with</div>
+  <h2 class="sr-only">Supported agents</h2>
   <div class="works reveal">
     <div class="works-agents">
       <span>Claude&nbsp;Code <em>· Anthropic</em></span>
       <span class="sep">/</span>
       <span>OpenAI&nbsp;Codex <em>· OpenAI</em></span>
     </div>
-    <p class="works-note">Bring an <b>API key</b> — or skip keys entirely and run on your existing <b>Claude&nbsp;Pro/Max</b> or <b>ChatGPT</b> subscription. Either way the credential stays on your Mac, never in the VM. Pick the agent per task with <span class="ic">--agent claude|codex</span>. <a href="docs/authentication.html" style="color:var(--grn)">Auth &amp; the subscription caveats →</a></p>
+    <p class="works-note">Bring an <b>API key</b> — or skip keys entirely and run on your existing <b>Claude&nbsp;Pro/Max</b> or <b>ChatGPT</b> subscription. Either way the credential stays on your Mac, never in the VM. Pick the agent per task with <span class="ic">--agent claude|codex</span>. <a href="docs/authentication.html">Auth &amp; the subscription caveats →</a></p>
   </div>
 </section>
 
@@ -267,11 +282,12 @@ make demo VM=1</pre>
   <div class="seclabel reveal">Honest limits</div>
   <h2 class="reveal">What it deliberately doesn't defend.</h2>
   <div class="prose reveal">
-    <p>A containment that overclaims fails quietly, so here's the honest edge: drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. And it trusts the Mac it runs on. It's pre-1.0, single-maintainer, and has had <b>no third-party security audit</b>. The full <a href="docs/threat-model.html" style="color:var(--grn)">threat model</a> is the contract — read it before you trust it.</p>
+    <p>A containment that overclaims fails quietly, so here's the honest edge: drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. And it trusts the Mac it runs on. It's pre-1.0, single-maintainer, and has had <b>no third-party security audit</b>. The full <a href="docs/threat-model.html">threat model</a> is the contract — read it before you trust it.</p>
   </div>
 </section>
 
 </div>
+</main>
 
 <footer class="wrap">
   <div>
@@ -283,7 +299,7 @@ make demo VM=1</pre>
       <path d="M 17 19 L 20 19" stroke-width="1.6" stroke-linecap="round"/>
     </svg>drydock — containment for autonomous coding agents
   </div>
-  <div><a href="docs/index.html" style="color:var(--mut);text-decoration:none">docs</a> · <a href="docs/threat-model.html" style="color:var(--mut);text-decoration:none">threat model</a> · <a href="https://github.com/sricola/drydock" style="color:var(--mut);text-decoration:none">github</a></div>
+  <div><a href="docs/index.html">docs</a> · <a href="docs/threat-model.html">threat model</a> · <a href="https://github.com/sricola/drydock">github</a></div>
 </footer>
 
 <script>
@@ -295,9 +311,11 @@ make demo VM=1</pre>
     if(el.closest('.hero')) el.style.transitionDelay=(i*0.08)+'s';
     io.observe(el);
   });
-  window.addEventListener('load',function(){
-    document.querySelectorAll('.hero .reveal').forEach(function(el){el.classList.add('in');});
-  });
+  // Hero is always above the fold — reveal it as soon as the DOM is ready (and
+  // again on load) so a slow web-font fetch can't leave it blank.
+  var showHero=function(){document.querySelectorAll('.hero .reveal').forEach(function(el){el.classList.add('in');});};
+  if(document.readyState!=='loading') showHero(); else document.addEventListener('DOMContentLoaded',showHero);
+  window.addEventListener('load',showHero);
 
   // copy-button handler. Reads the target <pre> textContent (comments included).
   document.querySelectorAll('.copy[data-copy-target]').forEach(function(btn){

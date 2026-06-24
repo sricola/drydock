@@ -21,6 +21,8 @@
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
+[id]{scroll-margin-top:70px}              /* sticky topbar must not cover anchored sections */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 body{
   margin:0;background:var(--bg);color:var(--ink);
   font-family:var(--serif);font-size:17px;line-height:1.6;
@@ -62,7 +64,6 @@ h1{
   font-size:clamp(34px,6.4vw,68px);line-height:1.04;letter-spacing:-.02em;
   margin:0 0 24px;
 }
-h1 .u{color:var(--red);position:relative}
 h1 .t{color:var(--grn)}
 .lede{font-size:clamp(17px,2.1vw,21px);line-height:1.5;max-width:42ch;color:var(--mut)}
 .lede b{font-weight:600;color:var(--ink)}
@@ -144,7 +145,7 @@ h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);lett
 .tbl th{font-family:var(--mono);font-weight:500;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);text-align:left;padding:13px 16px;border-bottom:1px solid var(--line2);background:var(--panel2)}
 .tbl td{padding:14px 16px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--mut);font-size:14.5px}
 .tbl tr:last-child td{border-bottom:0}
-.tbl tr:hover td{background:rgba(20,25,30,.025)}
+.tbl tr:hover td{background:var(--bg2)}
 /* On mobile, stack each row as a card: a 3-col table can't fit ~390px. */
 @media(max-width:680px){
   .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%}
@@ -164,14 +165,25 @@ h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);lett
 .tag.vm{color:var(--red);background:var(--red-dim);border:1px solid var(--red-line)}
 .tag.oos{color:var(--faint);border:1px solid var(--line2)}
 
-/* ---- architecture diagram (SVG-based) ---- */
-.archdiag{margin-top:18px;background:#ffffff;border-radius:10px;padding:24px;position:relative;
-  border:1px solid rgba(20,25,30,.06)}
-.archdiag svg{display:block;width:100%;height:auto}
-.archnote{margin-top:18px;color:var(--mut);font-size:15.5px;max-width:78ch}
-.archnote b{color:var(--ink);font-weight:600}
+/* ---- containment strip: a compact VM -> gated -> host teaser (distinct from
+       the full .diagram below) ---- */
+.cstrip{margin-top:14px;border:1px solid var(--line);border-radius:6px;background:var(--panel);
+  display:flex;align-items:stretch;flex-wrap:wrap;overflow:hidden}
+.cstrip .cz{flex:1;min-width:240px;padding:18px 20px;display:flex;flex-direction:column;gap:9px}
+.cstrip .cz.vm{background:linear-gradient(180deg,var(--red-dim),transparent)}
+.cstrip .cz.host{background:linear-gradient(180deg,var(--grn-dim),transparent)}
+.cstrip .czl{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase}
+.cstrip .cz.vm .czl{color:var(--red)}
+.cstrip .cz.host .czl{color:var(--grn)}
+.cstrip .pill{font-family:var(--mono);font-size:12.5px;padding:6px 11px;border-radius:4px;align-self:flex-start}
+.cstrip .pill.vm{color:var(--red);background:var(--red-dim);border:1px solid var(--red-line)}
+.cstrip .pill.host{color:var(--grn);background:var(--grn-dim);border:1px solid var(--grn-line)}
+.cstrip .cgate{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  padding:0 18px;border-left:1px solid var(--line);border-right:1px solid var(--line);
+  font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+.cstrip .cgate .arr{color:var(--grn);font-size:15px}
+@media(max-width:620px){.cstrip .cgate{flex-direction:row;width:100%;border:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:10px}}
 
-/* legacy node-grid styles (kept in case used elsewhere) */
 .diagram{margin-top:10px;border:1px solid var(--line2);background:var(--panel);border-radius:4px;overflow:hidden}
 .diagram .head{display:flex;border-bottom:1px solid var(--line)}
 .zone-h{flex:1;padding:11px 18px;font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase}
@@ -299,10 +311,14 @@ a:focus-visible,button:focus-visible,.btn:focus-visible,.copy:focus-visible,
 .doccontent blockquote{margin:18px 0;padding:11px 18px;border-left:3px solid var(--grn-line);background:var(--grn-dim);border-radius:0 9px 9px 0;color:var(--mut)}
 .doccontent details{margin:16px 0;border:1px solid var(--line);border-radius:11px;padding:2px 17px;background:var(--panel)}
 .doccontent summary{cursor:pointer;font-family:var(--mono);font-size:14px;font-weight:600;padding:11px 0}
-.doccontent h2:first-child,.doccontent h2:nth-child(1){border-top:0;padding-top:0}
+.doccontent h2:first-of-type{border-top:0;padding-top:0}   /* the first section heading flows from the intro, no hard rule */
 .foot{border-top:1px solid var(--line);font-family:var(--mono);font-size:12px;color:var(--faint)}
 .foot .wrap{padding:26px 24px}
 .foot a{color:var(--mut)}
+/* landing prose links + landing footer (replaces scattered inline styles) */
+.prose a,.works-note a,.tbl + .prose a,#threats .prose a{color:var(--grn)}
+footer.wrap a{color:var(--mut);text-decoration:none}
+footer.wrap a:hover{color:var(--grn)}
 @media(max-width:860px){
   .docwrap{grid-template-columns:1fr;gap:22px}
   .docside{position:static}

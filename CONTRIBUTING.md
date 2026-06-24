@@ -11,7 +11,7 @@ security model is in [`THREAT_MODEL.md`](THREAT_MODEL.md) and
 
 ```
 cmd/brokerd/      # broker daemon
-cmd/drydock/      # operator CLI (init|start|submit|status|tasks|pending|review|approve|deny|kill|prune|logs)
+cmd/drydock/      # operator CLI (setup|init|start|submit|status|tasks|pending|review|approve|deny|kill|prune|logs|doctor|redteam|auth|version)
 cmd/docs-build/   # Go-native markdown -> HTML renderer for the docs site (make docs)
 internal/
   broker/         # /tasks + admin handlers, approval + egress gates, concurrency, cancellation
