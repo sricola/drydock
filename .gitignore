@@ -9,5 +9,9 @@
 /bin/
 /dist/
 
+# Generated docs HTML (built from site/docs/*.md by `make docs`; CI rebuilds on deploy)
+/site/docs/*.html
+!/site/docs/_template.html
+
 # Per-task scratch (default STAGE_ROOT / AUDIT_ROOT / SQUID_RUN_DIR)
 /tmp/broker/

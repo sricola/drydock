@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test redteam redteam-vm demo sbom verify-build vet lint image network init clean help
+.PHONY: all build install uninstall test redteam redteam-vm demo sbom docs verify-build vet lint image network init clean help
 
 all: build
 
@@ -101,6 +101,12 @@ sbom:
 	go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@$(CYCLONEDX_VERSION) \
 		mod -json -output dist/drydock.cdx.json .
 	@echo "==> dist/drydock.cdx.json"
+
+# docs renders site/docs/*.md into site/docs/*.html for GitHub Pages.
+# Go-native (no external binary); deterministic output.
+docs:
+	go run ./cmd/docs-build
+	@echo "==> site/docs built"
 
 vet:
 	go vet ./...
