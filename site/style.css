@@ -50,7 +50,7 @@ a{color:inherit}
 .nav{font-family:var(--mono);font-size:12px;color:var(--mut);display:flex;gap:22px}
 .nav a{text-decoration:none;transition:color .2s}
 .nav a:hover{color:var(--grn)}
-@media(max-width:680px){.nav{gap:16px;font-size:11px}.nav a:nth-child(3),.nav a:nth-child(4){display:none}}
+@media(max-width:680px){.nav{gap:16px;font-size:11px}.nav a.hide-sm{display:none}}
 
 /* ---- hero ---- */
 .hero{padding:72px 0 52px;position:relative}

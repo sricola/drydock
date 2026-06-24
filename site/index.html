@@ -40,250 +40,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
-<style>
-:root{
-  --bg:#fbfaf6;          /* warm paper */
-  --bg2:#f4f3ee;
-  --panel:#ffffff;
-  --panel2:#f6f5f0;
-  --ink:#1a1d22;         /* dark slate */
-  --mut:#54606b;
-  --faint:#8a939e;
-  --line:rgba(20,25,30,.10);
-  --line2:rgba(20,25,30,.18);
-  --red:#c92c2c;
-  --red-dim:rgba(201,44,44,.07);
-  --red-line:rgba(201,44,44,.28);
-  --grn:#0d8d5e;
-  --grn-dim:rgba(13,141,94,.07);
-  --grn-line:rgba(13,141,94,.30);
-  --amber:#a86600;
-  --blue:#2d5fc7;
-  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
-  --serif:"Newsreader",Georgia,serif;
-}
-*{box-sizing:border-box}
-html{scroll-behavior:smooth}
-body{
-  margin:0;background:var(--bg);color:var(--ink);
-  font-family:var(--serif);font-size:17px;line-height:1.6;
-  -webkit-font-smoothing:antialiased;
-}
-body::before{
-  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
-  background:
-    radial-gradient(120% 80% at 50% -10%,rgba(13,141,94,.05),transparent 60%),
-    radial-gradient(100% 60% at 100% 110%,rgba(201,44,44,.04),transparent 55%),
-    radial-gradient(80% 60% at 0% 100%,rgba(45,95,199,.04),transparent 60%);
-}
-body::after{
-  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.7;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
-}
-.wrap{position:relative;z-index:1;max-width:1080px;margin:0 auto;padding:0 24px}
-a{color:inherit}
-.mono{font-family:var(--mono)}
-
-/* ---- top bar (sticky) ---- */
-.topbar{position:sticky;top:0;z-index:10;border-bottom:1px solid var(--line);background:rgba(251,250,246,.85);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
-.topbar .wrap{display:flex;align-items:center;justify-content:space-between;height:54px}
-.brand{font-family:var(--mono);font-weight:700;letter-spacing:.02em;font-size:14.5px;display:flex;align-items:center}
-.brand .mk{display:inline-block;width:22px;height:22px;margin-right:10px;vertical-align:-6px}
-.brand .mk path{stroke:var(--ink)}
-.nav{font-family:var(--mono);font-size:12px;color:var(--mut);display:flex;gap:22px}
-.nav a{text-decoration:none;transition:color .2s}
-.nav a:hover{color:var(--grn)}
-@media(max-width:680px){.nav{gap:16px;font-size:11px}.nav a:nth-child(3),.nav a:nth-child(4){display:none}}
-
-/* ---- hero ---- */
-.hero{padding:72px 0 52px;position:relative}
-@media(max-width:680px){.hero{padding:40px 0 36px}}
-.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.26em;text-transform:uppercase;color:var(--grn);margin-bottom:26px}
-.kicker .bar{display:inline-block;width:34px;height:1px;background:var(--grn-line);vertical-align:4px;margin-right:12px}
-h1{
-  font-family:var(--mono);font-weight:700;
-  font-size:clamp(34px,6.4vw,68px);line-height:1.04;letter-spacing:-.02em;
-  margin:0 0 24px;
-}
-h1 .u{color:var(--red);position:relative}
-h1 .t{color:var(--grn)}
-.lede{font-size:clamp(17px,2.1vw,21px);line-height:1.5;max-width:42ch;color:var(--mut)}
-.lede b{font-weight:600;color:var(--ink)}
-.herostatus{margin-top:22px;max-width:54ch;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--mut)}
-.herostatus b{color:var(--ink);font-weight:600}
-.vstack{list-style:none;margin:24px 0 0;padding:0;max-width:62ch;display:grid;gap:11px}
-.vstack li{position:relative;padding-left:24px;font-size:14.5px;line-height:1.55;color:var(--mut)}
-.vstack li::before{content:"→";position:absolute;left:0;top:0;color:var(--grn);font-weight:700}
-.vstack b{color:var(--ink);font-weight:600}
-.herocta{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}
-.herocta a{display:inline-block;padding:11px 20px;border-radius:6px;font-weight:600;font-size:14px;text-decoration:none}
-.herocta .btn{background:var(--grn);color:#fff;border:1px solid var(--grn)}
-.herocta .btn:hover{filter:brightness(1.07)}
-.herocta .btn-ghost{background:transparent;color:var(--ink);border:1px solid var(--line2)}
-.herocta .btn-ghost:hover{border-color:var(--ink)}
-.statustag{display:inline-block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;
-  color:var(--amber);background:rgba(168,102,0,.08);border:1px solid rgba(168,102,0,.28);
-  border-radius:3px;padding:2px 8px;margin-right:8px;vertical-align:1px}
-.install{margin-top:36px;max-width:640px}
-.install-label{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);margin-bottom:10px}
-.install-term{margin-top:0}
-.install-term pre{font-size:13px;line-height:1.7;padding:16px 18px}
-/* copy button — pinned to the right of the terminal title bar */
-.install-term .bar{position:relative}
-.copy{position:absolute;right:10px;top:50%;transform:translateY(-50%);
-  display:inline-flex;align-items:center;gap:6px;cursor:pointer;
-  padding:5px 9px;border-radius:4px;border:1px solid rgba(255,255,255,.10);
-  background:rgba(255,255,255,.04);color:#9aa3ad;
-  font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;
-  transition:color .15s, background .15s, border-color .15s;
-  font:inherit;font-family:var(--mono);font-size:10.5px}
-.copy:hover{color:#d6dae0;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.18)}
-.copy svg{width:12px;height:12px}
-.copy .copy-check{display:none;color:#3fe0a2}
-.copy.is-copied{color:#3fe0a2;border-color:rgba(63,224,162,.30)}
-.copy.is-copied .copy-icon{display:none}
-.copy.is-copied .copy-check{display:inline-block}
-.install-foot{margin-top:12px;font-family:var(--mono);font-size:11.5px;color:var(--mut);letter-spacing:.04em}
-.install-foot a{color:var(--grn);text-decoration:none;border-bottom:1px solid var(--grn-line)}
-.install-foot a:hover{border-bottom-color:var(--grn)}
-.demo{margin:34px 0 0;max-width:860px}
-.demo img{width:100%;display:block;border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 50px -28px rgba(0,0,0,.5)}
-.demo figcaption{margin-top:12px;font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--mut);letter-spacing:.02em;max-width:62ch}
-.demo figcaption b{color:var(--ink);font-weight:600}
-.demo figcaption code{font-size:11px;color:var(--grn)}
-.demo figcaption a{color:var(--grn);text-decoration:none;border-bottom:1px solid var(--grn-line);white-space:nowrap}
-.demo figcaption a:hover{border-bottom-color:var(--grn)}
-@media(max-width:680px){.install-term pre{font-size:12px;padding:14px}}
-.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:32px}
-.chip{font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--mut);
-  border:1px solid var(--line2);border-radius:2px;padding:6px 10px;background:var(--panel)}
-.chip b{color:var(--ink);font-weight:600}
-
-/* reveal */
-.reveal{opacity:0;transform:translateY(18px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
-.reveal.in{opacity:1;transform:none}
-
-/* ---- sections ---- */
-section{padding:56px 0;border-top:1px solid var(--line)}
-@media(max-width:680px){section{padding:40px 0}}
-.seclabel{font-family:var(--mono);font-size:11.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);margin-bottom:14px;display:flex;align-items:baseline;gap:14px}
-.seclabel .n{color:var(--grn)}
-/* "Works with" capability strip — agents × auth, kept tight. */
-#works .seclabel{justify-content:center}
-.works{text-align:center;max-width:660px;margin:0 auto;padding:4px 0 2px}
-.works-agents{font-family:var(--mono);font-weight:600;font-size:clamp(17px,2.6vw,21px);color:var(--ink);display:flex;gap:18px;justify-content:center;align-items:baseline;flex-wrap:wrap;margin-bottom:14px}
-.works-agents em{color:var(--faint);font-style:normal;font-weight:400;font-size:12.5px;letter-spacing:.02em}
-.works-agents .sep{color:var(--line2);font-weight:400}
-.works-note{font-size:15px;color:var(--mut);line-height:1.6;margin:0 auto;max-width:560px}
-.works-note b{color:var(--ink);font-weight:600}
-h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);letter-spacing:-.01em;margin:0 0 18px;line-height:1.15}
-.prose{max-width:64ch;color:var(--mut)}
-.prose p{margin:0 0 16px}
-.prose b{color:var(--ink);font-weight:600}
-.prose code,.ic{font-family:var(--mono);font-size:.86em;background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:1px 6px;color:var(--ink)}
-
-/* ---- threat table ---- */
-.tbl{width:100%;border-collapse:collapse;font-size:14.5px;margin-top:26px;border:1px solid var(--line)}
-.tbl th{font-family:var(--mono);font-weight:500;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);text-align:left;padding:13px 16px;border-bottom:1px solid var(--line2);background:var(--panel2)}
-.tbl td{padding:14px 16px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--mut);font-size:14.5px}
-.tbl tr:last-child td{border-bottom:0}
-.tbl tr:hover td{background:rgba(20,25,30,.025)}
-/* On mobile, stack each row as a card: a 3-col table can't fit ~390px. */
-@media(max-width:680px){
-  .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%}
-  .tbl{border:0}
-  .tbl thead{display:none}
-  .tbl tr{border:1px solid var(--line2);border-radius:4px;background:var(--panel);margin-bottom:12px;padding:6px 14px}
-  .tbl tr:hover td{background:transparent}
-  .tbl td{border-bottom:1px solid var(--line);padding:10px 0;font-size:14px}
-  .tbl tr td:last-child{border-bottom:0}
-  .tbl td::before{content:attr(data-l);display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
-  .tbl td:first-child::before{color:var(--ink)}
-  .tbl td:first-child{font-weight:600;color:var(--ink)}
-  .tbl .tag{white-space:normal;display:inline-block}
-}
-.tag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:2px;white-space:nowrap}
-.tag.host{color:var(--grn);background:var(--grn-dim);border:1px solid var(--grn-line)}
-.tag.vm{color:var(--red);background:var(--red-dim);border:1px solid var(--red-line)}
-.tag.oos{color:var(--faint);border:1px solid var(--line2)}
-
-/* ---- architecture diagram (SVG-based) ---- */
-.archdiag{margin-top:18px;background:#ffffff;border-radius:10px;padding:24px;position:relative;
-  border:1px solid rgba(20,25,30,.06)}
-.archdiag svg{display:block;width:100%;height:auto}
-.archnote{margin-top:18px;color:var(--mut);font-size:15.5px;max-width:78ch}
-.archnote b{color:var(--ink);font-weight:600}
-
-/* legacy node-grid styles (kept in case used elsewhere) */
-.diagram{margin-top:10px;border:1px solid var(--line2);background:var(--panel);border-radius:4px;overflow:hidden}
-.diagram .head{display:flex;border-bottom:1px solid var(--line)}
-.zone-h{flex:1;padding:11px 18px;font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase}
-.zone-h.vm{color:var(--red);background:var(--red-dim);text-align:left}
-.zone-h.host{color:var(--grn);background:var(--grn-dim);text-align:right}
-.grid2{display:grid;grid-template-columns:1fr 1px 1.15fr;align-items:stretch}
-.seam{background:repeating-linear-gradient(180deg,var(--line2) 0 7px,transparent 7px 14px)}
-.col{padding:22px 20px;display:flex;flex-direction:column;gap:12px}
-.col.vm{background:linear-gradient(180deg,rgba(201,44,44,.035),transparent)}
-.col.host{background:linear-gradient(180deg,rgba(13,141,94,.035),transparent)}
-.node{border:1px solid var(--line2);background:var(--bg);border-radius:3px;padding:12px 14px}
-.node .nt{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink);margin-bottom:4px}
-.node .nd{font-size:13px;color:var(--mut);font-family:var(--serif)}
-.node.danger{border-color:var(--red-line)}
-.node.danger .nt{color:var(--red)}
-.node.safe{border-color:var(--grn-line)}
-.node.safe .nt{color:var(--grn)}
-.node.key{border-color:var(--grn-line);background:linear-gradient(180deg,var(--grn-dim),var(--panel))}
-.flowrow{border-top:1px solid var(--line);padding:14px 20px;display:grid;grid-template-columns:130px 1fr;gap:16px;align-items:baseline}
-.flowrow .fl{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
-.flowrow .fd{font-family:var(--mono);font-size:13px;color:var(--ink);line-height:1.7}
-.flowrow .ar{color:var(--grn)}
-.flowrow .arr{color:var(--red)}
-.flowrow .tok{color:var(--red)}
-.flowrow .real{color:var(--grn)}
-@media(max-width:680px){
-  .grid2{grid-template-columns:1fr}
-  .seam{display:none}
-  .col.host{border-top:1px dashed var(--grn-line)}
-  .zone-h.host{text-align:left}
-  .flowrow{grid-template-columns:1fr;gap:6px}
-}
-
-/* ---- guarantee cards ---- */
-.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:8px}
-@media(max-width:780px){.cards{grid-template-columns:1fr}}
-.card{border:1px solid var(--line2);background:var(--panel);border-radius:4px;padding:22px 20px;position:relative;transition:transform .3s cubic-bezier(.2,.7,.2,1),border-color .3s,box-shadow .3s}
-.card:hover{transform:translateY(-4px);border-color:var(--grn-line);box-shadow:0 12px 32px -16px rgba(20,25,30,.18)}
-.card .idx{font-family:var(--mono);font-size:12px;color:var(--grn);letter-spacing:.1em}
-.card h3{font-family:var(--mono);font-size:17px;font-weight:600;margin:14px 0 10px;line-height:1.25}
-.card p{font-size:14.5px;color:var(--mut);margin:0;line-height:1.55}
-.card p b{color:var(--ink);font-weight:600}
-
-/* ---- terminal block (stays dark; real terminals are dark) ---- */
-.term{margin-top:24px;border:1px solid var(--line2);border-radius:5px;background:#0d1014;overflow:hidden;box-shadow:0 20px 48px -28px rgba(20,25,30,.30)}
-.term .bar{display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid rgba(255,255,255,.08);background:#15191f}
-.term .dot{width:10px;height:10px;border-radius:50%}
-.term .dot.r{background:#ff5f57}.term .dot.y{background:#febc2e}.term .dot.g{background:#28c840}
-.term .ttl{margin-left:8px;font-family:var(--mono);font-size:11.5px;color:#7a8493}
-.term pre{margin:0;padding:18px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.75;color:#d6dae0;overflow-x:auto}
-.term .c{color:#6b7480}
-.term .g{color:#3fe0a2}
-.term .r{color:#ff7a7a}
-.term .a{color:#f0b13c}
-.term .k{color:#6ea8ff}
-@media(max-width:680px){.term pre{font-size:11.5px;padding:14px}}
-
-/* ---- status callout ---- */
-.status{margin-top:26px;border-left:2px solid var(--grn-line);padding:4px 0 4px 20px;color:var(--mut);font-size:15px}
-.status b{color:var(--ink);font-weight:600}
-
-/* ---- footer ---- */
-footer{border-top:1px solid var(--line);padding:36px 0 56px;color:var(--faint);font-family:var(--mono);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px}
-footer .mk{display:inline-block;width:16px;height:16px;margin-right:8px;vertical-align:-3px}
-footer .mk path{stroke:var(--faint)}
-
-::selection{background:rgba(13,141,94,.30)}
-::-moz-selection{background:rgba(13,141,94,.30)}
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -300,7 +57,9 @@ footer .mk path{stroke:var(--faint)}
     </div>
     <nav class="nav">
       <a href="#how">how it works</a>
-      <a href="#limits">limits</a>
+      <a class="hide-sm" href="#architecture">architecture</a>
+      <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">threat model</a>
+      <a class="hide-sm" href="docs/index.html">docs</a>
       <a href="https://github.com/sricola/drydock">github</a>
     </nav>
   </div>
@@ -309,23 +68,14 @@ footer .mk path{stroke:var(--faint)}
 <header class="hero">
   <div class="wrap">
     <div class="kicker reveal"><span class="bar"></span>macos · local · coding agents on your repos, never the cloud</div>
-    <h1 class="reveal">Let a coding agent run wild on your repo —<br><span class="t">without trusting it.</span></h1>
+    <h1 class="reveal">Let a coding agent run wild on your Mac —<br><span class="t">without trusting it.</span></h1>
     <p class="lede reveal">drydock runs <b>Claude Code</b> or <b>OpenAI Codex</b> full-throttle on your own repos, on your own Mac — no permission prompts, no babysitting. Each task runs sealed in a throwaway VM, so the agent <b>can't touch your API key, can't reach the open internet, and can't write to anything but a disposable copy</b>. The only thing that ever comes back is a <span class="ic">git diff</span> — and nothing reaches your real code until you approve it.</p>
     <ul class="vstack reveal">
       <li><b>It never gets your key.</b> Your real API key stays on the host — the agent only ever sees a short-lived, budget-capped token.</li>
       <li><b>It can't smuggle anything out.</b> The internet is deny-by-default — no exfiltrating your code, no calling home.</li>
       <li><b>Nothing touches your repo until you say so.</b> You read the diff and approve it before it ever reaches origin.</li>
     </ul>
-    <div class="herocta reveal">
-      <a class="btn" href="https://github.com/sricola/drydock">View on GitHub</a>
-      <a class="btn-ghost" href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">Read the threat model</a>
-    </div>
-    <p class="herostatus reveal"><span class="statustag">working alpha · v0.2.0</span> Single-maintainer, no third-party security audit yet — read the threat model and decide for yourself. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
-    <figure class="demo reveal">
-      <img src="breach.gif" alt="drydock running four real attacks from its threat model — each one is contained live" loading="lazy" width="860">
-      <figcaption><b>Real attacks, contained live.</b> Every green is an actual <code>go test</code> red-team case that runs the attack and asserts it fails — reproduce with <code>make redteam</code>, or watch all seven (incl. live VM isolation) via <code>make demo VM=1</code>. <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">See the threat model&nbsp;→</a></figcaption>
-    </figure>
-    <div class="install reveal">
+    <div class="install reveal" id="install">
       <div class="install-label">Install · macOS · Apple silicon</div>
       <div class="term install-term">
         <div class="bar">
@@ -355,27 +105,41 @@ export <span class="a">ANTHROPIC_API_KEY</span>=<span class="r">sk-ant-…</span
 drydock start</pre>
       </div>
       <div class="install-foot">
-        <a href="https://github.com/sricola/drydock#install">install options</a>
+        <a href="docs/quickstart.html">quickstart</a>
         ·
-        <a href="https://github.com/sricola/drydock/releases/tag/v0.2.0">v0.2.0 release notes</a>
+        <a href="https://github.com/sricola/drydock/releases/tag/v0.3.0">v0.3.0 release notes</a>
         ·
         <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">threat model</a>
       </div>
     </div>
+    <div class="herocta reveal">
+      <a class="btn" href="docs/quickstart.html">Get started</a>
+      <a class="btn-ghost" href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">Read the threat model</a>
+    </div>
+    <p class="herostatus reveal"><span class="statustag">working alpha · v0.3.0</span> Single-maintainer, no third-party security audit yet — read the threat model and decide for yourself. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
   </div>
 </header>
 
 <div class="wrap">
 
-<section id="works">
-  <div class="seclabel reveal">Works with</div>
-  <div class="works reveal">
-    <div class="works-agents">
-      <span>Claude&nbsp;Code <em>· Anthropic</em></span>
-      <span class="sep">/</span>
-      <span>OpenAI&nbsp;Codex <em>· OpenAI</em></span>
+<section id="contain">
+  <div class="seclabel reveal">The boundary</div>
+  <div class="diagram reveal" style="margin-top:14px">
+    <div class="head">
+      <div class="zone-h vm">sealed VM — assume hostile</div>
+      <div class="zone-h host">host — your machine</div>
     </div>
-    <p class="works-note">Bring an <b>API key</b> — or skip keys entirely and run on your existing <b>Claude&nbsp;Pro/Max</b> or <b>ChatGPT</b> subscription. Either way the credential stays on your Mac, never in the VM. Pick the agent per task with <span class="ic">--agent claude|codex</span>.</p>
+    <div class="grid2">
+      <div class="col vm">
+        <div class="node danger"><div class="nt">poisoned repo · prompt injection</div><div class="nd">whatever the agent tries — exfiltrate, call home, escape — stays in the box.</div></div>
+        <div class="node danger"><div class="nt">the coding agent</div><div class="nd">full-throttle, no permission prompts.</div></div>
+      </div>
+      <div class="seam"></div>
+      <div class="col host">
+        <div class="node key"><div class="nt">your API key — safe</div><div class="nd">never crosses the seam; the agent holds only a budget-capped token.</div></div>
+        <div class="node safe"><div class="nt">your repo &amp; push creds — safe</div><div class="nd">the agent writes only a disposable clone; nothing lands until you approve the diff.</div></div>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -401,18 +165,111 @@ drydock start</pre>
   </div>
 </section>
 
+<section id="architecture">
+  <div class="seclabel reveal">Architecture</div>
+  <h2 class="reveal">See exactly where the agent can't reach.</h2>
+  <p class="lede reveal" style="max-width:60ch;margin-bottom:8px">Every task runs in a sealed VM. A credential gateway and a deny-by-default egress proxy sit on the seam — so a hostile agent never sees your key, the open internet, or your real repo.</p>
+  <div class="diagram reveal">
+    <div class="head">
+      <div class="zone-h vm">sealed VM — assume hostile</div>
+      <div class="zone-h host">host — your machine</div>
+    </div>
+    <div class="grid2">
+      <div class="col vm">
+        <div class="node danger"><div class="nt">coding agent + tools</div><div class="nd">claude / codex, plus curl · npm · pip — all egress is proxied, none direct.</div></div>
+        <div class="node danger"><div class="nt">poisoned repo / deps</div><div class="nd">treated as untrusted input, not a trusted collaborator.</div></div>
+      </div>
+      <div class="seam"></div>
+      <div class="col host">
+        <div class="node key"><div class="nt">real API key</div><div class="nd">stays on the host; the VM only ever holds a short-lived, budget-capped token.</div></div>
+        <div class="node safe"><div class="nt">your repo &amp; push creds</div><div class="nd">the agent works a disposable clone; the diff is gated behind your approval.</div></div>
+        <div class="node"><div class="nt">your egress allowlist</div><div class="nd">pypi · npm · the registries you choose — per-task widening is human-approved.</div></div>
+      </div>
+    </div>
+    <div class="flowrow">
+      <div class="fl">model API</div>
+      <div class="fd"><span class="tok">agent</span> <span class="ar">→</span> credential gateway <span class="ar">:8088</span> <span class="ar">→</span> mints a <span class="real">per-task token</span>, never the key</div>
+    </div>
+    <div class="flowrow">
+      <div class="fl">other egress</div>
+      <div class="fd"><span class="tok">curl · npm · pip</span> <span class="ar">→</span> squid proxy <span class="ar">:3128</span> <span class="ar">→</span> <span class="real">allowlist only</span>, everything else denied</div>
+    </div>
+    <div class="flowrow">
+      <div class="fl">result</div>
+      <div class="fd">work tree <span class="ar">→</span> <span class="real">git diff</span> <span class="ar">→</span> you review &amp; <span class="real">approve</span> <span class="ar">→</span> push</div>
+    </div>
+  </div>
+</section>
 
+<section id="threats">
+  <div class="seclabel reveal">Attack surface</div>
+  <h2 class="reveal">What's contained — and the residual risk.</h2>
+  <table class="tbl reveal">
+    <thead><tr><th>Attack</th><th>What drydock does</th><th>Residual risk</th></tr></thead>
+    <tbody>
+      <tr>
+        <td data-l="Attack">Exfiltrate your API key</td>
+        <td data-l="What drydock does">The real key never enters the VM. The agent gets only a short-lived, budget-capped token via the gateway. <span class="tag host">contained on host</span></td>
+        <td data-l="Residual risk">A leaked token is rate- and budget-limited, and dies with the task. <span class="tag vm">scoped</span></td>
+      </tr>
+      <tr>
+        <td data-l="Attack">Call home / exfiltrate code</td>
+        <td data-l="What drydock does">Egress is deny-by-default; the agent reaches only your allowlist, through the proxy. <span class="tag host">contained on host</span></td>
+        <td data-l="Residual risk">An allow-listed host is still reachable; widening is human-approved per task. <span class="tag vm">your call</span></td>
+      </tr>
+      <tr>
+        <td data-l="Attack">Persist / tamper with your machine</td>
+        <td data-l="What drydock does">The VM is a throwaway, destroyed after each task; the host filesystem is never mounted writable. <span class="tag host">contained on host</span></td>
+        <td data-l="Residual risk">None on the host — any persistence dies with the VM. <span class="tag oos">in-VM only</span></td>
+      </tr>
+      <tr>
+        <td data-l="Attack">Sneak a backdoor into the diff</td>
+        <td data-l="What drydock does">Nothing reaches origin until you read the diff and approve it. <span class="tag host">gated</span></td>
+        <td data-l="Residual risk">drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle one and it lands. <span class="tag oos">on you</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="prose reveal" style="margin-top:18px">The full <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a> is the contract — it enumerates every attack and what drydock does and doesn't defend.</p>
+</section>
+
+<section id="prove">
+  <div class="seclabel reveal">Prove it yourself</div>
+  <h2 class="reveal">Don't take the threat model's word for it.</h2>
+  <p class="lede reveal" style="max-width:58ch">Every claim above is a real <span class="ic">go test</span> red-team case that runs the actual attack and asserts it fails. Run them on your own machine — <b>no API key, no spend</b>, about five minutes:</p>
+  <div class="install reveal" style="margin-top:18px">
+    <div class="term install-term">
+      <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">~/$&nbsp;</span></div>
+<pre><span class="c"># run the live containment attacks — key exfil, egress, ephemerality</span>
+drydock redteam
+<span class="c"># …or watch all seven, including live VM isolation</span>
+make demo VM=1</pre>
+    </div>
+  </div>
+  <figure class="demo reveal" style="margin-top:26px">
+    <img src="breach.gif" alt="drydock running real red-team attacks — each one contained live" loading="lazy" width="860">
+    <figcaption><b>Real attacks, contained live.</b> Every green is an actual <code>go&nbsp;test</code> red-team case. <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">See the threat model&nbsp;→</a></figcaption>
+  </figure>
+</section>
+
+<section id="works">
+  <div class="seclabel reveal">Works with</div>
+  <div class="works reveal">
+    <div class="works-agents">
+      <span>Claude&nbsp;Code <em>· Anthropic</em></span>
+      <span class="sep">/</span>
+      <span>OpenAI&nbsp;Codex <em>· OpenAI</em></span>
+    </div>
+    <p class="works-note">Bring an <b>API key</b> — or skip keys entirely and run on your existing <b>Claude&nbsp;Pro/Max</b> or <b>ChatGPT</b> subscription. Either way the credential stays on your Mac, never in the VM. Pick the agent per task with <span class="ic">--agent claude|codex</span>. <a href="docs/authentication.html" style="color:var(--grn)">Auth &amp; the subscription caveats →</a></p>
+  </div>
+</section>
 
 <section id="limits">
   <div class="seclabel reveal">Honest limits</div>
   <h2 class="reveal">What it deliberately doesn't defend.</h2>
   <div class="prose reveal">
-    <p>A containment that overclaims fails quietly, so here's the honest edge: drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. And it trusts the Mac it runs on. The full <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a> is the contract — read it before you trust it.</p>
+    <p>A containment that overclaims fails quietly, so here's the honest edge: drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. And it trusts the Mac it runs on. It's pre-1.0, single-maintainer, and has had <b>no third-party security audit</b>. The full <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a> is the contract — read it before you trust it.</p>
   </div>
 </section>
-
-
-
 
 </div>
 
@@ -426,7 +283,7 @@ drydock start</pre>
       <path d="M 17 19 L 20 19" stroke-width="1.6" stroke-linecap="round"/>
     </svg>drydock — containment for autonomous coding agents
   </div>
-  <div><a href="https://github.com/sricola/drydock" style="color:var(--mut);text-decoration:none">github</a> · <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--mut);text-decoration:none">threat model</a> · <a href="https://github.com/sricola/drydock/blob/main/README.md" style="color:var(--mut);text-decoration:none">operator manual</a></div>
+  <div><a href="docs/index.html" style="color:var(--mut);text-decoration:none">docs</a> · <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--mut);text-decoration:none">threat model</a> · <a href="https://github.com/sricola/drydock" style="color:var(--mut);text-decoration:none">github</a></div>
 </footer>
 
 <script>
@@ -435,24 +292,19 @@ drydock start</pre>
     es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
   },{threshold:.12,rootMargin:"0px 0px -8% 0px"});
   document.querySelectorAll('.reveal').forEach(function(el,i){
-    // gentle stagger for hero cluster
     if(el.closest('.hero')) el.style.transitionDelay=(i*0.08)+'s';
     io.observe(el);
   });
-  // ensure hero shows even if observer misses on instant load
   window.addEventListener('load',function(){
     document.querySelectorAll('.hero .reveal').forEach(function(el){el.classList.add('in');});
   });
 
-  // copy-button handler. Reads the target <pre> element's textContent
-  // (so the # comments come along too — they're useful context for the
-  // operator pasting this into a fresh shell). 1.5s of "copied" feedback,
-  // then snap back. Graceful no-op if clipboard isn't reachable.
+  // copy-button handler. Reads the target <pre> textContent (comments included).
   document.querySelectorAll('.copy[data-copy-target]').forEach(function(btn){
     btn.addEventListener('click', function(){
       var target = document.querySelector(btn.dataset.copyTarget);
       if(!target) return;
-      var text = target.innerText.replace(/ /g,' ');
+      var text = target.innerText.replace(/ /g,' ');
       var done = function(){
         btn.classList.add('is-copied');
         var label = btn.querySelector('.copy-label');
@@ -466,7 +318,6 @@ drydock start</pre>
       if(navigator.clipboard && navigator.clipboard.writeText){
         navigator.clipboard.writeText(text).then(done, function(){});
       } else {
-        // legacy fallback
         var ta = document.createElement('textarea');
         ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
         document.body.appendChild(ta); ta.select();
