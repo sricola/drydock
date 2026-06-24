@@ -25,45 +25,65 @@ func main() {
 	}
 }
 
+// source is one input Markdown file and the docs slug it renders to.
+type source struct {
+	path string
+	slug string
+}
+
 func run() error {
 	tmpl, err := os.ReadFile(filepath.Join(docsDir, "_template.html"))
 	if err != nil {
 		return err
 	}
+
+	var srcs []source
 	mds, _ := filepath.Glob(filepath.Join(docsDir, "*.md"))
-	sort.Slice(mds, func(i, j int) bool {
-		ri, rj := rank(mds[i]), rank(mds[j])
+	for _, f := range mds {
+		srcs = append(srcs, source{path: f, slug: strings.TrimSuffix(filepath.Base(f), ".md")})
+	}
+	// The canonical threat model lives at the repo root — render it onto the site
+	// too, single-sourced from THREAT_MODEL.md so it can't drift.
+	srcs = append(srcs, source{path: "THREAT_MODEL.md", slug: "threat-model"})
+
+	sort.Slice(srcs, func(i, j int) bool {
+		ri, rj := rankSlug(srcs[i].slug), rankSlug(srcs[j].slug)
 		if ri != rj {
 			return ri < rj
 		}
-		return mds[i] < mds[j]
+		return srcs[i].slug < srcs[j].slug
 	})
 
+	raw := map[string][]byte{}
 	var pages []Page
-	for _, f := range mds {
-		slugName := strings.TrimSuffix(filepath.Base(f), ".md")
-		src, _ := os.ReadFile(f)
-		title := slugName
-		if m := h1Re.FindSubmatch(src); m != nil {
+	for _, s := range srcs {
+		b, err := os.ReadFile(s.path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", s.path, err)
+		}
+		if s.path == "THREAT_MODEL.md" {
+			b = rewriteRepoLinks(b) // its relative .md links point at repo files, not site pages
+		}
+		raw[s.slug] = b
+		title := s.slug
+		if m := h1Re.FindSubmatch(b); m != nil {
 			title = string(m[1])
 		}
-		pages = append(pages, Page{Slug: slugName, Title: title, File: slugName + ".html"})
+		pages = append(pages, Page{Slug: s.slug, Title: title, File: s.slug + ".html"})
 	}
-	for _, f := range mds {
-		slugName := strings.TrimSuffix(filepath.Base(f), ".md")
-		src, _ := os.ReadFile(f)
-		body, _, err := renderMarkdown(src)
+	for _, s := range srcs {
+		body, _, err := renderMarkdown(raw[s.slug])
 		if err != nil {
-			return fmt.Errorf("%s: %w", f, err)
+			return fmt.Errorf("%s: %w", s.path, err)
 		}
-		title := slugName
+		title := s.slug
 		for _, p := range pages {
-			if p.Slug == slugName {
+			if p.Slug == s.slug {
 				title = p.Title
 			}
 		}
-		page := renderPage(string(tmpl), body, title, buildSidebar(pages, slugName), "../")
-		out := filepath.Join(docsDir, slugName+".html")
+		page := renderPage(string(tmpl), body, title, buildSidebar(pages, s.slug), "../")
+		out := filepath.Join(docsDir, s.slug+".html")
 		if err := os.WriteFile(out, []byte(page), 0o644); err != nil {
 			return err
 		}
@@ -72,12 +92,20 @@ func run() error {
 	return nil
 }
 
-func rank(path string) int {
-	base := strings.TrimSuffix(filepath.Base(path), ".md")
+func rankSlug(slug string) int {
 	for i, o := range order {
-		if o == base {
+		if o == slug {
 			return i
 		}
 	}
 	return len(order) + 1
+}
+
+// rewriteRepoLinks turns relative Markdown links to repo files (e.g. the threat
+// model's link to docs/ROADMAP.md) into absolute GitHub blob URLs, since the
+// rendered page lives on the site, not in the repo tree.
+var repoMdLink = regexp.MustCompile(`\]\((?:\./)?([A-Za-z0-9_./-]+\.md)(#[^)]*)?\)`)
+
+func rewriteRepoLinks(b []byte) []byte {
+	return repoMdLink.ReplaceAll(b, []byte("](https://github.com/sricola/drydock/blob/main/$1$2)"))
 }

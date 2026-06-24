@@ -58,7 +58,7 @@
     <nav class="nav">
       <a href="#how">how it works</a>
       <a class="hide-sm" href="#architecture">architecture</a>
-      <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">threat model</a>
+      <a href="docs/threat-model.html">threat model</a>
       <a class="hide-sm" href="docs/index.html">docs</a>
       <a href="https://github.com/sricola/drydock">github</a>
     </nav>
@@ -109,12 +109,12 @@ drydock start</pre>
         ·
         <a href="https://github.com/sricola/drydock/releases/tag/v0.3.0">v0.3.0 release notes</a>
         ·
-        <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">threat model</a>
+        <a href="docs/threat-model.html">threat model</a>
       </div>
     </div>
     <div class="herocta reveal">
       <a class="btn" href="docs/quickstart.html">Get started</a>
-      <a class="btn-ghost" href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">Read the threat model</a>
+      <a class="btn-ghost" href="docs/threat-model.html">Read the threat model</a>
     </div>
     <p class="herostatus reveal"><span class="statustag">working alpha · v0.3.0</span> Single-maintainer, no third-party security audit yet — read the threat model and decide for yourself. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
   </div>
@@ -229,7 +229,7 @@ drydock start</pre>
       </tr>
     </tbody>
   </table>
-  <p class="prose reveal" style="margin-top:18px">The full <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a> is the contract — it enumerates every attack and what drydock does and doesn't defend.</p>
+  <p class="prose reveal" style="margin-top:18px">The full <a href="docs/threat-model.html" style="color:var(--grn)">threat model</a> is the contract — it enumerates every attack and what drydock does and doesn't defend.</p>
 </section>
 
 <section id="prove">
@@ -247,7 +247,7 @@ make demo VM=1</pre>
   </div>
   <figure class="demo reveal" style="margin-top:26px">
     <img src="breach.gif" alt="drydock running real red-team attacks — each one contained live" loading="lazy" width="860">
-    <figcaption><b>Real attacks, contained live.</b> Every green is an actual <code>go&nbsp;test</code> red-team case. <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md">See the threat model&nbsp;→</a></figcaption>
+    <figcaption><b>Real attacks, contained live.</b> Every green is an actual <code>go&nbsp;test</code> red-team case. <a href="docs/threat-model.html">See the threat model&nbsp;→</a></figcaption>
   </figure>
 </section>
 
@@ -267,7 +267,7 @@ make demo VM=1</pre>
   <div class="seclabel reveal">Honest limits</div>
   <h2 class="reveal">What it deliberately doesn't defend.</h2>
   <div class="prose reveal">
-    <p>A containment that overclaims fails quietly, so here's the honest edge: drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. And it trusts the Mac it runs on. It's pre-1.0, single-maintainer, and has had <b>no third-party security audit</b>. The full <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--grn)">threat model</a> is the contract — read it before you trust it.</p>
+    <p>A containment that overclaims fails quietly, so here's the honest edge: drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. And it trusts the Mac it runs on. It's pre-1.0, single-maintainer, and has had <b>no third-party security audit</b>. The full <a href="docs/threat-model.html" style="color:var(--grn)">threat model</a> is the contract — read it before you trust it.</p>
   </div>
 </section>
 
@@ -283,7 +283,7 @@ make demo VM=1</pre>
       <path d="M 17 19 L 20 19" stroke-width="1.6" stroke-linecap="round"/>
     </svg>drydock — containment for autonomous coding agents
   </div>
-  <div><a href="docs/index.html" style="color:var(--mut);text-decoration:none">docs</a> · <a href="https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md" style="color:var(--mut);text-decoration:none">threat model</a> · <a href="https://github.com/sricola/drydock" style="color:var(--mut);text-decoration:none">github</a></div>
+  <div><a href="docs/index.html" style="color:var(--mut);text-decoration:none">docs</a> · <a href="docs/threat-model.html" style="color:var(--mut);text-decoration:none">threat model</a> · <a href="https://github.com/sricola/drydock" style="color:var(--mut);text-decoration:none">github</a></div>
 </footer>
 
 <script>

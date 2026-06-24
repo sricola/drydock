@@ -40,6 +40,26 @@ func TestRenderMarkdown_Deterministic(t *testing.T) {
 	}
 }
 
+func TestRewriteRepoLinks(t *testing.T) {
+	in := []byte("see [roadmap](docs/ROADMAP.md) and [sec](SECURITY.md#x) and [gh](https://example.com/a.md) and [q](quickstart.html)")
+	got := string(rewriteRepoLinks(in))
+	for _, want := range []string{
+		"[roadmap](https://github.com/sricola/drydock/blob/main/docs/ROADMAP.md)",
+		"[sec](https://github.com/sricola/drydock/blob/main/SECURITY.md#x)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	// Absolute URLs and non-.md links are left alone.
+	if !strings.Contains(got, "[gh](https://example.com/a.md)") {
+		t.Errorf("absolute URL was rewritten: %s", got)
+	}
+	if !strings.Contains(got, "[q](quickstart.html)") {
+		t.Errorf(".html link was rewritten: %s", got)
+	}
+}
+
 func TestBuildSidebar_MarksCurrent(t *testing.T) {
 	pages := []Page{{Slug: "quickstart", Title: "Quickstart", File: "quickstart.html"}, {Slug: "egress", Title: "Egress", File: "egress.html"}}
 	out := buildSidebar(pages, "egress")

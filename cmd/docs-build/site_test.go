@@ -28,7 +28,7 @@ func repoRoot(t *testing.T) string {
 // The version moved to v0.3.0; nothing user-facing should still say v0.2.0.
 func TestNoStaleVersion(t *testing.T) {
 	root := repoRoot(t)
-	files := []string{"README.md", "site/index.html"}
+	files := []string{"README.md", "site/index.html", "THREAT_MODEL.md"}
 	docs, _ := filepath.Glob(filepath.Join(root, "site/docs/*.md"))
 	for _, d := range docs {
 		files = append(files, d[len(root)+1:])
@@ -58,6 +58,13 @@ func TestLandingInternalLinksResolve(t *testing.T) {
 	for _, m := range hrefRe.FindAllStringSubmatch(string(b), -1) {
 		target := m[1]
 		if strings.HasPrefix(target, "//") || strings.HasPrefix(target, "http") || strings.HasPrefix(target, "mailto") {
+			continue
+		}
+		// The threat model docs page is rendered from the canonical root file.
+		if target == "docs/threat-model.html" {
+			if _, err := os.Stat(filepath.Join(root, "THREAT_MODEL.md")); err != nil {
+				t.Errorf("landing links the threat model but THREAT_MODEL.md is missing")
+			}
 			continue
 		}
 		// A generated docs page: verify its Markdown source exists instead.
