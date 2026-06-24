@@ -1,0 +1,49 @@
+# Configuration
+
+`drydock init` creates `~/.drydock/` (mode `0700`) and seeds two files:
+
+| Path | What |
+|---|---|
+| `~/.drydock/config.yaml` | Operator settings (network, gateway IP, budget, timeout, concurrency, paths, listener, behavior flags) |
+| `~/.drydock/egress.yaml` | The allowlist — hosts and ports the sandbox may reach (see [Egress](egress.html)) |
+
+Both are seeded from defaults the first time; `drydock init` never overwrites
+them. **Env vars win over file values**, so existing scripts keep working. Edit
+`config.yaml` and re-run `drydock start`.
+
+The vendor keys (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) are intentionally
+**not** in these files — they live in your shell env, or at
+`~/.drydock/api-keys.env` (mode `0600`), read host-side and never passed into
+the VM.
+
+## Common settings
+
+| Field (`config.yaml`) | Env override | Default | Meaning |
+|---|---|---|---|
+| `anthropic_auth` | `DRYDOCK_ANTHROPIC_AUTH` | `api_key` | `api_key` uses `ANTHROPIC_API_KEY`; `subscription` uses `~/.drydock/claude-oauth.json` |
+| `openai_auth` | `DRYDOCK_OPENAI_AUTH` | `api_key` | `api_key` uses `OPENAI_API_KEY`; `subscription` uses `~/.drydock/codex-oauth.json` |
+| `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent when `--agent` is omitted (`claude` \| `codex`) |
+| `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | `--model` fallback; empty = the agent picks |
+| `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | Per-task USD ceiling (`api_key` mode only; unused in subscription mode) |
+| `task_max_requests` | `DRYDOCK_TASK_MAX_REQUESTS` | `0` (unlimited) | Hard cap on API round-trips per task — the primary runaway control in subscription mode |
+| `task_timeout` | — | `30m` | Wall-clock per task |
+| `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | Excess POSTs to `/tasks` get HTTP 503 |
+| `notifications` | `DRYDOCK_NO_NOTIFY=1` (off) | `true` | macOS notifications on pending approval |
+
+## Advanced: runtime, paths, listener
+
+| Field (`config.yaml`) | Env override | Default | Meaning |
+|---|---|---|---|
+| `network` | `DRYDOCK_NETWORK` | `drydock-egress` | vmnet network name |
+| `gateway_ip` | `DRYDOCK_GW_IP` | `192.168.66.1` | Gateway + squid bind here |
+| `sandbox_image` | `SANDBOX_IMAGE` | `drydock-sandbox:latest` | Per-task agent VM image |
+| `anchor_image` | `DRYDOCK_ANCHOR_IMAGE` | `drydock-anchor:latest` | Minimal image holding the vmnet gateway IP |
+| `stage_root` / `audit_root` / `squid_run_dir` | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `~/.drydock/{stage,audit,squid}` | Per-task scratch (audit dir `0700`; log + diff `0600`) |
+| `broker.socket` | `BROKER_SOCKET` | `$TMPDIR/drydock-$UID/drydock.sock` | Unix socket (parent dir `0700`, socket `0600`) |
+| `broker.addr` | `BROKER_ADDR` | *(empty)* | `host:port` to expose over TCP — **no auth**; see [SECURITY.md § TCP exposure](https://github.com/sricola/drydock/blob/main/SECURITY.md#tcp-exposure-brokeraddr--broker_addr) |
+| `log_json` | `DRYDOCK_LOG_JSON=1` | `false` | Force JSON logs even on a TTY |
+| `strict_container_version` | `DRYDOCK_STRICT_CONTAINER_VERSION=1` | `false` | Fail closed when `container`'s major drifts from the tested range |
+| — | `EGRESS_CONFIG` | `~/.drydock/egress.yaml` | Path override for the egress YAML |
+
+Gateway port `8088` and squid port `3128` are hard-coded in
+`cmd/brokerd/main.go` and `image/entrypoint.sh`; change both together.

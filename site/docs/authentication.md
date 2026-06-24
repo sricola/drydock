@@ -1,0 +1,80 @@
+# Authentication
+
+drydock runs two agents — **Claude Code** (Anthropic) and **OpenAI Codex**
+(OpenAI) — and each works with either a vendor **API key** or your existing
+**subscription**. Whichever you choose, the real credential stays host-side and
+**never enters the VM**: the sandbox only ever sees a per-task token.
+
+Pick the agent per task with `--agent claude|codex`, or set `default_agent` in
+`config.yaml`.
+
+## The matrix
+
+| Agent | API key | Subscription (no key) |
+|---|---|---|
+| **Claude Code** | `export ANTHROPIC_API_KEY=…` | `drydock auth claude` + `anthropic_auth: subscription` |
+| **OpenAI Codex** | `export OPENAI_API_KEY=…` | `drydock auth codex` + `openai_auth: subscription` |
+
+An API key is the quickest path. The subscription path lets you reuse a plan you
+already pay for (macOS only; needs the vendor's `claude` / `codex` CLI).
+
+## API key
+
+Set at least one vendor key. Keep it in your shell env, or let `drydock init`
+store it at `~/.drydock/api-keys.env` (mode `0600`, read host-side). Either way
+it never crosses the VM boundary.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code tasks
+export OPENAI_API_KEY=sk-...          # OpenAI Codex tasks
+drydock start
+```
+
+## Subscription (Claude Pro/Max or ChatGPT)
+
+```bash
+# Claude
+claude login            # log in to your Claude account (opens a browser)
+drydock auth claude     # copy the credential into ~/.drydock/claude-oauth.json (0600)
+export DRYDOCK_ANTHROPIC_AUTH=subscription   # or set anthropic_auth: subscription in config.yaml
+
+# Codex
+codex login             # log in to your ChatGPT account
+drydock auth codex      # copy into ~/.drydock/codex-oauth.json (0600)
+export DRYDOCK_OPENAI_AUTH=subscription      # or set openai_auth: subscription in config.yaml
+
+drydock start
+```
+
+<details>
+<summary><b>Important: subscription-mode limits and terms-of-service risk</b></summary>
+
+**Budget vs. request cap.** The USD budget (`task_budget_usd`) does **not** apply
+in subscription mode — there's no spend to meter. To stop a runaway task from
+burning your subscription's rate limit, set `task_max_requests` in
+`config.yaml`. `task_timeout` still applies as a wall-clock backstop. The cap
+stops *inference* the moment it's hit (the gateway returns HTTP 429), but the
+agent retries with backoff before giving up, so a capped task can spin for a
+minute or two before erroring out.
+
+**Credential blast radius.** The stored OAuth credential
+(`~/.drydock/claude-oauth.json` or `codex-oauth.json`) is a **full-account
+token** — broader than a scoped API key, and not per-task revocable. It never
+enters the VM, but keep it protected. See
+[SECURITY.md](https://github.com/sricola/drydock/blob/main/SECURITY.md) for the
+full blast-radius note.
+
+**Terms of service.** Headless use of a personal subscription may brush against
+the provider's terms and hit rate limits sooner than interactive use. drydock
+makes **no claim** that automating a personal Claude or ChatGPT subscription
+headlessly is sanctioned by Anthropic or OpenAI — the operator assumes that
+risk.
+
+</details>
+
+## Verify
+
+```bash
+drydock auth claude --status   # or: drydock auth codex --status
+drydock status
+```
