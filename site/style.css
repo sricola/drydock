@@ -185,10 +185,12 @@ h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);lett
 @media(max-width:620px){.cstrip .cgate{flex-direction:row;width:100%;border:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:10px}}
 
 .diagram{margin-top:10px;border:1px solid var(--line2);background:var(--panel);border-radius:4px;overflow:hidden}
-.diagram .head{display:flex;border-bottom:1px solid var(--line)}
-.zone-h{flex:1;padding:11px 18px;font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase}
-.zone-h.vm{color:var(--red);background:var(--red-dim);text-align:left}
-.zone-h.host{color:var(--grn);background:var(--grn-dim);text-align:right}
+/* head uses the SAME grid template as .grid2 so each zone-h aligns exactly with
+   its column — otherwise the red VM header bleeds past the seam into the host. */
+.diagram .head{display:grid;grid-template-columns:1fr 1px 1.15fr;border-bottom:1px solid var(--line)}
+.zone-h{padding:11px 18px;font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase}
+.zone-h.vm{color:var(--red);background:var(--red-dim);text-align:left;grid-column:1}
+.zone-h.host{color:var(--grn);background:var(--grn-dim);text-align:right;grid-column:3}
 .grid2{display:grid;grid-template-columns:1fr 1px 1.15fr;align-items:stretch}
 .seam{background:repeating-linear-gradient(180deg,var(--line2) 0 7px,transparent 7px 14px)}
 .col{padding:22px 20px;display:flex;flex-direction:column;gap:12px}
@@ -213,7 +215,8 @@ h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,30px);lett
   .grid2{grid-template-columns:1fr}
   .seam{display:none}
   .col.host{border-top:1px dashed var(--grn-line)}
-  .zone-h.host{text-align:left}
+  .diagram .head{grid-template-columns:1fr 1fr}
+  .zone-h.host{text-align:left;grid-column:2}
   .flowrow{grid-template-columns:1fr;gap:6px}
 }
 
