@@ -68,22 +68,25 @@ type SquidControl interface {
 }
 
 type Broker struct {
-	Cfg           egress.Config
-	Providers     map[string]creds.Provider // vendor -> provider
-	DefaultAgent  string                    // "" -> "claude"
-	ImageRef      string
-	StageRoot     string
-	AuditRoot     string
-	Timeout       time.Duration
-	Network       string       // stable egress network name (e.g. drydock-egress)
-	GatewayIP     string       // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
-	ProxyPort     int          // squid port (e.g. 3128)
-	Squid         SquidControl // per-task egress widening; nil = disabled
-	TaskBudget    float64      // USD budget per task
-	DefaultModel  string       // operator-level default; per-task Task.Model overrides
-	Notify        bool         // fire macOS notifications on approval gates (config notifications)
-	AnthropicAuth string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
-	OpenAIAuth    string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
+	Cfg          egress.Config
+	Providers    map[string]creds.Provider // vendor -> provider
+	DefaultAgent string                    // "" -> "claude"
+	ImageRef     string
+	StageRoot    string
+	AuditRoot    string
+	Timeout      time.Duration
+	// ApprovalTimeout, when > 0, auto-denies a task waiting at an approval gate
+	// after this long and frees its concurrency slot. 0 = wait indefinitely.
+	ApprovalTimeout time.Duration
+	Network         string       // stable egress network name (e.g. drydock-egress)
+	GatewayIP       string       // vmnet gateway IP the VM reaches (e.g. 192.168.64.1)
+	ProxyPort       int          // squid port (e.g. 3128)
+	Squid           SquidControl // per-task egress widening; nil = disabled
+	TaskBudget      float64      // USD budget per task
+	DefaultModel    string       // operator-level default; per-task Task.Model overrides
+	Notify          bool         // fire macOS notifications on approval gates (config notifications)
+	AnthropicAuth   string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
+	OpenAIAuth      string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
 
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
@@ -474,7 +477,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	taskVendor, _ := agent.Vendor(agentName)
 	subscription := (taskVendor == "anthropic" && b.AnthropicAuth == "subscription") ||
 		(taskVendor == "openai" && b.OpenAIAuth == "subscription")
-	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t}`+"\n", subscription)
+	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t,"sensitive":%t}`+"\n", subscription, t.Sensitive)
 
 	env := append([]string{}, grant.EnvVars()...)
 	env = append(env,
@@ -613,6 +616,11 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 // never reach squid. Mirrors gatePush so the operator only has to learn one
 // approval flow.
 func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []egress.Domain) bool {
+	if b.ApprovalTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.ApprovalTimeout)
+		defer cancel()
+	}
 	ch := make(chan bool, 1)
 	b.pendingMu.Lock()
 	if b.pending == nil {
@@ -647,7 +655,11 @@ func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []eg
 	case ok := <-ch:
 		return ok
 	case <-ctx.Done():
-		slog.Info("task cancelled at egress gate", "task_id", taskID)
+		if ctx.Err() == context.DeadlineExceeded {
+			slog.Warn("task auto-denied at egress gate (approval_timeout reached)", "task_id", taskID, "timeout", b.ApprovalTimeout)
+		} else {
+			slog.Info("task cancelled at egress gate", "task_id", taskID)
+		}
 		return false
 	}
 }
@@ -679,6 +691,11 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 		slog.Info("task auto-approve push", "task_id", taskID, "reason", "caller opted in")
 		return true
 	}
+	if b.ApprovalTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.ApprovalTimeout)
+		defer cancel()
+	}
 	ch := make(chan bool, 1)
 	b.pendingMu.Lock()
 	if b.pending == nil {
@@ -707,7 +724,11 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 	case ok := <-ch:
 		return ok
 	case <-ctx.Done():
-		slog.Info("task client disconnected before approval; aborting push", "task_id", taskID)
+		if ctx.Err() == context.DeadlineExceeded {
+			slog.Warn("task auto-denied at approval gate (approval_timeout reached)", "task_id", taskID, "timeout", b.ApprovalTimeout)
+		} else {
+			slog.Info("task client disconnected before approval; aborting push", "task_id", taskID)
+		}
 		return false
 	}
 }

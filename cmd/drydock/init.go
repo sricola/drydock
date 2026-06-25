@@ -162,7 +162,6 @@ func findShareFile(name string) (string, error) {
 // template is unreachable. Must stay in sync with config/egress.yaml.
 const defaultEgressYAML = `version: 1
 default:
-  allow_dns: true
   domains:
     - { host: api.anthropic.com,      ports: [443] }
     - { host: api.openai.com,         ports: [443] }
@@ -175,7 +174,6 @@ default:
     # is the checksum DB (Go refuses to fetch without it unless GOSUMDB=off).
     - { host: proxy.golang.org,       ports: [443] }
     - { host: sum.golang.org,         ports: [443] }
-  cidrs: []
 per_task_widening:
   requires_approval: true
 `

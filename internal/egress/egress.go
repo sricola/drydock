@@ -18,9 +18,7 @@ type Domain struct {
 type Config struct {
 	Version int `yaml:"version"`
 	Default struct {
-		AllowDNS bool     `yaml:"allow_dns"`
-		Domains  []Domain `yaml:"domains"`
-		CIDRs    []string `yaml:"cidrs"`
+		Domains []Domain `yaml:"domains"`
 	} `yaml:"default"`
 	PerTaskWidening struct {
 		RequiresApproval bool `yaml:"requires_approval"`
