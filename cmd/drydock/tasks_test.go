@@ -88,9 +88,9 @@ func TestSummarize_NoResultStaysRunning(t *testing.T) {
 	}
 }
 
-// firstMeta reads the per-task drydock_meta line so the cost column reflects how
-// the task ACTUALLY ran, not the operator's current config.
-func TestFirstMeta(t *testing.T) {
+// readMeta reads the per-task drydock_meta line so the cost column reflects how
+// the task ACTUALLY ran (subscription) and whether it was marked sensitive.
+func TestReadMeta(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		p := filepath.Join(dir, name)
@@ -99,20 +99,20 @@ func TestFirstMeta(t *testing.T) {
 		}
 		return p
 	}
-	sub := write("sub.jsonl", `{"type":"drydock_meta","subscription":true}`+"\n"+`{"type":"result","subtype":"success"}`+"\n")
-	if !firstMeta(sub) {
-		t.Error("subscription meta should report true")
+	sub := write("sub.jsonl", `{"type":"drydock_meta","subscription":true,"sensitive":false}`+"\n"+`{"type":"result","subtype":"success"}`+"\n")
+	if m := readMeta(sub); !m.Subscription || m.Sensitive {
+		t.Errorf("subscription meta = %+v, want Subscription=true Sensitive=false", m)
 	}
-	key := write("key.jsonl", `{"type":"drydock_meta","subscription":false}`+"\n")
-	if firstMeta(key) {
-		t.Error("api_key meta should report false")
+	sens := write("sens.jsonl", `{"type":"drydock_meta","subscription":false,"sensitive":true}`+"\n")
+	if m := readMeta(sens); m.Subscription || !m.Sensitive {
+		t.Errorf("sensitive meta = %+v, want Subscription=false Sensitive=true", m)
 	}
 	legacy := write("legacy.jsonl", `{"type":"stream_event"}`+"\n")
-	if firstMeta(legacy) {
-		t.Error("legacy task (no meta line) should report false")
+	if m := readMeta(legacy); m.Subscription || m.Sensitive {
+		t.Errorf("legacy task (no meta line) should report zero value, got %+v", m)
 	}
-	if firstMeta(filepath.Join(dir, "missing.jsonl")) {
-		t.Error("missing file should report false")
+	if m := readMeta(filepath.Join(dir, "missing.jsonl")); m.Subscription || m.Sensitive {
+		t.Errorf("missing file should report zero value, got %+v", m)
 	}
 }
 

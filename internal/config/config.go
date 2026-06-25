@@ -36,6 +36,12 @@ type Config struct {
 	TaskBudgetUSD float64       `yaml:"task_budget_usd"`
 	MaxConcurrent int           `yaml:"max_concurrent_tasks"`
 	TaskTimeout   time.Duration `yaml:"task_timeout"`
+	// ApprovalTimeout bounds how long a task may sit at a human-approval gate
+	// (diff push or egress widening) before it is auto-denied and its
+	// concurrency slot is released. 0 (the default) waits indefinitely — right
+	// for interactive use; set a value for unattended/batch runs so a forgotten
+	// approval can't pin a slot forever.
+	ApprovalTimeout time.Duration `yaml:"approval_timeout"`
 
 	// DefaultModel passes through to `claude --model` for every task that
 	// doesn't supply --model itself. Empty = let claude-code pick.
@@ -271,6 +277,9 @@ func (c *Config) validate() error {
 	if c.TaskTimeout < time.Second {
 		return fmt.Errorf("config: task_timeout must be ≥ 1s")
 	}
+	if c.ApprovalTimeout != 0 && c.ApprovalTimeout < time.Second {
+		return fmt.Errorf("config: approval_timeout must be 0 (wait indefinitely) or ≥ 1s")
+	}
 	if c.DefaultAgent != "claude" && c.DefaultAgent != "codex" {
 		return fmt.Errorf("config: default_agent must be claude or codex, got %q", c.DefaultAgent)
 	}
@@ -302,6 +311,7 @@ anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gatewa
 task_budget_usd:        2.0            # hard USD ceiling; gateway rejects after exhaustion
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
+approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs)
 default_model:          ""             # claude --model fallback (e.g. claude-sonnet-4-6); empty = claude picks. Per-task --model overrides.
 default_agent:          claude         # sandbox CLI: claude | codex. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription

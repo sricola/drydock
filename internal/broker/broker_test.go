@@ -663,3 +663,20 @@ func TestModelEnv(t *testing.T) {
 		})
 	}
 }
+
+// TestGatePush_AutoDeniesOnApprovalTimeout verifies that a task waiting at the
+// approval gate is auto-denied (and its slot freed) once ApprovalTimeout passes,
+// instead of blocking forever.
+func TestGatePush_AutoDeniesOnApprovalTimeout(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir(), ApprovalTimeout: 40 * time.Millisecond}
+	done := make(chan bool, 1)
+	go func() { done <- b.gatePush(context.Background(), "task-to", "a diff", false) }()
+	select {
+	case approved := <-done:
+		if approved {
+			t.Error("expected auto-deny (false) on approval_timeout, got approved")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("gatePush did not return; approval_timeout not enforced")
+	}
+}

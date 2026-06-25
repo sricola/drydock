@@ -30,26 +30,27 @@ type auditResult struct {
 type auditMeta struct {
 	Type         string `json:"type"`
 	Subscription bool   `json:"subscription"`
+	Sensitive    bool   `json:"sensitive"`
 }
 
-// firstMeta reports whether the task ran on a Claude subscription, read from the
-// drydock_meta line the broker writes first. Legacy tasks (no meta line) report
-// false. Reads only the first line, not the whole trace.
-func firstMeta(path string) bool {
+// readMeta returns the drydock_meta line the broker writes first (auth mode +
+// sensitivity). Legacy tasks (no meta line) report the zero value. Reads only
+// the first line, not the whole trace.
+func readMeta(path string) auditMeta {
 	f, err := os.Open(path)
 	if err != nil {
-		return false
+		return auditMeta{}
 	}
 	defer f.Close()
 	line, err := bufio.NewReader(f).ReadBytes('\n')
 	if err != nil && len(line) == 0 {
-		return false
+		return auditMeta{}
 	}
 	var m auditMeta
-	if json.Unmarshal(bytes.TrimSpace(line), &m) != nil {
-		return false
+	if json.Unmarshal(bytes.TrimSpace(line), &m) != nil || m.Type != "drydock_meta" {
+		return auditMeta{}
 	}
-	return m.Type == "drydock_meta" && m.Subscription
+	return m
 }
 
 type taskRow struct {
@@ -121,8 +122,9 @@ func summarize(id, path string, info os.FileInfo) taskRow {
 	if !ok {
 		return r
 	}
+	meta := readMeta(path)
 	r.dur = shortDur(last.DurationMs)
-	r.cost = costCell(firstMeta(path), last.TotalCostUSD)
+	r.cost = costCell(meta.Subscription, last.TotalCostUSD)
 	switch {
 	case last.IsError:
 		r.outcome = "error"
@@ -134,6 +136,9 @@ func summarize(id, path string, info os.FileInfo) taskRow {
 		}
 	default:
 		r.outcome = last.Subtype
+	}
+	if meta.Sensitive {
+		r.outcome += " · sensitive"
 	}
 	return r
 }
