@@ -125,6 +125,110 @@ SECURITY.md residual is updated.
 
 ---
 
+## Phase 3 — Provider expansion
+
+**Goal:** add a third coding agent (Gemini CLI) without forking the gateway,
+by first paying down the one place provider support is hardcoded — the CLI/config
+layer — then proving the seam with a real new vendor.
+
+**Why now:** the *gateway* layer is already cleanly additive — a vendor is a
+`Vendor{Name, BaseURL, Inject, ParseUsage, Prices}` value
+(`internal/gateway/vendor.go`) plus a pricing table and a usage parser, and
+nothing downstream enumerates vendors. The *CLI/config* layer is where "exactly
+two providers" is wired in by hand, in five places:
+
+- `internal/agent/agent.go` — a literal `switch` mapping `claude→anthropic`,
+  `codex→openai`; an unknown agent is rejected.
+- `internal/config/config.go` — `default_agent must be claude or codex`
+  validation, plus one `*_auth` key per vendor (`anthropic_auth`, `openai_auth`).
+- the setup wizard's "which agents?" menu (claude / codex / both).
+- `drydock start`'s per-agent credential preflight.
+- `drydock doctor` and `drydock auth`'s per-vendor branches.
+
+Adding Gemini by copy-paste would mean touching all five and growing every
+two-way branch into a three-way one — the classic special-case-on-shared-infra
+smell. Generalize the seam first.
+
+### 3A — Provider registry refactor *(do first; no new provider yet)*
+Introduce one source of truth: a `Provider{Agent, Vendor, AuthModes, …}` table
+that `agent.Vendor`, config validation, the wizard menu, `start`, `doctor`, and
+`auth` all read from instead of hardcoding pairs. Pure refactor — `claude` and
+`codex` still the only entries, behavior byte-identical, existing tests green.
+The deliverable is that adding a row is the *only* edit a new provider needs in
+this layer.
+
+### 3B — Gemini (Google) *(first new provider — proves the seam)*
+Add the `gemini → google` row: a `GoogleVendor()` (base URL + `Inject` for the
+Google auth header), a pricing table, a usage parser, the sandbox-image CLI
+install, and red-team coverage (A1 key-exfil, A2 egress) for the new vendor.
+If 3A is right, the CLI/config layer change is one registry row.
+
+### 3C — Generic OpenAI-compatible agent *(broadens reach cheaply)*
+Many third-party model gateways speak the OpenAI wire format. A single
+`openai-compat` provider whose base URL + key come from config covers a long
+tail (local models, OpenRouter-style proxies) without a bespoke vendor each.
+Gated on 3A's registry and 3B validating the shape.
+
+### 3D — Config-declared providers *(stretch; only if demand is real)*
+Let an operator declare a vendor entirely in config (name, base URL, auth
+header template, price table) with no Go change. YAGNI until 3B/3C show the
+registry's fields are the right ones — don't design the plugin format before
+two real providers have exercised the seam.
+
+**Done when:** a third agent (Gemini) runs end-to-end through the gateway with
+its own red-team coverage, and the CLI/config layer gained it via a registry
+row rather than a new branch in five files.
+
+---
+
+## Phase 4 — Reliability & hardening
+
+**Goal:** close the gaps between "works on the happy path" and "survives the
+operator's bad day" — crashes, partial failures, and the slow drift of pinned
+inputs. These are correctness/durability gaps, not new features; each is scoped
+so it can ship independently.
+
+- **4.1 Crash recovery.** A `brokerd` killed mid-task can leave an orphaned VM
+  and a permanently-held concurrency slot (the in-memory semaphore resets to
+  full on restart while the VM lingers). Reconcile on startup: list `drydock-*`
+  containers, reap orphans, and mark their audit rows terminated. *Highest
+  priority — it's a correctness gap a single crash exposes.*
+- **4.2 Push partial-failure.** The approved-diff push is a multi-step git
+  sequence with no defined rollback if it fails partway (e.g. push rejected
+  after a local commit). Define the failure contract and surface it in the
+  audit row instead of leaving an ambiguous state.
+- **4.3 Aggregate budget cap.** `task_budget_usd` caps a *single* task; nothing
+  bounds the daily/total spend across tasks. Add an aggregate ceiling the
+  gateway enforces, so a runaway loop of cheap tasks can't drain a key.
+- **4.4 `drydock retry`.** Re-run a prior task from its audit record (same repo
+  ref, prompt, allowlist) without reconstructing the invocation by hand —
+  closes the loop with the per-task audit trail Phase 1 already produces.
+- **4.5 Sandbox-image vulnerability scanning.** The SBOM (2.1) lists the
+  image's packages; nothing yet *scans* them. Run `grype`/`trivy` over the
+  built image in CI and fail on known-critical CVEs — the image-side analogue
+  of `govulncheck` (2.5) for Go deps.
+- **4.6 Agent-CLI bump automation.** The pinned agent CLIs
+  (`@anthropic-ai/claude-code`, `@openai/codex`) drift; a scheduled job that
+  proposes a pinned-version bump PR (with the red-team suite as the gate) keeps
+  them current without unpinning.
+- **4.7 Observability.** Structured run metrics (durations, gate latencies,
+  egress-widen frequency, budget burn) beyond the per-task JSONL — enough to
+  answer "what is drydock doing across many runs" without grepping audit files.
+- **4.8 Runtime abstraction.** The VM backend is Apple `container`-specific.
+  Factor the container operations behind an interface so an alternative backend
+  (e.g. Linux microVM) is a port, not a rewrite. *Stretch — only once a second
+  backend is actually wanted; don't abstract for one implementation.*
+- **4.9 Egress depth (IPv6 / plain-HTTP).** The allowlist proxy is HTTPS/CONNECT
+  and IPv4-centric; audit and document behavior for IPv6 literals and plain-HTTP
+  CONNECT, and either enforce or explicitly state the limit (no silent gaps —
+  the honesty constraint applies to egress edges too).
+
+**Done when:** a `brokerd` crash leaves no orphaned VM or wedged slot, spend is
+bounded in aggregate, the sandbox image is CVE-scanned in CI, and each
+remaining edge is either enforced or documented as a stated limit.
+
+---
+
 ## Sequencing
 
 1. **Phase 1 first** (1.1 → 1.2 → 1.3 → 1.4) — highest credibility, fully in
@@ -132,11 +236,19 @@ SECURITY.md residual is updated.
 2. **Phase 2 in parallel where it's free:** 2.3 (cosign/SLSA) + 2.1 (SBOM)
    first, then 2.4 / 2.5 (build docs + CI guards), then 2.2 (notarization) once
    the Apple cert is in hand.
+3. **Phase 4 reliability is interleaved, not deferred** — 4.1 (crash recovery)
+   and 4.3 (aggregate budget) are correctness gaps and rank ahead of new
+   providers; 4.5 (image CVE scan) rides alongside Phase 2's supply-chain work.
+4. **Phase 3 providers gate on 3A** — the registry refactor lands before any
+   new vendor, so Gemini (3B) and the rest are registry rows, not five-file
+   branches.
 
 **Prerequisites to flag:**
 - The A1 / A2 / A7 red-team tests need the VM, so full `make redteam` is a
   macOS / Apple-silicon gate; CI runs only the host-side subset (A3–A6).
 - 2.2 notarization requires a paid Apple Developer ID certificate.
+- 3B Gemini and 3C openai-compat need their own A1/A2 red-team coverage before
+  they count as shipped — a new credential path is a new attack surface.
 
 **First concrete deliverable:** the `make redteam` skeleton + the A1 key-exfil
 test — the single most convincing artifact.
