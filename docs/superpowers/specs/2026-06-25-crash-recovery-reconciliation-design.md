@@ -76,13 +76,23 @@ New `config.LockPath()` returning `~/.drydock/brokerd.lock` (mirrors
 `DefaultPath()`), and a small guard in `cmd/brokerd/main.go` run **before**
 `pruneOrphanTasks`:
 
-- A small helper `acquireLock(path) (*os.File, error)` opens (create, `0o600`)
-  the lock file and `syscall.Flock(fd, LOCK_EX|LOCK_NB)` (stdlib, already
-  imported; verified on darwin). On success it returns the open `*os.File`,
-  which `main` holds for the process's whole life (a package var so it isn't
-  GC'd/closed); the descriptor staying open is what keeps the lock held.
-- On a non-nil error from `acquireLock` (`EWOULDBLOCK` = another `brokerd` holds
-  it) → `die("another brokerd is already running", ...)` and exit non-zero
+- A small helper `acquireLock(path) (*os.File, error)`:
+  1. `os.MkdirAll(filepath.Dir(path), 0o700)` — `~/.drydock/` is **not**
+     guaranteed to exist at boot (the broker creates `AuditRoot`/`StageRoot`
+     lazily on the first task, `broker.go:458`; nothing creates the parent at
+     startup). Without this, a fresh `drydock start` (no prior init/task) hits
+     ENOENT opening the lock file.
+  2. `os.OpenFile(path, O_CREATE|O_RDWR, 0o600)`.
+  3. `syscall.Flock(fd, LOCK_EX|LOCK_NB)` (stdlib, already imported; verified on
+     darwin). On `EWOULDBLOCK`, close the file and return a sentinel the caller
+     can recognize as contention; on success return the open `*os.File`.
+  The returned `*os.File` is held by `main` for the process's whole life (a
+  package var so it isn't GC'd/closed); the descriptor staying open is what
+  keeps the lock held.
+- The caller **distinguishes the two failure modes** — never conflate them:
+  contention (`EWOULDBLOCK`) → `die("another brokerd is already running on this
+  host", ...)`; any other error (mkdir/open/flock failure) → `die("cannot
+  acquire brokerd lock", "path", path, "err", err)`. Either way, exit non-zero
   **without** running any reaper.
 - The lock is advisory and released automatically when the process exits
   (including SIGKILL — the kernel drops the flock), so no stale-lock cleanup is
@@ -114,10 +124,14 @@ New function in `internal/stage/stage.go`.
 New function in a new file `internal/broker/reconcile.go` (broker package).
 
 - `os.ReadDir(auditRoot)`. Missing root → `(0, nil)`.
-- For each `*.jsonl` entry: read the file's tail (16 KB, mirroring
-  `lastResult` in `cmd/drydock/tasks.go`) and scan its lines for one where
-  `"type":"result"`. If such a line exists, skip the file (already terminal —
-  this is what makes the sweep idempotent).
+- For each `*.jsonl` entry (skip subdirs and non-`.jsonl` names): read the
+  file's tail (16 KB) and detect a result line **exactly as `lastResult` does**
+  — `json.Unmarshal` each line and check the decoded `Type == "result"`, not a
+  substring match. A substring scan would false-positive when a stream event's
+  text payload happens to contain the literal `"type":"result"`, skipping a
+  genuinely-crashed task and leaving it `running?` forever — the very bug this
+  closes. If a real result line exists, skip the file (already terminal — this
+  is what makes the sweep idempotent).
 - If no result line exists, append exactly one line:
 
   ```json
@@ -159,6 +173,11 @@ default:
 key off it still treat an interrupted task as a non-success terminal state; the
 display simply distinguishes *why*.
 
+Because `duration_ms:0` is a placeholder (death time unknown), the DUR column
+for an interrupted row should render `-` (unknown), not `0s` (which reads as
+"ran instantly"): when `outcome == "interrupted"`, leave `r.dur` at its `"-"`
+default rather than `shortDur(0)`.
+
 ### 4. `pruneOrphanTasks` (`cmd/brokerd/main.go`)
 
 - Change signature to `pruneOrphanTasks(stageRoot, auditRoot string)`; pass
@@ -196,6 +215,10 @@ the entire stage sweep rather than risk a catastrophic `RemoveAll`.
   line appended; `is_error` decodes true, `subtype` is `interrupted`.
 - A `.jsonl` that already has a `result` line → byte-identical after the call
   (idempotency).
+- A `.jsonl` whose only non-result line is a stream event carrying the literal
+  substring `"type":"result"` inside its text payload → still treated as
+  crashed (an `interrupted` line IS appended). Guards R2: detection must parse,
+  not substring-match.
 - Running `TerminateStuckAudits` twice → the second call appends nothing.
 - Missing audit root → `(0, nil)`.
 
@@ -211,10 +234,12 @@ subprocess, no manual-only path). `flock` locks attach to the open file
 *description*, not the process, so two separate `os.OpenFile` handles to the
 same path within one test contend: lock the first → succeeds; lock the second
 (`LOCK_EX|LOCK_NB`) → returns `EWOULDBLOCK`. Verified empirically on darwin.
-The lock acquisition is therefore factored into a small testable helper
-(e.g. `acquireLock(path) (*os.File, error)`) that the `cmd/brokerd` guard
-calls, and the test asserts: first acquire on a `t.TempDir()` path succeeds,
-second acquire on the same path returns an error.
+`acquireLock` test assertions:
+- First `acquireLock` on a path under a `t.TempDir()` whose **parent does not
+  exist yet** succeeds (guards R1: the helper `MkdirAll`s the parent rather
+  than failing on a fresh install).
+- A second `acquireLock` on the same path returns the contention sentinel —
+  and it is distinguishable from a generic open/mkdir failure.
 
 ## Done when
 
