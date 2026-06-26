@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,6 +27,7 @@ import (
 	"drydock/internal/egress"
 	"drydock/internal/gateway"
 	"drydock/internal/netfw"
+	"drydock/internal/provider"
 	"drydock/internal/sockpath"
 	"drydock/internal/stage"
 )
@@ -140,14 +142,6 @@ func main() {
 	}
 
 	fileKeys := config.LoadAPIKeys(config.APIKeysPath())
-	anthropicKey := resolveAPIKey("ANTHROPIC_API_KEY", fileKeys)
-	openaiKey := resolveAPIKey("OPENAI_API_KEY", fileKeys)
-	// subscription mode satisfies either side without an API key.
-	haveAnthropic := cfg.AnthropicAuth == "subscription" || anthropicKey != ""
-	haveOpenAI := cfg.OpenAIAuth == "subscription" || openaiKey != ""
-	if !haveAnthropic && !haveOpenAI {
-		die("set at least one of ANTHROPIC_API_KEY or OPENAI_API_KEY, or an auth subscription mode, on the broker host")
-	}
 
 	gwPort, proxyPort := 8088, 3128
 
@@ -228,31 +222,22 @@ func main() {
 
 	// Credential gateway: real key host-only; the VM gets a bearer token.
 	var backends []gateway.Backend
-	switch cfg.AnthropicAuth {
-	case "subscription":
-		store := gateway.FileCredStore(filepath.Join(config.Dir(), "claude-oauth.json"))
-		snap, err := store.Load()
-		if err != nil {
-			die("anthropic_auth=subscription but no usable credentials — run `drydock auth claude`", "err", err)
-		}
-		backends = append(backends, gateway.Backend{Vendor: gateway.AnthropicOAuthVendor(), Cred: gateway.NewOAuthCred(snap, store)})
-	default: // api_key
-		if anthropicKey != "" {
-			backends = append(backends, gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey(anthropicKey)})
+	for _, p := range provider.Registry {
+		switch cfg.AuthMode(p.Vendor) {
+		case "subscription":
+			b, err := p.OAuthBackend(config.Dir())
+			if err != nil {
+				die(p.Vendor+"_auth=subscription but no usable credentials — run `"+p.AuthCmd+"`", "err", err)
+			}
+			backends = append(backends, b)
+		default: // api_key
+			if key := resolveAPIKey(p.APIKeyEnv, fileKeys); key != "" {
+				backends = append(backends, gateway.Backend{Vendor: p.APIVendor(), Cred: gateway.StaticKey(key)})
+			}
 		}
 	}
-	switch cfg.OpenAIAuth {
-	case "subscription":
-		store := gateway.NewCodexStore(filepath.Join(config.Dir(), "codex-oauth.json"))
-		snap, err := store.Load()
-		if err != nil {
-			die("openai_auth=subscription but no usable credentials — run `drydock auth codex`", "err", err)
-		}
-		backends = append(backends, gateway.Backend{Vendor: gateway.OpenAIOAuthVendor(store.AccountID()), Cred: gateway.NewOAuthCredCodex(snap, store)})
-	default: // api_key
-		if openaiKey != "" {
-			backends = append(backends, gateway.Backend{Vendor: gateway.OpenAIVendor(), Cred: gateway.StaticKey(openaiKey)})
-		}
+	if len(backends) == 0 {
+		die("set at least one provider's API key (e.g. ANTHROPIC_API_KEY/OPENAI_API_KEY) or enable a subscription mode")
 	}
 	gw, err := gateway.New(backends...)
 	if err != nil {
@@ -270,29 +255,36 @@ func main() {
 	providers := map[string]creds.Provider{}
 	for _, b := range backends {
 		budget := cfg.TaskBudgetUSD
-		subAnthropic := cfg.AnthropicAuth == "subscription" && b.Vendor.Name == "anthropic"
-		subOpenAI := cfg.OpenAIAuth == "subscription" && b.Vendor.Name == "openai"
-		if subAnthropic || subOpenAI {
+		if cfg.AuthMode(b.Vendor.Name) == "subscription" {
 			budget = math.MaxFloat64
 		}
+		p, _ := provider.ByVendor(b.Vendor.Name)
 		providers[b.Vendor.Name] = &gateway.Provider{
 			GW:          gw,
 			Vendor:      b.Vendor.Name,
 			BaseURL:     "http://" + gwAddr,
+			BaseURLEnv:  p.BaseURLEnv,
+			TokenEnv:    p.TokenEnv,
 			Budget:      budget,
 			TTL:         cfg.TaskTimeout + 5*time.Minute,
 			MaxRequests: cfg.TaskMaxRequests,
 		}
 	}
-	slog.Info("agents available", "anthropic", anthropicKey != "" || cfg.AnthropicAuth == "subscription", "openai", openaiKey != "" || cfg.OpenAIAuth == "subscription")
+	avail := make([]string, 0, len(providers))
+	for v := range providers {
+		avail = append(avail, v)
+	}
+	sort.Strings(avail)
+	slog.Info("agents available", "vendors", avail)
 	// Fail-loud at boot if the operator default points at a vendor with no
 	// key: brokerd still starts (other agents may work), but every task that
 	// doesn't pass --agent would be rejected with a 400, which is confusing
 	// to debug after the fact.
 	if v, ok := agent.Vendor(cfg.DefaultAgent); ok {
 		if _, have := providers[v]; !have {
+			pReg, _ := provider.ByVendor(v)
 			slog.Warn("default_agent has no API key configured — tasks that don't pass --agent will be rejected",
-				"default_agent", cfg.DefaultAgent, "set", strings.ToUpper(v)+"_API_KEY")
+				"default_agent", cfg.DefaultAgent, "set", pReg.APIKeyEnv)
 		}
 	}
 
