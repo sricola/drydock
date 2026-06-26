@@ -63,6 +63,9 @@ func runAuth(args []string) {
 		runAuthClaude(args[1:])
 	case "codex":
 		runAuthCodex(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "drydock auth: %q has no auth implementation wired (provider in registry but not in auth dispatch)\n", args[0])
+		os.Exit(2)
 	}
 }
 
