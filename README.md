@@ -13,7 +13,7 @@
   <img alt="status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
   <img alt="version" src="https://img.shields.io/github/v/tag/sricola/drydock?label=release&color=brightgreen">
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2026%2B%20·%20Apple%20silicon-black">
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="license" src="https://img.shields.io/badge/license-Apache_2.0-blue">
 </p>
 
 
@@ -131,4 +131,4 @@ residuals are in [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+Apache 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
