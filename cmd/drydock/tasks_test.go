@@ -131,3 +131,24 @@ func TestSummarize_SubscriptionTaskShowsSubscription(t *testing.T) {
 		t.Errorf("cost = %q, want subscription (per-task meta must drive the label)", got.cost)
 	}
 }
+
+// A brokerd crash leaves the boot reconciler's synthetic interrupted line.
+// It must read as a distinct "interrupted" outcome (not "error"), and DUR
+// must stay "-" (unknown) rather than the synthetic 0ms.
+func TestSummarize_InterruptedShowsInterruptedAndUnknownDur(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-i.jsonl")
+	body := `{"type":"drydock_meta","subscription":false}` + "\n" +
+		`{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	got := summarize("task-i", path, info)
+	if got.outcome != "interrupted" {
+		t.Errorf("outcome = %q, want interrupted", got.outcome)
+	}
+	if got.dur != "-" {
+		t.Errorf("dur = %q, want %q (unknown, not synthetic 0ms)", got.dur, "-")
+	}
+}
