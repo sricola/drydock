@@ -130,6 +130,16 @@ func Dir() string {
 	return filepath.Join(home, ".drydock")
 }
 
+// LockPath returns ~/.drydock/brokerd.lock — the single-instance lock brokerd
+// flocks at boot so only one daemon runs per host. Empty if home is
+// unresolvable (mirrors DefaultPath).
+func LockPath() string {
+	if d := Dir(); d != "" {
+		return filepath.Join(d, "brokerd.lock")
+	}
+	return ""
+}
+
 // defaultStateDir resolves <~/.drydock>/<sub> for stage/audit/squid runtime
 // state. Falls back to /tmp/broker/<sub> only if the home directory is
 // unresolvable (rare; happens in some CI/launchd contexts). The point of

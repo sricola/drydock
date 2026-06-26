@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -81,6 +82,11 @@ func resolveAPIKey(name string, fileKeys map[string]string) string {
 	return fileKeys[name]
 }
 
+// brokerdLock holds the single-instance flock for the process's whole life.
+// Kept in a package var so the descriptor isn't garbage-collected/closed —
+// closing it would drop the lock.
+var brokerdLock *os.File
+
 func main() {
 	// Hidden subcommand: squid invokes this same binary as its basic-auth
 	// helper (auth_param basic program <brokerd> __squid-authhelper <tokenfile>).
@@ -104,6 +110,18 @@ func main() {
 
 	initLogging(cfg.LogJSON)
 	checkContainerVersion(cfg.StrictContainerVersion)
+
+	// Single-instance: refuse to start (and run NO reaper) if another brokerd
+	// is live, so its in-flight task's VM/stage/audit can't be clobbered.
+	lf, err := acquireLock(config.LockPath())
+	if err != nil {
+		if errors.Is(err, errLockHeld) {
+			die("another brokerd is already running on this host", "lock", config.LockPath())
+		}
+		die("cannot acquire brokerd lock", "lock", config.LockPath(), "err", err)
+	}
+	brokerdLock = lf
+
 	pruneOrphanTasks()
 
 	// Egress allowlist: ~/.drydock/egress.yaml is preferred; share/drydock
