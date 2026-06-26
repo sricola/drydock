@@ -257,3 +257,47 @@ func TestHostCommit_IgnoresPlantedHook(t *testing.T) {
 		t.Errorf("planted .git leaked into commit:\n%s", diff)
 	}
 }
+
+func TestReapOrphans_RemovesChildDirsKeepsFiles(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"task-a", "task-b", "task-c"} {
+		if err := os.MkdirAll(filepath.Join(root, d, "work"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stray := filepath.Join(root, "keep.txt")
+	if err := os.WriteFile(stray, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n, err := ReapOrphans(root)
+	if err != nil {
+		t.Fatalf("ReapOrphans: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("reaped %d, want 3", n)
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Errorf("stray file must survive: %v", err)
+	}
+	entries, _ := os.ReadDir(root)
+	for _, e := range entries {
+		if e.IsDir() {
+			t.Errorf("dir %q should have been reaped", e.Name())
+		}
+	}
+}
+
+func TestReapOrphans_RefusesUnsafeRoot(t *testing.T) {
+	for _, bad := range []string{"", "/", ".", "relative/path"} {
+		if _, err := ReapOrphans(bad); err == nil {
+			t.Errorf("ReapOrphans(%q) = nil error, want refusal", bad)
+		}
+	}
+}
+
+func TestReapOrphans_MissingRootIsNoop(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if n, err := ReapOrphans(missing); err != nil || n != 0 {
+		t.Errorf("missing root = (%d,%v), want (0,nil)", n, err)
+	}
+}

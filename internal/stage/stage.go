@@ -174,3 +174,39 @@ func (s *Stage) Cleanup() error {
 	}
 	return os.RemoveAll(s.Root)
 }
+
+// ReapOrphans removes every child directory under root. Used at brokerd boot to
+// clear stage dirs orphaned by a crash (the per-task Cleanup defer never ran).
+// SAFE ONLY AT BOOT, when no task is live. Applies the same guard as Cleanup so
+// a misconfigured (empty/relative/root-shaped) StageRoot can't widen the blast
+// radius. A missing root is a no-op. Non-directory entries are left untouched.
+// Returns the count of dirs reaped and the first error (per-entry errors are
+// non-fatal and don't abort the sweep).
+func ReapOrphans(root string) (int, error) {
+	clean := filepath.Clean(root)
+	if clean == "" || clean == "/" || clean == "." || !filepath.IsAbs(clean) {
+		return 0, fmt.Errorf("stage: refusing to reap unsafe root %q", root)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	n := 0
+	var firstErr error
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if rerr := os.RemoveAll(filepath.Join(root, e.Name())); rerr != nil {
+			if firstErr == nil {
+				firstErr = rerr
+			}
+			continue
+		}
+		n++
+	}
+	return n, firstErr
+}
