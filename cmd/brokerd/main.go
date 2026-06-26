@@ -85,7 +85,10 @@ func resolveAPIKey(name string, fileKeys map[string]string) string {
 
 // brokerdLock holds the single-instance flock for the process's whole life.
 // Kept in a package var so the descriptor isn't garbage-collected/closed —
-// closing it would drop the lock.
+// closing it would drop the lock. It is intentionally write-only: nothing
+// reads it; its mere existence keeps the fd (and thus the lock) alive.
+//
+//lint:ignore U1000 write-only by design — keeps the flock fd alive for the process's life
 var brokerdLock *os.File
 
 func main() {
