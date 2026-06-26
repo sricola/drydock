@@ -27,10 +27,13 @@ two-way branch into a three-way one — the special-case-on-shared-infra smell.
 
 One source of truth (`internal/provider.Registry`) the CLI/config layer reads,
 so adding a provider becomes **one registry row + one gateway `Vendor`** instead
-of edits in 7 files. **3A is behavior-identical**: `claude` and `codex` remain
-the only entries, existing config files load unchanged, the wizard/auth/doctor
-output is the same, and the whole suite passes without test rewrites beyond the
-mechanical (constructor calls that move).
+of edits in 7 files. **3A is behavior-identical** with one deliberate exception:
+`claude` and `codex` remain the only entries, existing config files load
+unchanged, the wizard/auth/doctor output is the same, and the whole suite passes
+without test rewrites beyond the mechanical (constructor calls that move). The
+single intentional change is the wording/timing of the "set at least one
+credential" startup error (component 4), which generalizes from naming the two
+key env vars to a provider-agnostic message.
 
 ## Scope
 
@@ -112,12 +115,13 @@ wiring), so no behavior changes — they just move.
 
 ### 2. `internal/agent` — delegate to the registry
 
-`agent.Vendor(name)` becomes: empty/`"claude"` → look up the default; otherwise
-`provider.ByAgent(name)` → `(p.Vendor, true)`, unknown → `("", false)`. Keep the
-existing exported signature so callers are unchanged. (Decide: agent imports
-provider, or this lookup moves into provider and agent re-exports — either keeps
-the `agent.Vendor` API stable. Prefer agent importing provider, smallest blast
-radius.)
+`agent.Vendor(name)` becomes: empty or `"claude"` → the **literal `claude`
+default** (`provider.ByAgent("claude")` → `("anthropic", true)`); otherwise
+`provider.ByAgent(name)` → `(p.Vendor, true)`, unknown → `("", false)`. Pin the
+empty default to `"claude"` explicitly, **not** `Registry[0]`, so a future
+reordering (3B inserting Gemini ahead of claude) can't silently change what an
+omitted `--agent` resolves to. Keep the exported signature unchanged; `agent`
+imports `provider` (smallest blast radius).
 
 ### 3. `internal/config` — registry-driven validation + `AuthMode`
 
@@ -155,8 +159,19 @@ for _, p := range provider.Registry {
 The provider-map build loop sets `budget = MaxFloat64` when
 `cfg.AuthMode(b.Vendor.Name) == "subscription"` (replacing `subAnthropic ||
 subOpenAI`), and passes the registry's `BaseURLEnv`/`TokenEnv` into the
-`gateway.Provider` (new fields, see component 5). The boot guard uses
+`gateway.Provider` (new fields, see component 5) — resolved per backend via
+`provider.ByVendor(b.Vendor.Name)`. The boot guard uses
 `provider.ByAgent(cfg.DefaultAgent)` + `p.APIKeyEnv` for its message.
+
+**The "at least one credential" guard** (currently `main.go` ~146-150:
+`haveAnthropic`/`haveOpenAI` → `die("set at least one of ANTHROPIC_API_KEY or
+OPENAI_API_KEY …")`) is an additional hardcoded enumeration and MUST generalize
+too, or "adding a provider = one registry row" stays false. Replace it with a
+post-loop check: `if len(backends) == 0 { die("set at least one provider's API
+key (e.g. ANTHROPIC_API_KEY/OPENAI_API_KEY) or enable a subscription mode") }`.
+This is the one intentional, minor message change in 3A (the credentials check
+moves after backend construction); the *condition* is equivalent (no backend ⇔
+no provider had a key or subscription).
 
 ### 5. `internal/gateway/provider.go` — env names passed in, not switched
 
