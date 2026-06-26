@@ -226,7 +226,7 @@ walks the full operator surface; the
 [threat model](https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md)
 is the precise contract.
 
-drydock is open source under [MIT](https://github.com/sricola/drydock/blob/main/LICENSE).
+drydock is open source under [Apache 2.0](https://github.com/sricola/drydock/blob/main/LICENSE).
 The credential-gateway pattern in particular is portable — if you're
 building any kind of autonomous-agent system and want one well-defined
 boundary between the agent and your real keys, take that piece and use
