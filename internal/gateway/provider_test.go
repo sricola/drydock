@@ -53,3 +53,28 @@ func TestGrantEnvVars(t *testing.T) {
 		}
 	}
 }
+
+func TestProvider_MintGuardEmptyEnvNames(t *testing.T) {
+	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("REAL")})
+
+	// Empty BaseURLEnv → error
+	p := &Provider{GW: g, Vendor: "anthropic", BaseURL: "http://gw", TokenEnv: "ANTHROPIC_AUTH_TOKEN", TTL: time.Minute}
+	if _, err := p.Mint(1); err == nil {
+		t.Error("Mint with empty BaseURLEnv should return error")
+	}
+
+	// Empty TokenEnv → error
+	p2 := &Provider{GW: g, Vendor: "anthropic", BaseURL: "http://gw", BaseURLEnv: "ANTHROPIC_BASE_URL", TTL: time.Minute}
+	if _, err := p2.Mint(1); err == nil {
+		t.Error("Mint with empty TokenEnv should return error")
+	}
+
+	// Both set → success
+	p3 := &Provider{GW: g, Vendor: "anthropic", BaseURL: "http://gw",
+		BaseURLEnv: "ANTHROPIC_BASE_URL", TokenEnv: "ANTHROPIC_AUTH_TOKEN", TTL: time.Minute}
+	grant, err := p3.Mint(1)
+	if err != nil {
+		t.Fatalf("Mint with both env names set should succeed: %v", err)
+	}
+	grant.Revoke()
+}

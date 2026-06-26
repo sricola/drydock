@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"time"
 
 	"drydock/internal/creds"
@@ -28,6 +29,9 @@ type grant struct {
 }
 
 func (p *Provider) Mint(budgetUSD float64) (creds.Grant, error) {
+	if p.BaseURLEnv == "" || p.TokenEnv == "" {
+		return nil, fmt.Errorf("gateway: provider %q has empty BaseURLEnv/TokenEnv", p.Vendor)
+	}
 	b := budgetUSD
 	if b == 0 {
 		b = p.Budget
