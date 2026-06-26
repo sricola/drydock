@@ -1,5 +1,7 @@
 package remote
 
+import "fmt"
+
 // GiteaAdapter opens a PR via `tea pr create` against any Gitea or
 // Forgejo instance. `tea` (https://gitea.com/gitea/tea) is the official
 // Gitea CLI; auth via `tea login add`. Works against gitea.com and any
@@ -8,6 +10,16 @@ package remote
 type GiteaAdapter struct{}
 
 func (GiteaAdapter) Name() string { return "gitea" }
+
+func (GiteaAdapter) Available() error {
+	if _, err := lookPath("tea"); err != nil {
+		return fmt.Errorf("tea not found on PATH")
+	}
+	if err := probeCLI("tea", "login", "list"); err != nil {
+		return fmt.Errorf("tea not authenticated (run: tea login add)")
+	}
+	return nil
+}
 
 func (GiteaAdapter) OpenRequest(r Request) error {
 	title := r.Title

@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -147,3 +148,29 @@ var errSentinel = &cliError{"boom"}
 type cliError struct{ s string }
 
 func (e *cliError) Error() string { return e.s }
+
+func TestAvailable(t *testing.T) {
+	origLook, origProbe := lookPath, probeCLI
+	t.Cleanup(func() { lookPath, probeCLI = origLook, origProbe })
+
+	// CLI missing.
+	lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	if err := (GitHubAdapter{}).Available(); err == nil {
+		t.Error("missing gh must be unavailable")
+	}
+	// Installed but not authed.
+	lookPath = func(string) (string, error) { return "/usr/bin/gh", nil }
+	probeCLI = func(string, ...string) error { return errors.New("exit 1") }
+	if err := (GitHubAdapter{}).Available(); err == nil {
+		t.Error("unauthenticated gh must be unavailable")
+	}
+	// Installed + authed.
+	probeCLI = func(string, ...string) error { return nil }
+	if err := (GitHubAdapter{}).Available(); err != nil {
+		t.Errorf("authed gh must be available: %v", err)
+	}
+	// PushOnly is always available.
+	if err := (PushOnlyAdapter{}).Available(); err != nil {
+		t.Errorf("push-only must always be available: %v", err)
+	}
+}

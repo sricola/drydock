@@ -61,7 +61,8 @@ type fakeAdapter struct {
 	gotReq  remote.Request
 }
 
-func (a *fakeAdapter) Name() string { return a.name }
+func (a *fakeAdapter) Name() string     { return a.name }
+func (a *fakeAdapter) Available() error { return nil }
 func (a *fakeAdapter) OpenRequest(r remote.Request) error {
 	a.opened = true
 	a.gotReq = r

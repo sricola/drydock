@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"drydock/internal/remote"
 )
 
 // taskRequest mirrors the broker.Task JSON shape. We don't import broker
@@ -113,6 +115,15 @@ sockpath.Default().`)
 		Agent:       *agent,
 		Draft:       *draft,
 	}
+	if os.Getenv("BROKER_ADDR") == "" {
+		adapter := remote.AdapterFor(*repo, *platform)
+		if err := adapter.Available(); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"⚠ %s CLI unavailable on this host (%v): the task will run and push a branch, but the PR won't open automatically. Fix it (e.g. 'gh auth login') and open the PR manually, or pass --platform none.\n",
+				adapter.Name(), err)
+		}
+	}
+
 	if err := postSubmit(req, *jsonOut, *quiet); err != nil {
 		die("%v", err)
 	}

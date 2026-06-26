@@ -11,6 +11,15 @@ import (
 	"strings"
 )
 
+// lookPath / probeCLI are package vars so tests can simulate a missing or
+// unauthenticated CLI without the real binaries.
+var lookPath = exec.LookPath
+
+// probeCLI runs `args` and returns its error (used for `gh auth status` etc.).
+var probeCLI = func(name string, args ...string) error {
+	return exec.Command(name, args...).Run()
+}
+
 // Request describes a PR/MR to open for a freshly pushed branch. Title/Body
 // empty -> the adapter falls back to the vendor CLI's commit-message --fill.
 type Request struct {
@@ -29,6 +38,9 @@ type Request struct {
 type Adapter interface {
 	Name() string
 	OpenRequest(r Request) error
+	// Available returns nil if the vendor CLI is installed and authenticated.
+	// It is advisory — callers use it for early-warning, not as a gate.
+	Available() error
 }
 
 // AdapterFor selects an adapter. Explicit `platform` wins; otherwise we
