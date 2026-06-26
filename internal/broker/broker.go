@@ -907,8 +907,8 @@ func firstLine(s string) string {
 	if out == "" {
 		out = "agent task"
 	}
-	if len(out) > 72 {
-		out = out[:72]
+	if r := []rune(out); len(r) > 72 {
+		out = string(r[:72])
 	}
 	return out
 }
@@ -923,8 +923,8 @@ func prContent(instruction, taskID string) (title, body string) {
 		return "", ""
 	}
 	title = firstLine(instruction)
-	if len(title) > 72 {
-		title = title[:71] + "…"
+	if r := []rune(title); len(r) > 72 {
+		title = string(r[:71]) + "…"
 	}
 	const bodyCap = 4096
 	body = instruction

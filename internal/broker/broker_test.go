@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"drydock/internal/egress"
 )
@@ -698,5 +699,14 @@ func TestPRContent(t *testing.T) {
 	}
 	if _, b := prContent(strings.Repeat("y", 5000), "abc"); !strings.Contains(b, "truncated") {
 		t.Error("oversized body must be truncated")
+	}
+	// Multibyte title: 100 Chinese characters (3 bytes each). The clip must
+	// not split a rune — the result must be valid UTF-8 and ≤72 runes.
+	mbTitle, _ := prContent(strings.Repeat("你", 100), "abc")
+	if !utf8.ValidString(mbTitle) {
+		t.Errorf("multibyte title is not valid UTF-8: %q", mbTitle)
+	}
+	if len([]rune(mbTitle)) > 72 {
+		t.Errorf("multibyte title exceeds 72 runes: %d", len([]rune(mbTitle)))
 	}
 }
