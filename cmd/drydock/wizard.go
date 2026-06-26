@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"drydock/internal/config"
+	"drydock/internal/provider"
 )
 
 // promptChoice prints a numbered menu and returns the chosen 1-based index.
@@ -165,21 +166,38 @@ func runWizard(d *wizardDeps) wizardChoices {
 	d.in = bufio.NewReader(d.in)
 	var c wizardChoices
 
-	agent := promptChoice(d.in, d.out, "Which coding agent?",
-		[]string{"Claude Code (Anthropic)", "OpenAI Codex", "both"}, 1)
-	wantClaude := agent == 1 || agent == 3
-	wantCodex := agent == 2 || agent == 3
-	if agent == 2 {
-		c.DefaultAgent = "codex"
+	labels := provider.Labels()
+	choices := append(append([]string{}, labels...), "all")
+	sel := promptChoice(d.in, d.out, "Which coding agent?", choices, 1)
+	wanted := map[string]bool{}
+	if sel == len(choices) { // "all"
+		for _, p := range provider.Registry {
+			wanted[p.Agent] = true
+		}
 	} else {
-		c.DefaultAgent = "claude" // 1 or 3 ("both" defaults to claude)
+		wanted[provider.Registry[sel-1].Agent] = true
+	}
+	// DefaultAgent: the single selection, or claude when multiple ("all").
+	if len(wanted) == 1 {
+		for a := range wanted {
+			c.DefaultAgent = a
+		}
+	} else {
+		c.DefaultAgent = "claude"
 	}
 
-	if wantClaude {
-		c.AnthropicAuth = authStep(d, "Claude Code", "ANTHROPIC_API_KEY", d.bootstrapClaude)
-	}
-	if wantCodex {
-		c.OpenAIAuth = authStep(d, "OpenAI Codex", "OPENAI_API_KEY", d.bootstrapCodex)
+	bootstrap := map[string]func() error{"claude": d.bootstrapClaude, "codex": d.bootstrapCodex}
+	for _, p := range provider.Registry {
+		if !wanted[p.Agent] {
+			continue
+		}
+		mode := authStep(d, p.Label, p.APIKeyEnv, bootstrap[p.Agent])
+		switch p.Vendor {
+		case "anthropic":
+			c.AnthropicAuth = mode
+		case "openai":
+			c.OpenAIAuth = mode
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(d.configPath), 0o700); err == nil {

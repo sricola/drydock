@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"drydock/internal/config"
-	"drydock/internal/gateway"
+	"drydock/internal/provider"
 )
 
 // runDoctor is the no-API-spend smoke. It catches the failure modes that
@@ -101,53 +100,28 @@ func runDoctor() {
 		failed = true
 	}
 
-	// 4. When the operator is using Claude subscription auth, validate the
+	// 4. For each provider: when subscription auth is configured, validate the
 	// stored OAuth token by calling Current() once. This also refreshes the
 	// token if it is near expiry — no API budget spend beyond the refresh.
-	// Skipped entirely in api_key mode.
-	if cfg.AnthropicAuth == "subscription" {
-		credPath := filepath.Join(config.Dir(), "claude-oauth.json")
-		store := gateway.FileCredStore(credPath)
-		snap, err := store.Load()
-		if err != nil {
-			step("claude subscription", false, "load creds: "+err.Error())
-			failed = true
-		} else {
-			cred := gateway.NewOAuthCred(snap, store)
-			_, err := cred.Current()
-			if err != nil {
-				step("claude subscription", false, err.Error())
-				failed = true
-			} else {
-				step("claude subscription", true, "token valid")
-			}
-		}
-	}
-
-	if cfg.OpenAIAuth == "subscription" {
-		credPath := filepath.Join(config.Dir(), "codex-oauth.json")
-		store := gateway.NewCodexStore(credPath)
-		snap, err := store.Load()
-		if err != nil {
-			step("codex subscription", false, "load creds: "+err.Error())
-			failed = true
-		} else {
-			cred := gateway.NewOAuthCredCodex(snap, store)
-			if _, err := cred.Current(); err != nil {
-				step("codex subscription", false, err.Error())
-				failed = true
-			} else {
-				step("codex subscription", true, "token valid")
-			}
-		}
-	}
-
+	// Skipped entirely in api_key mode (api-key source is reported instead).
 	fileKeys := config.LoadAPIKeys(config.APIKeysPath())
-	if cfg.AnthropicAuth != "subscription" {
-		step("anthropic api key", true, "source: "+apiKeySource("ANTHROPIC_API_KEY", fileKeys))
-	}
-	if cfg.OpenAIAuth != "subscription" {
-		step("openai api key", true, "source: "+apiKeySource("OPENAI_API_KEY", fileKeys))
+	for _, p := range provider.Registry {
+		if cfg.AuthMode(p.Vendor) == "subscription" {
+			backend, err := p.OAuthBackend(config.Dir())
+			if err != nil {
+				step(p.Agent+" subscription", false, "load creds: "+err.Error())
+				failed = true
+			} else {
+				if _, err := backend.Cred.Current(); err != nil {
+					step(p.Agent+" subscription", false, err.Error())
+					failed = true
+				} else {
+					step(p.Agent+" subscription", true, "token valid")
+				}
+			}
+		} else {
+			step(p.Vendor+" api key", true, "source: "+apiKeySource(p.APIKeyEnv, fileKeys))
+		}
 	}
 
 	fmt.Println()
