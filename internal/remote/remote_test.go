@@ -50,7 +50,7 @@ func TestAdapterFor(t *testing.T) {
 }
 
 func TestPushOnly_NeverErrors(t *testing.T) {
-	if err := (PushOnlyAdapter{}).OpenRequest("/tmp", "feature/x", nil); err != nil {
+	if err := (PushOnlyAdapter{}).OpenRequest(Request{WorkDir: "/tmp", Branch: "feature/x"}); err != nil {
 		t.Errorf("PushOnly must be a no-op success: %v", err)
 	}
 }
@@ -75,17 +75,46 @@ func TestAdapterArgv(t *testing.T) {
 	cases := []struct {
 		name    string
 		adapter Adapter
+		title   string
+		body    string
+		draft   bool
 		want    []string
 	}{
-		{"github", GitHubAdapter{}, []string{"gh", "pr", "create", "--head", "agent/abc123", "--fill"}},
-		{"gitlab", GitLabAdapter{}, []string{"glab", "mr", "create", "--source-branch", "agent/abc123", "--fill", "--yes"}},
-		{"gitea", GiteaAdapter{}, []string{"tea", "pr", "create", "--head", "agent/abc123"}},
+		{
+			name: "github/title-set-no-draft", adapter: GitHubAdapter{}, title: "T", body: "B",
+			want: []string{"gh", "pr", "create", "--head", "agent/abc123", "--title", "T", "--body", "B"},
+		},
+		{
+			name: "github/no-title-fill", adapter: GitHubAdapter{},
+			want: []string{"gh", "pr", "create", "--head", "agent/abc123", "--fill"},
+		},
+		{
+			name: "github/draft", adapter: GitHubAdapter{}, title: "T", body: "B", draft: true,
+			want: []string{"gh", "pr", "create", "--head", "agent/abc123", "--title", "T", "--body", "B", "--draft"},
+		},
+		{
+			name: "gitlab/title-set", adapter: GitLabAdapter{}, title: "T", body: "B",
+			want: []string{"glab", "mr", "create", "--source-branch", "agent/abc123", "--yes", "--title", "T", "--description", "B"},
+		},
+		{
+			name: "gitlab/draft", adapter: GitLabAdapter{}, title: "T", body: "B", draft: true,
+			want: []string{"glab", "mr", "create", "--source-branch", "agent/abc123", "--yes", "--title", "T", "--description", "B", "--draft"},
+		},
+		{
+			name: "gitea/title-set", adapter: GiteaAdapter{}, title: "T", body: "B",
+			want: []string{"tea", "pr", "create", "--head", "agent/abc123", "--title", "T", "--description", "B"},
+		},
+		{
+			name: "gitea/draft", adapter: GiteaAdapter{}, title: "T", body: "B", draft: true,
+			want: []string{"tea", "pr", "create", "--head", "agent/abc123", "--title", "WIP: T", "--description", "B"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			gotWorkDir, gotEnv, gotArgs = "", nil, nil
 			env := []string{"GIT_DIR=/host/git"}
-			if err := tc.adapter.OpenRequest("/work", "agent/abc123", env); err != nil {
+			req := Request{WorkDir: "/work", Branch: "agent/abc123", Env: env, Title: tc.title, Body: tc.body, Draft: tc.draft}
+			if err := tc.adapter.OpenRequest(req); err != nil {
 				t.Fatalf("OpenRequest returned error: %v", err)
 			}
 			if !reflect.DeepEqual(gotArgs, tc.want) {
@@ -108,7 +137,7 @@ func TestAdapter_PropagatesError(t *testing.T) {
 	t.Cleanup(func() { runCLI = orig })
 	runCLI = func(string, []string, ...string) error { return errSentinel }
 
-	if err := (GitHubAdapter{}).OpenRequest("/work", "agent/x", nil); err != errSentinel {
+	if err := (GitHubAdapter{}).OpenRequest(Request{WorkDir: "/work", Branch: "agent/x"}); err != errSentinel {
 		t.Errorf("OpenRequest err = %v, want sentinel propagated", err)
 	}
 }

@@ -58,11 +58,13 @@ type fakeAdapter struct {
 	name    string
 	openErr error
 	opened  bool
+	gotReq  remote.Request
 }
 
 func (a *fakeAdapter) Name() string { return a.name }
-func (a *fakeAdapter) OpenRequest(workDir, branch string, env []string) error {
+func (a *fakeAdapter) OpenRequest(r remote.Request) error {
 	a.opened = true
+	a.gotReq = r
 	return a.openErr
 }
 

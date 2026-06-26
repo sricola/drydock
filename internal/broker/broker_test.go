@@ -680,3 +680,23 @@ func TestGatePush_AutoDeniesOnApprovalTimeout(t *testing.T) {
 		t.Fatal("gatePush did not return; approval_timeout not enforced")
 	}
 }
+
+func TestPRContent(t *testing.T) {
+	title, body := prContent("Add a retry to the uploader\nmore detail here", "abc")
+	if title != "Add a retry to the uploader" {
+		t.Errorf("title = %q", title)
+	}
+	if !strings.Contains(body, "more detail here") || !strings.Contains(body, "task abc") {
+		t.Errorf("body missing instruction or provenance: %q", body)
+	}
+	if tl, _ := prContent("", "abc"); tl != "" {
+		t.Errorf("empty instruction must yield empty title, got %q", tl)
+	}
+	long := strings.Repeat("x", 100)
+	if tl, _ := prContent(long, "abc"); len([]rune(tl)) > 72 {
+		t.Errorf("title not clipped: %d runes", len([]rune(tl)))
+	}
+	if _, b := prContent(strings.Repeat("y", 5000), "abc"); !strings.Contains(b, "truncated") {
+		t.Error("oversized body must be truncated")
+	}
+}

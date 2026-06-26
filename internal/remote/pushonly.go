@@ -8,6 +8,4 @@ type PushOnlyAdapter struct{}
 
 func (PushOnlyAdapter) Name() string { return "push-only" }
 
-func (PushOnlyAdapter) OpenRequest(workDir, branch string, env []string) error {
-	return nil
-}
+func (PushOnlyAdapter) OpenRequest(r Request) error { return nil }

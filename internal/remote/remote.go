@@ -11,13 +11,24 @@ import (
 	"strings"
 )
 
+// Request describes a PR/MR to open for a freshly pushed branch. Title/Body
+// empty -> the adapter falls back to the vendor CLI's commit-message --fill.
+type Request struct {
+	WorkDir string
+	Branch  string
+	Env     []string
+	Title   string
+	Body    string
+	Draft   bool
+}
+
 // Adapter opens a PR/MR for a freshly pushed branch. workDir is the staged
 // work tree the vendor CLI runs in; env carries the GIT_DIR /
 // GIT_WORK_TREE / hook-neutralization needed to keep the operation on the
 // host-only git dir even if the work tree contains a planted .git.
 type Adapter interface {
 	Name() string
-	OpenRequest(workDir, branch string, env []string) error
+	OpenRequest(r Request) error
 }
 
 // AdapterFor selects an adapter. Explicit `platform` wins; otherwise we

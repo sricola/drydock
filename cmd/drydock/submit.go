@@ -28,6 +28,7 @@ type taskRequest struct {
 	Platform    string      `json:"platform,omitempty"`
 	Model       string      `json:"model,omitempty"`
 	Agent       string      `json:"agent,omitempty"`
+	Draft       bool        `json:"draft,omitempty"`
 }
 
 type reqDomain struct {
@@ -52,6 +53,7 @@ func runSubmit(args []string) {
 		model       = fs.String("model", "", "claude --model passthrough (e.g. claude-opus-4-7); empty = use broker default")
 		agent       = fs.String("agent", "", "sandbox agent: claude | codex (default: broker's default_agent)")
 		sensitive   = fs.Bool("sensitive", false, "mark the task sensitive in the audit trail")
+		draft       = fs.Bool("draft", false, "open the PR/MR as a draft")
 		jsonOut     = fs.Bool("json", false, "print the raw response JSON instead of a pretty summary")
 		quiet       = fs.Bool("quiet", false, "suppress live progress; print only the final outcome")
 		egress      repeatedFlag
@@ -109,6 +111,7 @@ sockpath.Default().`)
 		Platform:    *platform,
 		Model:       *model,
 		Agent:       *agent,
+		Draft:       *draft,
 	}
 	if err := postSubmit(req, *jsonOut, *quiet); err != nil {
 		die("%v", err)
