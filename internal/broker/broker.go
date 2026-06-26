@@ -93,6 +93,10 @@ type Broker struct {
 	// drive HandleTask without a git clone or a container run.
 	prepareStage func(root, repoRef string) (taskStage, error)
 	runAgent     func(ctx context.Context, args []string, stdout, stderr io.Writer) error
+	// newAdapter selects the remote PR/MR adapter. nil in production ->
+	// remote.AdapterFor. White-box tests inject a fake to drive the
+	// best-effort PR-open path without shelling out to gh/glab/tea.
+	newAdapter func(repoRef, platform string) remote.Adapter
 
 	// MaxConcurrent caps how many tasks may be in any non-terminal state at
 	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
@@ -117,7 +121,8 @@ type taskStage interface {
 	WorkDir() string
 	WriteTaskFiles(prompt, allowlist string) error
 	CaptureDiff() (string, error)
-	Push(adapter remote.Adapter, branch, msg string) error
+	Push(branch, msg string) error
+	PushEnv() []string
 	Cleanup() error
 }
 
@@ -127,11 +132,10 @@ func (r realStage) WorkDir() string { return r.s.WorkDir }
 func (r realStage) WriteTaskFiles(prompt, allowlist string) error {
 	return r.s.WriteTaskFiles(prompt, allowlist)
 }
-func (r realStage) CaptureDiff() (string, error) { return r.s.CaptureDiff() }
-func (r realStage) Push(adapter remote.Adapter, branch, msg string) error {
-	return r.s.Push(adapter, branch, msg)
-}
-func (r realStage) Cleanup() error { return r.s.Cleanup() }
+func (r realStage) CaptureDiff() (string, error)  { return r.s.CaptureDiff() }
+func (r realStage) Push(branch, msg string) error { return r.s.Push(branch, msg) }
+func (r realStage) PushEnv() []string             { return r.s.PushEnv() }
+func (r realStage) Cleanup() error                { return r.s.Cleanup() }
 
 // defaultPrepareStage is the production prepareStage: a real host clone with
 // the .git dir moved out of the mounted work tree.
@@ -598,16 +602,29 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	b.setStage(taskID, StagePushing)
 	branch := "agent/" + taskID
-	adapter := remote.AdapterFor(t.RepoRef, t.Platform)
+	adapterFor := b.newAdapter
+	if adapterFor == nil {
+		adapterFor = remote.AdapterFor
+	}
+	adapter := adapterFor(t.RepoRef, t.Platform)
 	sw.emit(map[string]any{"event": "stage", "stage": "pushing", "task_id": taskID, "branch": branch})
-	if err := st.Push(adapter, branch, "agent: "+firstLine(t.Instruction)); err != nil {
+	if err := st.Push(branch, "agent: "+firstLine(t.Instruction)); err != nil {
 		sw.emit(errorEvent(taskID, "push failed: "+safeErr(err), "check the remote and push credentials"))
 		return
 	}
-	sw.emit(map[string]any{"event": "result", "outcome": "pushed",
+	// Branch is saved. Opening the PR/MR is best-effort — never downgrade a
+	// successful push to a failure.
+	prErr := adapter.OpenRequest(st.WorkDir(), branch, st.PushEnv())
+	ev := map[string]any{"event": "result", "outcome": "pushed",
 		"task_id": taskID, "branch": branch, "platform": adapter.Name(),
-		"files": files, "insertions": insertions, "deletions": deletions,
-		"duration_ms": time.Since(taskStart).Milliseconds(), "cost_usd": auditCost(auditPath)})
+		"pr_opened": prErr == nil,
+		"files":     files, "insertions": insertions, "deletions": deletions,
+		"duration_ms": time.Since(taskStart).Milliseconds(), "cost_usd": auditCost(auditPath)}
+	if prErr != nil {
+		ev["pr_error"] = safeErr(prErr)
+		ev["pr_hint"] = "branch '" + branch + "' was pushed; open a PR manually (" + adapter.Name() + ")"
+	}
+	sw.emit(ev)
 }
 
 // gateEgressWiden blocks until POST /admin/approve/{id} or /admin/deny/{id}

@@ -1,7 +1,6 @@
 package stage
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -138,50 +137,33 @@ func TestCleanup_RemovesAbsoluteTempDir(t *testing.T) {
 	}
 }
 
-// fakeOpener captures the args Push would have passed to a real adapter
-// (gh / glab). Stage's contract with the adapter is the env it gets, the
-// work dir, and the branch — verify all three end-to-end.
-type fakeOpener struct {
-	workDir string
-	branch  string
-	env     []string
-	calls   int
-	err     error // returned from OpenRequest
-}
-
-func (f *fakeOpener) OpenRequest(workDir, branch string, env []string) error {
-	f.calls++
-	f.workDir = workDir
-	f.branch = branch
-	f.env = env
-	return f.err
-}
-
-func TestPush_CommitsPushesAndCallsOpener(t *testing.T) {
+func TestPush_CommitsAndPushes(t *testing.T) {
 	bare := makeOriginRepo(t)
 	s := prepare(t, bare)
 	if err := os.WriteFile(filepath.Join(s.WorkDir, "README.md"), []byte("hello\nfeature\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	opener := &fakeOpener{}
-	if err := s.Push(opener, "agent/abc123", "agent: add feature"); err != nil {
+	if err := s.Push("agent/abc123", "agent: add feature"); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 
-	// 1. The adapter saw the work dir, branch, and env.
-	if opener.calls != 1 {
-		t.Errorf("opener called %d times, want 1", opener.calls)
+	// The branch exists on the bare origin with the new commit.
+	out, err := exec.Command("git", "--git-dir="+bare, "show", "agent/abc123", "--name-only").CombinedOutput()
+	if err != nil {
+		t.Fatalf("verifying push: %v\n%s", err, out)
 	}
-	if opener.workDir != s.WorkDir {
-		t.Errorf("opener workDir = %q, want %q", opener.workDir, s.WorkDir)
+	if !strings.Contains(string(out), "README.md") {
+		t.Errorf("pushed commit missing README.md change:\n%s", out)
 	}
-	if opener.branch != "agent/abc123" {
-		t.Errorf("opener branch = %q", opener.branch)
-	}
-	// 2. Env carries the host-only git dir and the hook-neutralization that
-	//    the threat model claims is enforced. Drop these and an adapter
-	//    that spawns git would run against the work-tree .git instead.
+}
+
+func TestPushEnv_CarriesGitDirAndHookNeutralization(t *testing.T) {
+	s := prepare(t, makeOriginRepo(t))
+	env := s.PushEnv()
+	// PushEnv must carry the host-only git dir and the hook-neutralization that
+	// the threat model claims is enforced. Drop these and an adapter that spawns
+	// git would run against the work-tree .git instead.
 	wantEnv := []string{
 		"GIT_DIR=" + s.gitDir,
 		"GIT_WORK_TREE=" + s.WorkDir,
@@ -192,35 +174,15 @@ func TestPush_CommitsPushesAndCallsOpener(t *testing.T) {
 	}
 	for _, want := range wantEnv {
 		found := false
-		for _, e := range opener.env {
+		for _, e := range env {
 			if e == want {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("env missing %q (adapter would lose the host-only-git-dir defense)", want)
+			t.Errorf("PushEnv missing %q (adapter would lose the host-only-git-dir defense)", want)
 		}
-	}
-
-	// 3. The branch exists on the bare origin with the new commit.
-	out, err := exec.Command("git", "--git-dir="+bare, "show", "agent/abc123", "--name-only").CombinedOutput()
-	if err != nil {
-		t.Fatalf("verifying push: %v\n%s", err, out)
-	}
-	if !strings.Contains(string(out), "README.md") {
-		t.Errorf("pushed commit missing README.md change:\n%s", out)
-	}
-}
-
-func TestPush_AdapterErrorPropagates(t *testing.T) {
-	s := prepare(t, makeOriginRepo(t))
-	os.WriteFile(filepath.Join(s.WorkDir, "README.md"), []byte("hello\nchanged\n"), 0o644)
-
-	opener := &fakeOpener{err: errors.New("gh: rate-limited")}
-	err := s.Push(opener, "agent/zzz", "agent: try")
-	if err == nil || !strings.Contains(err.Error(), "rate-limited") {
-		t.Errorf("Push must surface adapter error; got %v", err)
 	}
 }
 
