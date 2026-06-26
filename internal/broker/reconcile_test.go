@@ -90,3 +90,47 @@ func TestTerminateStuckAudits_MissingRootIsNoop(t *testing.T) {
 		t.Errorf("missing root = (%d,%v), want (0,nil)", n, err)
 	}
 }
+
+// A trace larger than the 16KB tail window with NO result line must still be
+// detected as stuck and terminated — exercises the hasResultLine seek branch.
+func TestTerminateStuckAudits_LargeTraceNoResultIsTerminated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-big.jsonl")
+	var b strings.Builder
+	for b.Len() < 64*1024 { // well past the 16KB tail window
+		b.WriteString(`{"type":"stream_event","delta":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}` + "\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := TerminateStuckAudits(dir)
+	if err != nil || n != 1 {
+		t.Fatalf("large no-result trace = (%d,%v), want (1,nil)", n, err)
+	}
+	assertLastLineInterrupted(t, path)
+}
+
+// A trace larger than the tail window WITH a result line as its last line must
+// be left untouched — the seek must land such that the final result line is
+// within the tail and is parsed.
+func TestTerminateStuckAudits_LargeTraceWithResultIsLeftAlone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-big2.jsonl")
+	var b strings.Builder
+	for b.Len() < 64*1024 {
+		b.WriteString(`{"type":"stream_event","delta":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}` + "\n")
+	}
+	b.WriteString(`{"type":"result","subtype":"success","is_error":false}` + "\n")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	n, err := TerminateStuckAudits(dir)
+	if err != nil || n != 0 {
+		t.Fatalf("large completed trace = (%d,%v), want (0,nil)", n, err)
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Error("large completed trace must be left untouched")
+	}
+}
