@@ -27,6 +27,7 @@ import (
 	"drydock/internal/gateway"
 	"drydock/internal/netfw"
 	"drydock/internal/sockpath"
+	"drydock/internal/stage"
 )
 
 // chooseLogHandler picks the slog handler. A TTY gets a terse text format
@@ -122,7 +123,7 @@ func main() {
 	}
 	brokerdLock = lf
 
-	pruneOrphanTasks()
+	pruneOrphanTasks(cfg.StageRoot, cfg.AuditRoot)
 
 	// Egress allowlist: ~/.drydock/egress.yaml is preferred; share/drydock
 	// is the seed template; CWD config/egress.yaml is the dev case.
@@ -482,7 +483,7 @@ func findEgressConfig() (string, error) {
 // VM up. Squid is launched via cmd.Start() and lives past brokerd if
 // brokerd doesn't receive a signal cleanly. Running this at boot closes
 // the easy-orphan window before the new brokerd tries to bind 3128 again.
-func pruneOrphanTasks() {
+func pruneOrphanTasks(stageRoot, auditRoot string) {
 	// Reap orphan task containers.
 	out, err := exec.Command("container", "ls", "-a", "--format", "json").CombinedOutput()
 	if err != nil {
@@ -502,6 +503,23 @@ func pruneOrphanTasks() {
 	}
 	// Reap orphan squid (very specific argv: "-N -f" only used by drydock).
 	_ = exec.Command("pkill", "-f", "squid -N -f").Run()
+
+	// Reap host-side leftovers a crash skipped (the per-task defers never ran).
+	// ORDER MATTERS — do not reorder: the container delete above must precede
+	// the stage reap, because a VM mounts its work tree out of the stage dir;
+	// reaping first could RemoveAll a path a still-terminating VM holds. The
+	// boot lock (see main) guarantees no other brokerd is concurrently running
+	// a task here, so every leftover provably belongs to a dead prior life.
+	if n, err := stage.ReapOrphans(stageRoot); err != nil {
+		slog.Warn("orphan prune: stage reap refused", "err", err)
+	} else if n > 0 {
+		slog.Info("orphan prune: reaped stage dirs", "count", n)
+	}
+	if n, err := broker.TerminateStuckAudits(auditRoot); err != nil {
+		slog.Warn("orphan prune: audit terminate error", "err", err)
+	} else if n > 0 {
+		slog.Info("orphan prune: terminated stuck audit rows", "count", n)
+	}
 }
 
 // startAnchor keeps the network's vmnet gateway interface up. Idempotent: any
