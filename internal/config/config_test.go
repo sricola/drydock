@@ -307,6 +307,19 @@ func TestConfig_OpenAIAuthRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestAuthMode(t *testing.T) {
+	c := &Config{AnthropicAuth: "subscription", OpenAIAuth: "api_key"}
+	if c.AuthMode("anthropic") != "subscription" {
+		t.Errorf("anthropic = %q", c.AuthMode("anthropic"))
+	}
+	if c.AuthMode("openai") != "api_key" {
+		t.Errorf("openai = %q", c.AuthMode("openai"))
+	}
+	if c.AuthMode("nope") != "" {
+		t.Errorf("unknown vendor should be empty, got %q", c.AuthMode("nope"))
+	}
+}
+
 func TestLockPath(t *testing.T) {
 	got := LockPath()
 	if got == "" {
