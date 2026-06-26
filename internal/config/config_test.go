@@ -306,3 +306,16 @@ func TestConfig_OpenAIAuthRejectsGarbage(t *testing.T) {
 		t.Error("want validate error for openai_auth=bogus")
 	}
 }
+
+func TestLockPath(t *testing.T) {
+	got := LockPath()
+	if got == "" {
+		t.Skip("home dir unresolvable in this environment")
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("LockPath() = %q, want an absolute path", got)
+	}
+	if filepath.Base(got) != "brokerd.lock" {
+		t.Errorf("LockPath() base = %q, want brokerd.lock", filepath.Base(got))
+	}
+}

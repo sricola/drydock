@@ -126,6 +126,12 @@ func summarize(id, path string, info os.FileInfo) taskRow {
 	r.dur = shortDur(last.DurationMs)
 	r.cost = costCell(meta.Subscription, last.TotalCostUSD)
 	switch {
+	case last.Subtype == "interrupted":
+		// brokerd died under the task (boot reconciler wrote this), distinct
+		// from "error" (the task itself failing). Death time is unknown, so
+		// keep the "-" placeholder rather than the synthetic 0ms.
+		r.outcome = "interrupted"
+		r.dur = "-"
 	case last.IsError:
 		r.outcome = "error"
 	case last.Subtype == "success":

@@ -188,11 +188,15 @@ operator's bad day" — crashes, partial failures, and the slow drift of pinned
 inputs. These are correctness/durability gaps, not new features; each is scoped
 so it can ship independently.
 
-- **4.1 Crash recovery.** A `brokerd` killed mid-task can leave an orphaned VM
-  and a permanently-held concurrency slot (the in-memory semaphore resets to
-  full on restart while the VM lingers). Reconcile on startup: list `drydock-*`
-  containers, reap orphans, and mark their audit rows terminated. *Highest
-  priority — it's a correctness gap a single crash exposes.*
+- **4.1 Crash recovery.** *Landed.* A `brokerd` killed mid-task left host-side
+  orphans the per-task cleanup defers never reaped. Boot reconciliation now:
+  enforces single-instance via an `flock` (`~/.drydock/brokerd.lock`) so a
+  second daemon can't clobber a live task; reaps orphan `task-*` VMs and squid
+  (pre-existing); sweeps stale stage dirs; and resolves tasks a crash
+  interrupted to a distinct `interrupted` outcome instead of a stuck
+  `running?`. (The in-memory concurrency slot was never the gap — a restart
+  rebuilds the semaphore at full capacity; the slot-pinning bug was the
+  approval-gate timeout, fixed separately.)
 - **4.2 Push partial-failure.** The approved-diff push is a multi-step git
   sequence with no defined rollback if it fails partway (e.g. push rejected
   after a local commit). Define the failure contract and surface it in the
