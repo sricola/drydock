@@ -499,7 +499,15 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		"NO_PROXY=127.0.0.1,localhost,"+b.GatewayIP,
 		"DRYDOCK_GW_IP="+b.GatewayIP,
 	)
-	env = append(env, modelEnv(taskModelFor(t.Model, b.OpenAICompatModel, taskVendor), b.DefaultModel)...)
+	// The operator DefaultModel is claude/codex-oriented; it must not leak into
+	// the opencode lane (it'd become `-m drydock/<claude-model>` and not
+	// resolve). For openai-compat the model comes only from --model or
+	// openai_compat.model (validation requires the latter when the lane is on).
+	defaultModel := b.DefaultModel
+	if taskVendor == "openai-compat" {
+		defaultModel = ""
+	}
+	env = append(env, modelEnv(taskModelFor(t.Model, b.OpenAICompatModel, taskVendor), defaultModel)...)
 	env = append(env, "DRYDOCK_AGENT="+agentName)
 
 	args := runner.BuildRunArgs(runner.Spec{
