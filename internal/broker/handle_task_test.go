@@ -32,7 +32,6 @@ type fakeStage struct {
 	pushErr      error
 	pushed       bool
 	pushBranch   string
-	pushAdapter  string
 	cleaned      bool
 	gotPrompt    string
 	gotAllowlist string
@@ -45,14 +44,29 @@ func (f *fakeStage) WriteTaskFiles(prompt, allowlist string) error {
 }
 func (f *fakeStage) CaptureDiff() (string, error) { return f.diff, f.captureErr }
 func (f *fakeStage) Cleanup() error               { f.cleaned = true; return nil }
-func (f *fakeStage) Push(adapter remote.Adapter, branch, msg string) error {
+func (f *fakeStage) Push(branch, msg string) error {
 	if f.pushErr != nil {
 		return f.pushErr
 	}
 	f.pushed = true
 	f.pushBranch = branch
-	f.pushAdapter = adapter.Name()
 	return nil
+}
+func (f *fakeStage) PushEnv() []string { return []string{"GIT_DIR=/fake"} }
+
+type fakeAdapter struct {
+	name    string
+	openErr error
+	opened  bool
+	gotReq  remote.Request
+}
+
+func (a *fakeAdapter) Name() string     { return a.name }
+func (a *fakeAdapter) Available() error { return nil }
+func (a *fakeAdapter) OpenRequest(r remote.Request) error {
+	a.opened = true
+	a.gotReq = r
+	return a.openErr
 }
 
 type fakeGrant struct {
@@ -88,6 +102,9 @@ func testBroker(t *testing.T, vendor string, st taskStage, grant *fakeGrant,
 		MaxConcurrent: 4,
 		prepareStage:  func(root, repo string) (taskStage, error) { return st, nil },
 		runAgent:      run,
+		newAdapter: func(repoRef, platform string) remote.Adapter {
+			return &fakeAdapter{name: remote.AdapterFor(repoRef, platform).Name()}
+		},
 	}
 }
 
@@ -192,8 +209,8 @@ func TestHandleTask_ClaudeAutoApprove_Pushes(t *testing.T) {
 	if term["platform"] != "github" {
 		t.Errorf("platform=%v, want github", term["platform"])
 	}
-	if !st.pushed || st.pushBranch != "agent/"+id || st.pushAdapter != "github" {
-		t.Errorf("stage.Push wrong: pushed=%v branch=%q adapter=%q", st.pushed, st.pushBranch, st.pushAdapter)
+	if !st.pushed || st.pushBranch != "agent/"+id {
+		t.Errorf("stage.Push wrong: pushed=%v branch=%q", st.pushed, st.pushBranch)
 	}
 	if !grant.revoked {
 		t.Error("grant.Revoke not called (defer)")
@@ -482,5 +499,30 @@ func TestHandleTask_RunErrorReasonIsSanitized(t *testing.T) {
 	}
 	if !strings.Contains(reason, "BOOM") {
 		t.Errorf("reason should keep the human-readable text, got %q", reason)
+	}
+}
+
+// A PR-open failure must NOT downgrade a successful push to a failure: the
+// branch is saved, so the result is "pushed" with pr_opened=false.
+func TestHandleTask_PROpenFailure_StillPushed(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
+	grant := &fakeGrant{}
+	resultLine := `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0.01,"num_turns":1}`
+	b := testBroker(t, "anthropic", st, grant, writesResult(resultLine))
+	b.newAdapter = func(repoRef, platform string) remote.Adapter {
+		return &fakeAdapter{name: "github", openErr: fmt.Errorf("gh: not authenticated")}
+	}
+	_, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"claude","auto_approve":true}`)
+	if term["outcome"] != "pushed" {
+		t.Fatalf("outcome = %v, want pushed (a saved branch must never report failure)", term["outcome"])
+	}
+	if term["pr_opened"] != false {
+		t.Errorf("pr_opened = %v, want false", term["pr_opened"])
+	}
+	if term["pr_error"] == nil {
+		t.Error("pr_error should carry the adapter failure reason")
+	}
+	if !st.pushed {
+		t.Error("the branch must still have been pushed")
 	}
 }

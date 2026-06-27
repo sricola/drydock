@@ -9,6 +9,7 @@ import (
 
 	"drydock/internal/config"
 	"drydock/internal/gateway"
+	"drydock/internal/remote"
 )
 
 // runDoctor is the no-API-spend smoke. It catches the failure modes that
@@ -148,6 +149,19 @@ func runDoctor() {
 	}
 	if cfg.OpenAIAuth != "subscription" {
 		step("openai api key", true, "source: "+apiKeySource("OPENAI_API_KEY", fileKeys))
+	}
+
+	// PR tooling: report which platform CLI (if any) is authenticated. Not a
+	// failure — push-only is a legitimate mode, and doctor is repo-agnostic.
+	anyAuthed := false
+	for _, a := range []remote.Adapter{remote.GitHubAdapter{}, remote.GitLabAdapter{}, remote.GiteaAdapter{}} {
+		if err := a.Available(); err == nil {
+			step("PR tooling: "+a.Name(), true, "authenticated")
+			anyAuthed = true
+		}
+	}
+	if !anyAuthed {
+		fmt.Println("note: no PR CLI (gh/glab/tea) is authenticated — tasks will push a branch but not open a PR until you authenticate one.")
 	}
 
 	fmt.Println()

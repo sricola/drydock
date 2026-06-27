@@ -89,16 +89,6 @@ func (s *Stage) CaptureDiff() (string, error) {
 	return s.git("diff", "--cached")
 }
 
-// requestOpener opens a PR/MR for a freshly pushed branch. Satisfied by
-// the adapters in internal/remote (GitHub / GitLab / push-only). Kept as
-// an interface here so stage doesn't need to import remote — broker wires
-// the two together. Adapters MUST honor the env vars (they carry GIT_DIR
-// and the hook-neutralization that keeps any vendor CLI on the host-only
-// git dir even if the work tree contains a planted .git).
-type requestOpener interface {
-	OpenRequest(workDir, branch string, env []string) error
-}
-
 // adapterAllowedEnv is the curated allowlist of host env vars forwarded to
 // gh/glab. The rest of os.Environ() (AWS_*, SLACK_*, cloud creds, every
 // secret you've ever exported) stays out — drastically narrows the blast
@@ -124,10 +114,11 @@ var adapterAllowedEnv = []string{
 	"SSH_AUTH_SOCK",
 }
 
-// Push commits the staged changes onto a new branch, pushes it via the
-// host-only git dir, then asks the adapter to open a PR/MR. Called only
-// after the approval gate.
-func (s *Stage) Push(opener requestOpener, branch, message string) error {
+// Push commits the staged changes onto a new branch and pushes it via the
+// host-only git dir. Opening a PR/MR is a separate, best-effort step the broker
+// drives (stage no longer knows about PR adapters). Called only after the
+// approval gate.
+func (s *Stage) Push(branch, message string) error {
 	if _, err := s.git("checkout", "-b", branch); err != nil {
 		return err
 	}
@@ -140,8 +131,14 @@ func (s *Stage) Push(opener requestOpener, branch, message string) error {
 	if _, err := s.git("push", "origin", branch); err != nil {
 		return err
 	}
-	// The adapter shells out to gh/glab and must do so against the
-	// host-only git dir with hooks neutralized — never the work-tree .git.
+	return nil
+}
+
+// PushEnv is the curated host env a PR/MR adapter must run with: the allowlisted
+// vars plus GIT_DIR and hook-neutralization that keep any vendor CLI on the
+// host-only git dir even if the work tree contains a planted .git. The broker
+// passes this to remote.Adapter.OpenRequest after Push succeeds.
+func (s *Stage) PushEnv() []string {
 	env := curatedEnv()
 	env = append(env,
 		"GIT_DIR="+s.gitDir,
@@ -150,7 +147,7 @@ func (s *Stage) Push(opener requestOpener, branch, message string) error {
 		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
 		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
 	)
-	return opener.OpenRequest(s.WorkDir, branch, env)
+	return env
 }
 
 func curatedEnv() []string {
