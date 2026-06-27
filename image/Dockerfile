@@ -32,9 +32,17 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 ARG CODEX_VERSION=0.140.0
 RUN npm install -g @openai/codex@${CODEX_VERSION}
 
+# Pin the opencode CLI for the OpenAI-compatible (bring-your-own-model) lane.
+# Bump deliberately. Override with --build-arg OPENCODE_VERSION=x.y.z. The
+# build-time `opencode --version` is a smoke check that the (script-running)
+# install produced a working binary.
+ARG OPENCODE_VERSION=1.17.11
+RUN npm install -g --foreground-scripts opencode-ai@${OPENCODE_VERSION} && opencode --version
+
 RUN useradd -m -u 10001 -s /bin/bash agent
-COPY init-firewall.sh     /usr/local/bin/init-firewall.sh
-COPY entrypoint.sh        /usr/local/bin/entrypoint.sh
-COPY write-codex-config.sh /usr/local/bin/write-codex-config.sh
-RUN chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh /usr/local/bin/write-codex-config.sh
+COPY init-firewall.sh         /usr/local/bin/init-firewall.sh
+COPY entrypoint.sh            /usr/local/bin/entrypoint.sh
+COPY write-codex-config.sh    /usr/local/bin/write-codex-config.sh
+COPY write-opencode-config.sh /usr/local/bin/write-opencode-config.sh
+RUN chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh /usr/local/bin/write-codex-config.sh /usr/local/bin/write-opencode-config.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

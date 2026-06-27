@@ -87,9 +87,13 @@ type Broker struct {
 	Squid           SquidControl // per-task egress widening; nil = disabled
 	TaskBudget      float64      // USD budget per task
 	DefaultModel    string       // operator-level default; per-task Task.Model overrides
-	Notify          bool         // fire macOS notifications on approval gates (config notifications)
-	AnthropicAuth   string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
-	OpenAIAuth      string       // "api_key" | "subscription"; recorded per task for `drydock tasks`
+	// OpenAICompatModel is the model id for the openai-compat lane (from
+	// config openai_compat.model). It's the per-task default for an opencode
+	// task when --model isn't passed, since that vendor has no built-in model.
+	OpenAICompatModel string
+	Notify            bool   // fire macOS notifications on approval gates (config notifications)
+	AnthropicAuth     string // "api_key" | "subscription"; recorded per task for `drydock tasks`
+	OpenAIAuth        string // "api_key" | "subscription"; recorded per task for `drydock tasks`
 
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
@@ -495,7 +499,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		"NO_PROXY=127.0.0.1,localhost,"+b.GatewayIP,
 		"DRYDOCK_GW_IP="+b.GatewayIP,
 	)
-	env = append(env, modelEnv(t.Model, b.DefaultModel)...)
+	env = append(env, modelEnv(taskModelFor(t.Model, b.OpenAICompatModel, taskVendor), b.DefaultModel)...)
 	env = append(env, "DRYDOCK_AGENT="+agentName)
 
 	args := runner.BuildRunArgs(runner.Spec{
@@ -978,6 +982,17 @@ func errorEvent(taskID, reason, hint string) map[string]any {
 		ev["hint"] = hint
 	}
 	return ev
+}
+
+// taskModelFor picks the per-task model before the operator default is applied.
+// An explicit --model always wins. Otherwise the openai-compat vendor
+// (opencode) falls back to the configured openai_compat.model, since that lane
+// has no built-in model the way claude/codex do.
+func taskModelFor(taskModel, openAICompatModel, vendor string) string {
+	if taskModel == "" && vendor == "openai-compat" {
+		return openAICompatModel
+	}
+	return taskModel
 }
 
 // modelEnv resolves the model passthrough for a task: the per-task value wins,
