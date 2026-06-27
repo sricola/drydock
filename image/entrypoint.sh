@@ -40,6 +40,28 @@ case "$AGENT" in
         --dangerously-skip-permissions \
         --output-format stream-json --verbose --include-partial-messages
     ;;
+  opencode)
+    # opencode ignores OPENAI_BASE_URL (validation spike) — it needs a config
+    # file. Write one pointing a custom openai-compatible provider at the drydock
+    # gateway, with the per-task bearer (OPENAI_API_KEY) as apiKey. Keep
+    # opencode's config + state OUT of /work so they never pollute the diff.
+    : "${OPENAI_BASE_URL:?missing OPENAI_BASE_URL}"
+    MODEL="${DRYDOCK_MODEL:?opencode needs a model — set openai_compat.model or pass --model}"
+    export XDG_CONFIG_HOME=/home/agent/.config
+    export XDG_DATA_HOME=/home/agent/.local/share
+    /usr/local/bin/write-opencode-config.sh "$OPENAI_BASE_URL" "$MODEL" "$XDG_CONFIG_HOME"
+    mkdir -p "$XDG_DATA_HOME"
+    chown -R agent:agent /home/agent/.config /home/agent/.local
+    # The VM is the isolation boundary, so auto-approve all permissions. JSON
+    # output gives the operator stream machine-readable events. The apiKey lives
+    # in the written config, so opencode (as agent) needs no gateway env itself.
+    exec gosu agent env \
+        "HOME=/home/agent" \
+        "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" \
+        "XDG_DATA_HOME=$XDG_DATA_HOME" \
+        opencode run "${PROMPT}" -m "drydock/${MODEL}" \
+        --dangerously-skip-permissions --format json
+    ;;
   *)
     echo "drydock: unknown DRYDOCK_AGENT=$AGENT" >&2
     exit 64

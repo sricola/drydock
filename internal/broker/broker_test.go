@@ -639,6 +639,23 @@ func TestHandleHealth_BreakdownByStage(t *testing.T) {
 	}
 }
 
+func TestTaskModelFor(t *testing.T) {
+	cases := []struct {
+		taskModel, ocModel, vendor, want string
+	}{
+		{"gpt-x", "gemini-2.5-pro", "openai-compat", "gpt-x"},     // explicit --model wins
+		{"", "gemini-2.5-pro", "openai-compat", "gemini-2.5-pro"}, // opencode falls back to configured model
+		{"", "gemini-2.5-pro", "anthropic", ""},                   // other vendors don't use the oc model
+		{"", "", "openai-compat", ""},                             // no model configured -> empty
+		{"claude-x", "", "anthropic", "claude-x"},                 // claude explicit
+	}
+	for _, c := range cases {
+		if got := taskModelFor(c.taskModel, c.ocModel, c.vendor); got != c.want {
+			t.Errorf("taskModelFor(%q,%q,%q) = %q, want %q", c.taskModel, c.ocModel, c.vendor, got, c.want)
+		}
+	}
+}
+
 func TestModelEnv(t *testing.T) {
 	cases := []struct {
 		name string
