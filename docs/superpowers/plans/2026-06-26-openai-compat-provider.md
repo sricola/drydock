@@ -433,3 +433,60 @@ git add cmd/drydock/ && git commit -m "drydock: openai-compat red-team A1 + wiza
 ## Execution note
 
 Tasks 2–5 and Task 7's host-side are buildable + unit-testable now. Task 1 (spike) and Task 6 (image build + live run), plus the container-run portions of Task 7, require the operator's environment (the `opencode` binary, a real OpenAI-compatible endpoint + key, and the macOS `container` service) — deferred exactly as the Codex-subscription spike + integration were.
+
+---
+
+## Task 1 spike findings (2026-06-27 — PASSED)
+
+Validated on macOS 27 / arm64 by driving real `opencode` against a local mock
+OpenAI-compatible server (logs auth + body, returns a canned `/v1/chat/completions`
+response — no real key needed). The mock received **2× `POST /v1/chat/completions`
+with `Authorization: Bearer <key>`** and opencode ran headless to completion.
+
+- **S1 — install:** `npm install -g opencode-ai`, version **`1.17.11`** (binary
+  `opencode`). The npm package runs a `postinstall` (downloads the platform
+  binary) — npm's allow-scripts policy blocked it locally yet the CLI still
+  worked; the **image build must allow/run the postinstall** (or pin a method
+  that doesn't need it). Pin via `ARG OPENCODE_VERSION=1.17.11` like the other
+  agent CLIs.
+- **S2 — endpoint config (the key finding):** opencode does **NOT** read
+  `OPENAI_BASE_URL`/`OPENAI_API_KEY` for a custom endpoint — an env-only run
+  errored (`UnknownError`). Like codex, it needs a **config file**. A project
+  `opencode.json` defining a custom provider works:
+  ```json
+  {
+    "provider": {
+      "drydock": {
+        "npm": "@ai-sdk/openai-compatible",
+        "options": { "baseURL": "<OPENAI_BASE_URL>", "apiKey": "<OPENAI_API_KEY>" },
+        "models": { "<model>": { "name": "<model>" } }
+      }
+    }
+  }
+  ```
+  → **Task 6 needs a `write-opencode-config.sh`** (mirroring `write-codex-config.sh`)
+  that writes this JSON from the injected `OPENAI_BASE_URL` / `OPENAI_API_KEY` /
+  `DRYDOCK_MODEL`. It speaks `/v1/chat/completions` (✓ matches the gateway's
+  openai-compat vendor + Gemini's `/v1beta/openai`).
+- **S3 — model:** `-m drydock/<model>` (format `provider/model`); the model id is
+  declared in the config's `models` map (and passed via `DRYDOCK_MODEL` →
+  `cfg.OpenAICompat.Model`).
+- **S4 — headless invocation:** `opencode run "<PROMPT>" -m drydock/<model>
+  --dangerously-skip-permissions --format json` runs non-interactively and exits
+  (the drydock entrypoint analog of `codex exec --dangerously-bypass-... "$PROMPT"`).
+  `--format json` emits machine-readable stream events for the operator stream.
+- **S5 — proof:** mock logged the chat/completions POSTs with the bearer; a real
+  run only swaps the baseURL/key to a real endpoint (Gemini/OpenRouter).
+- **Extra finding:** opencode makes an **additional** `/chat/completions` call to
+  auto-generate a session title — extra per-task token spend (all metered through
+  the gateway). Consider disabling title generation in the written config if a
+  config knob exists.
+- **`@ai-sdk/openai-compatible` availability:** the provider package loaded at
+  runtime here; the **egress-restricted image must have it available offline**
+  (bundled with opencode, or pre-installed in the image) — a Task 6 verification
+  item.
+
+**Conclusion:** opencode is a viable openai-compat sandbox agent. Task 6 is
+de-risked and concrete: pin+install opencode (allow the postinstall), add a
+`write-opencode-config.sh`, and an `entrypoint.sh` `opencode)` branch that writes
+the config from the gateway env and execs `opencode run`.
