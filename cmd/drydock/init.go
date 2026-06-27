@@ -234,6 +234,19 @@ func step(label string, ok bool, detail string) {
 	fmt.Printf("  %s %-32s %s\n", mark, label, detail)
 }
 
+// stepWarn prints a non-fatal advisory line — a yellow "!" rather than the red
+// "✗"/FAIL of a failed check. Use it for opt-in surfaces that are not yet
+// configured (e.g. the openai-compat lane with no key set): the operator should
+// see the gap, but it must not read as a failure that contradicts an overall
+// "all checks passed".
+func stepWarn(label, detail string) {
+	mark := "WARN"
+	if tty {
+		mark = "\033[33m!\033[0m"
+	}
+	fmt.Printf("  %s %-32s %s\n", mark, label, detail)
+}
+
 // checkPlatform fails loudly if drydock is run on a host where Apple's
 // `container` runtime can't work — non-darwin, or non-arm64. The Homebrew
 // formula already declares these constraints, but source builds skip that

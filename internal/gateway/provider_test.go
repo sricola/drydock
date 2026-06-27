@@ -54,11 +54,13 @@ func TestGrantEnvVars(t *testing.T) {
 	}
 }
 
-// TestOpenAICompat_RealKeyNeverInGrantEnv is the host-side A1 red-team
-// assertion for the openai-compat lane: the real upstream API key must never
-// appear in the grant's env vars — only the gateway base URL and a minted
-// tok_-style lease token may reach the VM.
-func TestOpenAICompat_RealKeyNeverInGrantEnv(t *testing.T) {
+// TestRedteam_A1_OpenAICompatRealKeyNeverInGrantEnv is the host-side A1
+// red-team assertion for the openai-compat (opencode) lane: the real upstream
+// API key must never appear in the grant's env vars — only the gateway base
+// URL and a minted tok_-style lease token may reach the VM. The TestRedteam_A1
+// name puts it in the `make redteam` containment report alongside the other
+// lanes, so the newest credential path is not dark there.
+func TestRedteam_A1_OpenAICompatRealKeyNeverInGrantEnv(t *testing.T) {
 	const realKey = "sk-REAL-SENTINEL"
 	const gwBaseURL = "http://192.168.64.1:8088"
 
