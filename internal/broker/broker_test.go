@@ -740,11 +740,10 @@ func TestDefaultModelNotLeakedToOpenAICompat(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Mirror broker.go:506-510: blank defaultModel for the compat lane.
-			defaultModel := operatorDefault
-			if tc.vendor == "openai-compat" {
-				defaultModel = ""
-			}
+			// Exercise the real production guard, not a copy of it: if
+			// effectiveDefaultModel stops blanking the compat lane, this test
+			// fails.
+			defaultModel := effectiveDefaultModel(operatorDefault, tc.vendor)
 			env := modelEnv(taskModelFor(tc.taskModel, tc.ocModel, tc.vendor), defaultModel)
 			joined := strings.Join(env, "\n")
 
