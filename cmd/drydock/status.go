@@ -40,6 +40,7 @@ func runStatus() {
 	}
 	fmt.Printf("tasks       %d total · %d in last 24h\n", total, last24)
 	fmt.Printf("audit dir   %s\n", filepath.Clean(dir))
+	fmt.Println("tip: `drydock ui` opens a local web dashboard (review diffs, submit, history).")
 }
 
 type healthBody struct {
