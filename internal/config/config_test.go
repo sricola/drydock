@@ -320,6 +320,33 @@ func TestAuthMode(t *testing.T) {
 	}
 }
 
+func TestValidate_OpenAICompat(t *testing.T) {
+	base := Defaults()
+	// Unconfigured (empty base_url) is valid — provider just inactive.
+	if err := base.validate(); err != nil {
+		t.Fatalf("default config must validate: %v", err)
+	}
+	// base_url set but no api_key_env / model -> error.
+	c := Defaults()
+	c.OpenAICompat.BaseURL = "https://example.test"
+	if err := c.validate(); err == nil {
+		t.Error("base_url without api_key_env+model must error")
+	}
+	// non-https base_url (non-localhost) -> error.
+	c = Defaults()
+	c.OpenAICompat.BaseURL = "http://example.test"
+	c.OpenAICompat.APIKeyEnv = "X_KEY"
+	c.OpenAICompat.Model = "m"
+	if err := c.validate(); err == nil {
+		t.Error("non-https non-localhost base_url must error")
+	}
+	// fully configured https -> ok.
+	c.OpenAICompat.BaseURL = "https://example.test"
+	if err := c.validate(); err != nil {
+		t.Errorf("configured openai_compat must validate: %v", err)
+	}
+}
+
 func TestLockPath(t *testing.T) {
 	got := LockPath()
 	if got == "" {
