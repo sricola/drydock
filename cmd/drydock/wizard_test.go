@@ -9,6 +9,151 @@ import (
 	"drydock/internal/config"
 )
 
+// ---------------------------------------------------------------------------
+// TestSetNestedYAMLKey
+// ---------------------------------------------------------------------------
+
+func TestSetNestedYAMLKey(t *testing.T) {
+	body := `openai_compat:
+  base_url:    ""        # e.g. https://generativelanguage.googleapis.com
+  base_path:   ""        # e.g. /v1beta/openai
+  model:       ""        # model id
+other_key: somevalue
+`
+	got := setNestedYAMLKey(body, "base_url", "https://example.com")
+	if !strings.Contains(got, `base_url:    "https://example.com"`) {
+		t.Errorf("expected base_url to be set; got:\n%s", got)
+	}
+	// other lines unchanged
+	if !strings.Contains(got, `base_path:   ""`) {
+		t.Errorf("base_path should be unchanged; got:\n%s", got)
+	}
+	if !strings.Contains(got, "other_key: somevalue") {
+		t.Errorf("other_key should be unchanged; got:\n%s", got)
+	}
+	// trailing comment preserved
+	if !strings.Contains(got, "# e.g. https://generativelanguage.googleapis.com") {
+		t.Errorf("trailing comment should be preserved; got:\n%s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestPromptText
+// ---------------------------------------------------------------------------
+
+func TestPromptText(t *testing.T) {
+	cases := []struct {
+		in   string
+		dflt string
+		want string
+	}{
+		{"hello\n", "", "hello"},
+		{"\n", "fallback", "fallback"}, // empty input → default
+		{"  trimmed  \n", "", "trimmed"},
+		{"\n", "", ""}, // empty input, no default → empty string
+	}
+	for _, c := range cases {
+		var out strings.Builder
+		got := promptText(strings.NewReader(c.in), &out, "Enter something", c.dflt)
+		if got != c.want {
+			t.Errorf("in=%q dflt=%q → %q, want %q", c.in, c.dflt, got, c.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestRenderConfig_OpenAICompat
+// ---------------------------------------------------------------------------
+
+func TestRenderConfig_OpenAICompat(t *testing.T) {
+	c := wizardChoices{
+		DefaultAgent:  "claude",
+		AnthropicAuth: "api_key",
+		OpenAIAuth:    "api_key",
+		OCBaseURL:     "https://generativelanguage.googleapis.com",
+		OCBasePath:    "/v1beta/openai",
+		OCModel:       "gemini-2.5-pro",
+		OCKeyEnv:      "GEMINI_API_KEY",
+	}
+	body := renderConfig(c)
+
+	if !strings.Contains(body, `"https://generativelanguage.googleapis.com"`) {
+		t.Errorf("rendered config missing base_url value:\n%s", body)
+	}
+	if !strings.Contains(body, `"gemini-2.5-pro"`) {
+		t.Errorf("rendered config missing model value:\n%s", body)
+	}
+	if !strings.Contains(body, `"GEMINI_API_KEY"`) {
+		t.Errorf("rendered config missing api_key_env value:\n%s", body)
+	}
+	if !strings.Contains(body, `"/v1beta/openai"`) {
+		t.Errorf("rendered config missing base_path value:\n%s", body)
+	}
+
+	// Round-trip: written config must parse without error.
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("rendered openai_compat config does not parse: %v", err)
+	}
+	if cfg.OpenAICompat.BaseURL != "https://generativelanguage.googleapis.com" {
+		t.Errorf("round-trip base_url = %q", cfg.OpenAICompat.BaseURL)
+	}
+	if cfg.OpenAICompat.Model != "gemini-2.5-pro" {
+		t.Errorf("round-trip model = %q", cfg.OpenAICompat.Model)
+	}
+	if cfg.OpenAICompat.APIKeyEnv != "GEMINI_API_KEY" {
+		t.Errorf("round-trip api_key_env = %q", cfg.OpenAICompat.APIKeyEnv)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestRunWizard_OpenAICompat — full flow test
+// ---------------------------------------------------------------------------
+
+func TestRunWizard_OpenAICompat(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	// Input: agent=1(Claude), auth=1(subscription), OC=yes,
+	//        base URL, base path, model, key env.
+	input := "1\n1\ny\nhttps://generativelanguage.googleapis.com\n/v1beta/openai\ngemini-2.5-pro\nGEMINI_API_KEY\n"
+	deps := &wizardDeps{
+		in:              strings.NewReader(input),
+		out:             &strings.Builder{},
+		bootstrapClaude: func() error { return nil },
+		bootstrapCodex:  func() error { return nil },
+		configPath:      filepath.Join(dir, ".drydock", "config.yaml"),
+	}
+	got := runWizard(deps)
+	if got.OCBaseURL != "https://generativelanguage.googleapis.com" {
+		t.Errorf("OCBaseURL = %q", got.OCBaseURL)
+	}
+	if got.OCModel != "gemini-2.5-pro" {
+		t.Errorf("OCModel = %q", got.OCModel)
+	}
+	if got.OCKeyEnv != "GEMINI_API_KEY" {
+		t.Errorf("OCKeyEnv = %q", got.OCKeyEnv)
+	}
+
+	// Written config must parse and contain OC values.
+	cfg, err := config.Load(deps.configPath)
+	if err != nil {
+		t.Fatalf("config not parseable: %v", err)
+	}
+	if cfg.OpenAICompat.BaseURL != "https://generativelanguage.googleapis.com" {
+		t.Errorf("config base_url = %q", cfg.OpenAICompat.BaseURL)
+	}
+	if cfg.OpenAICompat.Model != "gemini-2.5-pro" {
+		t.Errorf("config model = %q", cfg.OpenAICompat.Model)
+	}
+	if cfg.OpenAICompat.APIKeyEnv != "GEMINI_API_KEY" {
+		t.Errorf("config api_key_env = %q", cfg.OpenAICompat.APIKeyEnv)
+	}
+}
+
 // TestTTYEchoCmd_UsesTerminalStdin guards the no-echo regression: stty must run
 // against the controlling terminal (os.Stdin), not exec's default /dev/null —
 // otherwise it errors and a pasted secret echoes on screen.
