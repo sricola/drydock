@@ -122,6 +122,10 @@ type wizardChoices struct {
 	DefaultAgent  string // "claude" | "codex"
 	AnthropicAuth string // "api_key" | "subscription"
 	OpenAIAuth    string // "api_key" | "subscription"
+	OCBaseURL     string // bring-your-own OpenAI-compatible base URL
+	OCBasePath    string // optional base path (e.g. /v1beta/openai)
+	OCModel       string // model id (e.g. gemini-2.5-pro)
+	OCKeyEnv      string // env var name holding the API key
 }
 
 // renderConfig returns a complete config.yaml body: the seeded template with
@@ -141,6 +145,14 @@ func renderConfig(c wizardChoices) string {
 	body = setYAMLKey(body, "default_agent", c.DefaultAgent)
 	body = setYAMLKey(body, "anthropic_auth", c.AnthropicAuth)
 	body = setYAMLKey(body, "openai_auth", c.OpenAIAuth)
+	if c.OCBaseURL != "" {
+		body = setNestedYAMLKey(body, "base_url", c.OCBaseURL)
+		if c.OCBasePath != "" {
+			body = setNestedYAMLKey(body, "base_path", c.OCBasePath)
+		}
+		body = setNestedYAMLKey(body, "model", c.OCModel)
+		body = setNestedYAMLKey(body, "api_key_env", c.OCKeyEnv)
+	}
 	return body
 }
 
@@ -149,6 +161,31 @@ func renderConfig(c wizardChoices) string {
 func setYAMLKey(body, key, value string) string {
 	re := regexp.MustCompile(`(?m)^(` + regexp.QuoteMeta(key) + `:\s*)\S+`)
 	return re.ReplaceAllString(body, "${1}"+value)
+}
+
+// setNestedYAMLKey rewrites the value of an INDENTED `key:` line (e.g. inside
+// openai_compat:). Only the `""` token is replaced; leading whitespace, key,
+// spacing, and trailing comments are all preserved.
+func setNestedYAMLKey(body, key, value string) string {
+	re := regexp.MustCompile(`(?m)^(\s+` + regexp.QuoteMeta(key) + `:\s*)\S+`)
+	return re.ReplaceAllString(body, `${1}`+`"`+value+`"`)
+}
+
+// promptText prints q to out (appending " [dflt]" when dflt is non-empty),
+// reads one trimmed line from in, and returns it — or dflt if the line is empty.
+func promptText(in io.Reader, out io.Writer, q, dflt string) string {
+	prompt := q
+	if dflt != "" {
+		prompt += " [" + dflt + "]"
+	}
+	fmt.Fprint(out, prompt+": ")
+	r := bufio.NewReader(in)
+	line, _ := r.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return dflt
+	}
+	return line
 }
 
 type wizardDeps struct {
@@ -206,6 +243,20 @@ func runWizard(d *wizardDeps) wizardChoices {
 			c.AnthropicAuth = mode
 		case "openai":
 			c.OpenAIAuth = mode
+		}
+	}
+
+	if promptYesNo(d.in, d.out, "Configure a bring-your-own OpenAI-compatible endpoint (e.g. Gemini, OpenRouter, local)?", false) {
+		c.OCBaseURL = promptText(d.in, d.out, "  base URL (e.g. https://generativelanguage.googleapis.com)", "")
+		if c.OCBaseURL != "" {
+			c.OCBasePath = promptText(d.in, d.out, "  base path (optional, e.g. /v1beta/openai)", "")
+			for c.OCModel == "" {
+				c.OCModel = promptText(d.in, d.out, "  model id (e.g. gemini-2.5-pro)", "")
+			}
+			for c.OCKeyEnv == "" {
+				c.OCKeyEnv = promptText(d.in, d.out, "  env var holding the API key (e.g. GEMINI_API_KEY)", "")
+			}
+			fmt.Fprintf(d.out, "  → export %s=... then run tasks with --agent opencode\n", c.OCKeyEnv)
 		}
 	}
 
