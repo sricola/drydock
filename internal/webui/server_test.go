@@ -74,3 +74,31 @@ func TestServesIndex(t *testing.T) {
 		t.Fatalf("GET / = %d, want 200", rec.Code)
 	}
 }
+
+func TestEmptyHostRejected(t *testing.T) {
+	s := testServer()
+	// An empty/missing Host must not be treated as loopback.
+	req := httptest.NewRequest("GET", "/api/tasks", nil)
+	req.Host = ""
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("empty host = %d, want 403", rec.Code)
+	}
+}
+
+func TestNonLoopbackOriginRejected(t *testing.T) {
+	s := testServer()
+	// A cross-origin request (browser-set Origin) must be rejected even with a
+	// valid token and loopback Host — CSRF defense-in-depth.
+	req := httptest.NewRequest("GET", "/api/tasks", nil)
+	req.Host = "127.0.0.1:7878"
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Origin", "http://evil.example.com")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin = %d, want 403", rec.Code)
+	}
+}
