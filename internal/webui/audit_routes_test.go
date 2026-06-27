@@ -23,9 +23,12 @@ func auditServer(t *testing.T) *Server {
 func TestDiffAndLogsAndWiden(t *testing.T) {
 	s := auditServer(t)
 	id := "0123456789abcdef0123456789abcdef"
+	logsWant := `{"type":"drydock_meta","subscription":false,"sensitive":false}` + "\n" +
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":0.05,"num_turns":3}` + "\n"
 	for _, tc := range []struct{ path, want string }{
 		{"/api/diff/" + id, "diff --git a b\n+line\n"},
 		{"/api/widen/" + id, `[{"host":"x.test","ports":[443]}]`},
+		{"/api/logs/" + id, logsWant},
 	} {
 		rec := do(t, s, "GET", tc.path, "127.0.0.1:7878", "Bearer secret")
 		if rec.Code != http.StatusOK || rec.Body.String() != tc.want {
@@ -63,7 +66,7 @@ func TestSymlinkRejected(t *testing.T) {
 	id := "ffffffffffffffffffffffffffffffff"
 	os.Symlink("/etc/hosts", filepath.Join(s.AuditRoot, id+".diff"))
 	rec := do(t, s, "GET", "/api/diff/"+id, "127.0.0.1:7878", "Bearer secret")
-	if rec.Code == http.StatusOK {
-		t.Fatalf("symlinked diff was served (status %d) — must not follow symlinks", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("symlinked diff: got status %d, want 404 — must not follow symlinks", rec.Code)
 	}
 }
