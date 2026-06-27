@@ -13,7 +13,7 @@
 | v1 scope | All four: Board, Diff review + approve/deny/kill, Submit, History |
 | Submit lifetime | **Small brokerd change:** detach task context from the submit request; kill only via `/admin/kill`. Removes the "closing the UI kills my task" wart and hardens CLI submit too. |
 | Real-time | Polling (~1.5s; ~0.5s while any task is at a gate) + optimistic update on actions; no streaming endpoint |
-| Cost | Live *board* cost deferred; **cost + budget shown at the approval gate** (parsed from the live audit jsonl — no brokerd change) |
+| Cost | Live *board* cost deferred; **spent-so-far shown at the approval gate** (parsed from the live audit jsonl — no brokerd change). The per-task budget *cap* is deferred (config-level, not in the task API/jsonl — would need plumbing). |
 | Destructive actions | Deny + Kill require confirm/undo; Approve only after the diff is opened |
 | Diff rendering | Client-side unified-diff coloring + per-file headers/collapse + `+X/−Y` stats; no vendored syntax highlighter |
 
@@ -98,7 +98,7 @@ Vanilla HTML/CSS/JS, embedded. On load it reads `#t=<token>` from the fragment, 
 
 - **Board** (default): polls `/api/tasks` + `/api/pending` (interval ~1.5s normally, ~0.5s while any task is at a gate). One card per task: id (click-to-copy), repo, truncated instruction, stage badge, elapsed. Tasks at a gate sort to the top; **a card's position is pinned for ~2s after hover/focus** so a re-sort can't move a click target.
   - `awaiting_egress` → **egress card**: shows the requested hosts (from `/api/widen/{id}`) **plus the instruction + repo** so the operator can judge *why*; Approve / Deny.
-  - `awaiting_approval` → **diff card**: "Review" opens the Review view; shows **spent-so-far + budget** (parsed from `/api/logs/{id}`'s latest cost line and the per-task budget). Approve is enabled only after the diff has been opened; Deny requires confirm.
+  - `awaiting_approval` → **diff card**: "Review" opens the Review view; shows **spent-so-far** (parsed from `/api/logs/{id}`'s latest `total_cost_usd` line — already present at the push gate because the agent finished before the gate). The budget *cap* is deferred. Approve is enabled only after the diff has been opened; Deny requires confirm.
   - any live task → **Kill** (with confirm/undo).
   - Empty board → a real empty state linking to Submit/History (not a blank page).
   - A task that reaches terminal state stays briefly in a **"just finished"** zone with its outcome+cost before aging into History — completed tasks never silently vanish.
