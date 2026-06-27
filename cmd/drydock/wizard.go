@@ -166,16 +166,25 @@ func runWizard(d *wizardDeps) wizardChoices {
 	d.in = bufio.NewReader(d.in)
 	var c wizardChoices
 
-	labels := provider.Labels()
+	var selectable []provider.Provider
+	for _, p := range provider.Registry {
+		if !p.ConfigBuilt {
+			selectable = append(selectable, p)
+		}
+	}
+	labels := make([]string, len(selectable))
+	for i, p := range selectable {
+		labels[i] = p.Label
+	}
 	choices := append(append([]string{}, labels...), "all")
 	sel := promptChoice(d.in, d.out, "Which coding agent?", choices, 1)
 	wanted := map[string]bool{}
 	if sel == len(choices) { // "all"
-		for _, p := range provider.Registry {
+		for _, p := range selectable {
 			wanted[p.Agent] = true
 		}
 	} else {
-		wanted[provider.Registry[sel-1].Agent] = true
+		wanted[selectable[sel-1].Agent] = true
 	}
 	// DefaultAgent: the single selection, or claude when multiple ("all").
 	if len(wanted) == 1 {

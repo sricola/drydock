@@ -52,6 +52,39 @@ func TestAgentCredentialAvailable(t *testing.T) {
 	}
 }
 
+func TestAgentCredentialAvailable_OpenAICompat(t *testing.T) {
+	// Only openai_compat configured (BaseURL set + api key env var present)
+	// should be sufficient for agentCredentialAvailable to return true.
+	os.Unsetenv("ANTHROPIC_API_KEY")
+	os.Unsetenv("OPENAI_API_KEY")
+	t.Setenv("MY_COMPAT_KEY", "sk-compat")
+
+	cfg := config.Defaults()
+	cfg.OpenAICompat.BaseURL = "https://openrouter.ai"
+	cfg.OpenAICompat.APIKeyEnv = "MY_COMPAT_KEY"
+	cfg.OpenAICompat.Model = "some-model"
+
+	if got := agentCredentialAvailable(cfg); !got {
+		t.Error("agentCredentialAvailable with openai_compat BaseURL+APIKeyEnv set should return true")
+	}
+}
+
+func TestAgentCredentialAvailable_OpenAICompatNoKey(t *testing.T) {
+	// openai_compat BaseURL set but api key env var absent → false (no standard creds either).
+	os.Unsetenv("ANTHROPIC_API_KEY")
+	os.Unsetenv("OPENAI_API_KEY")
+	os.Unsetenv("MY_COMPAT_KEY")
+
+	cfg := config.Defaults()
+	cfg.OpenAICompat.BaseURL = "https://openrouter.ai"
+	cfg.OpenAICompat.APIKeyEnv = "MY_COMPAT_KEY"
+	cfg.OpenAICompat.Model = "some-model"
+
+	if got := agentCredentialAvailable(cfg); got {
+		t.Error("agentCredentialAvailable with openai_compat BaseURL but missing key should return false")
+	}
+}
+
 func TestAgentCredentialAvailable_Codex(t *testing.T) {
 	cases := []struct {
 		anthropicAuth, openaiAuth, aKey, oKey string

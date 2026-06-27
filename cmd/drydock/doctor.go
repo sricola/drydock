@@ -107,6 +107,9 @@ func runDoctor() {
 	// Skipped entirely in api_key mode (api-key source is reported instead).
 	fileKeys := config.LoadAPIKeys(config.APIKeysPath())
 	for _, p := range provider.Registry {
+		if p.ConfigBuilt {
+			continue
+		}
 		if cfg.AuthMode(p.Vendor) == "subscription" {
 			backend, err := p.OAuthBackend(config.Dir())
 			if err != nil {

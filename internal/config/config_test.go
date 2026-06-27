@@ -345,6 +345,22 @@ func TestValidate_OpenAICompat(t *testing.T) {
 	if err := c.validate(); err != nil {
 		t.Errorf("configured openai_compat must validate: %v", err)
 	}
+	// localhost http -> ok (http is allowed for localhost).
+	c = Defaults()
+	c.OpenAICompat.BaseURL = "http://localhost:8080"
+	c.OpenAICompat.APIKeyEnv = "X_KEY"
+	c.OpenAICompat.Model = "m"
+	if err := c.validate(); err != nil {
+		t.Errorf("localhost http openai_compat must validate: %v", err)
+	}
+	// 127.0.0.1 http -> ok (http is allowed for loopback).
+	c = Defaults()
+	c.OpenAICompat.BaseURL = "http://127.0.0.1:8080"
+	c.OpenAICompat.APIKeyEnv = "X_KEY"
+	c.OpenAICompat.Model = "m"
+	if err := c.validate(); err != nil {
+		t.Errorf("127.0.0.1 http openai_compat must validate: %v", err)
+	}
 }
 
 func TestLockPath(t *testing.T) {
