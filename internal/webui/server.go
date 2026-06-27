@@ -21,8 +21,7 @@ var idRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 func validID(id string) bool { return idRe.MatchString(id) }
 
-// Handler wires the SPA and the /api surface. Proxy/audit/submit handlers are
-// added in later tasks; here they are stubs so the mux + middleware are testable.
+// Handler wires the SPA and the /api surface.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -30,15 +29,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /", http.FileServer(http.FS(sub)))
 
 	api := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.authed(h)) }
-	stub := func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "not implemented", http.StatusNotImplemented)
-	}
 	api("GET /api/tasks", func(w http.ResponseWriter, r *http.Request) { s.proxy(w, r, "GET", "/admin/tasks") })
 	api("GET /api/pending", func(w http.ResponseWriter, r *http.Request) { s.proxy(w, r, "GET", "/admin/pending") })
 	api("POST /api/approve/{id}", s.signalHandler("approve"))
 	api("POST /api/deny/{id}", s.signalHandler("deny"))
 	api("POST /api/kill/{id}", s.signalHandler("kill"))
-	api("POST /api/submit", stub)
+	api("POST /api/submit", s.handleSubmit)
 	api("GET /api/diff/{id}", func(w http.ResponseWriter, r *http.Request) {
 		s.serveAuditFile(w, r, ".diff", "text/plain; charset=utf-8")
 	})
