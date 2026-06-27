@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"drydock/internal/remote"
 )
 
 // taskRequest mirrors the broker.Task JSON shape. We don't import broker
@@ -28,6 +30,7 @@ type taskRequest struct {
 	Platform    string      `json:"platform,omitempty"`
 	Model       string      `json:"model,omitempty"`
 	Agent       string      `json:"agent,omitempty"`
+	Draft       bool        `json:"draft,omitempty"`
 }
 
 type reqDomain struct {
@@ -52,6 +55,7 @@ func runSubmit(args []string) {
 		model       = fs.String("model", "", "claude --model passthrough (e.g. claude-opus-4-7); empty = use broker default")
 		agent       = fs.String("agent", "", "sandbox agent: claude | codex (default: broker's default_agent)")
 		sensitive   = fs.Bool("sensitive", false, "mark the task sensitive in the audit trail")
+		draft       = fs.Bool("draft", false, "open the PR/MR as a draft")
 		jsonOut     = fs.Bool("json", false, "print the raw response JSON instead of a pretty summary")
 		quiet       = fs.Bool("quiet", false, "suppress live progress; print only the final outcome")
 		egress      repeatedFlag
@@ -109,7 +113,17 @@ sockpath.Default().`)
 		Platform:    *platform,
 		Model:       *model,
 		Agent:       *agent,
+		Draft:       *draft,
 	}
+	if os.Getenv("BROKER_ADDR") == "" {
+		adapter := remote.AdapterFor(*repo, *platform)
+		if err := adapter.Available(); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"⚠ %s CLI unavailable on this host (%v): the task will run and push a branch, but the PR won't open automatically. Fix it (e.g. 'gh auth login') and open the PR manually, or pass --platform none.\n",
+				adapter.Name(), err)
+		}
+	}
+
 	if err := postSubmit(req, *jsonOut, *quiet); err != nil {
 		die("%v", err)
 	}

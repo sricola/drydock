@@ -95,8 +95,13 @@ func (r *renderer) summary(ev map[string]any) {
 	switch ev["outcome"] {
 	case "pushed":
 		stat := fmt.Sprintf("%d files +%d/-%d", num(ev["files"]), num(ev["insertions"]), num(ev["deletions"]))
-		r.persist(fmt.Sprintf("✓ pushed %s (%s) · %s · %s%s",
-			str(ev["branch"]), str(ev["platform"]), stat, durStr(ev["duration_ms"]), costStr(ev["cost_usd"])))
+		if ev["pr_opened"] == false {
+			r.persist(fmt.Sprintf("✓ pushed %s (%s) — PR not opened: %s · open it manually · %s · %s%s",
+				str(ev["branch"]), str(ev["platform"]), str(ev["pr_error"]), stat, durStr(ev["duration_ms"]), costStr(ev["cost_usd"])))
+		} else {
+			r.persist(fmt.Sprintf("✓ pushed %s (%s) · %s · %s%s",
+				str(ev["branch"]), str(ev["platform"]), stat, durStr(ev["duration_ms"]), costStr(ev["cost_usd"])))
+		}
 	case "no_diff":
 		r.persist(fmt.Sprintf("✓ task %s finished · no changes%s", id, costStr(ev["cost_usd"])))
 	case "denied":
