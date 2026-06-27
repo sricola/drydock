@@ -10,7 +10,16 @@ import (
 	"time"
 
 	"drydock/internal/gateway"
+	"drydock/internal/provider"
 )
+
+// gwEnvNames returns the injected env-var names for a vendor, sourced from the
+// provider registry so a hand-built gateway.Provider here can't drift from the
+// real wiring (and satisfies Mint's non-empty BaseURLEnv/TokenEnv guard).
+func gwEnvNames(vendor string) (baseURLEnv, tokenEnv string) {
+	p, _ := provider.ByVendor(vendor)
+	return p.BaseURLEnv, p.TokenEnv
+}
 
 // VM-backed red-team tests (THREAT_MODEL A1, A2, A7): each runs an actual
 // attack inside the sandbox VM and asserts containment. They need the Apple
@@ -53,7 +62,8 @@ func TestRedteam_A1_RealKeyNeverInVM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", Budget: 1, TTL: time.Minute}
+	aBase, aTok := gwEnvNames("anthropic")
+	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", BaseURLEnv: aBase, TokenEnv: aTok, Budget: 1, TTL: time.Minute}
 	grant, err := prov.Mint(1)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +120,8 @@ func TestRedteam_A1_OAuthTokensNeverInVM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", Budget: 1, TTL: time.Minute}
+	aBase, aTok := gwEnvNames("anthropic")
+	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", BaseURLEnv: aBase, TokenEnv: aTok, Budget: 1, TTL: time.Minute}
 	grant, err := prov.Mint(1)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +174,8 @@ func TestRedteam_A1_CodexOAuthNeverInVM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov := &gateway.Provider{GW: gw, Vendor: "openai", BaseURL: "http://10.0.0.1:8088", Budget: 1, TTL: time.Minute}
+	oBase, oTok := gwEnvNames("openai")
+	prov := &gateway.Provider{GW: gw, Vendor: "openai", BaseURL: "http://10.0.0.1:8088", BaseURLEnv: oBase, TokenEnv: oTok, Budget: 1, TTL: time.Minute}
 	grant, err := prov.Mint(1)
 	if err != nil {
 		t.Fatal(err)
