@@ -221,42 +221,9 @@ func main() {
 	}()
 
 	// Credential gateway: real key host-only; the VM gets a bearer token.
-	var backends []gateway.Backend
-	for _, p := range provider.Registry {
-		if p.ConfigBuilt {
-			oc := cfg.OpenAICompat
-			if oc.BaseURL == "" {
-				continue // provider not configured; skip
-			}
-			key := resolveAPIKey(oc.APIKeyEnv, fileKeys)
-			if key == "" {
-				die("openai_compat.base_url is set but its api_key_env (" + oc.APIKeyEnv + ") is empty")
-			}
-			prices := map[string]gateway.Price{}
-			for m, pr := range oc.Prices {
-				prices[m] = gateway.Price{InputPer1M: pr.Input, OutputPer1M: pr.Output}
-			}
-			backends = append(backends, gateway.Backend{
-				Vendor: gateway.OpenAICompatVendor(p.Vendor, oc.BaseURL, oc.BasePath, prices),
-				Cred:   gateway.StaticKey(key),
-			})
-			continue
-		}
-		switch cfg.AuthMode(p.Vendor) {
-		case "subscription":
-			b, err := p.OAuthBackend(config.Dir())
-			if err != nil {
-				die(p.Vendor+"_auth=subscription but no usable credentials — run `"+p.AuthCmd+"`", "err", err)
-			}
-			backends = append(backends, b)
-		default: // api_key
-			if key := resolveAPIKey(p.APIKeyEnv, fileKeys); key != "" {
-				backends = append(backends, gateway.Backend{Vendor: p.APIVendor(), Cred: gateway.StaticKey(key)})
-			}
-		}
-	}
-	if len(backends) == 0 {
-		die("set at least one provider's API key (e.g. ANTHROPIC_API_KEY/OPENAI_API_KEY) or enable a subscription mode")
+	backends, err := buildBackends(cfg, fileKeys)
+	if err != nil {
+		die("gateway backends", "err", err)
 	}
 	gw, err := gateway.New(backends...)
 	if err != nil {
