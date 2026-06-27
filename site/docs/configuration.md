@@ -22,13 +22,31 @@ the VM.
 |---|---|---|---|
 | `anthropic_auth` | `DRYDOCK_ANTHROPIC_AUTH` | `api_key` | `api_key` uses `ANTHROPIC_API_KEY`; `subscription` uses `~/.drydock/claude-oauth.json` |
 | `openai_auth` | `DRYDOCK_OPENAI_AUTH` | `api_key` | `api_key` uses `OPENAI_API_KEY`; `subscription` uses `~/.drydock/codex-oauth.json` |
-| `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent when `--agent` is omitted (`claude` \| `codex`) |
+| `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent when `--agent` is omitted (`claude` \| `codex` \| `opencode`) |
 | `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | `--model` fallback; empty = the agent picks |
 | `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | Per-task USD ceiling (`api_key` mode only; unused in subscription mode) |
 | `task_max_requests` | `DRYDOCK_TASK_MAX_REQUESTS` | `0` (unlimited) | Hard cap on API round-trips per task — the primary runaway control in subscription mode |
 | `task_timeout` | — | `30m` | Wall-clock per task |
+| `approval_timeout` | — | `0s` | Auto-deny a task left at an approval gate after this long; `0` = wait forever (right for interactive use; set for unattended runs) |
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | Excess POSTs to `/tasks` get HTTP 503 |
 | `notifications` | `DRYDOCK_NO_NOTIFY=1` (off) | `true` | macOS notifications on pending approval |
+
+## Bring your own model
+
+`opencode` reaches any OpenAI-compatible endpoint via the `openai_compat` block
+in `config.yaml` (or the `drydock setup` wizard). There is **no env override** —
+configure it in the file. The real key is referenced by env-var **name**, never
+stored here.
+
+| Key (under `openai_compat:`) | Meaning |
+|---|---|
+| `base_url` | Endpoint host, e.g. `https://generativelanguage.googleapis.com` (empty = disabled; https, or http only for `localhost`) |
+| `base_path` | Path joined onto the request, e.g. `/v1beta/openai` |
+| `api_key_env` | **Name** of the host env var holding the real key (e.g. `GEMINI_API_KEY`) |
+| `model` | Model id passed to the agent, e.g. `gemini-2.5-pro` |
+| `prices` | Optional `{<model>: {input, output}}` USD per 1M tokens — enables USD budgeting; omit to rely on `task_max_requests` |
+
+See [Bring your own model](models.html) for worked examples.
 
 ## Advanced: runtime, paths, listener
 
