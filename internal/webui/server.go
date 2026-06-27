@@ -1,11 +1,14 @@
 package webui
 
 import (
+	"context"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type Server struct {
@@ -30,17 +33,66 @@ func (s *Server) Handler() http.Handler {
 	stub := func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "not implemented", http.StatusNotImplemented)
 	}
-	api("GET /api/tasks", stub)
-	api("GET /api/pending", stub)
-	api("POST /api/approve/{id}", stub)
-	api("POST /api/deny/{id}", stub)
-	api("POST /api/kill/{id}", stub)
+	api("GET /api/tasks", func(w http.ResponseWriter, r *http.Request) { s.proxy(w, r, "GET", "/admin/tasks") })
+	api("GET /api/pending", func(w http.ResponseWriter, r *http.Request) { s.proxy(w, r, "GET", "/admin/pending") })
+	api("POST /api/approve/{id}", s.signalHandler("approve"))
+	api("POST /api/deny/{id}", s.signalHandler("deny"))
+	api("POST /api/kill/{id}", s.signalHandler("kill"))
 	api("POST /api/submit", stub)
 	api("GET /api/diff/{id}", stub)
 	api("GET /api/logs/{id}", stub)
 	api("GET /api/widen/{id}", stub)
 	api("GET /api/history", stub)
 	return mux
+}
+
+// brokerClient returns an http.Client that dials brokerd's unix socket. Used
+// for the short admin pokes (5s timeout). base is the dummy host the dialer
+// ignores. Submit (Task 6) uses a separate no-timeout client.
+func (s *Server) brokerClient() (*http.Client, string) {
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) { return s.BrokerDial() },
+		},
+	}, "http://brokerd"
+}
+
+// proxy forwards the request to brokerd at adminPath and copies status+body back.
+func (s *Server) proxy(w http.ResponseWriter, r *http.Request, method, adminPath string) {
+	if s.BrokerDial == nil {
+		http.Error(w, "brokerd not running — run `drydock start`", http.StatusBadGateway)
+		return
+	}
+	c, base := s.brokerClient()
+	req, err := http.NewRequestWithContext(r.Context(), method, base+adminPath, nil)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		http.Error(w, "brokerd not running — run `drydock start`", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body) //nolint:errcheck
+}
+
+// signalHandler builds an approve/deny/kill handler for the given verb.
+func (s *Server) signalHandler(verb string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if !validID(id) {
+			http.Error(w, "bad task id", http.StatusBadRequest)
+			return
+		}
+		s.proxy(w, r, "POST", "/admin/"+verb+"/"+id)
+	}
 }
 
 // authed enforces the loopback Host allowlist, an optional cross-origin Origin
