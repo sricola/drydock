@@ -1,2 +1,23 @@
-<!doctype html><html><head><meta charset="utf-8"><title>drydock</title></head>
-<body><p>drydock UI</p></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>drydock</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <span class="brand">drydock</span>
+    <nav>
+      <button data-view="board" class="active">Board</button>
+      <button data-view="submit">Submit</button>
+      <button data-view="history">History</button>
+    </nav>
+    <span id="conn" class="conn"></span>
+  </header>
+  <main id="app"></main>
+  <script src="app.js"></script>
+</body>
+</html>
