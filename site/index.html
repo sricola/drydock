@@ -70,7 +70,7 @@
   <div class="wrap">
     <div class="kicker reveal"><span class="bar"></span>macos · local · coding agents on your repos, never the cloud</div>
     <h1 class="reveal">Let a coding agent run wild on your Mac —<br><span class="t">without trusting it.</span></h1>
-    <p class="lede reveal">drydock runs <b>Claude Code</b> or <b>OpenAI Codex</b> full-throttle on your own repos, on your own Mac — no permission prompts, no babysitting. Each task runs sealed in a throwaway VM, so the agent <b>can't touch your API key, can't reach the open internet, and can't write to anything but a disposable copy</b>. The only thing that ever comes back is a <span class="ic">git diff</span> — and nothing reaches your real code until you approve it.</p>
+    <p class="lede reveal">drydock runs <b>Claude Code</b>, <b>OpenAI Codex</b>, or <b>any OpenAI-compatible model</b> (Gemini, OpenRouter, local) full-throttle on your own repos, on your own Mac — no permission prompts, no babysitting. Each task runs sealed in a throwaway VM, so the agent <b>can't touch your API key, can't reach the open internet, and can't write to anything but a disposable copy</b>. The only thing that ever comes back is a <span class="ic">git diff</span> — and nothing reaches your real code until you approve it.</p>
     <ul class="vstack reveal" role="list">
       <li><b>It never gets your key.</b> Your real API key stays on the host — the agent only ever sees a short-lived, budget-capped token.</li>
       <li><b>It can't smuggle anything out.</b> The internet is deny-by-default — no exfiltrating your code, no calling home.</li>
@@ -273,8 +273,10 @@ make demo VM=1</pre>
       <span>Claude&nbsp;Code <em>· Anthropic</em></span>
       <span class="sep">/</span>
       <span>OpenAI&nbsp;Codex <em>· OpenAI</em></span>
+      <span class="sep">/</span>
+      <span>Any OpenAI-compatible model <em>· Gemini · OpenRouter · local</em></span>
     </div>
-    <p class="works-note">Bring an <b>API key</b> — or skip keys entirely and run on your existing <b>Claude&nbsp;Pro/Max</b> or <b>ChatGPT</b> subscription. Either way the credential stays on your Mac, never in the VM. Pick the agent per task with <span class="ic">--agent claude|codex</span>. <a href="docs/authentication.html">Auth &amp; the subscription caveats →</a></p>
+    <p class="works-note">Bring an <b>API key</b> — or skip keys entirely and run on your existing <b>Claude&nbsp;Pro/Max</b> or <b>ChatGPT</b> subscription. Either way the credential stays on your Mac, never in the VM. Pick the agent per task with <span class="ic">--agent claude|codex|opencode</span>. <a href="docs/authentication.html">Auth &amp; the subscription caveats →</a> Or bring any OpenAI-compatible endpoint (Gemini, OpenRouter, local) via <span class="ic">opencode</span> — your key stays host-side. <a href="docs/models.html">Bring-your-own-model →</a></p>
   </div>
 </section>
 

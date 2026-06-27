@@ -17,8 +17,8 @@
 </p>
 
 
-drydock runs **Claude Code** or **OpenAI Codex** full-throttle on your own
-repos, on your own Mac — no permission prompts, no babysitting. Each task runs
+drydock runs **Claude Code**, **OpenAI Codex**, or **any OpenAI-compatible model**
+(Gemini, OpenRouter, local) full-throttle on your own repos, on your own Mac — no permission prompts, no babysitting. Each task runs
 sealed in a throwaway VM, so the agent **can't touch your API key, can't reach
 the open internet, and can't write to anything but a disposable copy**. The only
 thing that ever comes back is a `git diff` — and nothing reaches your real code
