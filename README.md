@@ -1,3 +1,4 @@
+<!-- drydock: run coding agents (Claude Code / OpenAI Codex) full-throttle on your Mac, sealed in throwaway VMs so they can't reach your API key, filesystem, or the open internet. -->
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="site/logo-512-dark.png">
