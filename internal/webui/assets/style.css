@@ -37,3 +37,4 @@ table.history { width:100%; border-collapse:collapse; } .history th,.history td 
 .recent-title { color:var(--muted); font-size:12px; margin-bottom:6px; }
 .recent-row { display:flex; gap:12px; align-items:center; padding:4px 0; color:var(--muted); }
 .recent-row .outcome { margin-left:auto; color:var(--fg); }
+.card.justnew { outline:2px solid var(--ok); }

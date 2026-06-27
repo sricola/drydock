@@ -68,7 +68,6 @@ function setConn(text, ok) {
 
 // =================== BOARD ===================
 let pollTimer = null;
-let pinnedUntil = {}; // id -> timestamp; pin a card's position briefly after hover
 
 async function renderBoard() {
   let tasks;
@@ -81,14 +80,9 @@ async function renderBoard() {
     scheduleBoardPoll(tasks);
     return;
   }
-  // gate tasks float to top, but a recently-hovered card holds its slot ~2s.
-  const now = Date.now();
+  // gate tasks always float to top.
   const gateRank = s => (s === "awaiting_approval" || s === "awaiting_egress" ? 0 : 1);
-  tasks.sort((a, b) => {
-    const pa = pinnedUntil[a.id] > now ? 1 : 0, pb = pinnedUntil[b.id] > now ? 1 : 0;
-    if (pa !== pb) return 0; // pinned: leave relative order
-    return gateRank(a.stage) - gateRank(b.stage);
-  });
+  tasks.sort((a, b) => gateRank(a.stage) - gateRank(b.stage));
 
   const container = el("div", { class: "board" });
   if (tasks.length === 0) {
@@ -105,7 +99,7 @@ async function renderBoard() {
     if (recent.length) {
       const strip = el("div", { class: "recent" }, el("div", { class: "recent-title", text: "Just finished" }));
       for (const it of recent) {
-        strip.append(el("div", { class: "recent-row hrow", onclick: () => openReview(it.id) },
+        strip.append(el("div", { class: "recent-row hrow", onclick: () => openReview(it.id, true) },
           el("code", { text: it.id.slice(0, 12) }),
           el("span", { class: "age", text: fmtAgeFromUnix(it.mtime_unix) }),
           el("span", { text: it.cost }),
@@ -116,6 +110,11 @@ async function renderBoard() {
   } catch (_) { /* history is best-effort on the board */ }
 
   app().replaceChildren(container);
+  if (newTaskID) {
+    const c = container.querySelector(`[data-tid="${newTaskID}"]`);
+    if (c) { c.classList.add("justnew"); c.scrollIntoView({ block: "center" }); }
+    newTaskID = null;
+  }
   scheduleBoardPoll(tasks);
 }
 
@@ -132,8 +131,7 @@ function stageBadge(stage) {
 }
 
 function taskCard(t) {
-  const card = el("div", { class: "card" });
-  card.onmouseenter = () => { pinnedUntil[t.id] = Date.now() + 2000; };
+  const card = el("div", { class: "card", "data-tid": t.id });
   const head = el("div", { class: "card-head" },
     el("code", { class: "tid", title: "click to copy", onclick: () => navigator.clipboard && navigator.clipboard.writeText(t.id), text: t.id.slice(0, 12) }),
     stageBadge(t.stage),
@@ -209,7 +207,7 @@ function dangerButton(label, fn) { return el("button", { class: "danger", onclic
 views.board = renderBoard;
 
 // =================== REVIEW (diff overlay) ===================
-async function openReview(id) {
+async function openReview(id, readonly = false) {
   const overlay = el("div", { class: "overlay" });
   const panel = el("div", { class: "panel" });
   panel.append(el("div", { class: "panel-head" },
@@ -217,9 +215,11 @@ async function openReview(id) {
     el("button", { class: "close", onclick: () => overlay.remove() }, "✕")));
   const diffBox = el("div", { class: "diff", text: "loading diff…" });
   panel.append(diffBox);
-  panel.append(el("div", { class: "actions" },
-    el("button", { class: "ok", onclick: () => { act("approve", id); overlay.remove(); } }, "Approve push"),
-    dangerButton("Deny", () => { act("deny", id); overlay.remove(); })));
+  if (!readonly) {
+    panel.append(el("div", { class: "actions" },
+      el("button", { class: "ok", onclick: () => { act("approve", id); overlay.remove(); } }, "Approve push"),
+      dangerButton("Deny", () => { act("deny", id); overlay.remove(); })));
+  }
   overlay.append(panel);
   document.body.append(overlay);
   try {
@@ -300,7 +300,7 @@ async function renderHistory() {
       el("td", { text: it.has_duration ? fmtDurMs(it.duration_ms) : "-" }),
       el("td", { text: it.cost }),
       el("td", { text: it.outcome }));
-    row.onclick = () => openReview(it.id); // read-only diff/logs for past tasks
+    row.onclick = () => openReview(it.id, true); // read-only diff/logs for past tasks
     table.append(row);
   }
   app().replaceChildren(el("h2", { text: "History" }), table);
