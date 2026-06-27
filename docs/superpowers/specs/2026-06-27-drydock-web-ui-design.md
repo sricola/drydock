@@ -1,43 +1,55 @@
 # drydock Web UI — Design Spec
 
-**Status:** Approved (brainstorming) — 2026-06-27
-**Goal:** A local web UI that is a complete browser alternative to the `drydock` CLI: submit tasks, monitor them live, review the push diff and approve/deny/kill, approve egress-widening, and browse history — without changing brokerd's security model.
+**Status:** Approved (brainstorming), revised after PM + staff-engineer review — 2026-06-27
+**Goal:** A local web UI that is a complete browser alternative to the `drydock` CLI: submit tasks, monitor them live, review the push diff and approve/deny/kill, approve egress-widening, and browse history — with the approval gate as the marquee, well-designed moment.
 
 ## Summary of decisions
 
 | Decision | Choice |
 |---|---|
 | Primary purpose | Full control center (submit + monitor + approve/deny/kill + egress + history) |
-| Access model | `drydock ui` loopback-only server, token-gated; brokerd stays socket-only (unchanged) |
+| Access model | `drydock ui` loopback-only server, token-gated (header-bearer for actions) |
 | Frontend stack | Vanilla HTML/CSS/JS, `go:embed`'d, no npm/bundler/framework |
-| v1 scope | All four: Live board, Diff review + approve/deny/kill, Submit, History |
-| Real-time | Polling (~1.5s); no brokerd streaming endpoint |
-| Live cost | Out of v1 — cost shown at completion + in History (parsed from audit); board shows stage + elapsed only |
-| Diff rendering | Client-side unified-diff coloring (split on `+`/`-`/`@@`); no vendored syntax highlighter |
+| v1 scope | All four: Board, Diff review + approve/deny/kill, Submit, History |
+| Submit lifetime | **Small brokerd change:** detach task context from the submit request; kill only via `/admin/kill`. Removes the "closing the UI kills my task" wart and hardens CLI submit too. |
+| Real-time | Polling (~1.5s; ~0.5s while any task is at a gate) + optimistic update on actions; no streaming endpoint |
+| Cost | Live *board* cost deferred; **cost + budget shown at the approval gate** (parsed from the live audit jsonl — no brokerd change) |
+| Destructive actions | Deny + Kill require confirm/undo; Approve only after the diff is opened |
+| Diff rendering | Client-side unified-diff coloring + per-file headers/collapse + `+X/−Y` stats; no vendored syntax highlighter |
 
-## Background — what already exists (do not change)
+## Background — what already exists
 
-- **brokerd is already an HTTP/JSON server** over a per-user unix socket (optional TCP via `broker.addr`, which is explicitly no-auth — the UI does NOT use it). Routes (`cmd/brokerd/main.go:318-325`):
-  - `POST /tasks` (submit; registers the task immediately, then blocks until terminal outcome)
-  - `POST /admin/approve/{id}`, `POST /admin/deny/{id}`, `POST /admin/kill/{id}`
-  - `GET /admin/pending` (→ `[]string` of task ids awaiting a gate)
-  - `GET /admin/tasks` (→ `[]TaskState`), `GET /healthz`
-- **`TaskState`** (`internal/broker/broker.go:181`): `id, repo, instruction, stage, started_at, egress_extra`. **No cost field.**
+- **brokerd is already an HTTP/JSON server** over a per-user unix socket (optional TCP via `broker.addr`, explicitly no-auth — the UI does NOT use it). Routes (`cmd/brokerd/main.go:318-325`): `POST /tasks`; `POST /admin/{approve,deny,kill}/{id}`; `GET /admin/pending` (→ `[]string` ids at a gate); `GET /admin/tasks` (→ `[]TaskState`); `GET /healthz`.
+- **`TaskState`** (`broker.go:181`): `id, repo, instruction, stage, started_at, egress_extra`. **No cost field.** `egress_extra` is populated only while at the egress gate and **cleared the instant it resolves** (`broker.go:409-411`), with `omitempty`.
 - **Stages** (`broker.go:172-175`): `awaiting_egress`, `running`, `awaiting_approval` (push gate), `pushing`.
-- **The push diff is persisted to disk**, not served over HTTP: `<audit_root>/<id>.diff` (mode 0600), written at `broker.go:741-744`; `drydock review` reads it directly (`cmd/drydock/review.go`, `diffPath()` at `cmd/drydock/util.go:58`).
-- **The audit log** `<audit_root>/<id>.jsonl` is the per-task event stream the broker writes live (`accepted` → `stage` → … → `result`). Its terminal `result` line carries `outcome`, `total_cost_usd`, `duration_ms`. `drydock tasks` parses these (`cmd/drydock/tasks.go`: `auditResult`, `auditMeta`, `runTasks`); `auditCost()` at `internal/broker/stream.go:85`.
-- The CLI talks to brokerd as an HTTP client over the socket (`cmd/drydock/client.go`).
+- **Two distinct result vocabularies — do not conflate (review finding B2):**
+  - The **streamed HTTP** protocol emits `{"event":"result","outcome":"pushed|denied|cancelled|no_diff"}` (`broker.go:583,606,630`). This is **never written to disk.**
+  - The **on-disk `<id>.jsonl`** terminal line is `{"type":"result","subtype":"success|error|interrupted","is_error":bool,"total_cost_usd","duration_ms","num_turns"}` (written by the agent, or synthesized at `broker.go:549,572`, or by the boot reconciler `reconcile.go`). The `.jsonl` has **no `outcome` field** — outcome is *derived* from `subtype`/`is_error` exactly as `cmd/drydock/tasks.go:summarize()` does, and cost is subscription-aware (`tasks.go:costCell` shows the literal `"subscription"`, not a dollar amount, when metering is off — keyed off the `drydock_meta` first line).
+- **The push diff is persisted to disk** (`<audit_root>/<id>.diff`, mode 0600, `broker.go:741-744`); `drydock review` reads it directly (`diffPath()` at `cmd/drydock/util.go:58`). The egress-widen request is persisted to `<audit_root>/<id>.widen.json` (`broker.go:668`).
+- **Submit error responses are synchronous and pre-stream:** brokerd returns plain non-200 (`http.Error`) for bad repo (`400`, `broker.go:362`; repos must be https/git/ssh URLs — `gitURLRef`, no local paths), concurrency cap (`503`, `broker.go:366`), invalid egress (`400`, `broker.go:388`) — all **before** any `accepted` event. The CLI checks `resp.StatusCode >= 400` before reading the stream (`submit.go:248`).
+- Task ids are `newID()` = 16 random bytes hex = exactly `[0-9a-f]{32}` (`broker.go:239`). The audit dir is `0700`, files `0600`.
+- The CLI talks to brokerd over the socket via `cmd/drydock/client.go` (note: admin client has a 5s timeout; `brokerdDown()` keys off the socket path).
 
-The key architectural fact: **the UI server runs on the same machine as brokerd and the audit dir, so it can read diffs/logs/history directly and only needs to proxy the socket for live state + actions.** brokerd needs no changes.
+The architectural fact: **the UI server runs on the same machine as brokerd and the audit dir**, so it reads diffs/logs/history directly and proxies the socket only for live state + actions.
+
+## brokerd change — detach task lifetime from the submit request
+
+Today brokerd derives each task's context from the inbound request: `taskCtx, cancel := context.WithCancel(r.Context())` (`broker.go:379`), so a client disconnect cancels the task. Change it to a **broker-owned context** independent of the request:
+
+- `taskCtx, cancel := context.WithCancel(b.rootCtx)` (a broker-root context, so `CancelAll` on shutdown still reaches it) — NOT `r.Context()`.
+- The stored `cancel` (via `registerTask`) continues to back `/admin/kill` unchanged. **Kill is now the only way to cancel a task**; client disconnect does not.
+- Event streaming to the response writer becomes **best-effort**: if the client has gone, writes fail — the handler must swallow the write error and let the task run to completion (the `<id>.jsonl` audit log remains the source of truth). The run loop must not key off `r.Context()` for liveness.
+- **Behavior change (document in release notes + `drydock submit` help):** Ctrl-C'ing `drydock submit`, or closing the browser/UI, no longer cancels the task — it keeps running; reattach via `drydock tasks`/`logs` or the UI Board, cancel via `drydock kill`/the UI. This is consistent with the existing crash-recovery reconciler (a task already survives a brokerd restart's reconciliation).
+- **Tests:** disconnect the client mid-task → task still reaches a terminal `result` in the audit log; `/admin/kill` still cancels; `CancelAll` (shutdown) still cancels. Update any existing test that asserts disconnect-cancellation.
 
 ## Architecture
 
 ```
 browser ──TCP 127.0.0.1:PORT──▶ drydock ui server ──┬─ unix socket ─▶ brokerd   (live state + actions)
-        (token-gated)                                └─ reads <audit_root>/*.{jsonl,diff}  (diffs, logs, history)
+        (token-gated, header)                        └─ reads <audit_root>/*.{jsonl,diff,widen.json}
 ```
 
-The `drydock ui` server is a localhost-only HTTP server that (a) serves the embedded SPA, (b) proxies a small allow-listed set of brokerd endpoints over the unix socket, and (c) reads the audit directory directly for diffs, logs, and history. brokerd is untouched; no TCP exposure of brokerd is involved.
+The `drydock ui` server is loopback-only; it serves the embedded SPA, proxies an allow-listed set of brokerd endpoints over the socket, and reads the audit dir directly. With the detach change above, the UI never holds a task open.
 
 ## Components
 
@@ -47,108 +59,109 @@ The `drydock ui` server is a localhost-only HTTP server that (a) serves the embe
 drydock ui [--port N] [--open] [--no-token]
 ```
 
-- Resolves the audit root and socket path from config (same resolution the other CLI commands use).
+- Resolves audit root + socket path from config (reuse the existing resolution, not a copy).
 - Mints a random token (32 bytes hex) unless `--no-token`.
-- Binds `127.0.0.1:PORT` (default port `7878`; if taken, fail with a clear message naming the port — do not auto-scan).
-- Prints `UI ready: http://127.0.0.1:PORT/?t=<token>` (token omitted when `--no-token`).
-- `--open` launches the default browser at that URL (macOS `open`).
-- Runs until Ctrl-C; clean shutdown.
+- Binds `127.0.0.1:PORT` (default `7878`; if taken, exit non-zero naming the port — no auto-scan).
+- Prints `UI ready: http://127.0.0.1:PORT/#t=<token>` (token in the URL **fragment**, never the query — fragments are not sent in `Referer` or server logs). `--no-token` omits it and prints a loud warning that any local process/page can drive privileged actions.
+- `--open` launches the browser (macOS `open`). Runs until Ctrl-C; clean shutdown (does not affect running tasks, given the detach change).
 
 ### 2. `internal/webui/` — the UI server package
 
-A `Server` struct holding: the brokerd HTTP client (unix-socket transport, reused from the CLI's `client.go` pattern), the audit root path, and the token. Exposes `Handler() http.Handler` (an `http.ServeMux`) so it is unit-testable without binding a port.
-
-Routes:
+A `Server` struct holding: the brokerd socket client (reuse the `client.go` transport + `brokerdDown` logic), the audit root, and the token. Exposes `Handler() http.Handler` (an `http.ServeMux`) — port-free, `httptest`-able.
 
 | Method + path | Behavior |
 |---|---|
-| `GET /` and static assets | Serve the embedded SPA (`go:embed`). |
+| `GET /` + assets | Serve embedded SPA via `http.FS` over the `go:embed` FS (no `http.Dir`, no traversal). |
 | `GET /api/tasks` | Proxy `GET /admin/tasks`. |
 | `GET /api/pending` | Proxy `GET /admin/pending`. |
 | `POST /api/approve/{id}` | Proxy `POST /admin/approve/{id}`. |
 | `POST /api/deny/{id}` | Proxy `POST /admin/deny/{id}`. |
 | `POST /api/kill/{id}` | Proxy `POST /admin/kill/{id}`. |
-| `POST /api/submit` | Start a task on a **background context** (see "Submit decoupling"); return the task id immediately. |
-| `GET /api/diff/{id}` | Read `<audit_root>/<id>.diff`; 404 if absent. `text/plain`. |
-| `GET /api/logs/{id}` | Read `<audit_root>/<id>.jsonl`; supports a re-fetch for live tailing. 404 if absent. |
-| `GET /api/history` | List `<audit_root>/*.jsonl`, parse each terminal record → `{id, repo, instruction, outcome, cost_usd, duration_ms, started/mtime}`. |
+| `POST /api/submit` | Start a task (see "Submit flow"); reject `auto_approve:true`. |
+| `GET /api/diff/{id}` | Read `<audit>/<id>.diff`; 404 if absent; `text/plain`. |
+| `GET /api/logs/{id}` | Read `<audit>/<id>.jsonl` (re-fetch for tailing; tolerate an unterminated final line). |
+| `GET /api/widen/{id}` | Read `<audit>/<id>.widen.json` for the egress card detail (the live `egress_extra` snapshot may already be cleared). |
+| `GET /api/history` | List+parse `<audit>/*.jsonl` via `internal/audit`. |
 
-Cross-cutting middleware on every `/api/*` route:
-- **Token gate:** require the token (via `Authorization: Bearer <token>` header OR a `t` cookie the SPA sets from the launch URL). Missing/wrong → `403`. Skipped entirely when `--no-token`.
-- **Host check:** reject requests whose `Host` is not `127.0.0.1[:port]` or `localhost[:port]` → `403` (DNS-rebinding defense).
-- **`{id}` path-safety:** task ids are validated against a strict charset (the broker's id format — hex/alphanumeric + `-`); reject anything else BEFORE building a filesystem path, so `/api/diff/../../etc/passwd` cannot traverse.
+Cross-cutting middleware on `/api/*`:
+- **Token gate (default on):** **all** `/api/*` routes require the token in the **`Authorization: Bearer` header** — no cookie is used for auth anywhere (a cookie-borne token is CSRF-forgeable, finding I3). The SPA holds the token in memory and sends it on every fetch. Missing/wrong → `403`. `--no-token` skips the gate but keeps every other check.
+- **Origin/Host checks:** reject `/api/*` whose `Host` is not `127.0.0.1[:port]`/`localhost[:port]` (DNS-rebinding), and reject a present `Origin` that is not the loopback origin (CSRF defense-in-depth). → `403`.
+- **`{id}` safety:** validate against the anchored regex `^[0-9a-f]{32}$` before building any path. After `filepath.Join`, `filepath.Clean` and verify the audit-root prefix; open audit files with `O_NOFOLLOW` (or `Lstat` reject symlinks) so a planted symlink can't escape. → `400` on bad id.
 
 ### 3. Shared audit parsing — `internal/audit/`
 
-The terminal-record parsing currently lives in `cmd/drydock/tasks.go` (`auditResult`, `auditMeta`, the per-file summarizer). Extract the pure parsing (one `<id>.jsonl` → a summary struct) into a small `internal/audit` package so both `cmd/drydock/tasks.go` and `internal/webui` use one implementation. This is a targeted DRY improvement, not a rewrite: `cmd/drydock/tasks.go`'s display/formatting stays; only the parse-one-file logic moves and is imported back.
+Extract the **on-disk** parse + derivation from `cmd/drydock/tasks.go` (`auditResult`/`auditMeta` decode, `summarize()` outcome derivation, subscription-aware `costCell`, the tail-read that tolerates a partial last line) into `internal/audit`. Both `cmd/drydock/tasks.go` and `internal/webui` import it. The move is behavior-preserving: `tasks.go` keeps its table formatting; the existing `tasks_test.go` fixtures are re-pointed at the new package and must still pass. The History API returns, per task: `id, repo, instruction, outcome (derived), cost (string — a dollar figure OR "subscription"), duration, started/mtime`.
 
 ### 4. SPA — `internal/webui/assets/`
 
-Vanilla HTML/CSS/JS, embedded. On first load it reads `?t=<token>` from the URL, stores it (cookie + in-memory), and sends it on every `/api/*` call; it then strips the token from the visible URL. Four views:
+Vanilla HTML/CSS/JS, embedded. On load it reads `#t=<token>` from the fragment, stores it in memory, and `history.replaceState`s to strip it **before** any `/api/*` or asset fetch; the served HTML carries `Referrer-Policy: no-referrer`. Views:
 
-- **Board** (default): polls `/api/tasks` + `/api/pending` every ~1.5s. One row/card per task: id, repo, truncated instruction, stage badge, elapsed. Tasks at a gate float to the top:
-  - stage `awaiting_egress` → **egress card** listing `egress_extra` domains, with Approve / Deny.
-  - stage `awaiting_approval` → **diff card** with a "Review" action opening the Review view, plus inline Approve / Deny.
-  - any live task → **Kill** action.
-- **Review**: fetches `/api/diff/{id}`, renders it with unified-diff coloring; tails `/api/logs/{id}` for the live trace; Approve / Deny buttons (POST to the proxy).
-- **Submit**: a form mirroring `drydock submit` — repo as an **https/git/ssh URL** (brokerd rejects local paths: `gitURLRef` at `broker.go`), instruction, agent + model picker, optional budget/flags — POSTs `/api/submit`, then routes to the Board to watch it.
-- **History**: `/api/history` table — past tasks with outcome, cost, duration; clicking one opens its diff + logs (read-only).
+- **Board** (default): polls `/api/tasks` + `/api/pending` (interval ~1.5s normally, ~0.5s while any task is at a gate). One card per task: id (click-to-copy), repo, truncated instruction, stage badge, elapsed. Tasks at a gate sort to the top; **a card's position is pinned for ~2s after hover/focus** so a re-sort can't move a click target.
+  - `awaiting_egress` → **egress card**: shows the requested hosts (from `/api/widen/{id}`) **plus the instruction + repo** so the operator can judge *why*; Approve / Deny.
+  - `awaiting_approval` → **diff card**: "Review" opens the Review view; shows **spent-so-far + budget** (parsed from `/api/logs/{id}`'s latest cost line and the per-task budget). Approve is enabled only after the diff has been opened; Deny requires confirm.
+  - any live task → **Kill** (with confirm/undo).
+  - Empty board → a real empty state linking to Submit/History (not a blank page).
+  - A task that reaches terminal state stays briefly in a **"just finished"** zone with its outcome+cost before aging into History — completed tasks never silently vanish.
+- **Review**: `/api/diff/{id}` rendered with unified-diff coloring, per-file headers/collapse, and a `+X/−Y` summary; tails `/api/logs/{id}`; shows spent/budget; Approve / Deny (Deny confirmed).
+- **Submit**: form mirroring `drydock submit` — repo as **https/git/ssh URL** (no local paths), instruction, agent + model picker (agents from the provider registry), optional budget/egress. POSTs `/api/submit`; on success highlights/scrolls to the new task on the Board; on error renders brokerd's message verbatim (bad repo, queue-full 503, bad egress). **Re-run:** a History row can prefill this form.
+- **History**: `/api/history` table — outcome, cost (or "subscription"), duration; a row opens its diff + logs read-only and can prefill Submit.
 
-## Submit decoupling (critical)
+## Submit flow (with the detach change)
 
-brokerd derives each task's context from the inbound `POST /tasks` request (`broker.go:379`: `context.WithCancel(r.Context())`) — **a client disconnect cancels the task.** Therefore the UI server, NOT the browser, must own that long-lived connection:
+1. SPA `POST /api/submit` with the token header. UI server **rejects `auto_approve:true`** (the UI's purpose is a human at the gate) and forwards the rest.
+2. UI server dials brokerd `POST /tasks` with a background context and **no short timeout**.
+3. **If `resp.StatusCode >= 400`** (bad repo / slot full / bad egress): copy brokerd's status+body straight back to the SPA as the submit error and return — **no stream read, no goroutine** (finding B1).
+4. On `200`: read the **first NDJSON line**; expect `{"event":"accepted","task_id":...}` → return `{"id":...}` to the SPA. If the first post-accept event is instead `{"event":"error",...}` (e.g. mint failure), surface that. Because the task no longer depends on the connection, the UI server then **closes the brokerd connection** — the task runs independently and is observed via polling + audit.
 
-1. On `POST /api/submit`, the UI server dials brokerd `POST /tasks` using a request built with **`context.Background()`** (never the inbound browser request's context) and **no client timeout** (the admin client's 5s timeout would abort mid-task).
-2. brokerd streams a newline-delimited event log; the **first line is `{"event":"accepted","task_id":...}`**. The UI server reads that one line, then returns `{"id": "<task_id>"}` to the SPA immediately.
-3. The UI server keeps draining the stream to completion **in a background goroutine** (keeping the connection — and thus the task — alive regardless of what the browser does), discarding the body (state is observed via polling + the audit log). The goroutine ends when brokerd closes the stream.
-4. The SPA never holds the task open; it gets the id and switches to Board polling. Closing the tab does not kill the task.
+## Real-time & actions
 
-This is the single trickiest part of the implementation; the tests must assert that aborting the inbound `/api/submit` request does not cancel the brokerd task.
-
-## Data flow
-
-1. Operator runs `drydock ui --open`. Browser opens the token URL; SPA captures + stores the token.
-2. **Submit:** SPA `POST /api/submit` → UI server starts the task on a background context, returns the task id (see "Submit decoupling"); the task appears in `/admin/tasks` immediately and the SPA watches it via Board polling.
-3. **Monitor:** Board polling reflects stage transitions.
-4. **Gate (egress):** task enters `awaiting_egress`; egress card shows domains; Approve → `POST /api/approve/{id}` → brokerd `signal`.
-5. **Gate (push):** task enters `awaiting_approval`; diff card / Review view shows `<id>.diff`; Approve/Deny likewise.
-6. **Completion:** task leaves the live set; its outcome + cost are read from the audit terminal record in History.
+Polling (no SSE). On any action POST (approve/deny/kill), the SPA **optimistically updates** the card, disables the button until the response, and **immediately re-polls** rather than waiting the interval — so the gate feels instant without a streaming endpoint. macOS notifications (already built) remain the out-of-band "you're needed" nudge; the notification path should deep-link to the Review view (stable URL — see Security/token lifetime).
 
 ## Error handling
 
-- brokerd socket unreachable (brokerd not running): `/api/*` proxy routes return a clear `502` with a body the SPA renders as "brokerd not running — run `drydock start`". The Board shows this state rather than erroring blankly.
-- Missing diff/log file: `404`; the SPA shows "no diff yet / no logs yet".
-- Bad token / bad Host / bad id: `403` (token/host) / `400` (id), with terse bodies. The SPA, on a `403`, shows "open the UI from the `drydock ui` link" rather than silently failing.
-- Submit validation errors from brokerd (e.g. unknown agent, 400) are surfaced verbatim in the Submit view.
-- Port already in use: `drydock ui` exits non-zero with a clear message naming the port.
+- brokerd socket unreachable: proxy routes return `502` with a body the SPA renders as "brokerd not running — run `drydock start`" (reuse `brokerdDown`).
+- Missing diff/log/widen file: `404` → "no diff/logs yet".
+- `403` (token/host/origin) → "open the UI from the `drydock ui` link"; `400` (bad id) terse.
+- Approve/deny race: brokerd returns `409` "already signaled" (still pending) or `404` (gate resolved/gone) — the SPA treats both as "already resolved, refreshing," not a hard error.
+- Submit `503` (queue full) rendered as "concurrency limit reached — wait or raise the cap," not a crash.
+- Torn reads: log/history parsing ignores an unterminated trailing line (the diff is written atomically once at the gate).
 
 ## Security model
 
-- **Loopback bind only** (`127.0.0.1`) — never `0.0.0.0`. No network exposure.
-- **Token-gated** `/api/*` (default on) — guards against other local users / processes and CSRF-style cross-site calls (a random bearer the attacker can't read).
-- **Host-header check** — blocks DNS-rebinding (a malicious page resolving a hostname to 127.0.0.1 still fails the Host allowlist).
-- **No brokerd change** — the socket-only default and its file permissions remain the real boundary; the UI server is an explicit, ephemeral, same-user front door to it.
-- **Path-safety** on all `{id}` → filesystem reads.
-- The UI inherits brokerd's existing gates (push/egress still require explicit approval); the UI never auto-approves.
+- **Loopback bind only** (`127.0.0.1`), never `0.0.0.0`.
+- **Header-bearer token** for state-changing routes (cookie tokens are CSRF-forgeable, I3); token delivered via URL **fragment** + `Referrer-Policy: no-referrer` to avoid Referer/log leakage (I4); residual argv visibility of `--open` documented, not hidden.
+- **`--no-token`** kept for trusted single-user machines but gated behind a loud startup warning; it is NOT "localhost is safe" — the Host check is only a rebinding mitigation, not an auth boundary (I5).
+- **`/api/submit` refuses `auto_approve`** so the UI can't be used (via CSRF or a local process) to push without a human (I6).
+- **Path-safety:** anchored `^[0-9a-f]{32}$`, prefix re-check, `O_NOFOLLOW`/symlink rejection (I7). Embedded assets served from the embed FS (no traversal).
+- **Token lifetime / re-entry:** the token persists for the life of the `drydock ui` process; running `drydock ui` while one is already up re-prints the live URL (so the notification deep-link and bookmarks resolve). brokerd's socket-only default and file modes remain the real boundary; the UI server is an explicit same-user front door.
+
+## Discoverability
+
+- `drydock init` final hints mention `drydock ui` (`init.go` "next:" block).
+- `drydock status` prints the UI URL if a `drydock ui` server is running, else a hint to start one.
+- `drydock pending`, when a task is at a gate, suggests `drydock ui` for browser diff review.
 
 ## Testing
 
-- **UI server (`internal/webui`)** via `httptest`:
-  - token enforcement: `/api/tasks` → 403 without token, 200 with; `--no-token` mode skips the gate.
-  - Host-header rebinding: a non-loopback `Host` → 403.
-  - `{id}` path-safety: `/api/diff/..%2f..` and similar → 400, no file read outside the audit root.
-  - proxy correctness: stand up a fake brokerd on a temp unix socket; assert `/api/tasks`, `/api/approve/{id}`, `/api/submit` round-trip method+path+body+status.
-  - **submit decoupling:** with a fake brokerd that emits `accepted` then blocks, assert `/api/submit` returns the task id promptly AND that aborting the inbound `/api/submit` request does not close the brokerd-side connection (the background goroutine keeps it open); assert the submit proxy uses a no-timeout, background-context request.
-  - audit reads: temp audit dir with crafted `.diff` / `.jsonl`; assert `/api/diff`, `/api/logs`, `/api/history` return expected content and the history parse matches `drydock tasks`.
-  - brokerd-down: socket path absent → `/api/tasks` returns 502 with the documented body.
-- **`internal/audit`** parsing: table-driven over success/error/interrupted/missing-result fixtures (mirrors existing `tasks.go` cases; move them with the code).
-- **`cmd/drydock/ui.go`**: token minting (non-empty, hex), URL formatting, `--no-token` omits the token; binding/serving is covered by the `internal/webui` handler tests (the command is a thin wrapper).
-- **SPA**: kept logic-light; no JS test harness (consistent with the no-build ethos). Any non-trivial pure helper (e.g. diff-line classification) is small enough to keep correct by inspection; if it grows, it moves server-side where it can be tested in Go.
+- **`internal/webui`** via `httptest` + a fake brokerd on a temp unix socket:
+  - token: state-changing POST with no `Authorization` header → 403; **cookie-only token → 403** (CSRF shape); valid header → 200; `--no-token` skips.
+  - Host/Origin: non-loopback `Host` → 403; cross-origin `Origin` → 403.
+  - `{id}`: `..%2f..`, non-hex, wrong length → 400; planted symlink `<hex>.diff` not followed.
+  - proxy round-trips: `/api/tasks`, `/api/approve/{id}` method+path+body+status.
+  - **submit happy path:** fake brokerd emits `accepted` → `/api/submit` returns the id and closes; task not tied to the request.
+  - **submit error path (the critical one, B1):** fake brokerd returns `400`/`503` pre-accept → the body+status reach the SPA, **no goroutine spawned, no slot leaked**; and a `200` whose first event is `error` is surfaced.
+  - **`auto_approve` rejected (I6):** `/api/submit` with `auto_approve:true` → rejected before reaching brokerd.
+  - audit reads: temp audit dir with crafted `.diff`/`.jsonl`/`.widen.json` → `/api/diff`, `/api/logs`, `/api/widen`, `/api/history` return expected content; history parse matches `drydock tasks` for success/error/interrupted/subscription/still-running.
+  - brokerd-down → `/api/tasks` 502 with the documented body.
+- **brokerd detach:** client disconnects mid-task → task still reaches a terminal `result`; `/admin/kill` still cancels; existing disconnect-cancellation tests updated.
+- **`internal/audit`:** table-driven over success/error/interrupted/missing-result/subscription fixtures (moved from `tasks_test.go`); `drydock tasks` output unchanged.
+- **`cmd/drydock/ui.go`:** token minting (hex, non-empty), fragment-URL formatting, `--no-token` omits token + warns; binding covered by the handler tests.
+- **SPA:** kept logic-light; no JS test harness. Any non-trivial pure helper (diff-line classification) stays small enough to verify by inspection, or moves server-side for Go testing.
 
-## Out of scope (fast-follows / explicitly deferred)
+## Out of scope (deferred)
 
-- Live per-task cost on the board (needs a brokerd change to expose lease spend).
-- SSE/WebSocket streaming (polling is sufficient for single-user).
-- Syntax-highlighted diffs (would require vendoring a JS highlighter).
-- Auth beyond the loopback token (multi-user / remote access).
+- Live per-task cost **on the board** (needs a brokerd lease-spend endpoint). Cost at the gate + in History is in scope.
+- SSE/WebSocket streaming (polling + optimistic update is enough for single-user).
+- Syntax-highlighted diffs (would require vendoring a JS highlighter; unified-diff coloring + per-file structure ships instead).
+- Auth beyond the loopback token (multi-user / remote).
 - Serving the UI from brokerd's TCP listener.
