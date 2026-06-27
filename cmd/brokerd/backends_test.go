@@ -150,3 +150,66 @@ func TestBuildBackends_Empty(t *testing.T) {
 
 // Compile-time check: StaticKey implements gateway.Credential.
 var _ gateway.Credential = gateway.StaticKey("")
+
+// ocPrice is a convenience alias for the anonymous price struct used in
+// config.OpenAICompat.Prices so test literals stay readable.
+type ocPrice = struct {
+	Input  float64 `yaml:"input"`
+	Output float64 `yaml:"output"`
+}
+
+func TestOpenAICompatWarnings(t *testing.T) {
+	mk := func(base, basePath string, prices map[string]ocPrice) config.Config {
+		var c config.Config
+		c.OpenAICompat.BaseURL = base
+		c.OpenAICompat.BasePath = basePath
+		c.OpenAICompat.APIKeyEnv = "OC_KEY"
+		c.OpenAICompat.Model = "m"
+		c.OpenAICompat.Prices = prices
+		return c
+	}
+	price := func(in, out float64) ocPrice {
+		return ocPrice{in, out}
+	}
+
+	t.Run("disabled lane yields no warnings", func(t *testing.T) {
+		var c config.Config // BaseURL == ""
+		if w := openAICompatWarnings(c.OpenAICompat); len(w) != 0 {
+			t.Errorf("want none, got %v", w)
+		}
+	})
+	t.Run("clean config yields no warnings", func(t *testing.T) {
+		c := mk("https://up.test", "/api/v1", map[string]ocPrice{"default": price(1, 2)})
+		if w := openAICompatWarnings(c.OpenAICompat); len(w) != 0 {
+			t.Errorf("want none, got %v", w)
+		}
+	})
+	t.Run("negative price warns", func(t *testing.T) {
+		c := mk("https://up.test", "", map[string]ocPrice{"gpt-x": price(-1, 2), "default": price(1, 2)})
+		w := strings.Join(openAICompatWarnings(c.OpenAICompat), "\n")
+		if !strings.Contains(w, "gpt-x") || !strings.Contains(w, "negative") {
+			t.Errorf("expected negative-price warning naming gpt-x; got %q", w)
+		}
+	})
+	t.Run("partial prices without default warns", func(t *testing.T) {
+		c := mk("https://up.test", "", map[string]ocPrice{"gpt-x": price(1, 2)})
+		w := strings.Join(openAICompatWarnings(c.OpenAICompat), "\n")
+		if !strings.Contains(w, "default") {
+			t.Errorf("expected no-default warning; got %q", w)
+		}
+	})
+	t.Run("base_url with path warns", func(t *testing.T) {
+		c := mk("https://openrouter.ai/api/v1", "", nil)
+		w := strings.Join(openAICompatWarnings(c.OpenAICompat), "\n")
+		if !strings.Contains(w, "/api/v1") || !strings.Contains(w, "base_path") {
+			t.Errorf("expected base_url-path warning; got %q", w)
+		}
+	})
+	t.Run("base_path without leading slash warns", func(t *testing.T) {
+		c := mk("https://up.test", "v1", nil)
+		w := strings.Join(openAICompatWarnings(c.OpenAICompat), "\n")
+		if !strings.Contains(w, "base_path") || !strings.Contains(w, "/") {
+			t.Errorf("expected base_path slash warning; got %q", w)
+		}
+	})
+}
