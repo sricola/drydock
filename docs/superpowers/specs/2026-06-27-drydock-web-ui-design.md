@@ -90,7 +90,7 @@ Cross-cutting middleware on `/api/*`:
 
 ### 3. Shared audit parsing — `internal/audit/`
 
-Extract the **on-disk** parse + derivation from `cmd/drydock/tasks.go` (`auditResult`/`auditMeta` decode, `summarize()` outcome derivation, subscription-aware `costCell`, the tail-read that tolerates a partial last line) into `internal/audit`. Both `cmd/drydock/tasks.go` and `internal/webui` import it. The move is behavior-preserving: `tasks.go` keeps its table formatting; the existing `tasks_test.go` fixtures are re-pointed at the new package and must still pass. The History API returns, per task: `id, repo, instruction, outcome (derived), cost (string — a dollar figure OR "subscription"), duration, started/mtime`.
+Extract the **on-disk** parse + derivation from `cmd/drydock/tasks.go` (`auditResult`/`auditMeta` decode, `summarize()` outcome derivation, subscription-aware `costCell`, the tail-read that tolerates a partial last line) into `internal/audit`. Both `cmd/drydock/tasks.go` and `internal/webui` import it. The move is behavior-preserving: `tasks.go` keeps its table formatting; the existing `tasks_test.go` fixtures are re-pointed at the new package and must still pass. **Repo and instruction are NOT persisted to the audit file** (the on-disk meta line is only `{"type":"drydock_meta","subscription","sensitive"}`; repo/instruction live only in the streamed `accepted` event / live `TaskState`). So the History API returns exactly what `drydock tasks` shows, per task: `id, outcome (derived), cost (string — a dollar figure OR "subscription"), duration, age/mtime`.
 
 ### 4. SPA — `internal/webui/assets/`
 
@@ -103,8 +103,8 @@ Vanilla HTML/CSS/JS, embedded. On load it reads `#t=<token>` from the fragment, 
   - Empty board → a real empty state linking to Submit/History (not a blank page).
   - A task that reaches terminal state stays briefly in a **"just finished"** zone with its outcome+cost before aging into History — completed tasks never silently vanish.
 - **Review**: `/api/diff/{id}` rendered with unified-diff coloring, per-file headers/collapse, and a `+X/−Y` summary; tails `/api/logs/{id}`; shows spent/budget; Approve / Deny (Deny confirmed).
-- **Submit**: form mirroring `drydock submit` — repo as **https/git/ssh URL** (no local paths), instruction, agent + model picker (agents from the provider registry), optional budget/egress. POSTs `/api/submit`; on success highlights/scrolls to the new task on the Board; on error renders brokerd's message verbatim (bad repo, queue-full 503, bad egress). **Re-run:** a History row can prefill this form.
-- **History**: `/api/history` table — outcome, cost (or "subscription"), duration; a row opens its diff + logs read-only and can prefill Submit.
+- **Submit**: form mirroring `drydock submit` — repo as **https/git/ssh URL** (no local paths), instruction, agent + model picker (agents from the provider registry), optional budget/egress. POSTs `/api/submit`; on success highlights/scrolls to the new task on the Board; on error renders brokerd's message verbatim (bad repo, queue-full 503, bad egress).
+- **History**: `/api/history` table matching `drydock tasks` — id, age, duration, cost (or "subscription"), outcome; a row opens its diff + logs read-only. (Repo/instruction aren't persisted, so they aren't shown for completed tasks, and re-run-prefill is out of scope — it would need a brokerd change to persist them.)
 
 ## Submit flow (with the detach change)
 
