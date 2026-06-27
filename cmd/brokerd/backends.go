@@ -15,16 +15,7 @@ import (
 // when the lane is disabled (oc.BaseURL == ""). The function is pure and never
 // panics — URL parse errors are silently skipped (config.validate() already
 // rejects unparseable URLs).
-func openAICompatWarnings(oc struct {
-	BaseURL   string `yaml:"base_url"`
-	BasePath  string `yaml:"base_path"`
-	APIKeyEnv string `yaml:"api_key_env"`
-	Model     string `yaml:"model"`
-	Prices    map[string]struct {
-		Input  float64 `yaml:"input"`
-		Output float64 `yaml:"output"`
-	} `yaml:"prices"`
-}) []string {
+func openAICompatWarnings(oc config.OpenAICompatConfig) []string {
 	if oc.BaseURL == "" {
 		return nil
 	}
