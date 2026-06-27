@@ -75,8 +75,15 @@ async function renderBoard() {
     tasks = await apiJSON("/api/tasks");
     setConn("brokerd connected", true);
   } catch (e) {
-    setConn("brokerd not running — run `drydock start`", false);
-    app().replaceChildren(el("p", { class: "empty", text: "brokerd is not running. Start it with `drydock start`, then this board will populate." }));
+    // A 401/403 means the access token was rejected (it changed since this tab
+    // opened) — NOT that brokerd is down. Don't conflate the two.
+    if (e.message === "401" || e.message === "403") {
+      setConn("unauthorized — reopen the `drydock ui` link", false);
+      app().replaceChildren(el("p", { class: "empty", text: "Access token rejected. Reopen the URL printed by `drydock ui` — the token may have changed since this tab was opened." }));
+    } else {
+      setConn("brokerd not running — run `drydock start`", false);
+      app().replaceChildren(el("p", { class: "empty", text: "brokerd is not running. Start it with `drydock start`, then this board will populate." }));
+    }
     scheduleBoardPoll(tasks);
     return;
   }
