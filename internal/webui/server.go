@@ -39,10 +39,16 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/deny/{id}", s.signalHandler("deny"))
 	api("POST /api/kill/{id}", s.signalHandler("kill"))
 	api("POST /api/submit", stub)
-	api("GET /api/diff/{id}", stub)
-	api("GET /api/logs/{id}", stub)
-	api("GET /api/widen/{id}", stub)
-	api("GET /api/history", stub)
+	api("GET /api/diff/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.serveAuditFile(w, r, ".diff", "text/plain; charset=utf-8")
+	})
+	api("GET /api/logs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.serveAuditFile(w, r, ".jsonl", "text/plain; charset=utf-8")
+	})
+	api("GET /api/widen/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.serveAuditFile(w, r, ".widen.json", "application/json")
+	})
+	api("GET /api/history", s.handleHistory)
 	return mux
 }
 
