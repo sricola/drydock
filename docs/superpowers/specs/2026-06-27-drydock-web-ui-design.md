@@ -36,8 +36,8 @@ The architectural fact: **the UI server runs on the same machine as brokerd and 
 
 Today brokerd derives each task's context from the inbound request: `taskCtx, cancel := context.WithCancel(r.Context())` (`broker.go:379`), so a client disconnect cancels the task. Change it to a **broker-owned context** independent of the request:
 
-- `taskCtx, cancel := context.WithCancel(b.rootCtx)` (a broker-root context, so `CancelAll` on shutdown still reaches it) — NOT `r.Context()`.
-- The stored `cancel` (via `registerTask`) continues to back `/admin/kill` unchanged. **Kill is now the only way to cancel a task**; client disconnect does not.
+- `taskCtx, cancel := context.WithCancel(context.Background())` — NOT `r.Context()`. (No new broker field is needed: `CancelAll` already iterates the per-task **stored cancels** `b.cancellers` (`broker.go:337-347`), so brokerd-shutdown cancellation is unaffected by the parent-context change.)
+- The stored `cancel` (via `registerTask`) continues to back `/admin/kill` unchanged. **Kill (or brokerd shutdown) is now the only way to cancel a task**; client disconnect does not.
 - Event streaming to the response writer becomes **best-effort**: if the client has gone, writes fail — the handler must swallow the write error and let the task run to completion (the `<id>.jsonl` audit log remains the source of truth). The run loop must not key off `r.Context()` for liveness.
 - **Behavior change (document in release notes + `drydock submit` help):** Ctrl-C'ing `drydock submit`, or closing the browser/UI, no longer cancels the task — it keeps running; reattach via `drydock tasks`/`logs` or the UI Board, cancel via `drydock kill`/the UI. This is consistent with the existing crash-recovery reconciler (a task already survives a brokerd restart's reconciliation).
 - **Tests:** disconnect the client mid-task → task still reaches a terminal `result` in the audit log; `/admin/kill` still cancels; `CancelAll` (shutdown) still cancels. Update any existing test that asserts disconnect-cancellation.
