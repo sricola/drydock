@@ -1,8 +1,8 @@
 # Authentication
 
-drydock runs two agents — **Claude Code** (Anthropic) and **OpenAI Codex**
-(OpenAI) — and each works with either a vendor **API key** or your existing
-**subscription**. Whichever you choose, the real credential stays host-side and
+drydock runs **Claude Code** (Anthropic) and **OpenAI Codex** (OpenAI), each
+with a vendor **API key** or your existing **subscription** — and **`opencode`**
+for any OpenAI-compatible endpoint (see [Bring your own model](models.html)). Whichever you choose, the real credential stays host-side and
 **never enters the VM**: the sandbox only ever sees a per-task token.
 
 Pick the agent per task with `--agent claude|codex`, or set `default_agent` in
@@ -17,6 +17,12 @@ Pick the agent per task with `--agent claude|codex`, or set `default_agent` in
 
 An API key is the quickest path. The subscription path lets you reuse a plan you
 already pay for (macOS only; needs the vendor's `claude` / `codex` CLI).
+
+### Bring your own model
+
+`opencode` reaches any OpenAI-compatible endpoint (Gemini, OpenRouter, a local
+server). It's API-key-only — no OAuth — and configured by the `openai_compat`
+block, not the matrix above. See [Bring your own model](models.html).
 
 ## API key
 

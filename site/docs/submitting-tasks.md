@@ -34,6 +34,10 @@ drydock approve <id>       # … or: drydock deny <id>
 `drydock review` is the fast path; `approve` / `deny` are the explicit controls.
 A denied task keeps its diff in the audit dir but never pushes.
 
+If the branch pushes but the PR can't be opened (e.g. `gh` isn't authenticated),
+drydock reports it as **pushed** with a hint to open the PR manually — it never
+loses your work to a failed PR step.
+
 ## Operator surface
 
 ```bash
@@ -48,8 +52,10 @@ drydock redteam            # run live containment attacks on your own sandbox (n
 ## Variations
 
 ```bash
-# Use OpenAI Codex instead of Claude Code for this task
+# Pick the agent for this task: claude (default) | codex | opencode
 drydock submit --repo … --instruction "…" --agent codex
+# opencode runs any OpenAI-compatible model — see Bring your own model
+drydock submit --repo … --instruction "…" --agent opencode
 
 # Long prompt from a file
 drydock submit --repo … --instruction-file ./task.md
@@ -62,6 +68,9 @@ drydock submit --repo … --instruction "…" --model claude-sonnet-4-6
 
 # Skip the approval gate (trusted batch run; see the threat model first)
 drydock submit --repo … --instruction "…" --auto-approve
+
+# Open the resulting PR/MR as a draft
+drydock submit --repo … --instruction "…" --draft
 
 # Request additional egress (host:port[,port], repeatable; human-gated)
 drydock submit --repo … --instruction "…" \
