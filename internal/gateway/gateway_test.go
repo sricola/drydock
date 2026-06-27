@@ -305,6 +305,24 @@ func TestDirector_CodexRemapPreservesQuery(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatVendor(t *testing.T) {
+	v := OpenAICompatVendor("openai-compat", "https://example.test", "/v1beta/openai", nil)
+	if v.Name != "openai-compat" || v.BaseURL != "https://example.test" || v.BasePath != "/v1beta/openai" {
+		t.Fatalf("vendor fields = %+v", v)
+	}
+	// Inject must set bearer + clear X-Api-Key (identical to OpenAI).
+	r, _ := http.NewRequest("POST", "http://gw/v1/chat/completions", nil)
+	r.Header.Set("X-Api-Key", "should-be-removed")
+	v.Inject(r, "real-key")
+	if r.Header.Get("Authorization") != "Bearer real-key" || r.Header.Get("X-Api-Key") != "" {
+		t.Errorf("inject headers = %v", r.Header)
+	}
+	// Usage parser is the OpenAI one (non-nil).
+	if v.ParseUsage == nil {
+		t.Error("ParseUsage must be set (parseOpenAIUsage)")
+	}
+}
+
 func TestStripJSONObjectFields(t *testing.T) {
 	// Top-level field removed; every other field preserved verbatim. (This is the
 	// real fix: the OAuth endpoint 400s on context_management Claude Code sends.)

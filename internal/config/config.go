@@ -14,6 +14,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,6 +61,22 @@ type Config struct {
 
 	// TaskMaxRequests is a per-task request cap (0 = unlimited).
 	TaskMaxRequests int `yaml:"task_max_requests"`
+
+	// OpenAICompat configures a bring-your-own OpenAI-compatible upstream
+	// (Gemini's /v1beta/openai, OpenRouter, local). Empty BaseURL = disabled.
+	// The real key is read from the host env var named by APIKeyEnv — never
+	// stored here. Prices (USD per 1M tokens) enable USD metering; omit to fall
+	// back to the task_max_requests cap.
+	OpenAICompat struct {
+		BaseURL   string `yaml:"base_url"`
+		BasePath  string `yaml:"base_path"`
+		APIKeyEnv string `yaml:"api_key_env"`
+		Model     string `yaml:"model"`
+		Prices    map[string]struct {
+			Input  float64 `yaml:"input"`
+			Output float64 `yaml:"output"`
+		} `yaml:"prices"`
+	} `yaml:"openai_compat"`
 
 	// Where state lives
 	StageRoot   string `yaml:"stage_root"`
@@ -300,6 +317,19 @@ func (c *Config) validate() error {
 	if c.OpenAIAuth != "api_key" && c.OpenAIAuth != "subscription" {
 		return fmt.Errorf("config: openai_auth must be api_key or subscription, got %q", c.OpenAIAuth)
 	}
+	if oc := c.OpenAICompat; oc.BaseURL != "" {
+		if oc.APIKeyEnv == "" || oc.Model == "" {
+			return fmt.Errorf("config: openai_compat.base_url set but api_key_env and model are required")
+		}
+		u, err := url.Parse(oc.BaseURL)
+		if err != nil || u.Host == "" {
+			return fmt.Errorf("config: openai_compat.base_url must be an absolute URL, got %q", oc.BaseURL)
+		}
+		isLocal := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"
+		if u.Scheme != "https" && !(u.Scheme == "http" && isLocal) {
+			return fmt.Errorf("config: openai_compat.base_url must be https (http allowed only for localhost), got %q", oc.BaseURL)
+		}
+	}
 	return nil
 }
 
@@ -328,6 +358,13 @@ default_agent:          claude         # sandbox CLI: claude | codex. Per-task -
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
 task_max_requests:      0              # per-task request cap (0 = unlimited)
+
+# --- Bring-your-own OpenAI-compatible model (optional; e.g. Gemini, OpenRouter, local) ---
+openai_compat:
+  base_url:    ""        # e.g. https://generativelanguage.googleapis.com  (empty = disabled)
+  base_path:   ""        # e.g. /v1beta/openai
+  api_key_env: ""        # name of the host env var holding the real key (never the key itself)
+  model:       ""        # model id passed to the agent, e.g. gemini-2.5-pro
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

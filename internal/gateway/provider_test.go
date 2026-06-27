@@ -54,6 +54,61 @@ func TestGrantEnvVars(t *testing.T) {
 	}
 }
 
+// TestOpenAICompat_RealKeyNeverInGrantEnv is the host-side A1 red-team
+// assertion for the openai-compat lane: the real upstream API key must never
+// appear in the grant's env vars — only the gateway base URL and a minted
+// tok_-style lease token may reach the VM.
+func TestOpenAICompat_RealKeyNeverInGrantEnv(t *testing.T) {
+	const realKey = "sk-REAL-SENTINEL"
+	const gwBaseURL = "http://192.168.64.1:8088"
+
+	vendor := OpenAICompatVendor("openai-compat", "https://openrouter.ai", "/api/v0", nil)
+	g, err := New(Backend{Vendor: vendor, Cred: StaticKey(realKey)})
+	if err != nil {
+		t.Fatalf("gateway.New: %v", err)
+	}
+
+	p := &Provider{
+		GW:         g,
+		Vendor:     "openai-compat",
+		BaseURL:    gwBaseURL,
+		BaseURLEnv: "OPENAI_BASE_URL",
+		TokenEnv:   "OPENAI_API_KEY",
+		TTL:        time.Minute,
+	}
+
+	grant, err := p.Mint(2.5)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	defer grant.Revoke() //nolint:errcheck
+
+	env := grant.EnvVars()
+
+	// Gateway base URL must be present so the VM can reach the proxy.
+	if !slices.Contains(env, "OPENAI_BASE_URL="+gwBaseURL) {
+		t.Errorf("grant env missing gateway base URL; got %v", env)
+	}
+
+	// A minted lease token (tok_-prefix) must be present.
+	hasToken := false
+	for _, e := range env {
+		if strings.HasPrefix(e, "OPENAI_API_KEY=tok_") {
+			hasToken = true
+		}
+	}
+	if !hasToken {
+		t.Errorf("grant env missing tok_-style token; got %v", env)
+	}
+
+	// The real upstream key must NEVER appear anywhere in the grant env.
+	for _, e := range env {
+		if strings.Contains(e, realKey) {
+			t.Errorf("grant env leaks real upstream key %q: %v", realKey, env)
+		}
+	}
+}
+
 func TestProvider_MintGuardEmptyEnvNames(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("REAL")})
 

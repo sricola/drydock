@@ -21,6 +21,10 @@ type Provider struct {
 	TokenEnv     string                                       // env injected into the VM: token var
 	APIVendor    func() gateway.Vendor                        // API-key-mode vendor (static)
 	OAuthBackend func(cfgDir string) (gateway.Backend, error) // subscription mode; nil if unsupported
+	// ConfigBuilt marks a provider whose backend brokerd builds from config
+	// (operator-parameterized endpoint), rather than the static APIVendor /
+	// OAuthBackend hooks. Such a provider has nil APIVendor and OAuthBackend.
+	ConfigBuilt bool
 }
 
 var Registry = []Provider{
@@ -51,6 +55,13 @@ var Registry = []Provider{
 			}
 			return gateway.Backend{Vendor: gateway.OpenAIOAuthVendor(store.AccountID()), Cred: gateway.NewOAuthCredCodex(snap, store)}, nil
 		},
+	},
+	{
+		Agent: "opencode", Vendor: "openai-compat", Label: "OpenAI-compatible (bring your own)",
+		APIKeyEnv: "", AuthCmd: "",
+		BaseURLEnv: "OPENAI_BASE_URL", TokenEnv: "OPENAI_API_KEY",
+		ConfigBuilt: true,
+		// APIVendor / OAuthBackend intentionally nil — brokerd builds from config.
 	},
 }
 

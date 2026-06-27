@@ -223,6 +223,25 @@ func main() {
 	// Credential gateway: real key host-only; the VM gets a bearer token.
 	var backends []gateway.Backend
 	for _, p := range provider.Registry {
+		if p.ConfigBuilt {
+			oc := cfg.OpenAICompat
+			if oc.BaseURL == "" {
+				continue // provider not configured; skip
+			}
+			key := resolveAPIKey(oc.APIKeyEnv, fileKeys)
+			if key == "" {
+				die("openai_compat.base_url is set but its api_key_env (" + oc.APIKeyEnv + ") is empty")
+			}
+			prices := map[string]gateway.Price{}
+			for m, pr := range oc.Prices {
+				prices[m] = gateway.Price{InputPer1M: pr.Input, OutputPer1M: pr.Output}
+			}
+			backends = append(backends, gateway.Backend{
+				Vendor: gateway.OpenAICompatVendor(p.Vendor, oc.BaseURL, oc.BasePath, prices),
+				Cred:   gateway.StaticKey(key),
+			})
+			continue
+		}
 		switch cfg.AuthMode(p.Vendor) {
 		case "subscription":
 			b, err := p.OAuthBackend(config.Dir())
@@ -256,6 +275,9 @@ func main() {
 	for _, b := range backends {
 		budget := cfg.TaskBudgetUSD
 		if cfg.AuthMode(b.Vendor.Name) == "subscription" {
+			budget = math.MaxFloat64
+		}
+		if b.Vendor.Name == "openai-compat" && len(cfg.OpenAICompat.Prices) == 0 {
 			budget = math.MaxFloat64
 		}
 		p, _ := provider.ByVendor(b.Vendor.Name)

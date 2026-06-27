@@ -17,6 +17,12 @@ import (
 // is sufficient.
 func agentCredentialAvailable(cfg *config.Config) bool {
 	for _, p := range provider.Registry {
+		if p.ConfigBuilt {
+			if cfg.OpenAICompat.BaseURL != "" && os.Getenv(cfg.OpenAICompat.APIKeyEnv) != "" {
+				return true
+			}
+			continue
+		}
 		if cfg.AuthMode(p.Vendor) == "subscription" || os.Getenv(p.APIKeyEnv) != "" {
 			return true
 		}
@@ -40,9 +46,15 @@ func runStart() {
 	if !agentCredentialAvailable(cfg) {
 		fmt.Fprintln(os.Stderr, "drydock start: no usable agent credential.")
 		for _, p := range provider.Registry {
+			if p.ConfigBuilt {
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "  export %s=...\t\t# %s (API key)\n", p.APIKeyEnv, p.Label)
 		}
 		for _, p := range provider.Registry {
+			if p.ConfigBuilt {
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "  or set %s_auth: subscription\t# run `%s` first\n", p.Vendor, p.AuthCmd)
 		}
 		os.Exit(1)

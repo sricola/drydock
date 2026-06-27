@@ -90,6 +90,20 @@ func OpenAIVendor() Vendor {
 	}
 }
 
+// OpenAICompatVendor is a config-driven OpenAI-compatible upstream (Gemini's
+// /v1beta/openai endpoint, OpenRouter, a local server, …). It reuses OpenAI's
+// bearer auth and usage parsing; the operator supplies the base URL, an
+// optional base path joined onto the inbound path, and optional prices for USD
+// metering. Constructed by brokerd from config (not a static registry row).
+func OpenAICompatVendor(name, baseURL, basePath string, prices map[string]Price) Vendor {
+	v := OpenAIVendor()
+	v.Name = name
+	v.BaseURL = baseURL
+	v.BasePath = basePath
+	v.Prices = prices
+	return v
+}
+
 // OpenAIOAuthVendor is the ChatGPT-subscription Codex backend: Bearer OAuth +
 // chatgpt-account-id, served at chatgpt.com/backend-api/codex. accountID is
 // captured once at bootstrap and is constant across token refreshes. The VM's
