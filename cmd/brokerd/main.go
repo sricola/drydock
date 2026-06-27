@@ -223,7 +223,10 @@ func main() {
 	// Credential gateway: real key host-only; the VM gets a bearer token.
 	backends, err := buildBackends(cfg, fileKeys)
 	if err != nil {
-		die("gateway backends", "err", err)
+		// Pass the error text as the message so the boot log line is the
+		// specific condition (e.g. "openai_compat.base_url is set but its
+		// api_key_env (FOO) is empty"), identical to the pre-refactor die calls.
+		die(err.Error())
 	}
 	gw, err := gateway.New(backends...)
 	if err != nil {
