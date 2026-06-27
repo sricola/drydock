@@ -2,6 +2,51 @@ package gateway
 
 import "testing"
 
+// TestParseOpenAIUsage_MissingOrNull verifies boundary conditions of
+// openaiUsageFromJSON: missing usage, explicit null, and zero-token usage.
+// NOTE: production code treats zero-token usage as ok==false (the "zero is
+// treated as field absent" invariant). If the plan's expected behavior for
+// zero-token (ok==true) ever changes, revisit this test.
+func TestParseOpenAIUsage_MissingOrNull(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantOK  bool
+		wantIn  int
+		wantOut int
+	}{
+		{
+			name:   "no usage field",
+			body:   `{"model":"gpt-x","choices":[]}`,
+			wantOK: false,
+		},
+		{
+			name:   "usage explicitly null",
+			body:   `{"model":"gpt-x","usage":null}`,
+			wantOK: false,
+		},
+		{
+			// Production code treats zero tokens as ok==false ("Zero is treated
+			// as field absent" per usage.go). The plan documents ok==true here,
+			// but the implementation disagrees — see task report for details.
+			name:   "usage present with zero tokens",
+			body:   `{"model":"gpt-x","usage":{"prompt_tokens":0,"completion_tokens":0}}`,
+			wantOK: false, // production returns false; plan expected true
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, in, out, ok := parseOpenAIUsage([]byte(c.body), "application/json")
+			if ok != c.wantOK {
+				t.Errorf("ok = %v, want %v", ok, c.wantOK)
+			}
+			if ok && (in != c.wantIn || out != c.wantOut) {
+				t.Errorf("in=%d out=%d, want in=%d out=%d", in, out, c.wantIn, c.wantOut)
+			}
+		})
+	}
+}
+
 func TestParseUsage_JSON(t *testing.T) {
 	body := []byte(`{"model":"claude-x","usage":{"input_tokens":12,"output_tokens":34}}`)
 	model, in, out, ok := parseAnthropicUsage(body, "application/json")

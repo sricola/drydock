@@ -30,6 +30,42 @@ the VM.
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | Excess POSTs to `/tasks` get HTTP 503 |
 | `notifications` | `DRYDOCK_NO_NOTIFY=1` (off) | `true` | macOS notifications on pending approval |
 
+## Bring your own model
+
+`opencode` reaches any OpenAI-compatible endpoint via the `openai_compat` block
+in `config.yaml` (or the `drydock setup` wizard). There is **no env override** —
+configure it in the file. The real key is referenced by env-var **name**, never
+stored here.
+
+| Key (under `openai_compat:`) | Meaning |
+|---|---|
+| `base_url` | Endpoint host, e.g. `https://generativelanguage.googleapis.com` (empty = disabled; https, or http only for `localhost`) |
+| `base_path` | Path joined onto the request, e.g. `/v1beta/openai` |
+| `api_key_env` | **Name** of the host env var holding the real key (e.g. `GEMINI_API_KEY`) |
+| `model` | Model id passed to the agent, e.g. `gemini-2.5-pro` |
+| `prices` | Optional `{<model>: {input, output}}` USD per 1M tokens — enables USD budgeting; omit to rely on `task_max_requests` |
+
+**Streaming and USD metering.** Streaming `chat/completions` responses commonly
+omit token usage unless the client explicitly requests it (via
+`stream_options.include_usage`). drydock does not inject that option, so a
+*streamed* task against a priced `openai_compat` endpoint may be metered at $0
+against `task_budget_usd` — the response completes but carries no usage to bill.
+The usage-independent backstop is `task_max_requests`: it counts every API
+round-trip regardless of whether the upstream reports usage. Set
+`task_max_requests` for any `openai_compat` lane where streaming is expected.
+
+**`prices` and the `"default"` row.** The `prices` map is keyed by model id. If
+a task uses a model not explicitly listed and no `"default"` row exists, drydock
+has no price to apply and meters that call at $0 — the USD budget will never
+trip for that model. Add a `"default"` entry to catch unlisted models:
+
+```yaml
+openai_compat:
+  prices:
+    my-model: {input: 1.00, output: 3.00}
+    default:  {input: 1.00, output: 3.00}  # fallback for any unlisted model
+```
+
 ## Advanced: runtime, paths, listener
 
 | Field (`config.yaml`) | Env override | Default | Meaning |

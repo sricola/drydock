@@ -682,6 +682,90 @@ func TestModelEnv(t *testing.T) {
 	}
 }
 
+// TestDefaultModelNotLeakedToOpenAICompat verifies that the operator
+// DefaultModel (a claude-oriented value) is never forwarded into the
+// openai-compat lane. The blanking happens at broker.go:506-509; the
+// observable effect is that modelEnv gets an empty defaultModel and therefore
+// emits no DRYDOCK_MODEL entry for the operator default — only an explicit
+// --model or the openai_compat.model config can resolve the model in that lane.
+func TestDefaultModelNotLeakedToOpenAICompat(t *testing.T) {
+	const operatorDefault = "claude-sonnet-4-6" // a claude-oriented default
+
+	cases := []struct {
+		name         string
+		taskModel    string
+		ocModel      string
+		vendor       string
+		wantContains string // non-empty means the env entry must appear
+		wantAbsent   string // non-empty means this string must NOT appear in env
+	}{
+		{
+			// openai-compat: no per-task model, no oc model → operator default
+			// must be blanked; env is empty.
+			name:       "compat/no explicit model: operator default absent",
+			taskModel:  "",
+			ocModel:    "",
+			vendor:     "openai-compat",
+			wantAbsent: operatorDefault,
+		},
+		{
+			// openai-compat: openai_compat.model configured → that value wins;
+			// operator default must still not appear.
+			name:         "compat/oc model configured: oc model present, operator default absent",
+			taskModel:    "",
+			ocModel:      "gemini-2.5-pro",
+			vendor:       "openai-compat",
+			wantContains: "DRYDOCK_MODEL=gemini-2.5-pro",
+			wantAbsent:   operatorDefault,
+		},
+		{
+			// openai-compat: explicit --model overrides everything; operator
+			// default still must not appear.
+			name:         "compat/explicit --model: task model present, operator default absent",
+			taskModel:    "gpt-4o",
+			ocModel:      "gemini-2.5-pro",
+			vendor:       "openai-compat",
+			wantContains: "DRYDOCK_MODEL=gpt-4o",
+			wantAbsent:   operatorDefault,
+		},
+		{
+			// non-compat: no per-task model → operator default IS propagated.
+			name:         "non-compat/no task model: operator default forwarded",
+			taskModel:    "",
+			ocModel:      "",
+			vendor:       "anthropic",
+			wantContains: "DRYDOCK_MODEL=" + operatorDefault,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Exercise the real production guard, not a copy of it: if
+			// effectiveDefaultModel stops blanking the compat lane, this test
+			// fails.
+			defaultModel := effectiveDefaultModel(operatorDefault, tc.vendor)
+			env := modelEnv(taskModelFor(tc.taskModel, tc.ocModel, tc.vendor), defaultModel)
+			joined := strings.Join(env, "\n")
+
+			if tc.wantContains != "" {
+				found := false
+				for _, e := range env {
+					if e == tc.wantContains {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("env %v does not contain %q", env, tc.wantContains)
+				}
+			}
+			if tc.wantAbsent != "" && strings.Contains(joined, tc.wantAbsent) {
+				t.Errorf("env %v must not contain %q (operator default leaked into %s lane)", env, tc.wantAbsent, tc.vendor)
+			}
+		})
+	}
+}
+
 // TestGatePush_AutoDeniesOnApprovalTimeout verifies that a task waiting at the
 // approval gate is auto-denied (and its slot freed) once ApprovalTimeout passes,
 // instead of blocking forever.

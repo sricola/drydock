@@ -279,6 +279,11 @@ func main() {
 				"default_agent", cfg.DefaultAgent, "set", pReg.APIKeyEnv)
 		}
 	}
+	// Warn about openai_compat budget/routing misconfigurations — logged at
+	// boot so operators see them before a task runs (warn, don't reject).
+	for _, msg := range openAICompatWarnings(cfg.OpenAICompat) {
+		slog.Warn(msg, "config", "openai_compat")
+	}
 
 	b := &broker.Broker{
 		Cfg:               egCfg,
