@@ -373,10 +373,13 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	taskID := newID()
 
-	// One context per task. Cancelling it propagates to the container run
-	// (via exec.CommandContext below) AND to gatePush's select. /admin/kill
-	// invokes the stored cancel; client disconnect also propagates here.
-	taskCtx, cancel := context.WithCancel(r.Context())
+	// One context per task, deliberately rooted at Background (NOT r.Context()):
+	// a submit client disconnecting — CLI ^C, or the web UI closing the
+	// connection right after the `accepted` line — must NOT cancel the task.
+	// Cancellation is driven only by /admin/kill (the stored cancel) and
+	// brokerd shutdown (CancelAll iterates the stored cancels). Event writes to
+	// the response become best-effort (emit already ignores write errors).
+	taskCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	b.registerTask(taskID, t.RepoRef, t.Instruction, cancel)
 	defer b.unregisterTask(taskID)
