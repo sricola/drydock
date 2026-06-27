@@ -70,9 +70,11 @@ The H1 becomes the sidebar label automatically.
 
 ### 4. `site/docs/configuration.md`
 Config table gains rows (matching the existing table format):
-- `approval_timeout` — `DRYDOCK_APPROVAL_TIMEOUT` — `0s` — auto-deny a task
-  waiting at an approval gate after this long; `0` waits forever.
-- `default_agent` row updated to `claude | codex | opencode`.
+- `approval_timeout` — env override **`—` (none; `config.yaml` only — verified:
+  there is no `DRYDOCK_APPROVAL_TIMEOUT`)** — `0s` — auto-deny a task waiting at
+  an approval gate after this long; `0` waits forever.
+- `default_agent` row updated to `claude | codex | opencode` (env override
+  `DRYDOCK_DEFAULT_AGENT` is real, keep it).
 - An `openai_compat` block reference: a compact sub-table or rows for
   `base_url` / `base_path` / `api_key_env` / `model` / `prices`, with a pointer
   to `models.html`. (Nested keys — present them clearly; the table's one-key-
@@ -88,7 +90,14 @@ Config table gains rows (matching the existing table format):
 - Top pitch + feature bullets: mention bring-your-own-model (Gemini/OpenRouter/
   local), `--draft`, `approval_timeout`. Light touch — don't restructure.
 
-### 7. `site/index.html` (landing)
+### 7. `cmd/drydock/submit.go` — CLI help consistency (one line)
+The `--agent` flag help currently reads `claude | codex` but `opencode` works
+end-to-end (the broker validates it via the provider registry). Update the
+usage string to `claude | codex | opencode` so the CLI help matches the docs.
+This is the only code change in this effort; it keeps `drydock submit -h` and
+the docs from contradicting each other.
+
+### 8. `site/index.html` (landing)
 - Capabilities/feature copy: add bring-your-own-model alongside the
   claude/codex framing. Keep the existing layout/structure; copy only.
 - If a `docs/models.html` link is added, the `models.md` source must exist (it
