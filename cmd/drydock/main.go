@@ -18,6 +18,7 @@ Setup:
   drydock doctor                 smoke-test the sandbox setup (no API spend)
   drydock redteam                run live containment attacks on your sandbox (no API spend)
   drydock auth claude|codex      bootstrap Claude or ChatGPT/Codex subscription credentials for brokerd
+  drydock ui [--port N] [--open] [--no-token]   local web UI (loopback, token-gated)
 
 Tasks:
   drydock submit <flags>         POST a new task; blocks until approval/completion
@@ -71,6 +72,7 @@ var subHelp = map[string]string{
 	"redteam": "run live containment attacks (A1 key-exfil, A2 egress, A7 ephemerality) against your sandbox. No API spend.",
 	"auth":    "auth claude|codex [--status] — bootstrap Claude or ChatGPT/Codex subscription creds into ~/.drydock/.",
 	"submit":  "POST a new task; see `drydock submit -h` for the full flag list.",
+	"ui":      "--port N --open --no-token — run the loopback web UI (token-gated, 127.0.0.1 only).",
 	"version": "print drydock version.",
 }
 
@@ -148,6 +150,8 @@ func main() {
 	case "auth":
 		consumeHelpFlag(cmd, subArgs)
 		runAuth(subArgs)
+	case "ui":
+		runUI(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("drydock", version)
 	case "-h", "--help", "help":
