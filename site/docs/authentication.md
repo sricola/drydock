@@ -2,11 +2,13 @@
 
 drydock runs **Claude Code** (Anthropic) and **OpenAI Codex** (OpenAI), each
 with a vendor **API key** or your existing **subscription** — and **`opencode`**
-for any OpenAI-compatible endpoint (see [Bring your own model](models.html)). Whichever you choose, the real credential stays host-side and
-**never enters the VM**: the sandbox only ever sees a per-task token.
+for any OpenAI-compatible endpoint (see [Bring your own model](models.html)).
 
-Pick the agent per task with `--agent claude|codex`, or set `default_agent` in
-`config.yaml`.
+Whichever you choose, the real credential stays host-side and **never enters the
+VM**: the sandbox only ever sees a per-task token.
+
+Pick the agent per task with `--agent claude|codex|opencode`, or set
+`default_agent` in `config.yaml`.
 
 ## The matrix
 
