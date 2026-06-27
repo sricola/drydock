@@ -1,6 +1,20 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"testing"
+
+	"drydock/internal/config"
+)
+
+// makeTestCfg returns a config with the given per-vendor auth modes and no
+// other magic; env vars set by the caller override the key checks.
+func makeTestCfg(anthropicAuth, openaiAuth string) *config.Config {
+	c := config.Defaults()
+	c.AnthropicAuth = anthropicAuth
+	c.OpenAIAuth = openaiAuth
+	return c
+}
 
 func TestAgentCredentialAvailable(t *testing.T) {
 	cases := []struct {
@@ -19,8 +33,19 @@ func TestAgentCredentialAvailable(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := agentCredentialAvailable(c.anthropicAuth, c.openaiAuth, c.anthropicKey, c.openaiKey); got != c.want {
-				t.Errorf("agentCredentialAvailable(%q,%q,%q,%q) = %v, want %v",
+			if c.anthropicKey != "" {
+				t.Setenv("ANTHROPIC_API_KEY", c.anthropicKey)
+			} else {
+				os.Unsetenv("ANTHROPIC_API_KEY")
+			}
+			if c.openaiKey != "" {
+				t.Setenv("OPENAI_API_KEY", c.openaiKey)
+			} else {
+				os.Unsetenv("OPENAI_API_KEY")
+			}
+			cfg := makeTestCfg(c.anthropicAuth, c.openaiAuth)
+			if got := agentCredentialAvailable(cfg); got != c.want {
+				t.Errorf("agentCredentialAvailable(%q,%q,ANTHROPIC_API_KEY=%q,OPENAI_API_KEY=%q) = %v, want %v",
 					c.anthropicAuth, c.openaiAuth, c.anthropicKey, c.openaiKey, got, c.want)
 			}
 		})
@@ -38,8 +63,20 @@ func TestAgentCredentialAvailable_Codex(t *testing.T) {
 		{"api_key", "api_key", "", "sk-o", true},  // openai key
 	}
 	for _, c := range cases {
-		if got := agentCredentialAvailable(c.anthropicAuth, c.openaiAuth, c.aKey, c.oKey); got != c.want {
-			t.Errorf("agentCredentialAvailable(%q,%q,%q,%q)=%v want %v", c.anthropicAuth, c.openaiAuth, c.aKey, c.oKey, got, c.want)
+		if c.aKey != "" {
+			t.Setenv("ANTHROPIC_API_KEY", c.aKey)
+		} else {
+			os.Unsetenv("ANTHROPIC_API_KEY")
+		}
+		if c.oKey != "" {
+			t.Setenv("OPENAI_API_KEY", c.oKey)
+		} else {
+			os.Unsetenv("OPENAI_API_KEY")
+		}
+		cfg := makeTestCfg(c.anthropicAuth, c.openaiAuth)
+		if got := agentCredentialAvailable(cfg); got != c.want {
+			t.Errorf("agentCredentialAvailable(%q,%q,ANTHROPIC=%q,OPENAI=%q)=%v want %v",
+				c.anthropicAuth, c.openaiAuth, c.aKey, c.oKey, got, c.want)
 		}
 	}
 }

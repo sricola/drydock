@@ -9,6 +9,7 @@ import (
 
 	"drydock/internal/config"
 	"drydock/internal/gateway"
+	"drydock/internal/provider"
 )
 
 // runRedteam runs drydock's live containment attacks against the operator's
@@ -62,7 +63,9 @@ func redteamA1(img string) bool {
 		step(label, false, "gateway init: "+err.Error())
 		return false
 	}
-	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", Budget: 1, TTL: time.Minute}
+	pv, _ := provider.ByVendor("anthropic")
+	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088",
+		BaseURLEnv: pv.BaseURLEnv, TokenEnv: pv.TokenEnv, Budget: 1, TTL: time.Minute}
 	grant, err := prov.Mint(1)
 	if err != nil {
 		step(label, false, "mint: "+err.Error())

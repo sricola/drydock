@@ -221,7 +221,8 @@ func TestGrant_SpentReflectsMeteredCost(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	p := &Provider{GW: g, Vendor: "anthropic", BaseURL: "http://192.168.64.1:8088", TTL: time.Minute, Budget: 100}
+	p := &Provider{GW: g, Vendor: "anthropic", BaseURL: "http://192.168.64.1:8088",
+		BaseURLEnv: "ANTHROPIC_BASE_URL", TokenEnv: "ANTHROPIC_AUTH_TOKEN", TTL: time.Minute, Budget: 100}
 
 	grant, err := p.Mint(100)
 	if err != nil {

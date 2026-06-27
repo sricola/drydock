@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"drydock/internal/provider"
 	"gopkg.in/yaml.v3"
 )
 
@@ -290,8 +291,8 @@ func (c *Config) validate() error {
 	if c.ApprovalTimeout != 0 && c.ApprovalTimeout < time.Second {
 		return fmt.Errorf("config: approval_timeout must be 0 (wait indefinitely) or ≥ 1s")
 	}
-	if c.DefaultAgent != "claude" && c.DefaultAgent != "codex" {
-		return fmt.Errorf("config: default_agent must be claude or codex, got %q", c.DefaultAgent)
+	if _, ok := provider.ByAgent(c.DefaultAgent); !ok {
+		return fmt.Errorf("config: default_agent must be one of %v, got %q", provider.Agents(), c.DefaultAgent)
 	}
 	if c.AnthropicAuth != "api_key" && c.AnthropicAuth != "subscription" {
 		return fmt.Errorf("config: anthropic_auth must be api_key or subscription, got %q", c.AnthropicAuth)
@@ -351,6 +352,19 @@ func WriteSeed(path string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(SeedTemplate), 0o644)
+}
+
+// AuthMode returns the configured auth mode ("api_key" | "subscription") for a
+// gateway vendor, reading the typed per-vendor field. Unknown vendor -> "".
+func (c *Config) AuthMode(vendor string) string {
+	switch vendor {
+	case "anthropic":
+		return c.AnthropicAuth
+	case "openai":
+		return c.OpenAIAuth
+	default:
+		return ""
+	}
 }
 
 // String emits a one-line summary suitable for boot logs (no secrets).

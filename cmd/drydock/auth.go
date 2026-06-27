@@ -13,6 +13,7 @@ import (
 
 	"drydock/internal/config"
 	"drydock/internal/gateway"
+	"drydock/internal/provider"
 )
 
 // keychainService is the service name Claude Code uses in the macOS Keychain.
@@ -50,7 +51,11 @@ func parseClaudeCreds(raw []byte) (gateway.CredSnapshot, error) {
 func runAuth(args []string) {
 	consumeHelpFlag("auth", args)
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "drydock auth — usage: drydock auth claude|codex [--status]")
+		fmt.Fprintf(os.Stderr, "drydock auth — usage: drydock auth %s [--status]\n", strings.Join(provider.Agents(), "|"))
+		os.Exit(2)
+	}
+	if _, ok := provider.ByAgent(args[0]); !ok {
+		fmt.Fprintf(os.Stderr, "drydock auth: unknown subcommand %q (want one of %v)\n", args[0], provider.Agents())
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -59,7 +64,7 @@ func runAuth(args []string) {
 	case "codex":
 		runAuthCodex(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "drydock auth: unknown subcommand %q\n", args[0])
+		fmt.Fprintf(os.Stderr, "drydock auth: %q has no auth implementation wired (provider in registry but not in auth dispatch)\n", args[0])
 		os.Exit(2)
 	}
 }
