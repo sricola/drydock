@@ -125,6 +125,13 @@ func runDoctor() {
 		}
 	}
 
+	// openai-compat: optional bring-your-own endpoint — report key source but
+	// never mark doctor failed (the provider is opt-in).
+	if cfg.OpenAICompat.BaseURL != "" {
+		src := apiKeySource(cfg.OpenAICompat.APIKeyEnv, fileKeys)
+		step("openai-compat ("+cfg.OpenAICompat.Model+")", src != "none", "key from "+src)
+	}
+
 	// PR tooling: report which platform CLI (if any) is authenticated. Not a
 	// failure — push-only is a legitimate mode, and doctor is repo-agnostic.
 	anyAuthed := false
