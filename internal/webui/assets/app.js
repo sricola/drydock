@@ -198,25 +198,51 @@ function ensureBoardContainer(){
   return boardEl;
 }
 
+// failureReason fetches the task's logs and extracts the first line of the
+// terminal result's error text (the agent's own error message). Returns null
+// when unavailable or when the task did not error.
+async function failureReason(id){
+  try {
+    const text = await (await api("GET", "/api/logs/" + id)).text();
+    let reason = null;
+    for (const line of text.split("\n")){
+      if (!line.includes('"result"')) continue;
+      let o; try { o = JSON.parse(line); } catch { continue; }
+      if (o.type === "result" && (o.is_error || o.subtype === "error") && typeof o.result === "string")
+        reason = o.result.split("\n")[0]; // first line of the agent's error text
+    }
+    return reason;
+  } catch { return null; }
+}
+
 // renderFinishedStrip ports the "Just finished" strip: the most recent completed
 // tasks, so a task leaving the live set doesn't silently vanish. Best-effort.
 async function renderFinishedStrip(container, liveIDs){
   // clear any previously-appended strip (reconcile owns the cards, not this)
   for (const old of container.querySelectorAll(".recent")) old.remove();
-  try {
-    const hist = await apiJSON("/api/history");
-    const recent = hist.filter(h => !liveIDs.has(h.id)).slice(0, 5);
-    if (!recent.length) return;
-    const strip = el("div", { class: "recent" }, el("div", { class: "recent-title", text: "Just finished" }));
-    for (const it of recent) {
-      strip.append(el("div", { class: "recent-row hrow", onclick: () => openReview(it.id, true) },
-        el("code", { text: shortId(it.id) }),
-        el("span", { class: "age", text: fmtAgeFromUnix(it.mtime_unix) }),
-        el("span", { text: it.cost }),
-        el("span", { class: "outcome", text: it.outcome })));
+  let hist; try { hist = await apiJSON("/api/history"); } catch { return; }
+  const recent = hist.filter(h => !liveIDs.has(h.id)).slice(0, 5);
+  if (!recent.length) return;
+  const strip = el("div", { class: "recent" }, el("div", { class: "recent-title", text: "Just finished" }));
+  for (const it of recent){
+    const isErr = it.outcome.startsWith("error");
+    const icon = isErr
+      ? el("span", { style: "color:var(--red)", text: "✕" })
+      : el("span", { style: "color:var(--green)", text: "✓" });
+    const row = el("div", { class: "recent-row", onclick: () => openReview(it.id, true) },
+      icon,
+      el("code", { class: "tid", text: shortId(it.id) }),
+      el("span", { class: "age", text: fmtAgeFromUnix(it.mtime_unix) }));
+    if (isErr){
+      const r = el("span", { class: "reason", text: "error" });
+      row.append(r);
+      failureReason(it.id).then(reason => { if (reason) r.textContent = "error · " + reason; });
+    } else {
+      row.append(el("span", { class: "outcome", text: it.outcome }));
     }
-    container.append(strip);
-  } catch (_) { /* history is best-effort on the board */ }
+    strip.append(row);
+  }
+  container.append(strip);
 }
 
 let progressTick = 0;
