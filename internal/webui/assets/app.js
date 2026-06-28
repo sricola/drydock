@@ -456,22 +456,31 @@ function singleGate(){
   const gs = [...cardMap.keys()].map(id => boardTasks.get(id)).filter(t => t && (t.stage === "awaiting_approval" || t.stage === "awaiting_egress"));
   return gs.length === 1 ? gs[0] : null;
 }
+// Two-press confirm for keyboard deny — first d arms, second d (within 3 s) fires.
+let denyArmed = false, denyTimer = null;
+function disarmDeny(){ denyArmed = false; if (denyTimer) clearTimeout(denyTimer); denyTimer = null; }
+function armOrDeny(doDeny){
+  if (denyArmed){ disarmDeny(); doDeny(); return; }
+  denyArmed = true;
+  toast("press d again to deny · Esc cancels");
+  denyTimer = setTimeout(disarmDeny, 3000);
+}
 addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter"){ if (currentView === "submit") document.querySelector(".submit-form")?.requestSubmit(); return; }
   if (isTyping(e)) return;                       // never hijack typing
   if (overlayState){
-    if (e.key === "Escape") closeOverlay();
-    else if (e.key === "a" && overlayState.approve) overlayState.approve();
-    else if (e.key === "d" && overlayState.deny) overlayState.deny();
+    if (e.key === "Escape"){ disarmDeny(); closeOverlay(); }
+    else if (e.key === "a" && overlayState.approve){ disarmDeny(); overlayState.approve(); }
+    else if (e.key === "d" && overlayState.deny) armOrDeny(() => overlayState.deny());
     return;
   }
   if (e.key === "?"){ toast("R review · A approve · D deny · Esc close · ⌘↵ submit"); return; }
   if (currentView === "board"){
     const g = singleGate();
     if (g){
-      if (e.key === "r") openReview(g.id);
-      else if (e.key === "a") act("approve", g.id);
-      else if (e.key === "d") act("deny", g.id);
+      if (e.key === "r"){ disarmDeny(); openReview(g.id); }
+      else if (e.key === "a"){ disarmDeny(); act("approve", g.id); }
+      else if (e.key === "d") armOrDeny(() => act("deny", g.id));
     }
   }
 });
