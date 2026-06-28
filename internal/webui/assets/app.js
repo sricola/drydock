@@ -79,54 +79,168 @@ function setConn(text, ok) {
 // =================== BOARD ===================
 let pollTimer = null;
 
-async function renderBoard() {
-  let tasks;
-  try {
-    tasks = await apiJSON("/api/tasks");
-    setConn("brokerd connected", true);
-  } catch (e) {
-    // A 401/403 means the access token was rejected (it changed since this tab
-    // opened) — NOT that brokerd is down. Don't conflate the two.
-    if (e.message === "401" || e.message === "403") {
-      setConn("unauthorized — reopen the `drydock ui` link", false);
-      app().replaceChildren(el("p", { class: "empty", text: "Access token rejected. Reopen the URL printed by `drydock ui` — the token may have changed since this tab was opened." }));
-    } else {
-      setConn("brokerd not running — run `drydock start`", false);
-      app().replaceChildren(el("p", { class: "empty", text: "brokerd is not running. Start it with `drydock start`, then this board will populate." }));
+// --- live running progress: parse the agent's stream-json to count turns,
+// track cost, and label the current action. claude emits assistant/tool_use
+// events; other agents only yield total_cost_usd (so turns/action stay 0/null).
+function base(p){ return p ? p.split("/").pop() : ""; }
+function actionLabel(tu){
+  const f = (tu.input && (tu.input.file_path || tu.input.path)) || "";
+  switch (tu.name) {
+    case "Edit": case "Write": case "MultiEdit": return "editing " + base(f);
+    case "Read": return "reading " + base(f);
+    case "Bash": return "running a command";
+    case "Grep": case "Glob": return "searching";
+    default: return (tu.name || "working").toLowerCase();
+  }
+}
+function parseProgress(jsonl){
+  let turns = 0, cost = null, action = null;
+  for (const line of jsonl.split("\n")){
+    if (!line) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.type === "assistant"){
+      turns++;
+      const tu = (o.message && o.message.content || []).find(c => c.type === "tool_use");
+      if (tu) action = actionLabel(tu);
     }
-    scheduleBoardPoll(tasks);
-    return;
+    if (typeof o.total_cost_usd === "number") cost = o.total_cost_usd;
   }
-  // gate tasks always float to top.
-  const gateRank = s => (s === "awaiting_approval" || s === "awaiting_egress" ? 0 : 1);
+  return { turns, cost, action };
+}
+
+// --- reconcile-by-id: build each card once, then mutate only changed nodes in
+// place across polls (no replaceChildren on the board, so no flicker, no scroll
+// jump, no lost focus). cardMap holds the persistent DOM + a content signature.
+const cardMap = new Map(); // id -> { el, sig, ageEl, liveEl, _prog }
+let boardTasks = new Map(); // id -> task (kept fresh each poll; a later keyboard layer needs it)
+function gateRank(s){ return (s === "awaiting_approval" || s === "awaiting_egress") ? 0 : 1; }
+function progressSig(t){ const p = t._prog || {}; return [t.stage, p.turns, p.cost, p.action].join("|"); }
+
+function reconcile(container, tasks){
   tasks.sort((a, b) => gateRank(a.stage) - gateRank(b.stage));
-
-  const container = el("div", { class: "board" });
-  if (tasks.length === 0) {
-    container.append(el("p", { class: "empty" }, "No tasks running. ", el("a", { href: "#", onclick: () => show("submit") }, "Submit one"), " or see ", el("a", { href: "#", onclick: () => show("history") }, "History"), "."));
+  const seen = new Set();
+  let prev = null;
+  for (const t of tasks){
+    seen.add(t.id);
+    let rec = cardMap.get(t.id);
+    if (!rec){ rec = buildCard(t); cardMap.set(t.id, rec); }
+    else if (rec.sig !== progressSig(t)){ updateCard(rec, t); rec.sig = progressSig(t); }
+    rec._prog = t._prog; // remember last known progress for the non-fetch poll
+    const want = prev ? prev.nextSibling : container.firstChild;
+    if (rec.el !== want) container.insertBefore(rec.el, want);
+    prev = rec.el;
   }
-  for (const t of tasks) container.append(taskCard(t));
+  for (const [id, rec] of cardMap){ if (!seen.has(id)){ rec.el.remove(); cardMap.delete(id); } }
+}
 
-  // "Just finished" strip: show the most recent completed tasks so a task that
-  // leaves the live set (its most interesting moment) doesn't silently vanish.
-  const liveIDs = new Set(tasks.map(t => t.id));
+function buildCard(t){
+  const ageEl = el("span", { class: "age", text: elapsed(t.started_at) });
+  const head = el("div", { class: "card-head" },
+    el("code", { class: "tid", title: "click to copy", onclick: () => copyId(t.id), text: shortId(t.id) }),
+    stageBadge(t.stage), ageEl);
+  const liveEl = el("div", { class: "live" });
+  const el_ = el("div", { class: "card", "data-tid": t.id, "data-started": t.started_at }, head,
+    el("div", { class: "repo", text: shortRepo(t.repo) }),
+    el("div", { class: "instr", text: t.instruction || "" }), liveEl);
+  const rec = { el: el_, sig: progressSig(t), ageEl, liveEl };
+  paintBody(rec, t);
+  return rec;
+}
+function updateCard(rec, t){
+  // swap the badge (stage may have changed) and repaint the body/gate/live
+  const head = rec.el.querySelector(".card-head");
+  head.replaceChild(stageBadge(t.stage), head.children[1]);
+  paintBody(rec, t);
+}
+// paintBody fills the live line, the bar, gate, and Kill action for the current stage.
+function paintBody(rec, t){
+  rec.liveEl.replaceChildren();
+  // remove any existing gate/actions appended after liveEl
+  let n = rec.liveEl.nextSibling; while (n){ const x = n; n = n.nextSibling; x.remove(); }
+  rec.el.classList.toggle("gate-host", t.stage.startsWith("awaiting"));
+  if (t.stage === "running"){
+    const p = t._prog || {};
+    const parts = ["claude", p.turns ? p.turns + " turns" : "", p.cost != null ? "$" + p.cost.toFixed(2) : "", p.action || ""].filter(Boolean);
+    rec.liveEl.textContent = parts.join(" · ");
+    rec.el.append(el("div", { class: "bar" }, el("i", {})));
+  } else { rec.liveEl.textContent = ""; }
+  if (t.stage === "awaiting_egress") rec.el.append(egressGate(t));
+  else if (t.stage === "awaiting_approval") rec.el.append(pushGate(t));
+  if (["running","pushing","awaiting_egress","awaiting_approval"].includes(t.stage))
+    rec.el.append(el("div", { class: "actions" }, dangerButton("Kill", () => act("kill", t.id))));
+}
+
+// boardEl is the persistent .board node; null until first mount / after an error
+// unmounts it (so ensureBoardContainer rebuilds it on recovery).
+let boardEl = null;
+
+// boardError keeps the 401/403 (token rejected) vs brokerd-down split (commit 0ee639f).
+function boardError(e){
+  // A 401/403 means the access token was rejected (it changed since this tab
+  // opened) — NOT that brokerd is down. Don't conflate the two.
+  if (e.message === "401" || e.message === "403") {
+    setConn("unauthorized — reopen the `drydock ui` link", false);
+    app().replaceChildren(el("p", { class: "empty", text: "Access token rejected. Reopen the URL printed by `drydock ui` — the token may have changed since this tab was opened." }));
+  } else {
+    setConn("brokerd not running — run `drydock start`", false);
+    app().replaceChildren(el("p", { class: "empty", text: "brokerd is not running. Start it with `drydock start`, then this board will populate." }));
+  }
+  boardEl = null; // the board node was just unmounted; rebuild it on recovery
+  cardMap.clear();
+  scheduleBoardPoll();
+}
+
+// ensureBoardContainer returns the persistent .board node, mounting it only when
+// entering the board view (not every poll) so reconcile can mutate it in place.
+function ensureBoardContainer(){
+  if (!boardEl) boardEl = el("div", { class: "board" });
+  if (boardEl.parentNode !== app()) app().replaceChildren(boardEl);
+  return boardEl;
+}
+
+// renderFinishedStrip ports the "Just finished" strip: the most recent completed
+// tasks, so a task leaving the live set doesn't silently vanish. Best-effort.
+async function renderFinishedStrip(container, liveIDs){
+  // clear any previously-appended strip (reconcile owns the cards, not this)
+  for (const old of container.querySelectorAll(".recent")) old.remove();
   try {
     const hist = await apiJSON("/api/history");
     const recent = hist.filter(h => !liveIDs.has(h.id)).slice(0, 5);
-    if (recent.length) {
-      const strip = el("div", { class: "recent" }, el("div", { class: "recent-title", text: "Just finished" }));
-      for (const it of recent) {
-        strip.append(el("div", { class: "recent-row hrow", onclick: () => openReview(it.id, true) },
-          el("code", { text: it.id.slice(0, 12) }),
-          el("span", { class: "age", text: fmtAgeFromUnix(it.mtime_unix) }),
-          el("span", { text: it.cost }),
-          el("span", { class: "outcome", text: it.outcome })));
-      }
-      container.append(strip);
+    if (!recent.length) return;
+    const strip = el("div", { class: "recent" }, el("div", { class: "recent-title", text: "Just finished" }));
+    for (const it of recent) {
+      strip.append(el("div", { class: "recent-row hrow", onclick: () => openReview(it.id, true) },
+        el("code", { text: shortId(it.id) }),
+        el("span", { class: "age", text: fmtAgeFromUnix(it.mtime_unix) }),
+        el("span", { text: it.cost }),
+        el("span", { class: "outcome", text: it.outcome })));
     }
+    container.append(strip);
   } catch (_) { /* history is best-effort on the board */ }
+}
 
-  app().replaceChildren(container);
+let progressTick = 0;
+async function renderBoard(){
+  let tasks;
+  try { tasks = await apiJSON("/api/tasks"); setConn("brokerd connected", true); }
+  catch (e){ return boardError(e); }   // boardError keeps the 401/403 vs down split (commit 0ee639f)
+  // keep boardTasks fresh for a later keyboard layer (harmless now)
+  boardTasks = new Map(tasks.map(t => [t.id, t]));
+  // throttle live-progress fetches to every other poll; reuse last known on the off-poll
+  const doProg = (progressTick++ % 2) === 0;
+  if (doProg) await Promise.all(tasks.filter(t => t.stage === "running").map(async t => {
+    try { t._prog = parseProgress(await (await api("GET","/api/logs/"+t.id)).text()); } catch {}
+  }));
+  else for (const t of tasks){ const r = cardMap.get(t.id); if (r && r._prog) t._prog = r._prog; }
+  const container = ensureBoardContainer();   // creates the .board div once; preserves it across polls
+  reconcile(container, tasks);
+  // empty prompt: shown only when no live cards remain (managed after reconcile
+  // so a some->zero transition clears the stale cards first).
+  for (const old of container.querySelectorAll(":scope > .empty")) old.remove();
+  if (tasks.length === 0) {
+    container.prepend(el("p", { class: "empty" }, "No tasks running. ", el("a", { href: "#", onclick: () => show("submit") }, "Submit one"), " or see ", el("a", { href: "#", onclick: () => show("history") }, "History"), "."));
+  }
+  await renderFinishedStrip(container, new Set(tasks.map(t => t.id)));
   if (newTaskID) {
     const c = container.querySelector(`[data-tid="${newTaskID}"]`);
     if (c) { c.classList.add("justnew"); c.scrollIntoView({ block: "center" }); }
@@ -142,27 +256,18 @@ function scheduleBoardPoll(tasks) {
   pollTimer = setTimeout(renderBoard, atGate ? 500 : 1500); // faster while a gate is open
 }
 
+// 1s elapsed ticker: bump each card's age without a poll, so the board feels live.
+setInterval(() => {
+  if (currentView !== "board") return;
+  for (const rec of cardMap.values()){
+    const s = rec.el.getAttribute("data-started");
+    if (s) rec.ageEl.textContent = elapsed(s);
+  }
+}, 1000);
+
 function stageBadge(stage) {
   const label = { awaiting_egress: "egress?", running: "running", awaiting_approval: "review?", pushing: "pushing" }[stage] || stage;
   return el("span", { class: "badge stage-" + stage, text: label });
-}
-
-function taskCard(t) {
-  const card = el("div", { class: "card", "data-tid": t.id });
-  const head = el("div", { class: "card-head" },
-    el("code", { class: "tid", title: "click to copy", onclick: () => navigator.clipboard && navigator.clipboard.writeText(t.id), text: t.id.slice(0, 12) }),
-    stageBadge(t.stage),
-    el("span", { class: "age", text: elapsed(t.started_at) }));
-  card.append(head);
-  card.append(el("div", { class: "repo", text: shortRepo(t.repo) }));
-  card.append(el("div", { class: "instr", text: t.instruction || "" }));
-
-  if (t.stage === "awaiting_egress") card.append(egressGate(t));
-  else if (t.stage === "awaiting_approval") card.append(pushGate(t));
-  if (t.stage === "running" || t.stage === "pushing" || t.stage === "awaiting_egress" || t.stage === "awaiting_approval") {
-    card.append(el("div", { class: "actions" }, dangerButton("Kill", () => act("kill", t.id))));
-  }
-  return card;
 }
 
 function shortRepo(r) { const i = r.lastIndexOf(":"); return i >= 0 ? r.slice(i + 1) : r; }
@@ -170,7 +275,7 @@ function shortRepo(r) { const i = r.lastIndexOf(":"); return i >= 0 ? r.slice(i 
 // egress gate: show the requested hosts (from the persisted widen file) PLUS the
 // instruction/repo so the operator can judge WHY the host was requested.
 function egressGate(t) {
-  const box = el("div", { class: "gate egress" }, el("div", { class: "gate-title", text: "Egress widening requested" }));
+  const box = el("div", { class: "gate egress dominant" }, el("div", { class: "gate-title", text: "Egress widening requested" }));
   apiJSON("/api/widen/" + t.id).then(domains => {
     box.append(el("ul", {}, ...domains.map(d => el("li", { text: d.host + ":" + (d.ports || []).join(",") }))));
   }).catch(() => box.append(el("p", { class: "muted", text: "(host list unavailable)" })));
@@ -182,7 +287,7 @@ function egressGate(t) {
 
 // push gate: cost + budget, open the diff to review, approve only after viewing.
 function pushGate(t) {
-  const box = el("div", { class: "gate push" }, el("div", { class: "gate-title", text: "Push awaiting review" }));
+  const box = el("div", { class: "gate push dominant" }, el("div", { class: "gate-title", text: "Push awaiting review" }));
   const cost = el("span", { class: "cost", text: "spent: …" });
   box.append(cost);
   spentSoFar(t.id).then(s => (cost.textContent = s));
