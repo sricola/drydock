@@ -26,7 +26,7 @@ async function apiJSON(path) {
   return res.json();
 }
 
-// --- tiny DOM helpers
+// === dom + design system ===
 function el(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -48,6 +48,16 @@ function fmtAge(s) {
 }
 function elapsed(startedAt) { return fmtAge((Date.now() - new Date(startedAt).getTime()) / 1000); }
 function fmtDurMs(ms) { return ms >= 1000 ? Math.round(ms / 1000) + "s" : ms + "ms"; }
+function shortId(id){ return (id||"").slice(0,12); }
+function toast(msg, kind){
+  const t = el("div", { class: "toast" + (kind ? " " + kind : "") }, msg);
+  document.body.append(t);
+  setTimeout(() => t.remove(), 2200);
+}
+function copyId(id){
+  if (navigator.clipboard) navigator.clipboard.writeText(id);
+  toast("copied " + shortId(id));
+}
 
 // --- view router
 const views = {};
