@@ -359,6 +359,7 @@ let overlayState = null; // { close, approve?, deny? } — read by the keys sect
 function closeOverlay(){ if (overlayState){ overlayState.close(); overlayState = null; } }
 
 async function openReview(id, readonly = false){
+  if (overlayState) closeOverlay();   // close any existing overlay first
   const diffBox = el("div", { class: "tabbody" }, "loading diff…");
   const logsBox = el("div", { class: "tabbody", style: "display:none" }, "");
   const diffTab = el("button", { class: "tab on" }, "Diff");

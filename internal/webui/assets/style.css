@@ -34,7 +34,7 @@ main{padding:16px;max-width:900px;margin:0 auto}
 .gate-title{font-weight:500;color:var(--amber);margin-bottom:6px}
 .actions{display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap}
 button,.btn{background:var(--surface-2);color:var(--fg);border:1px solid var(--line-2);border-radius:6px;padding:5px 11px;cursor:pointer;font:inherit;font-size:12px}
-.btn.ok{border-color:#2c5a33;color:var(--green)} .btn.danger{border-color:#5a2a2a;color:var(--red)}
+button.ok,.btn.ok{border-color:#2c5a33;color:var(--green)} button.danger,.btn.danger{border-color:#5a2a2a;color:var(--red)}
 .btn.confirming{border-color:var(--red);color:var(--red)}
 button[disabled]{opacity:.45;cursor:not-allowed}
 .kbd{margin-left:auto;color:var(--faint);font-size:11px}
