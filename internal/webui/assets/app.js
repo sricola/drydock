@@ -433,25 +433,40 @@ function renderDiff(box, text) {
 }
 
 // =================== SUBMIT ===================
+const REPO_RE = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)\S+$/;
+function validRepo(v){ v = (v || "").trim(); return REPO_RE.test(v) && !v.startsWith("/") && !v.startsWith("."); }
+function recentRepos(){ try { return JSON.parse(localStorage.getItem("dd.repos") || "[]"); } catch { return []; } }
+function pushRecentRepo(r){ const a = [r, ...recentRepos().filter(x => x !== r)].slice(0, 5); localStorage.setItem("dd.repos", JSON.stringify(a)); }
+const MODEL_SUGGESTIONS = ["", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]; // "" = broker default; update when models change
+
 const AGENTS = ["claude", "codex", "opencode"];
 function renderSubmit() {
   if (pollTimer) clearTimeout(pollTimer);
   const form = el("form", { class: "submit-form" });
-  const repo = el("input", { type: "text", placeholder: "https://github.com/owner/repo.git", required: "" });
+  const repo = el("input", { type: "text", placeholder: "git@github.com:owner/repo", required: "" });
+  const okMark = el("span", { class: "ok-mark", text: "✓", style: "display:none" });
+  repo.oninput = () => { okMark.style.display = validRepo(repo.value) ? "" : "none"; };
+  const repoField = el("div", { class: "field" }, repo, okMark);
+  const chips = el("div", { class: "actions" }, ...recentRepos().map(r =>
+    el("span", { class: "chip", onclick: () => { repo.value = r; repo.oninput(); } }, r)));
   const instr = el("textarea", { placeholder: "What should the agent do?", rows: "4", required: "" });
   const agent = el("select", {});
   for (const a of AGENTS) agent.append(el("option", { value: a, text: a }));
-  const model = el("input", { type: "text", placeholder: "model (optional)" });
+  const model = el("input", { type: "text", placeholder: "broker default", list: "models" });
+  const datalist = el("datalist", { id: "models" }, ...MODEL_SUGGESTIONS.map(m => el("option", { value: m })));
   const msg = el("div", { class: "msg" });
   form.append(
-    label("Repo URL (https/git/ssh — no local paths)", repo),
+    label("Repo URL (https/git/ssh — no local paths)", repoField),
+    chips,
     label("Instruction", instr),
     label("Agent", agent),
     label("Model", model),
+    datalist,
     el("button", { type: "submit", class: "ok" }, "Submit task"),
     msg);
   form.onsubmit = async (e) => {
     e.preventDefault();
+    if (!validRepo(repo.value)) { msg.textContent = "enter a valid https/git/ssh repo URL (no local paths)"; return; }
     msg.textContent = "submitting…";
     const body = { repo_ref: repo.value.trim(), instruction: instr.value, agent: agent.value };
     if (model.value.trim()) body.model = model.value.trim();
@@ -461,6 +476,7 @@ function renderSubmit() {
       if (!res.ok) { msg.textContent = "error: " + txt; return; }
       const { id } = JSON.parse(txt);
       newTaskID = id;
+      pushRecentRepo(repo.value.trim());
       show("board");
     } catch (e) { msg.textContent = "error: " + e.message; }
   };
