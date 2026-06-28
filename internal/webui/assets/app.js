@@ -374,14 +374,14 @@ function closeOverlay(){ if (overlayState){ overlayState.close(); overlayState =
 
 async function openReview(id, readonly = false){
   if (overlayState) closeOverlay();   // close any existing overlay first
-  const diffBox = el("div", { class: "tabbody" }, "loading diff…");
+  const diffBox = el("div", { class: "tabbody" }, el("p", { class: "muted", text: "loading…" }));
   const logsBox = el("div", { class: "tabbody", style: "display:none" }, "");
   const diffTab = el("button", { class: "tab on" }, "Diff");
   const logsTab = el("button", { class: "tab" }, "Logs");
   let logsLoaded = false;
   diffTab.onclick = () => { diffTab.classList.add("on"); logsTab.classList.remove("on"); diffBox.style.display = ""; logsBox.style.display = "none"; };
   logsTab.onclick = async () => { logsTab.classList.add("on"); diffTab.classList.remove("on"); logsBox.style.display = ""; diffBox.style.display = "none";
-    if (!logsLoaded){ logsLoaded = true; try { renderLogs(logsBox, await (await api("GET","/api/logs/"+id)).text()); } catch { logsBox.textContent = "could not load logs"; } } };
+    if (!logsLoaded){ logsLoaded = true; try { renderLogs(logsBox, await (await api("GET","/api/logs/"+id)).text()); } catch { logsBox.replaceChildren(el("p", { class: "empty", text: "could not load logs" })); } } };
 
   const panel = el("div", { class: "panel" },
     el("div", { class: "panel-head" },
@@ -403,9 +403,9 @@ async function openReview(id, readonly = false){
                    deny: readonly ? null : () => { act("deny", id); closeOverlay(); } };
   try {
     const res = await api("GET", "/api/diff/" + id);
-    if (res.status === 404) { diffBox.textContent = "no diff"; return; }
+    if (res.status === 404) { diffBox.replaceChildren(el("p", { class: "muted", text: "no diff" })); return; }
     renderDiff(diffBox, await res.text());
-  } catch { diffBox.textContent = "could not load diff"; }
+  } catch { diffBox.replaceChildren(el("p", { class: "empty", text: "could not load diff" })); }
 }
 
 function renderLogs(box, text){
@@ -538,7 +538,7 @@ async function renderHistory() {
   catch (e) { app().replaceChildren(el("p", { class: "empty", text: "could not load history" })); return; }
   const table = el("table", { class: "history" });
   table.append(el("tr", {}, ...["ID", "AGE", "DUR", "COST", "OUTCOME"].map(h => el("th", { text: h }))));
-  if (items.length === 0) table.append(el("tr", {}, el("td", { colspan: "5", text: "(no tasks yet)" })));
+  if (items.length === 0) table.append(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "no tasks yet" })));
   for (const it of items) {
     const row = el("tr", { class: "hrow" },
       el("td", {}, el("code", { onclick: () => navigator.clipboard && navigator.clipboard.writeText(it.id), title: "copy", text: it.id.slice(0, 12) })),

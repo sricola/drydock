@@ -36,10 +36,10 @@ type OpenAICompatPrice struct {
 // OpenAICompatConfig is the operator-facing config block for the bring-your-own
 // OpenAI-compatible upstream. Empty BaseURL disables the lane entirely.
 type OpenAICompatConfig struct {
-	BaseURL   string `yaml:"base_url"`
-	BasePath  string `yaml:"base_path"`
-	APIKeyEnv string `yaml:"api_key_env"`
-	Model     string `yaml:"model"`
+	BaseURL   string                       `yaml:"base_url"`
+	BasePath  string                       `yaml:"base_path"`
+	APIKeyEnv string                       `yaml:"api_key_env"`
+	Model     string                       `yaml:"model"`
 	Prices    map[string]OpenAICompatPrice `yaml:"prices"`
 }
 
