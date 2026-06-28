@@ -57,7 +57,7 @@ gradients/glow). Centralize as CSS custom properties at the top of `style.css`:
 --radius:8px  --radius-card:10px   type scale: 11 / 12 / 12.5 / 13px   weights: 400 / 500
 ```
 
-Component vocabulary (CSS classes + `dom.js` helpers): `card`, `pill`/`badge`,
+Component vocabulary (CSS classes + dom helpers): `card`, `pill`/`badge`,
 `btn` (`.btn`, `.btn.ok`, `.btn.danger`), `gate` block, `chip`, `tab`, `toast`.
 All-monospace throughout (identity). Two weights only.
 
@@ -65,30 +65,37 @@ All-monospace throughout (identity). Two weights only.
 
 ### File structure
 
-The current single `app.js` (~315 lines) grows to ~600+ with these features —
-too much for one file. **Decision for review:** split into focused ES modules
-(native `import`/`export`, no build; works over `http://127.0.0.1`), each
-~80–150 lines, all under `internal/webui/assets/` (the file server already
-serves any file there, so no Go change):
+The current single `app.js` (~315 lines) grows to ~600+ with these features.
+**Resolved (was open):** keep it a **single, clearly-sectioned `app.js`** rather
+than splitting into files.
 
-| File | Responsibility |
+> **Why not split into ES modules?** Modules require the server to send a
+> JavaScript MIME type for each file, and Go's `http.FileServer` resolves
+> `.js`'s `Content-Type` from the *host* mime table — on some operator machines
+> that isn't module-compatible, which *silently* breaks `import`. Fixing it
+> needs a Go change (setting the header), violating the FE-only boundary.
+> Classic `<script>` files dodge the MIME issue but reintroduce global-scope
+> coupling + load-order fragility. For a cohesive ~600-line SPA, one
+> well-organized file is simpler and robust; split into classic ordered
+> `<script>` files only if a later feature makes it unwieldy.
+
+Organize `app.js` into clearly-banner'd sections, each a self-contained unit with
+a documented interface, and put a `:root` tokens block at the top of `style.css`:
+
+| Section in `app.js` | Responsibility |
 |---|---|
-| `index.html` | loads `app.js` as `<script type="module">` |
-| `app.js` | entry: token capture, view router, board-poll orchestration, boot |
-| `api.js` | `api()`/`apiJSON()`, token header, error classification (auth vs down) |
-| `dom.js` | `el()`, formatters, `toast()`, copy-with-feedback, keyboard registry, design-system helpers |
-| `board.js` | board render + **reconcile-by-id**, task card, gates, live progress |
-| `review.js` | diff/logs overlay (tabs, shortcuts) |
-| `submit.js` | submit form (validation, recent repos, model picker) |
-| `history.js` | history table |
-| `style.css` | tokens block + component styles |
-
-(Alternative if you'd rather not restructure: keep one sectioned `app.js`. I
-recommend the split for focus + testability.)
+| api | `api()`/`apiJSON()`, token header, error classification (auth vs down) |
+| dom + design system | `el()`, formatters, `toast()`, copy-with-feedback, component helpers |
+| keys | keyboard registry (see interaction layer) |
+| board | render + **reconcile-by-id**, task card, gates, live progress |
+| review | diff/logs overlay (tabs, shortcuts) |
+| submit | form (validation, recent repos, model picker) |
+| history | history table |
+| boot | token capture, view router, poll orchestration |
 
 ### Render loop — reconcile by id (kills the flicker)
 
-`board.js` keeps `Map<taskId, {el, sig}>`. On each poll:
+The board section keeps `Map<taskId, {el, sig}>`. On each poll:
 
 - **New task** → build a card, insert at its sorted position (gate tasks float
   to top, as today).
@@ -98,6 +105,10 @@ recommend the split for focus + testability.)
   card. Age is owned by the 1s ticker below, so it never enters the signature.
 - **Gone task** → remove its card (it surfaces in the "Just finished" strip).
 - **Reorder** only when gate membership changes (minimal `insertBefore` moves).
+
+Reconcile preserves transient UI state: keyboard focus and an open inline
+"Confirm?" affordance sit on nodes the signature-driven update doesn't rebuild,
+so a poll never clobbers an in-progress interaction.
 
 A separate **1s ticker** updates just the `age`/elapsed spans, decoupled from
 the 1.5s data poll, so elapsed time ticks smoothly. Result: no flicker, no
@@ -113,7 +124,9 @@ scroll-jump, no interrupted clicks.
   label** (`Edit`/`Write` → "editing <file>", `Bash` → "running a command",
   `Read` → "reading <file>", else the tool name). Render
   `claude · 3 turns · $0.04 · editing client.go` + a CSS-only indeterminate
-  progress bar. Turns/cost/elapsed are cheap; the action label is best-effort.
+  progress bar. Turns/cost/elapsed are cheap; the action label is best-effort,
+  parsed from claude's stream-json — codex/opencode emit a thinner trace and fall
+  back to turns/cost/elapsed.
   *(Efficiency note: `/api/logs` returns the whole jsonl; acceptable for
   ≤`max_concurrent` running tasks, ~2. A future `Range`/tail optimization is
   out of scope.)*
@@ -153,12 +166,16 @@ scroll-jump, no interrupted clicks.
   with free-text fallback, robust to model churn.
 - **Feedback:** submit status as inline message / `toast()`, not `alert()`.
 
-### Interaction layer (cross-cutting, `dom.js`)
+### Interaction layer (cross-cutting)
 
 - **Keyboard registry** dispatched by current view + context:
   - Board: when **exactly one** task is at a gate, `R` review · `A` approve ·
     `D` deny. Overlay open: `A`/`D`/`Esc`. Submit: `Cmd/Ctrl+Enter` submits.
     `?` toggles a small shortcuts cheatsheet.
+  - **Suppressed while typing:** the handler ignores single-key shortcuts when the
+    focused element is an `input`/`textarea`/`select` or is `contenteditable`, so
+    keystrokes in the submit form (or any field) are never hijacked. The
+    `Cmd/Ctrl+Enter` submit chord is the deliberate exception.
 - **Copy feedback:** clicking a task id copies it and shows a transient `toast()`
   ("copied 78633fdc…") — today it's silent.
 - **Replace native dialogs:** deny/kill use a two-step **inline confirm** (the
@@ -190,8 +207,8 @@ diff viewer; server/broker/API changes; auth changes.
 
 ## Suggested phasing (for the plan)
 
-1. Design system (tokens + component CSS + `dom.js` helpers + `toast`).
-2. `api.js` split + reconcile render loop + live progress (board no-flicker).
+1. Design system (tokens + component CSS + dom helpers + `toast`).
+2. Reconcile render loop + live progress (board no-flicker).
 3. Review overlay (Diff/Logs tabs + shortcuts + dismiss).
 4. Submit refinements.
 5. Interaction layer (keyboard, copy-feedback, inline confirm).
@@ -200,9 +217,11 @@ diff viewer; server/broker/API changes; auth changes.
 ## Resolved decisions
 
 - **Typography:** all-monospace (terminal identity) — kept.
-- **Dependencies:** none; no build; ES modules + focused files served as static
-  assets.
-- **Live "current action":** included (best-effort, parsed from `/api/logs`).
+- **File structure:** a single, well-sectioned `app.js` + `style.css`, served as
+  static assets. No ES modules — Go's file-server `.js` MIME is host-dependent and
+  can silently break module `import`; classic scripts would dodge that but couple
+  the global scope. One file is simplest and robust at this size.
+- **Live "current action":** included (best-effort from `/api/logs`; claude only,
+  others fall back to turns/cost/elapsed).
 - **Surface area:** FE-only — no Go/broker/server/API changes.
-- **Open for review:** the file split (focused ES modules) vs keeping one
-  sectioned `app.js`.
+- **Keyboard:** single-key shortcuts suppressed while a text field is focused.
