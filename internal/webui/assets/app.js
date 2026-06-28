@@ -355,26 +355,63 @@ function dangerButton(label, fn) { return el("button", { class: "danger", onclic
 views.board = renderBoard;
 
 // =================== REVIEW (diff overlay) ===================
-async function openReview(id, readonly = false) {
-  const overlay = el("div", { class: "overlay" });
-  const panel = el("div", { class: "panel" });
-  panel.append(el("div", { class: "panel-head" },
-    el("strong", { text: "Review " + id.slice(0, 12) }),
-    el("button", { class: "close", onclick: () => overlay.remove() }, "✕")));
-  const diffBox = el("div", { class: "diff", text: "loading diff…" });
-  panel.append(diffBox);
-  if (!readonly) {
-    panel.append(el("div", { class: "actions" },
-      el("button", { class: "ok", onclick: () => { act("approve", id); overlay.remove(); } }, "Approve push"),
-      dangerButton("Deny", () => { act("deny", id); overlay.remove(); })));
-  }
-  overlay.append(panel);
+let overlayState = null; // { close, approve?, deny? } — read by the keys section
+function closeOverlay(){ if (overlayState){ overlayState.close(); overlayState = null; } }
+
+async function openReview(id, readonly = false){
+  const diffBox = el("div", { class: "tabbody" }, "loading diff…");
+  const logsBox = el("div", { class: "tabbody", style: "display:none" }, "");
+  const diffTab = el("button", { class: "tab on" }, "Diff");
+  const logsTab = el("button", { class: "tab" }, "Logs");
+  let logsLoaded = false;
+  diffTab.onclick = () => { diffTab.classList.add("on"); logsTab.classList.remove("on"); diffBox.style.display = ""; logsBox.style.display = "none"; };
+  logsTab.onclick = async () => { logsTab.classList.add("on"); diffTab.classList.remove("on"); logsBox.style.display = ""; diffBox.style.display = "none";
+    if (!logsLoaded){ logsLoaded = true; try { renderLogs(logsBox, await (await api("GET","/api/logs/"+id)).text()); } catch { logsBox.textContent = "could not load logs"; } } };
+
+  const panel = el("div", { class: "panel" },
+    el("div", { class: "panel-head" },
+      el("strong", { text: "Review " + shortId(id) }),
+      el("span", { class: "kbd", style:"display:flex;gap:8px;align-items:center" }, "Esc to close",
+        el("button", { class:"tab", onclick: closeOverlay, text: "✕" }))),
+    el("div", { class: "tabs" }, diffTab, logsTab), diffBox, logsBox);
+  if (!readonly) panel.append(el("div", { class: "actions" },
+    el("button", { class: "btn ok", onclick: () => { act("approve", id); closeOverlay(); } }, "Approve push"),
+    dangerButton("Deny", () => { act("deny", id); closeOverlay(); }),
+    el("span", { class: "kbd" }, "A approve · D deny · Esc close")));
+
+  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); closeOverlay(); } };
+  document.addEventListener("keydown", onKey);
+  const overlay = el("div", { class: "overlay", onclick: (e) => { if (e.target === overlay) closeOverlay(); } }, panel);
   document.body.append(overlay);
+  overlayState = { close: () => { document.removeEventListener("keydown", onKey); overlay.remove(); },
+                   approve: readonly ? null : () => { act("approve", id); closeOverlay(); },
+                   deny: readonly ? null : () => { act("deny", id); closeOverlay(); } };
   try {
     const res = await api("GET", "/api/diff/" + id);
-    if (res.status === 404) { diffBox.textContent = "no diff yet"; return; }
+    if (res.status === 404) { diffBox.textContent = "no diff"; return; }
     renderDiff(diffBox, await res.text());
-  } catch (_) { diffBox.textContent = "could not load diff"; }
+  } catch { diffBox.textContent = "could not load diff"; }
+}
+
+function renderLogs(box, text){
+  box.replaceChildren();
+  const pre = el("pre", { class: "logs-pre" });
+  for (const line of text.split("\n")){
+    if (!line.trim()) continue;
+    let o; try { o = JSON.parse(line); } catch { pre.append(el("span", { class: "lg", text: line + "\n" })); continue; }
+    let cls = "lg", txt = line;
+    if (o.type === "assistant"){
+      const c = (o.message && o.message.content) || [];
+      const tu = c.find(x => x.type === "tool_use");
+      const tx = c.find(x => x.type === "text");
+      if (tu){ cls = "lg tool"; txt = "→ " + actionLabel(tu); }
+      else if (tx){ cls = "lg txt"; txt = tx.text; }
+    } else if (o.type === "user"){ cls = "lg res"; txt = "  (tool result)"; }
+    else if (o.type === "result"){ cls = "lg " + (o.is_error ? "err" : "res"); txt = (o.is_error ? "error: " : "done: ") + (o.result || o.subtype || ""); }
+    else if (o.type === "system"){ cls = "lg res"; txt = "· " + (o.subtype || "system"); }
+    pre.append(el("span", { class: cls, text: txt + "\n" }));
+  }
+  box.append(pre);
 }
 
 // renderDiff colors a unified diff line-by-line (+ add, - del, @@ hunk, file
