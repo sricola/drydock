@@ -321,7 +321,8 @@ function pushGate(t) {
   box.append(el("div", { class: "actions" },
     el("button", { onclick: () => { openReview(t.id); approveBtn.removeAttribute("disabled"); } }, "Review diff"),
     approveBtn,
-    dangerButton("Deny", () => act("deny", t.id))));
+    dangerButton("Deny", () => act("deny", t.id)),
+    el("span", { class: "kbd" }, "R review · A approve · D deny")));
   return box;
 }
 
@@ -340,18 +341,31 @@ async function spentSoFar(id) {
 }
 
 // act performs approve/deny/kill with optimistic feedback + immediate re-poll.
-// deny/kill are destructive, so they confirm first.
+// deny/kill are destructive, but confirmation now lives in dangerButton's
+// two-step (not a native confirm()); failures surface as a toast, not alert().
 async function act(verb, id) {
-  if ((verb === "deny" || verb === "kill") && !confirm(`${verb} task ${id.slice(0, 12)}? This cannot be undone.`)) return;
   try {
     const res = await api("POST", "/api/" + verb + "/" + id);
     if (res.status === 409 || res.status === 404) { /* already resolved — just refresh */ }
-    else if (!res.ok) alert(`${verb} failed: HTTP ${res.status}`);
-  } catch (e) { alert(`${verb} failed: ${e.message}`); }
+    else if (!res.ok) toast(`${verb} failed: HTTP ${res.status}`, "bad");
+  } catch (e) { toast(`${verb} failed: ${e.message}`, "bad"); }
   renderBoard(); // immediate re-poll (don't wait the interval)
 }
 
-function dangerButton(label, fn) { return el("button", { class: "danger", onclick: fn }, label); }
+// dangerButton replaces a native confirm() with an inline two-step: the first
+// click arms the button (label -> "Confirm?", red .confirming style) and starts
+// a 3s disarm timer; a second click within that window runs fn(). Class is
+// "btn danger" so both the red .btn.danger and the .btn.confirming styles apply.
+function dangerButton(label, fn){
+  const b = el("button", { class: "btn danger" }, label);
+  let armed = false, timer = null;
+  b.onclick = () => {
+    if (armed){ clearTimeout(timer); fn(); return; }
+    armed = true; b.dataset.orig = label; b.textContent = "Confirm?"; b.classList.add("confirming");
+    timer = setTimeout(() => { armed = false; b.textContent = label; b.classList.remove("confirming"); }, 3000);
+  };
+  return b;
+}
 views.board = renderBoard;
 
 // =================== REVIEW (diff overlay) ===================
@@ -380,11 +394,11 @@ async function openReview(id, readonly = false){
     dangerButton("Deny", () => { act("deny", id); closeOverlay(); }),
     el("span", { class: "kbd" }, "A approve · D deny · Esc close")));
 
-  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); closeOverlay(); } };
-  document.addEventListener("keydown", onKey);
+  // Esc is owned by the global keydown registry (via overlayState), not a
+  // per-open listener here — exactly one keydown handler in the app.
   const overlay = el("div", { class: "overlay", onclick: (e) => { if (e.target === overlay) closeOverlay(); } }, panel);
   document.body.append(overlay);
-  overlayState = { close: () => { document.removeEventListener("keydown", onKey); overlay.remove(); },
+  overlayState = { close: () => { overlay.remove(); },
                    approve: readonly ? null : () => { act("approve", id); closeOverlay(); },
                    deny: readonly ? null : () => { act("deny", id); closeOverlay(); } };
   try {
@@ -431,6 +445,36 @@ function renderDiff(box, text) {
   }
   box.append(el("div", { class: "diffstat", text: `+${add} −${del}` }), pre);
 }
+
+// =================== KEYS (global keydown registry) ===================
+// One keydown handler for the whole app. Single-key shortcuts are suppressed
+// while typing (the field gets the char); the Cmd/Ctrl+Enter submit chord is the
+// only exception. When an overlay is open it owns A/D/Esc via overlayState; on
+// the board, R/A/D act only when exactly one task sits at a gate (singleGate).
+function isTyping(e){ const t = e.target; return t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable); }
+function singleGate(){
+  const gs = [...cardMap.keys()].map(id => boardTasks.get(id)).filter(t => t && (t.stage === "awaiting_approval" || t.stage === "awaiting_egress"));
+  return gs.length === 1 ? gs[0] : null;
+}
+addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter"){ if (currentView === "submit") document.querySelector(".submit-form")?.requestSubmit(); return; }
+  if (isTyping(e)) return;                       // never hijack typing
+  if (overlayState){
+    if (e.key === "Escape") closeOverlay();
+    else if (e.key === "a" && overlayState.approve) overlayState.approve();
+    else if (e.key === "d" && overlayState.deny) overlayState.deny();
+    return;
+  }
+  if (e.key === "?"){ toast("R review · A approve · D deny · Esc close · ⌘↵ submit"); return; }
+  if (currentView === "board"){
+    const g = singleGate();
+    if (g){
+      if (e.key === "r") openReview(g.id);
+      else if (e.key === "a") act("approve", g.id);
+      else if (e.key === "d") act("deny", g.id);
+    }
+  }
+});
 
 // =================== SUBMIT ===================
 const REPO_RE = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)\S+$/;
