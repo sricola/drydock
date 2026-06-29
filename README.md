@@ -106,6 +106,7 @@ Full operator docs live at **[sricola.github.io/drydock/docs](https://sricola.gi
 - [Quickstart](https://sricola.github.io/drydock/docs/quickstart.html) — install to first task.
 - [Authentication](https://sricola.github.io/drydock/docs/authentication.html) — API key or subscription, Claude Code & Codex.
 - [Submitting tasks](https://sricola.github.io/drydock/docs/submitting-tasks.html) — `drydock submit`, the approval gate, flags, scripting.
+- [Web UI](https://sricola.github.io/drydock/docs/web-ui.html) — the board, approval gate, and history in a local browser app.
 - [Egress & widening](https://sricola.github.io/drydock/docs/egress.html) — the allowlist and per-task widening.
 - [Configuration](https://sricola.github.io/drydock/docs/configuration.html) — `config.yaml` and env overrides.
 - [Troubleshooting](https://sricola.github.io/drydock/docs/troubleshooting.html) — `drydock doctor` and common failures.

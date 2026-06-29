@@ -49,6 +49,9 @@ drydock doctor             # smoke-test the sandbox setup (no API spend)
 drydock redteam            # run live containment attacks on your own sandbox (no API spend)
 ```
 
+Prefer a browser? `drydock ui` puts the board, the diff/approve gate, and
+history in a local web app — see [Web UI](web-ui.html).
+
 ## Variations
 
 ```bash
