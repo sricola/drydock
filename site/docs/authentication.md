@@ -28,9 +28,9 @@ block, not the matrix above. See [Bring your own model](models.html).
 
 ## API key
 
-Set at least one vendor key. Keep it in your shell env, or let `drydock init`
-store it at `~/.drydock/api-keys.env` (mode `0600`, read host-side). Either way
-it never crosses the VM boundary.
+Set at least one vendor key. Keep it in your shell env, or let the `drydock setup`
+wizard store it at `~/.drydock/api-keys.env` (mode `0600`, read host-side). Either
+way it never crosses the VM boundary.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code tasks
