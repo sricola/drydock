@@ -3,55 +3,29 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"drydock/internal/config"
 )
 
-// auditDir returns the audit root brokerd writes to. Mirrors brokerd's default
-// so the CLI can find the same files without a config dance. Resolution order:
+// auditDir returns the audit root brokerd writes to, read from the same place
+// brokerd reads it so the CLI (ui, tasks, status, prune) always looks where the
+// diffs/logs/history actually are. Resolution order, all via config.Load:
 //  1. AUDIT_ROOT env override
-//  2. ~/.drydock/audit (current default; matches config.Defaults())
-//  3. /tmp/broker/audit (legacy fallback — see below)
+//  2. ~/.drydock/config.yaml -> audit_root (the operator's configured value)
+//  3. config.Defaults() (~/.drydock/audit)
 //
-// The legacy fallback exists so an operator who upgraded from drydock < v0.1.4
-// can still run `drydock tasks` / `drydock logs` against their old history
-// without setting AUDIT_ROOT by hand. New tasks land in the new default; the
-// fallback only triggers if the new path is empty/missing.
+// Reading config.audit_root — rather than guessing from directory state — is
+// what keeps the UI in sync with the broker: a configured audit_root that
+// differs from the default used to make diffs/logs/history silently 404.
 func auditDir() string {
 	if v := os.Getenv("AUDIT_ROOT"); v != "" {
 		return v
 	}
-	if d := config.Dir(); d != "" {
-		preferred := filepath.Join(d, "audit")
-		if hasAudit(preferred) {
-			return preferred
-		}
-		// Fall back to the legacy /tmp path if it has files and the new
-		// one is empty — surfaces old history during the transition.
-		if !hasAudit(preferred) && hasAudit("/tmp/broker/audit") {
-			return "/tmp/broker/audit"
-		}
-		return preferred
+	if cfg, err := config.Load(config.DefaultPath()); err == nil {
+		return cfg.AuditRoot
 	}
-	return "/tmp/broker/audit"
-}
-
-// hasAudit returns true if dir exists and contains at least one .jsonl file.
-// Used by auditDir's legacy-fallback path so we only divert to /tmp when the
-// operator actually has history there.
-func hasAudit(dir string) bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".jsonl" {
-			return true
-		}
-	}
-	return false
+	return "/tmp/broker/audit" // config unreadable — last-resort legacy default
 }
 
 // diffPath returns AUDIT_ROOT/<id>.diff. Used by `review` and `kill`.

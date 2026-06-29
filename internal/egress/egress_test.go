@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,17 @@ func TestCompileAllowlist_DefaultPlusExtra(t *testing.T) {
 	want := "api.anthropic.com 443\npypi.org 443\ninternal.example.com 443\ninternal.example.com 8443\n"
 	if got != want {
 		t.Fatalf("CompileAllowlist mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestDomainJSONIsLowercase(t *testing.T) {
+	b, err := json.Marshal([]Domain{{Host: "x.test", Ports: []int{443}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"host":"x.test","ports":[443]}]`
+	if string(b) != want {
+		t.Fatalf("Domain JSON = %s, want %s (the web UI reads lowercase host/ports)", b, want)
 	}
 }
 

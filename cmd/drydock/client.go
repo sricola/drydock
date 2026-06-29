@@ -130,6 +130,7 @@ func listPending() {
 		}
 		fmt.Printf("%-14s  %5s  %-7s  %-28s  %s\n", t.ID, relAge(t.StartedAt), gate, repo, detail)
 	}
+	fmt.Println("\ntip: `drydock ui` reviews these diffs in a browser.")
 }
 
 func formatExtras(extras []domain) string {

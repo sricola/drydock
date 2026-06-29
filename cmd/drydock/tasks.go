@@ -1,57 +1,15 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"drydock/internal/audit"
 )
-
-// auditResult is the single line at the end of each <id>.jsonl that
-// summarises the run. We only decode the few fields we need.
-type auditResult struct {
-	Type         string  `json:"type"`
-	Subtype      string  `json:"subtype"`
-	IsError      bool    `json:"is_error"`
-	DurationMs   int64   `json:"duration_ms"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	NumTurns     int     `json:"num_turns"`
-}
-
-// auditMeta is the drydock-written first line of each <id>.jsonl recording how
-// the task actually ran. A distinct "type" so it never collides with a Claude
-// Code stream event.
-type auditMeta struct {
-	Type         string `json:"type"`
-	Subscription bool   `json:"subscription"`
-	Sensitive    bool   `json:"sensitive"`
-}
-
-// readMeta returns the drydock_meta line the broker writes first (auth mode +
-// sensitivity). Legacy tasks (no meta line) report the zero value. Reads only
-// the first line, not the whole trace.
-func readMeta(path string) auditMeta {
-	f, err := os.Open(path)
-	if err != nil {
-		return auditMeta{}
-	}
-	defer f.Close()
-	line, err := bufio.NewReader(f).ReadBytes('\n')
-	if err != nil && len(line) == 0 {
-		return auditMeta{}
-	}
-	var m auditMeta
-	if json.Unmarshal(bytes.TrimSpace(line), &m) != nil || m.Type != "drydock_meta" {
-		return auditMeta{}
-	}
-	return m
-}
 
 type taskRow struct {
 	id      string
@@ -60,16 +18,6 @@ type taskRow struct {
 	dur     string
 	cost    string
 	outcome string
-}
-
-// costCell formats the cost column for the tasks table. When subscription is
-// true it returns the literal "subscription" regardless of the USD amount.
-// Otherwise it formats the dollar value as "$x.xxxx".
-func costCell(subscription bool, usd float64) string {
-	if subscription {
-		return "subscription"
-	}
-	return fmt.Sprintf("$%.4f", usd)
 }
 
 // runTasks lists recent runs by scanning AUDIT_ROOT. brokerd doesn't keep
@@ -117,65 +65,12 @@ func runTasks() {
 
 func summarize(id, path string, info os.FileInfo) taskRow {
 	r := taskRow{id: id, mtime: info.ModTime(), age: relAge(info.ModTime()), dur: "-", cost: "-", outcome: "running?"}
-
-	last, ok := lastResult(path, info.Size())
-	if !ok {
-		return r
-	}
-	meta := readMeta(path)
-	r.dur = shortDur(last.DurationMs)
-	r.cost = costCell(meta.Subscription, last.TotalCostUSD)
-	switch {
-	case last.Subtype == "interrupted":
-		// brokerd died under the task (boot reconciler wrote this), distinct
-		// from "error" (the task itself failing). Death time is unknown, so
-		// keep the "-" placeholder rather than the synthetic 0ms.
-		r.outcome = "interrupted"
-		r.dur = "-"
-	case last.IsError:
-		r.outcome = "error"
-	case last.Subtype == "success":
-		if last.NumTurns > 0 {
-			r.outcome = fmt.Sprintf("ok (%d turn)", last.NumTurns)
-		} else {
-			r.outcome = "ok"
-		}
-	default:
-		r.outcome = last.Subtype
-	}
-	if meta.Sensitive {
-		r.outcome += " · sensitive"
+	last, ok := audit.LastResult(path, info.Size())
+	meta := audit.ReadMeta(path)
+	r.outcome = audit.Outcome(last, ok, meta)
+	r.cost = audit.Cost(meta, last, ok)
+	if audit.HasDuration(last, ok) {
+		r.dur = shortDur(last.DurationMs)
 	}
 	return r
-}
-
-// lastResult finds the final {"type":"result",...} line, which the broker
-// appends at task completion. It reads only the file's tail, not the whole
-// (potentially multi-MB) stream-event trace. Returns ok=false for a task that
-// never wrote a result line (still running, or killed before completion).
-func lastResult(path string, size int64) (auditResult, bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return auditResult{}, false
-	}
-	defer f.Close()
-
-	const tail = 16 * 1024 // the result line is ~120 bytes and always last
-	if size > tail {
-		if _, err := f.Seek(size-tail, io.SeekStart); err != nil {
-			return auditResult{}, false
-		}
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return auditResult{}, false
-	}
-	lines := bytes.Split(data, []byte("\n"))
-	for i := len(lines) - 1; i >= 0; i-- {
-		var x auditResult
-		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" {
-			return x, true
-		}
-	}
-	return auditResult{}, false
 }

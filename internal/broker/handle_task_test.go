@@ -502,6 +502,70 @@ func TestHandleTask_RunErrorReasonIsSanitized(t *testing.T) {
 	}
 }
 
+// TestHandleTask_SurvivesClientDisconnect verifies that cancelling the submit
+// request context (^C / web-UI disconnect) does NOT cancel the running task.
+// The task must complete and write a terminal result line to the audit log.
+func TestHandleTask_SurvivesClientDisconnect(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{}
+	run := func(ctx context.Context, _ []string, stdout, _ io.Writer) error {
+		close(started)
+		// Wait on either the release channel or the task context being cancelled.
+		// If taskCtx is (wrongly) derived from r.Context(), a client disconnect
+		// will cancel ctx here and we'll return an error before emitting a result.
+		select {
+		case <-ctx.Done():
+			return ctx.Err() // task was killed — no result line written
+		case <-release:
+		}
+		// emit a minimal result so the task terminates like a real run
+		fmt.Fprintln(stdout, `{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"total_cost_usd":0,"num_turns":1}`)
+		return nil
+	}
+	b := testBroker(t, "anthropic", st, grant, run)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("POST", "/tasks",
+		strings.NewReader(`{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { b.HandleTask(rec, req); close(done) }()
+
+	<-started
+	cancel()       // client "disconnects" while the agent is mid-run
+	close(release) // let the agent finish
+	<-done
+
+	// The task must have completed and written a result line despite the disconnect.
+	assertAuditHasResult(t, b.AuditRoot)
+}
+
+// assertAuditHasResult scans the AuditRoot directory for a *.jsonl file
+// containing a {"type":"result"} line, failing the test if none is found.
+func assertAuditHasResult(t *testing.T, auditRoot string) {
+	t.Helper()
+	entries, err := os.ReadDir(auditRoot)
+	if err != nil {
+		t.Fatalf("assertAuditHasResult: ReadDir %s: %v", auditRoot, err)
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(auditRoot, e.Name()))
+		if err != nil {
+			t.Fatalf("assertAuditHasResult: read %s: %v", e.Name(), err)
+		}
+		if strings.Contains(string(data), `"type":"result"`) {
+			return // found it
+		}
+	}
+	t.Fatalf("assertAuditHasResult: no *.jsonl in %s contains a {\"type\":\"result\"} line", auditRoot)
+}
+
 // A PR-open failure must NOT downgrade a successful push to a failure: the
 // branch is saved, so the result is "pushed" with pr_opened=false.
 func TestHandleTask_PROpenFailure_StillPushed(t *testing.T) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,28 @@ func TestAuditDir_DefaultAndOverride(t *testing.T) {
 	t.Setenv("AUDIT_ROOT", "/custom/dir")
 	if got := auditDir(); got != "/custom/dir" {
 		t.Errorf("override auditDir = %q", got)
+	}
+}
+
+// auditDir must read the SAME audit_root the broker writes to — config.audit_root —
+// not guess from directory state. Regression test for the web-ui "no diff yet"
+// bug: the broker wrote to the configured /tmp/broker/audit while the UI's
+// resolver defaulted to ~/.drydock/audit, so diffs/logs/history 404'd.
+func TestAuditDir_HonorsConfiguredAuditRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AUDIT_ROOT", "") // env override off, so the config file decides
+	custom := filepath.Join(t.TempDir(), "broker-audit")
+	cfgDir := filepath.Join(home, ".drydock")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"),
+		[]byte("audit_root: "+custom+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := auditDir(); got != custom {
+		t.Errorf("auditDir() = %q, want %q (the configured audit_root)", got, custom)
 	}
 }
 

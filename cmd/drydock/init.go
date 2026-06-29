@@ -49,6 +49,7 @@ func runInit() {
 	fmt.Println("  2. edit ~/.drydock/{config,egress}.yaml if you want non-defaults")
 	fmt.Println("  3. drydock start                       (look for `brokerd listening on unix://...`)")
 	fmt.Println("  4. drydock status / pending / approve  (in another shell)")
+	fmt.Println("  5. drydock ui                          (optional: browser dashboard for review/submit)")
 }
 
 // ensureUserConfig creates ~/.drydock/ at 0700 if missing and seeds

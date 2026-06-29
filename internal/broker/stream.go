@@ -27,8 +27,8 @@ func newStream(w http.ResponseWriter) *stream {
 }
 
 // emit writes one event line and flushes. Encode errors (client gone) are
-// ignored on purpose — task cancellation is driven by the request context, not
-// by the success of this write.
+// ignored on purpose — task cancellation is driven by /admin/kill or brokerd
+// shutdown (CancelAll), never by the success of this write.
 func (s *stream) emit(ev map[string]any) {
 	_ = s.enc.Encode(ev)
 	if s.f != nil {
