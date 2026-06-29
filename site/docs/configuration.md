@@ -22,11 +22,12 @@ the VM.
 |---|---|---|---|
 | `anthropic_auth` | `DRYDOCK_ANTHROPIC_AUTH` | `api_key` | `api_key` uses `ANTHROPIC_API_KEY`; `subscription` uses `~/.drydock/claude-oauth.json` |
 | `openai_auth` | `DRYDOCK_OPENAI_AUTH` | `api_key` | `api_key` uses `OPENAI_API_KEY`; `subscription` uses `~/.drydock/codex-oauth.json` |
-| `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent when `--agent` is omitted (`claude` \| `codex`) |
+| `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent when `--agent` is omitted (`claude` \| `codex` \| `opencode`) |
 | `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | `--model` fallback; empty = the agent picks |
 | `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | Per-task USD ceiling (`api_key` mode only; unused in subscription mode) |
 | `task_max_requests` | `DRYDOCK_TASK_MAX_REQUESTS` | `0` (unlimited) | Hard cap on API round-trips per task — the primary runaway control in subscription mode |
 | `task_timeout` | — | `30m` | Wall-clock per task |
+| `approval_timeout` | — | `0s` | Auto-deny a task left at an approval gate after this long; `0` = wait forever (right for interactive use; set for unattended runs) |
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | Excess POSTs to `/tasks` get HTTP 503 |
 | `notifications` | `DRYDOCK_NO_NOTIFY=1` (off) | `true` | macOS notifications on pending approval |
 
@@ -65,6 +66,8 @@ openai_compat:
     my-model: {input: 1.00, output: 3.00}
     default:  {input: 1.00, output: 3.00}  # fallback for any unlisted model
 ```
+
+See [Bring your own model](models.html) for worked examples.
 
 ## Advanced: runtime, paths, listener
 

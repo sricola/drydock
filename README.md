@@ -17,8 +17,8 @@
 </p>
 
 
-drydock runs **Claude Code** or **OpenAI Codex** full-throttle on your own
-repos, on your own Mac — no permission prompts, no babysitting. Each task runs
+drydock runs **Claude Code**, **OpenAI Codex**, or **any OpenAI-compatible model**
+(Gemini, OpenRouter, local) full-throttle on your own repos, on your own Mac — no permission prompts, no babysitting. Each task runs
 sealed in a throwaway VM, so the agent **can't touch your API key, can't reach
 the open internet, and can't write to anything but a disposable copy**. The only
 thing that ever comes back is a `git diff` — and nothing reaches your real code
@@ -106,6 +106,7 @@ Full operator docs live at **[sricola.github.io/drydock/docs](https://sricola.gi
 - [Quickstart](https://sricola.github.io/drydock/docs/quickstart.html) — install to first task.
 - [Authentication](https://sricola.github.io/drydock/docs/authentication.html) — API key or subscription, Claude Code & Codex.
 - [Submitting tasks](https://sricola.github.io/drydock/docs/submitting-tasks.html) — `drydock submit`, the approval gate, flags, scripting.
+- [Web UI](https://sricola.github.io/drydock/docs/web-ui.html) — the board, approval gate, and history in a local browser app.
 - [Egress & widening](https://sricola.github.io/drydock/docs/egress.html) — the allowlist and per-task widening.
 - [Configuration](https://sricola.github.io/drydock/docs/configuration.html) — `config.yaml` and env overrides.
 - [Troubleshooting](https://sricola.github.io/drydock/docs/troubleshooting.html) — `drydock doctor` and common failures.
