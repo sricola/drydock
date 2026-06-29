@@ -323,6 +323,135 @@ func TestOpenAICompatVendor(t *testing.T) {
 	}
 }
 
+// TestDirector_OpenAICompatRoutes verifies that OpenAICompatVendor BasePath
+// joins correctly onto the inbound path, and that empty BasePath forwards
+// the path byte-identical while still rewriting scheme/host.
+func TestDirector_OpenAICompatRoutes(t *testing.T) {
+	cases := []struct {
+		name     string
+		basePath string
+		inURL    string
+		wantPath string
+		wantHost string
+	}{
+		{
+			name:     "basePath=/api/v1 strips leading /v1 and joins",
+			basePath: "/api/v1",
+			inURL:    "http://gw/v1/chat/completions",
+			wantPath: "/api/v1/chat/completions",
+			wantHost: "up.test",
+		},
+		{
+			name:     "basePath=/api/v1 non-v1-prefixed path joins without extra strip",
+			basePath: "/api/v1",
+			inURL:    "http://gw/chat/completions",
+			wantPath: "/api/v1/chat/completions",
+			wantHost: "up.test",
+		},
+		{
+			name:     "basePath= forwards path byte-identical",
+			basePath: "",
+			inURL:    "http://gw/v1/chat/completions",
+			wantPath: "/v1/chat/completions",
+			wantHost: "up.test",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := OpenAICompatVendor("openai-compat", "https://up.test", c.basePath, nil)
+			g, err := New(Backend{Vendor: v, Cred: StaticKey("k")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest("POST", c.inURL, nil)
+			req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, &reqCtx{lease: &Lease{Vendor: "openai-compat"}, secret: "k"}))
+			g.director(req)
+			if req.URL.Scheme != "https" {
+				t.Errorf("Scheme = %q, want https", req.URL.Scheme)
+			}
+			if req.URL.Host != c.wantHost {
+				t.Errorf("Host = %q, want %q", req.URL.Host, c.wantHost)
+			}
+			if req.URL.Path != c.wantPath {
+				t.Errorf("Path = %q, want %q", req.URL.Path, c.wantPath)
+			}
+		})
+	}
+}
+
+// TestGateway_OpenAICompatMetersAndCaps verifies end-to-end that an
+// OpenAICompatVendor: injects the real key as Bearer upstream, meters SpentUSD
+// against the configured prices, and returns 402 once the budget is exhausted.
+func TestGateway_OpenAICompatMetersAndCaps(t *testing.T) {
+	const realKey = "sk-oc-real"
+	// Upstream asserts correct auth header and returns a known usage response.
+	// prompt_tokens=100000, completion_tokens=200000; at $1/1M in, $2/1M out
+	// → cost = 0.1 + 0.4 = 0.5 USD.
+	upstreamHit := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit++
+		if got := r.Header.Get("Authorization"); got != "Bearer "+realKey {
+			t.Errorf("Authorization = %q, want Bearer %s", got, realKey)
+		}
+		if r.Header.Get("X-Api-Key") != "" {
+			t.Errorf("X-Api-Key should be unset for openai-compat, got %q", r.Header.Get("X-Api-Key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"model":"my-model","usage":{"prompt_tokens":100000,"completion_tokens":200000}}`)
+	}))
+	defer up.Close()
+
+	prices := map[string]Price{
+		"my-model": {InputPer1M: 1.0, OutputPer1M: 2.0},
+		"default":  {InputPer1M: 1.0, OutputPer1M: 2.0},
+	}
+	v := OpenAICompatVendor("openai-compat", up.URL, "", prices)
+	g, err := New(Backend{Vendor: v, Cred: StaticKey(realKey)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Budget of 1.0 USD; first request costs 0.5 USD; second also 0.5 → budget
+	// exactly exhausted, third should 402.
+	tok, _ := g.Mint("openai-compat", 1.0, 0, time.Minute)
+
+	req1 := httptest.NewRequest("POST", "http://gw/v1/chat/completions", strings.NewReader("{}"))
+	req1.Header.Set("Authorization", "Bearer "+tok)
+	rec1 := httptest.NewRecorder()
+	g.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request: status = %d body=%s", rec1.Code, rec1.Body.String())
+	}
+	// 100k in @1/1M + 200k out @2/1M = 0.1 + 0.4 = 0.5 USD
+	if got := g.spent(tok); got < 0.49 || got > 0.51 {
+		t.Errorf("SpentUSD after first request = %v, want ~0.5", got)
+	}
+
+	req2 := httptest.NewRequest("POST", "http://gw/v1/chat/completions", strings.NewReader("{}"))
+	req2.Header.Set("Authorization", "Bearer "+tok)
+	rec2 := httptest.NewRecorder()
+	g.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second request: status = %d body=%s", rec2.Code, rec2.Body.String())
+	}
+	// 0.5 + 0.5 = 1.0 USD spent, equal to budget → next request should 402.
+	if got := g.spent(tok); got < 0.99 || got > 1.01 {
+		t.Errorf("SpentUSD after second request = %v, want ~1.0", got)
+	}
+
+	// Third request: budget exhausted → 402.
+	req3 := httptest.NewRequest("POST", "http://gw/v1/chat/completions", strings.NewReader("{}"))
+	req3.Header.Set("Authorization", "Bearer "+tok)
+	rec3 := httptest.NewRecorder()
+	g.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusPaymentRequired {
+		t.Errorf("third request: status = %d, want 402 (StatusPaymentRequired)", rec3.Code)
+	}
+	if upstreamHit != 2 {
+		t.Errorf("upstream hit %d times, want 2 (third request must be blocked before upstream)", upstreamHit)
+	}
+}
+
 func TestStripJSONObjectFields(t *testing.T) {
 	// Top-level field removed; every other field preserved verbatim. (This is the
 	// real fix: the OAuth endpoint 400s on context_management Claude Code sends.)

@@ -10,7 +10,16 @@ import (
 	"time"
 
 	"drydock/internal/gateway"
+	"drydock/internal/provider"
 )
+
+// gwEnvNames returns the injected env-var names for a vendor, sourced from the
+// provider registry so a hand-built gateway.Provider here can't drift from the
+// real wiring (and satisfies Mint's non-empty BaseURLEnv/TokenEnv guard).
+func gwEnvNames(vendor string) (baseURLEnv, tokenEnv string) {
+	p, _ := provider.ByVendor(vendor)
+	return p.BaseURLEnv, p.TokenEnv
+}
 
 // VM-backed red-team tests (THREAT_MODEL A1, A2, A7): each runs an actual
 // attack inside the sandbox VM and asserts containment. They need the Apple
@@ -41,6 +50,46 @@ func containerRun(t *testing.T, args ...string) string {
 	return string(out)
 }
 
+// A1 (openai-compat variant) — the real vendor key never enters the VM for the
+// openai-compat (opencode) lane. We build the EXACT env the broker injects,
+// using an OpenAICompatVendor gateway with a sentinel real key, then inspect
+// that env from inside the VM. The sentinel must be absent; only the per-task
+// bearer token may be present.
+func TestRedteam_A1_OpenAICompatRealKeyNeverInVM(t *testing.T) {
+	requireContainer(t)
+	const sentinel = "sk-oc-SENTINEL-DO-NOT-LEAK-7a2b"
+
+	gw, err := gateway.New(gateway.Backend{Vendor: gateway.OpenAICompatVendor("openai-compat", "https://up.invalid", "", nil), Cred: gateway.StaticKey(sentinel)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oBase, oTok := gwEnvNames("openai-compat")
+	if oBase == "" || oTok == "" {
+		t.Fatalf("gwEnvNames(\"openai-compat\") returned empty names (oBase=%q oTok=%q); registry gap — cannot proceed", oBase, oTok)
+	}
+	prov := &gateway.Provider{GW: gw, Vendor: "openai-compat", BaseURL: "http://10.0.0.1:8088", BaseURLEnv: oBase, TokenEnv: oTok, Budget: 1, TTL: time.Minute}
+	grant, err := prov.Mint(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer grant.Revoke()
+
+	args := []string{"run", "--rm", "--entrypoint", "/bin/bash"}
+	for _, e := range grant.EnvVars() {
+		args = append(args, "--env", e)
+	}
+	args = append(args, sandboxImage(), "-lc",
+		"env; echo '---PROC---'; tr '\\0' '\\n' < /proc/self/environ")
+
+	out := containerRun(t, args...)
+	if strings.Contains(out, sentinel) {
+		t.Fatalf("A1 BREACH: the real openai-compat key leaked into the VM environment:\n%s", out)
+	}
+	if !strings.Contains(out, "tok_") {
+		t.Errorf("expected the per-task bearer token (tok_) in the VM env; got:\n%s", out)
+	}
+}
+
 // A1 — the real vendor key never enters the VM. We build the EXACT env the
 // broker injects, using the real gateway + credential provider with a sentinel
 // real key, then inspect that env from inside the VM. The sentinel must be
@@ -53,7 +102,8 @@ func TestRedteam_A1_RealKeyNeverInVM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", Budget: 1, TTL: time.Minute}
+	aBase, aTok := gwEnvNames("anthropic")
+	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", BaseURLEnv: aBase, TokenEnv: aTok, Budget: 1, TTL: time.Minute}
 	grant, err := prov.Mint(1)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +160,8 @@ func TestRedteam_A1_OAuthTokensNeverInVM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", Budget: 1, TTL: time.Minute}
+	aBase, aTok := gwEnvNames("anthropic")
+	prov := &gateway.Provider{GW: gw, Vendor: "anthropic", BaseURL: "http://10.0.0.1:8088", BaseURLEnv: aBase, TokenEnv: aTok, Budget: 1, TTL: time.Minute}
 	grant, err := prov.Mint(1)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +214,8 @@ func TestRedteam_A1_CodexOAuthNeverInVM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov := &gateway.Provider{GW: gw, Vendor: "openai", BaseURL: "http://10.0.0.1:8088", Budget: 1, TTL: time.Minute}
+	oBase, oTok := gwEnvNames("openai")
+	prov := &gateway.Provider{GW: gw, Vendor: "openai", BaseURL: "http://10.0.0.1:8088", BaseURLEnv: oBase, TokenEnv: oTok, Budget: 1, TTL: time.Minute}
 	grant, err := prov.Mint(1)
 	if err != nil {
 		t.Fatal(err)

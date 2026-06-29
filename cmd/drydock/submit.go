@@ -192,8 +192,8 @@ func parseEgressExtras(raw []string) ([]reqDomain, error) {
 
 // postSubmit builds an HTTP client without a timeout (tasks can run for
 // 30+ minutes plus operator approval), POSTs /tasks, and prints the
-// response. SIGINT propagates as a context cancel — brokerd treats that
-// as a task kill, so ^C is a clean abort.
+// response. SIGINT detaches the local stream; the task keeps running in
+// brokerd (cancellation is via `drydock kill <id>` or brokerd shutdown).
 func postSubmit(req taskRequest, jsonOut, quiet bool) error {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -219,10 +219,10 @@ func postSubmit(req taskRequest, jsonOut, quiet bool) error {
 		base = "http://brokerd"
 	}
 
-	// ^C in the submit shell cancels the in-flight POST instead of leaving
-	// the local CLI dead and brokerd quietly running the task. brokerd's
-	// HandleTask reads the request context and treats cancellation as a
-	// task kill (the comment a few lines above is now actually true).
+	// ^C cancels the in-flight POST and detaches the local stream, but does NOT
+	// kill the task — brokerd's taskCtx is rooted at Background. The task keeps
+	// running; use `drydock kill <id>` to stop it or `drydock logs <id> -f` to
+	// reattach.
 	ctx, stop := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -270,10 +270,57 @@ func postSubmit(req taskRequest, jsonOut, quiet bool) error {
 	if quiet {
 		mode = modeQuiet
 	}
-	if exit := consume(resp.Body, os.Stdout, mode); exit != 0 {
+
+	// Wrap the response body with a tee that captures the task_id from the
+	// accepted event so we can print a useful detach hint if ^C interrupts.
+	var capturedID string
+	teed := &taskIDTee{r: resp.Body, capture: func(id string) { capturedID = id }}
+	if exit := consume(teed, os.Stdout, mode); exit != 0 {
+		if ctx.Err() != nil {
+			// Context was cancelled (SIGINT/SIGTERM) — the task is still running.
+			if capturedID != "" {
+				fmt.Fprintf(os.Stderr, "drydock: detached — task %s is still running; `drydock kill %s` to stop, `drydock logs %s -f` to reattach\n", capturedID, capturedID, capturedID)
+			} else {
+				fmt.Fprintln(os.Stderr, "drydock: detached — task may still be running; check `drydock tasks`")
+			}
+			os.Exit(0) // detach is not a failure
+		}
 		os.Exit(exit)
 	}
 	return nil
+}
+
+// taskIDTee wraps an io.Reader and calls capture with the task_id from the
+// first accepted NDJSON event (fired once, on first parse).
+type taskIDTee struct {
+	r       io.Reader
+	buf     []byte // leftover bytes from prior Read
+	capture func(string)
+	done    bool // capture already fired
+}
+
+func (t *taskIDTee) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if !t.done && n > 0 {
+		t.buf = append(t.buf, p[:n]...)
+		// Scan complete lines; call capture on first accepted event found.
+		for {
+			i := bytes.IndexByte(t.buf, '\n')
+			if i < 0 {
+				break
+			}
+			line := t.buf[:i]
+			t.buf = t.buf[i+1:]
+			var ev map[string]any
+			if json.Unmarshal(line, &ev) == nil && ev["event"] == "accepted" {
+				if id, ok := ev["task_id"].(string); ok {
+					t.capture(id)
+					t.done = true
+				}
+			}
+		}
+	}
+	return n, err
 }
 
 func printPretty(w io.Writer, out map[string]any) {

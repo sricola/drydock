@@ -263,6 +263,12 @@ Without `task_max_requests` a Codex subscription task can burn through a large
 fraction of the subscription's rate limit before `task_timeout` fires.
 Operators running batch jobs should set both.
 
+**`openai_compat` lane (`api_key` mode).** USD metering depends on the upstream
+reporting token usage in its response. Streaming `chat/completions` responses
+commonly omit usage, so a streamed task may be metered at $0 and never trip
+`task_budget_usd`. `task_max_requests` is the usage-independent cap and should
+be set for any `openai_compat` lane where streaming is expected.
+
 ### N5. Compromise of the host's git remote credentials
 
 `gh` on the host uses the operator's GitHub credentials to push and

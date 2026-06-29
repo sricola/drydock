@@ -49,6 +49,7 @@ func runInit() {
 	fmt.Println("  2. edit ~/.drydock/{config,egress}.yaml if you want non-defaults")
 	fmt.Println("  3. drydock start                       (look for `brokerd listening on unix://...`)")
 	fmt.Println("  4. drydock status / pending / approve  (in another shell)")
+	fmt.Println("  5. drydock ui                          (optional: browser dashboard for review/submit)")
 }
 
 // ensureUserConfig creates ~/.drydock/ at 0700 if missing and seeds
@@ -230,6 +231,19 @@ func step(label string, ok bool, detail string) {
 		mark = "ok "
 	default:
 		mark = "FAIL"
+	}
+	fmt.Printf("  %s %-32s %s\n", mark, label, detail)
+}
+
+// stepWarn prints a non-fatal advisory line — a yellow "!" rather than the red
+// "✗"/FAIL of a failed check. Use it for opt-in surfaces that are not yet
+// configured (e.g. the openai-compat lane with no key set): the operator should
+// see the gap, but it must not read as a failure that contradicts an overall
+// "all checks passed".
+func stepWarn(label, detail string) {
+	mark := "WARN"
+	if tty {
+		mark = "\033[33m!\033[0m"
 	}
 	fmt.Printf("  %s %-32s %s\n", mark, label, detail)
 }

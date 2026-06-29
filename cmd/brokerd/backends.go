@@ -2,11 +2,64 @@ package main
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 
 	"drydock/internal/config"
 	"drydock/internal/gateway"
 	"drydock/internal/provider"
 )
+
+// openAICompatWarnings inspects the openai_compat lane config and returns one
+// human-readable warning string per detected misconfiguration. Returns nil
+// when the lane is disabled (oc.BaseURL == ""). The function is pure and never
+// panics — URL parse errors are silently skipped (config.validate() already
+// rejects unparseable URLs).
+func openAICompatWarnings(oc config.OpenAICompatConfig) []string {
+	if oc.BaseURL == "" {
+		return nil
+	}
+	var warnings []string
+
+	// Check for negative prices — a negative price means USD budget never trips.
+	for model, pr := range oc.Prices {
+		if pr.Input < 0 || pr.Output < 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				`openai_compat.prices[%q] has a negative value; a negative price makes the USD budget never trip — spend will be uncapped except by task_max_requests`,
+				model,
+			))
+		}
+	}
+
+	// Check for prices map with no "default" entry — unlisted models meter at $0.
+	if len(oc.Prices) > 0 {
+		if _, hasDefault := oc.Prices["default"]; !hasDefault {
+			warnings = append(warnings,
+				`openai_compat.prices is set but has no "default" entry; any model not listed is metered at $0 (uncapped USD spend) — add a "default" row or rely on task_max_requests`,
+			)
+		}
+	}
+
+	// Check whether base_url carries a path — that path is ignored by the gateway.
+	if u, err := url.Parse(oc.BaseURL); err == nil {
+		if p := u.Path; p != "" && p != "/" {
+			warnings = append(warnings, fmt.Sprintf(
+				`openai_compat.base_url has a path (%q); that path is ignored by the gateway — move it to openai_compat.base_path`,
+				p,
+			))
+		}
+	}
+
+	// Check whether base_path is missing its leading slash — causes mis-joins.
+	if oc.BasePath != "" && !strings.HasPrefix(oc.BasePath, "/") {
+		warnings = append(warnings, fmt.Sprintf(
+			`openai_compat.base_path (%q) does not start with "/"; the upstream path will be mis-joined — prefix it with "/"`,
+			oc.BasePath,
+		))
+	}
+
+	return warnings
+}
 
 // buildBackends constructs the gateway backends from cfg and fileKeys.
 // fileKeys supplements env-var lookup (see resolveAPIKey) without touching

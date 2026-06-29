@@ -25,6 +25,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// OpenAICompatPrice holds the USD/1M-token prices for a single model in the
+// openai_compat lane. Both fields are optional; omit to skip USD metering for
+// that model.
+type OpenAICompatPrice struct {
+	Input  float64 `yaml:"input"`
+	Output float64 `yaml:"output"`
+}
+
+// OpenAICompatConfig is the operator-facing config block for the bring-your-own
+// OpenAI-compatible upstream. Empty BaseURL disables the lane entirely.
+type OpenAICompatConfig struct {
+	BaseURL   string                       `yaml:"base_url"`
+	BasePath  string                       `yaml:"base_path"`
+	APIKeyEnv string                       `yaml:"api_key_env"`
+	Model     string                       `yaml:"model"`
+	Prices    map[string]OpenAICompatPrice `yaml:"prices"`
+}
+
 // Config is the operator surface. yaml tags match what's written to
 // ~/.drydock/config.yaml; the env-var names are documented in README.
 type Config struct {
@@ -67,16 +85,7 @@ type Config struct {
 	// The real key is read from the host env var named by APIKeyEnv — never
 	// stored here. Prices (USD per 1M tokens) enable USD metering; omit to fall
 	// back to the task_max_requests cap.
-	OpenAICompat struct {
-		BaseURL   string `yaml:"base_url"`
-		BasePath  string `yaml:"base_path"`
-		APIKeyEnv string `yaml:"api_key_env"`
-		Model     string `yaml:"model"`
-		Prices    map[string]struct {
-			Input  float64 `yaml:"input"`
-			Output float64 `yaml:"output"`
-		} `yaml:"prices"`
-	} `yaml:"openai_compat"`
+	OpenAICompat OpenAICompatConfig `yaml:"openai_compat"`
 
 	// Where state lives
 	StageRoot   string `yaml:"stage_root"`

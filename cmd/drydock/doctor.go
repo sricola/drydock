@@ -131,8 +131,14 @@ func runDoctor() {
 	// openai-compat: optional bring-your-own endpoint — report key source but
 	// never mark doctor failed (the provider is opt-in).
 	if cfg.OpenAICompat.BaseURL != "" {
-		src := apiKeySource(cfg.OpenAICompat.APIKeyEnv, fileKeys)
-		step("openai-compat ("+cfg.OpenAICompat.Model+")", src != "none", "key from "+src)
+		label := "openai-compat (" + cfg.OpenAICompat.Model + ")"
+		if src := apiKeySource(cfg.OpenAICompat.APIKeyEnv, fileKeys); src == "none" {
+			// Opt-in lane, not configured yet: advise, don't fail. A red ✗ here
+			// would contradict the "all checks passed" line printed below.
+			stepWarn(label, "no key in "+cfg.OpenAICompat.APIKeyEnv+" — set it before submitting opencode tasks")
+		} else {
+			step(label, true, "key from "+src)
+		}
 	}
 
 	// PR tooling: report which platform CLI (if any) is authenticated. Not a

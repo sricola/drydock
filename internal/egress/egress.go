@@ -11,8 +11,8 @@ import (
 )
 
 type Domain struct {
-	Host  string `yaml:"host"`
-	Ports []int  `yaml:"ports"`
+	Host  string `yaml:"host" json:"host"`
+	Ports []int  `yaml:"ports" json:"ports"`
 }
 
 type Config struct {
