@@ -20,9 +20,9 @@ the fragment and sends it as a bearer token on every API call.
 
 ## What's in it
 
-- **Board** — every live task as a card. Running tasks show the agent, turn
-  count, cost, and current action; a task awaiting you floats to the top with a
-  prominent approval block.
+- **Board** — every live task as a card. Running tasks show turn count, cost,
+  and the current action; a task awaiting you floats to the top with a prominent
+  approval block.
 - **Review** — open a task for its **Diff** and **Logs** (the agent transcript)
   in tabs. **Approve push** stays disabled until you've opened the diff — the
   same review-before-approve gate as the CLI; **Deny** takes a confirm. `Esc` or
