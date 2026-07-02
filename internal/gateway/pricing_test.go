@@ -38,6 +38,24 @@ func TestGooglePrices_MetersKnownAndDefault(t *testing.T) {
 	if got := cost(p, "gemini-9-ultra", 1_000_000, 0); got != 1.25 {
 		t.Errorf("unknown-model input cost = %v, want 1.25 (default)", got)
 	}
+	// Every known model's family must have a listed key, and the default must be
+	// at least as expensive as the priciest known model so a new release can't
+	// undercount and overrun the budget (guards a future table edit).
+	for _, k := range []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"} {
+		if _, ok := p[k]; !ok {
+			t.Errorf("GooglePrices missing key %q", k)
+		}
+	}
+	def := p["default"]
+	for k, v := range p {
+		if k == "default" {
+			continue
+		}
+		if v.InputPer1M > def.InputPer1M || v.OutputPer1M > def.OutputPer1M {
+			t.Errorf("default ($%.2f/$%.2f) is cheaper than known %q ($%.2f/$%.2f) — unknown models could overrun budget",
+				def.InputPer1M, def.OutputPer1M, k, v.InputPer1M, v.OutputPer1M)
+		}
+	}
 }
 
 // The seeded table must (a) cover the current 4.x families, (b) have a
