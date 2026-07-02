@@ -68,7 +68,7 @@ type Config struct {
 	DefaultModel string `yaml:"default_model"`
 
 	// DefaultAgent selects the sandbox CLI when a task doesn't pass --agent.
-	// "claude" or "codex".
+	// "claude", "codex", or "opencode".
 	DefaultAgent string `yaml:"default_agent"`
 
 	// AnthropicAuth selects authentication mode: "api_key" or "subscription".
