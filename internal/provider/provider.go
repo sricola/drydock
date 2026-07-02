@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"drydock/internal/gateway"
+	"drydock/internal/gwcreds"
 )
 
 // Provider is the static description of one agent + its upstream vendor.
@@ -36,7 +37,7 @@ type Provider struct {
 	// LoadOAuthSnap loads the currently stored OAuth credential snapshot from
 	// cfgDir for display purposes (drydock auth --status). Unlike OAuthBackend,
 	// it does not construct a refreshable Cred — it just reads the file.
-	LoadOAuthSnap func(cfgDir string) (gateway.CredSnapshot, error)
+	LoadOAuthSnap func(cfgDir string) (gwcreds.CredSnapshot, error)
 
 	// AuthLabel is the human-readable entity shown in auth status lines, e.g.
 	// "Claude subscription" or "Codex (ChatGPT) subscription".
@@ -65,15 +66,15 @@ var Registry = []Provider{
 		AuthLabel: "Claude subscription",
 		APIVendor: gateway.AnthropicVendor,
 		OAuthBackend: func(cfgDir string) (gateway.Backend, error) {
-			store := gateway.FileCredStore(filepath.Join(cfgDir, oauthFileClaud))
+			store := gwcreds.FileCredStore(filepath.Join(cfgDir, oauthFileClaud))
 			snap, err := store.Load()
 			if err != nil {
 				return gateway.Backend{}, err
 			}
-			return gateway.Backend{Vendor: gateway.AnthropicOAuthVendor(), Cred: gateway.NewOAuthCred(snap, store)}, nil
+			return gateway.Backend{Vendor: gateway.AnthropicOAuthVendor(), Cred: gwcreds.NewOAuthCred(snap, store)}, nil
 		},
-		LoadOAuthSnap: func(cfgDir string) (gateway.CredSnapshot, error) {
-			return gateway.FileCredStore(filepath.Join(cfgDir, oauthFileClaud)).Load()
+		LoadOAuthSnap: func(cfgDir string) (gwcreds.CredSnapshot, error) {
+			return gwcreds.FileCredStore(filepath.Join(cfgDir, oauthFileClaud)).Load()
 		},
 	},
 	{
@@ -85,15 +86,15 @@ var Registry = []Provider{
 		RefreshOnExpiry: true,
 		APIVendor:       gateway.OpenAIVendor,
 		OAuthBackend: func(cfgDir string) (gateway.Backend, error) {
-			store := gateway.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex))
+			store := gwcreds.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex))
 			snap, err := store.Load()
 			if err != nil {
 				return gateway.Backend{}, err
 			}
-			return gateway.Backend{Vendor: gateway.OpenAIOAuthVendor(store.AccountID()), Cred: gateway.NewOAuthCredCodex(snap, store)}, nil
+			return gateway.Backend{Vendor: gateway.OpenAIOAuthVendor(store.AccountID()), Cred: gwcreds.NewOAuthCredCodex(snap, store)}, nil
 		},
-		LoadOAuthSnap: func(cfgDir string) (gateway.CredSnapshot, error) {
-			return gateway.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex)).Load()
+		LoadOAuthSnap: func(cfgDir string) (gwcreds.CredSnapshot, error) {
+			return gwcreds.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex)).Load()
 		},
 	},
 	{

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"drydock/internal/config"
-	"drydock/internal/gateway"
+	"drydock/internal/gwcreds"
 	"drydock/internal/provider"
 )
 
@@ -30,17 +30,17 @@ type claudeKeychainBlob struct {
 }
 
 // parseClaudeCreds unmarshals the raw JSON blob from the macOS Keychain and
-// returns a gateway.CredSnapshot. Returns an error if the blob contains no
+// returns a gwcreds.CredSnapshot. Returns an error if the blob contains no
 // access token (i.e. the operator is not logged in).
-func parseClaudeCreds(raw []byte) (gateway.CredSnapshot, error) {
+func parseClaudeCreds(raw []byte) (gwcreds.CredSnapshot, error) {
 	var blob claudeKeychainBlob
 	if err := json.Unmarshal(raw, &blob); err != nil {
-		return gateway.CredSnapshot{}, fmt.Errorf("auth: parse keychain blob: %w", err)
+		return gwcreds.CredSnapshot{}, fmt.Errorf("auth: parse keychain blob: %w", err)
 	}
 	if blob.ClaudeAiOauth.AccessToken == "" {
-		return gateway.CredSnapshot{}, fmt.Errorf("auth: no Claude credentials found — run `claude login` first")
+		return gwcreds.CredSnapshot{}, fmt.Errorf("auth: no Claude credentials found — run `claude login` first")
 	}
-	return gateway.CredSnapshot{
+	return gwcreds.CredSnapshot{
 		Access:  blob.ClaudeAiOauth.AccessToken,
 		Refresh: blob.ClaudeAiOauth.RefreshToken,
 		Expiry:  time.UnixMilli(blob.ClaudeAiOauth.ExpiresAt),
@@ -128,7 +128,7 @@ func runAuthAgent(p provider.Provider, args []string) {
 // printCodexValidity, using Provider.AuthLabel for the entity name and
 // Provider.RefreshOnExpiry for the refresh note.
 // The token value itself is never printed.
-func printAgentValidity(p provider.Provider, snap gateway.CredSnapshot) {
+func printAgentValidity(p provider.Provider, snap gwcreds.CredSnapshot) {
 	remaining := time.Until(snap.Expiry)
 	label := p.AuthLabel
 	if remaining <= 0 {
@@ -159,7 +159,7 @@ func bootstrapClaudeCred(cfgDir string) error {
 	if !ok {
 		return fmt.Errorf("auth: claude provider not registered")
 	}
-	return gateway.FileCredStore(filepath.Join(cfgDir, p.OAuthFile)).Save(snap)
+	return gwcreds.FileCredStore(filepath.Join(cfgDir, p.OAuthFile)).Save(snap)
 }
 
 // codexAuthFile is the relevant shape of ~/.codex/auth.json (auth_mode
@@ -197,19 +197,19 @@ func jwtExpiry(token string) (time.Time, error) {
 
 // parseCodexCreds maps ~/.codex/auth.json to a CredSnapshot + the ChatGPT
 // account id. Expiry comes from the access-token JWT exp claim.
-func parseCodexCreds(raw []byte) (gateway.CredSnapshot, string, error) {
+func parseCodexCreds(raw []byte) (gwcreds.CredSnapshot, string, error) {
 	var f codexAuthFile
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return gateway.CredSnapshot{}, "", fmt.Errorf("auth: parse codex auth.json: %w", err)
+		return gwcreds.CredSnapshot{}, "", fmt.Errorf("auth: parse codex auth.json: %w", err)
 	}
 	if f.Tokens.AccessToken == "" {
-		return gateway.CredSnapshot{}, "", fmt.Errorf("auth: no Codex credentials found — run `codex login` first")
+		return gwcreds.CredSnapshot{}, "", fmt.Errorf("auth: no Codex credentials found — run `codex login` first")
 	}
 	exp, err := jwtExpiry(f.Tokens.AccessToken)
 	if err != nil {
-		return gateway.CredSnapshot{}, "", err
+		return gwcreds.CredSnapshot{}, "", err
 	}
-	return gateway.CredSnapshot{Access: f.Tokens.AccessToken, Refresh: f.Tokens.RefreshToken, Expiry: exp}, f.Tokens.AccountID, nil
+	return gwcreds.CredSnapshot{Access: f.Tokens.AccessToken, Refresh: f.Tokens.RefreshToken, Expiry: exp}, f.Tokens.AccountID, nil
 }
 
 // bootstrapCodexCred copies the ChatGPT/Codex credential from ~/.codex/auth.json
@@ -231,6 +231,6 @@ func bootstrapCodexCred(cfgDir string) error {
 	if !ok {
 		return fmt.Errorf("auth: codex provider not registered")
 	}
-	store := gateway.NewCodexStore(filepath.Join(cfgDir, p.OAuthFile))
+	store := gwcreds.NewCodexStore(filepath.Join(cfgDir, p.OAuthFile))
 	return store.Put(snap, account)
 }
