@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strings"
 )
 
 type Result struct {
@@ -169,4 +171,96 @@ func Cost(m Meta, r Result, ok bool) string {
 		return "subscription"
 	}
 	return fmt.Sprintf("$%.4f", r.TotalCostUSD)
+}
+
+// TotalCost returns total_cost_usd from the last result line in path.
+// Returns 0 when no result line is present or the file cannot be read.
+func TotalCost(path string) float64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	r, ok := LastResult(path, fi.Size())
+	if !ok {
+		return 0
+	}
+	return r.TotalCostUSD
+}
+
+// HasResultLine reports whether path's tail contains a parsed
+// {"type":"result",...} line. Returns (false, nil) when no result is
+// present; returns (false, err) when the file cannot be read.
+func HasResultLine(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	const tail = 16 * 1024
+	if info.Size() > tail {
+		if _, err := f.Seek(info.Size()-tail, io.SeekStart); err != nil {
+			return false, err
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return false, err
+	}
+	for _, ln := range bytes.Split(data, []byte("\n")) {
+		var x struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(ln, &x) == nil && x.Type == "result" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+var progressLine = regexp.MustCompile(`^\[\d+/\d+\]`)
+
+// looksLikeError reports whether a line reads as a failure message, so
+// Reason can prefer it over an incidental trailing line.
+func looksLikeError(ln string) bool {
+	l := strings.ToLower(ln)
+	return strings.Contains(l, "error") || strings.Contains(l, "fatal") ||
+		strings.Contains(l, "panic") || strings.Contains(l, "failed")
+}
+
+// Reason returns the last human-meaningful line of an audit log — the line
+// that explains a boot failure (e.g. an entrypoint error). It skips empty
+// lines, container progress lines ("[6/6] …"), and JSON event lines.
+// ok is false when nothing meaningful is found, so the caller falls back to
+// a generic error message.
+func Reason(path string) (line string, ok bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	lastMeaningful := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		ln := strings.TrimSpace(lines[i])
+		if ln == "" || strings.HasPrefix(ln, "{") || strings.HasPrefix(ln, "[") || progressLine.MatchString(ln) {
+			continue
+		}
+		// Prefer the most recent line that actually reads as an error: some
+		// agents (e.g. codex) print incidental trailing output after the real
+		// failure — `ERROR: exceeded retry limit …` followed by a bare token
+		// count — and the bare count is useless as an operator-facing reason.
+		if looksLikeError(ln) {
+			return ln, true
+		}
+		if lastMeaningful == "" {
+			lastMeaningful = ln // fallback when no line reads as an error
+		}
+	}
+	if lastMeaningful != "" {
+		return lastMeaningful, true
+	}
+	return "", false
 }

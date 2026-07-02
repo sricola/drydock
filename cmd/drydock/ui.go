@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 
+	"drydock/internal/brokerclient"
 	"drydock/internal/webui"
 )
 
@@ -50,7 +51,7 @@ func runUI(args []string) {
 	srv := &webui.Server{
 		AuditRoot:  auditDir(),
 		Token:      token,
-		BrokerDial: func() (net.Conn, error) { return net.Dial("unix", socketPath()) },
+		BrokerDial: func() (net.Conn, error) { return net.Dial("unix", brokerclient.ResolveSocketPath()) },
 	}
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)

@@ -12,7 +12,9 @@ import (
 	"strings"
 
 	"drydock/internal/config"
+	"drydock/internal/defaults"
 	"drydock/internal/netfw"
+	"drydock/internal/sharedir"
 )
 
 // tty is true if stdout looks like an interactive terminal. We emit ANSI
@@ -84,7 +86,7 @@ func ensureUserConfig() {
 	if err != nil {
 		// Fall back to a minimal default so brokerd can boot even without
 		// the share template.
-		_ = os.WriteFile(egPath, []byte(defaultEgressYAML), 0o644)
+		_ = os.WriteFile(egPath, defaultEgressYAML, 0o644)
 		step("~/.drydock/egress.yaml", true, "seeded with built-in default")
 		return
 	}
@@ -136,48 +138,19 @@ func findShareEgressTemplate() (string, error) {
 	return findShareFile("egress.yaml")
 }
 
-// findShareFile is the shared probe used by both share-dir lookups. Search
-// order matches findImageDir: alongside the drydock binary, $HOMEBREW_PREFIX,
-// then the cloned-repo dev case.
+// findShareFile locates a config file in the share-dir layout (brew, make
+// install) or the cloned-repo dev case. It delegates to sharedir.Locate with
+// a "config/<name>" relative path so the search order is binary-relative →
+// $HOMEBREW_PREFIX → CWD, matching findImageDir and findEgressConfig.
 func findShareFile(name string) (string, error) {
-	candidates := []string{}
-	if self, err := os.Executable(); err == nil {
-		root := filepath.Dir(filepath.Dir(self))
-		candidates = append(candidates,
-			filepath.Join(root, "share", "drydock", "config", name))
-	}
-	if hb := os.Getenv("HOMEBREW_PREFIX"); hb != "" {
-		candidates = append(candidates,
-			filepath.Join(hb, "share", "drydock", "config", name))
-	}
-	candidates = append(candidates, filepath.Join("config", name))
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c, nil
-		}
-	}
-	return "", fmt.Errorf("share-dir %s not found", name)
+	return sharedir.Locate(filepath.Join("config", name))
 }
 
 // defaultEgressYAML is the absolute fallback — used only if the share-dir
-// template is unreachable. Must stay in sync with config/egress.yaml.
-const defaultEgressYAML = `version: 1
-default:
-  domains:
-    - { host: api.anthropic.com,      ports: [443] }
-    - { host: api.openai.com,         ports: [443] }
-    # JavaScript
-    - { host: registry.npmjs.org,     ports: [443] }
-    # Python
-    - { host: pypi.org,               ports: [443] }
-    - { host: files.pythonhosted.org, ports: [443] }
-    # Go module ecosystem — proxy.golang.org is the module cache; sum.golang.org
-    # is the checksum DB (Go refuses to fetch without it unless GOSUMDB=off).
-    - { host: proxy.golang.org,       ports: [443] }
-    - { host: sum.golang.org,         ports: [443] }
-per_task_widening:
-  requires_approval: true
-`
+// template is unreachable. It is the embedded content of config/egress.yaml;
+// see internal/defaults for the //go:embed source and the byte-equality test
+// that replaces the old "Must stay in sync" comment.
+var defaultEgressYAML = defaults.EgressYAML
 
 // recommendedEgressHosts is the allowlist a fresh install would receive.
 // When an existing operator config (~/.drydock/egress.yaml) lacks any of
@@ -467,27 +440,27 @@ func imageBuildHint(buildOutput string) string {
 //  4. $HOMEBREW_PREFIX/share/drydock/<subdir>
 //  5. ~/.local/share/drydock/<subdir>
 func findImageDir(subdir string) (string, error) {
-	candidates := []string{}
+	var candidates []string
 	if env := os.Getenv("DRYDOCK_IMAGE_DIR"); env != "" {
 		candidates = append(candidates, filepath.Join(env, strings.TrimPrefix(subdir, "image/")))
 		candidates = append(candidates, filepath.Join(env, subdir))
 	}
+	// CWD first (dev: running from the cloned repo), then binary-relative and
+	// $HOMEBREW_PREFIX candidates from the shared sharedir helper. Candidates()
+	// also returns CWD as its last element; we deduplicate below so it isn't
+	// probed twice.
 	candidates = append(candidates, subdir)
-	if self, err := os.Executable(); err == nil {
-		// drydock at $PREFIX/bin/drydock -> $PREFIX/share/drydock/<subdir>
-		root := filepath.Dir(filepath.Dir(self))
-		candidates = append(candidates,
-			filepath.Join(root, "share", "drydock", subdir),
-		)
-	}
-	if hb := os.Getenv("HOMEBREW_PREFIX"); hb != "" {
-		candidates = append(candidates, filepath.Join(hb, "share", "drydock", subdir))
-	}
+	candidates = append(candidates, sharedir.Candidates(subdir)...)
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates, filepath.Join(home, ".local", "share", "drydock", subdir))
 	}
 
+	seen := map[string]bool{}
 	for _, c := range candidates {
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
 		if _, err := os.Stat(filepath.Join(c, "Dockerfile")); err == nil {
 			return c, nil
 		}

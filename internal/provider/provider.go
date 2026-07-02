@@ -25,35 +25,75 @@ type Provider struct {
 	// (operator-parameterized endpoint), rather than the static APIVendor /
 	// OAuthBackend hooks. Such a provider has nil APIVendor and OAuthBackend.
 	ConfigBuilt bool
+
+	// OAuthFile is the filename (not full path) of the stored OAuth credential
+	// inside ~/.drydock/. It is the canonical source: auth.go derives the full
+	// path as filepath.Join(cfgDir, p.OAuthFile). OAuthBackend and LoadOAuthSnap
+	// use the same underlying constant (see oauthFile* below) so all three are
+	// always in sync.
+	OAuthFile string
+
+	// LoadOAuthSnap loads the currently stored OAuth credential snapshot from
+	// cfgDir for display purposes (drydock auth --status). Unlike OAuthBackend,
+	// it does not construct a refreshable Cred — it just reads the file.
+	LoadOAuthSnap func(cfgDir string) (gateway.CredSnapshot, error)
+
+	// AuthLabel is the human-readable entity shown in auth status lines, e.g.
+	// "Claude subscription" or "Codex (ChatGPT) subscription".
+	AuthLabel string
+
+	// RefreshOnExpiry, when true, appends "(will refresh on next use)" to the
+	// expired-token status line. Set for providers that auto-refresh.
+	RefreshOnExpiry bool
 }
+
+// oauthFile* are the single source of truth for each provider's OAuth
+// credential filename. OAuthFile in the registry entry, the OAuthBackend
+// closure, and the LoadOAuthSnap closure all derive from these constants so
+// renaming one is a one-line change, not a search-and-replace across files.
+const (
+	oauthFileClaud = "claude-oauth.json"
+	oauthFileCodex = "codex-oauth.json"
+)
 
 var Registry = []Provider{
 	{
 		Agent: "claude", Vendor: "anthropic", Label: "Claude Code (Anthropic)",
 		APIKeyEnv: "ANTHROPIC_API_KEY", AuthCmd: "drydock auth claude",
 		BaseURLEnv: "ANTHROPIC_BASE_URL", TokenEnv: "ANTHROPIC_AUTH_TOKEN",
+		OAuthFile: oauthFileClaud,
+		AuthLabel: "Claude subscription",
 		APIVendor: gateway.AnthropicVendor,
 		OAuthBackend: func(cfgDir string) (gateway.Backend, error) {
-			store := gateway.FileCredStore(filepath.Join(cfgDir, "claude-oauth.json"))
+			store := gateway.FileCredStore(filepath.Join(cfgDir, oauthFileClaud))
 			snap, err := store.Load()
 			if err != nil {
 				return gateway.Backend{}, err
 			}
 			return gateway.Backend{Vendor: gateway.AnthropicOAuthVendor(), Cred: gateway.NewOAuthCred(snap, store)}, nil
 		},
+		LoadOAuthSnap: func(cfgDir string) (gateway.CredSnapshot, error) {
+			return gateway.FileCredStore(filepath.Join(cfgDir, oauthFileClaud)).Load()
+		},
 	},
 	{
 		Agent: "codex", Vendor: "openai", Label: "OpenAI Codex",
 		APIKeyEnv: "OPENAI_API_KEY", AuthCmd: "drydock auth codex",
 		BaseURLEnv: "OPENAI_BASE_URL", TokenEnv: "OPENAI_API_KEY",
-		APIVendor: gateway.OpenAIVendor,
+		OAuthFile:       oauthFileCodex,
+		AuthLabel:       "Codex (ChatGPT) subscription",
+		RefreshOnExpiry: true,
+		APIVendor:       gateway.OpenAIVendor,
 		OAuthBackend: func(cfgDir string) (gateway.Backend, error) {
-			store := gateway.NewCodexStore(filepath.Join(cfgDir, "codex-oauth.json"))
+			store := gateway.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex))
 			snap, err := store.Load()
 			if err != nil {
 				return gateway.Backend{}, err
 			}
 			return gateway.Backend{Vendor: gateway.OpenAIOAuthVendor(store.AccountID()), Cred: gateway.NewOAuthCredCodex(snap, store)}, nil
+		},
+		LoadOAuthSnap: func(cfgDir string) (gateway.CredSnapshot, error) {
+			return gateway.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex)).Load()
 		},
 	},
 	{

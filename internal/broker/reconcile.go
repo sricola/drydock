@@ -1,12 +1,11 @@
 package broker
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"drydock/internal/audit"
 )
 
 // interruptedResultLine is the synthetic terminal event appended to a task
@@ -37,7 +36,7 @@ func TerminateStuckAudits(auditRoot string) (int, error) {
 			continue
 		}
 		path := filepath.Join(auditRoot, e.Name())
-		has, herr := hasResultLine(path)
+		has, herr := audit.HasResultLine(path)
 		if herr != nil {
 			if firstErr == nil {
 				firstErr = herr
@@ -56,42 +55,6 @@ func TerminateStuckAudits(auditRoot string) (int, error) {
 		n++
 	}
 	return n, firstErr
-}
-
-// hasResultLine reports whether the file's tail contains a JSON line whose
-// decoded "type" is "result". Mirrors cmd/drydock's lastResult: it PARSES each
-// line rather than substring-matching, so a stream event whose text payload
-// contains the literal `"type":"result"` is not mistaken for a real result. A
-// completed task's result line is always last, hence always within the tail.
-func hasResultLine(path string) (bool, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return false, err
-	}
-	const tail = 16 * 1024
-	if info.Size() > tail {
-		if _, err := f.Seek(info.Size()-tail, io.SeekStart); err != nil {
-			return false, err
-		}
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return false, err
-	}
-	for _, ln := range bytes.Split(data, []byte("\n")) {
-		var x struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(ln, &x) == nil && x.Type == "result" {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // appendLine appends s to the file at path.

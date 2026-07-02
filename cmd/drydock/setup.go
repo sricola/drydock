@@ -88,11 +88,15 @@ func runSetup(args []string) {
 	if tty && stdinIsTTY() && (firstRun || reconfigure) {
 		fmt.Println()
 		fmt.Println("── configure ───────────────────────────────")
+		cfgDir := config.Dir()
 		runWizard(&wizardDeps{
-			in:              os.Stdin,
-			out:             os.Stdout,
-			bootstrapClaude: bootstrapClaudeCred,
-			bootstrapCodex:  bootstrapCodexCred,
+			in:  os.Stdin,
+			out: os.Stdout,
+			// Wrap the cfgDir-taking bootstrap functions into the wizard's
+			// func() error interface. config.Dir() is resolved here (at call
+			// time, not package init) so the path is always fresh.
+			bootstrapClaude: func() error { return bootstrapClaudeCred(cfgDir) },
+			bootstrapCodex:  func() error { return bootstrapCodexCred(cfgDir) },
 			configPath:      cfgPath,
 		})
 	}

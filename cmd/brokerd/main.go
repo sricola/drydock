@@ -28,6 +28,7 @@ import (
 	"drydock/internal/gateway"
 	"drydock/internal/netfw"
 	"drydock/internal/provider"
+	"drydock/internal/sharedir"
 	"drydock/internal/sockpath"
 	"drydock/internal/stage"
 )
@@ -445,30 +446,34 @@ func checkContainerVersion(strict bool) {
 //  4. <brokerd>/../share/drydock/config/egress.yaml  (brew + make install seed)
 //  5. $HOMEBREW_PREFIX/share/drydock/config/egress.yaml
 func findEgressConfig() (string, error) {
-	candidates := []string{}
+	// Check the operator-override and user-owned file first.
+	var first []string
 	if env := os.Getenv("EGRESS_CONFIG"); env != "" {
-		candidates = append(candidates, env)
+		first = append(first, env)
 	}
 	if p := config.EgressPath(); p != "" {
-		candidates = append(candidates, p)
+		first = append(first, p)
 	}
-	candidates = append(candidates, "config/egress.yaml")
-	if self, err := os.Executable(); err == nil {
-		root := filepath.Dir(filepath.Dir(self))
-		candidates = append(candidates,
-			filepath.Join(root, "share", "drydock", "config", "egress.yaml"))
-	}
-	if hb := os.Getenv("HOMEBREW_PREFIX"); hb != "" {
-		candidates = append(candidates,
-			filepath.Join(hb, "share", "drydock", "config", "egress.yaml"))
-	}
-	for _, c := range candidates {
+	for _, c := range first {
 		if _, err := os.Stat(c); err == nil {
 			return c, nil
 		}
 	}
-	return "", fmt.Errorf("egress config not found; tried: %s",
-		strings.Join(candidates, ", "))
+	// Dev: CWD/config/egress.yaml (running from the cloned repo). This check
+	// must come before the share-dir candidates so a developer running brokerd
+	// from the repo root gets the local config even if a share-dir copy exists
+	// (e.g. when drydock is also installed via Homebrew).
+	if _, err := os.Stat("config/egress.yaml"); err == nil {
+		return "config/egress.yaml", nil
+	}
+	// Installed layouts: binary-relative and $HOMEBREW_PREFIX via the shared
+	// sharedir helper. Locate tries CWD last, which we've already handled above;
+	// the retry is harmless.
+	if p, err := sharedir.Locate("config/egress.yaml"); err == nil {
+		return p, nil
+	}
+	tried := append(first, "config/egress.yaml", "(share dirs via sharedir.Locate)")
+	return "", fmt.Errorf("egress config not found; tried: %s", strings.Join(tried, ", "))
 }
 
 // pruneOrphanTasks reaps any task-* containers and orphan squid processes

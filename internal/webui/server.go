@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"context"
 	"crypto/subtle"
 	"io"
 	"io/fs"
@@ -10,20 +9,39 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"drydock/internal/brokerclient"
 )
 
 type Server struct {
 	AuditRoot  string
 	Token      string
 	BrokerDial func() (net.Conn, error)
+
+	// broker is the cached 5s-timeout client for short admin polls.
+	// brokerNoTimeout is used by handleSubmit (tasks can run for 30+ min).
+	// Both are initialised once in Handler() from BrokerDial.
+	broker          *http.Client
+	brokerBase      string
+	brokerNoTimeout *http.Client
 }
 
 var idRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 func validID(id string) bool { return idRe.MatchString(id) }
 
-// Handler wires the SPA and the /api surface.
+// Handler wires the SPA and the /api surface. It also initialises the cached
+// broker HTTP clients so that proxy calls reuse a single transport rather than
+// allocating a fresh one per request.
 func (s *Server) Handler() http.Handler {
+	// Build the broker clients once. If BrokerDial is nil (e.g. in unit tests
+	// that only exercise auth/routing, not proxying) we leave them nil and the
+	// proxy helper's nil-check handles it gracefully.
+	if s.BrokerDial != nil {
+		s.broker, s.brokerBase = brokerclient.New(s.BrokerDial, 5*time.Second)
+		s.brokerNoTimeout, _ = brokerclient.New(s.BrokerDial, 0)
+	}
+
 	mux := http.NewServeMux()
 
 	sub, _ := fs.Sub(assetsFS, "assets")
@@ -49,31 +67,19 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// brokerClient returns an http.Client that dials brokerd's unix socket. Used
-// for the short admin pokes (5s timeout). base is the dummy host the dialer
-// ignores. Submit (Task 6) uses a separate no-timeout client.
-func (s *Server) brokerClient() (*http.Client, string) {
-	return &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) { return s.BrokerDial() },
-		},
-	}, "http://brokerd"
-}
-
 // proxy forwards the request to brokerd at adminPath and copies status+body back.
+// It uses the cached 5s-timeout broker client built once in Handler().
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, method, adminPath string) {
-	if s.BrokerDial == nil {
+	if s.broker == nil {
 		http.Error(w, "brokerd not running — run `drydock start`", http.StatusBadGateway)
 		return
 	}
-	c, base := s.brokerClient()
-	req, err := http.NewRequestWithContext(r.Context(), method, base+adminPath, nil)
+	req, err := http.NewRequestWithContext(r.Context(), method, s.brokerBase+adminPath, nil)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	resp, err := c.Do(req)
+	resp, err := s.broker.Do(req)
 	if err != nil {
 		http.Error(w, "brokerd not running — run `drydock start`", http.StatusBadGateway)
 		return

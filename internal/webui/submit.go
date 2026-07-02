@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 )
 
@@ -29,19 +28,20 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No-timeout, Background-context request: tasks run for minutes and must not
-	// die when this handler returns.
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) { return s.BrokerDial() },
-	}}
-	req, err := http.NewRequestWithContext(context.Background(), "POST", "http://brokerd/tasks", bytes.NewReader(body))
+	// Use the cached no-timeout client (built once in Handler). Background
+	// context: tasks run for minutes and must not die when this handler returns.
+	if s.brokerNoTimeout == nil {
+		http.Error(w, "brokerd not running — run `drydock start`", http.StatusBadGateway)
+		return
+	}
+	req, err := http.NewRequestWithContext(context.Background(), "POST", s.brokerBase+"/tasks", bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := s.brokerNoTimeout.Do(req)
 	if err != nil {
 		http.Error(w, "brokerd not running — run `drydock start`", http.StatusBadGateway)
 		return
