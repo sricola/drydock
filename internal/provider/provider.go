@@ -1,7 +1,7 @@
 // Package provider is the single registry of coding-agent CLIs and the upstream
 // API each talks to. The CLI/config layer enumerates providers from here so a
-// new provider is one row, not edits across the codebase. Imports gateway only
-// (never config — the OAuth hook takes cfgDir as a parameter).
+// new provider is one row, not edits across the codebase. Imports gateway and
+// gwcreds only (never config — the OAuth hook takes cfgDir as a parameter).
 package provider
 
 import (

@@ -53,7 +53,8 @@ func (f *fileStore) Save(s CredSnapshot) error {
 	return os.Rename(tmp, f.path)
 }
 
-// OAuthCred implements gateway.Credential for a Claude subscription OAuth token.
+// OAuthCred satisfies gateway.Credential (via structural typing) for a Claude
+// subscription OAuth token.
 // It refreshes the access token when within oauthRefreshMargin of expiry and
 // persists the rotated snapshot via the store.
 type OAuthCred struct {
