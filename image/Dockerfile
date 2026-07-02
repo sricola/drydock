@@ -39,10 +39,16 @@ RUN npm install -g @openai/codex@${CODEX_VERSION}
 ARG OPENCODE_VERSION=1.17.11
 RUN npm install -g --foreground-scripts opencode-ai@${OPENCODE_VERSION} && opencode --version
 
+# Pin the Gemini CLI for the native google vendor. Bump deliberately; every
+# drydock release anchors to a known version (0.49.0 validated by the 3B spike).
+ARG GEMINI_CLI_VERSION=0.49.0
+RUN npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
+
 RUN useradd -m -u 10001 -s /bin/bash agent
 COPY init-firewall.sh         /usr/local/bin/init-firewall.sh
 COPY entrypoint.sh            /usr/local/bin/entrypoint.sh
 COPY write-codex-config.sh    /usr/local/bin/write-codex-config.sh
 COPY write-opencode-config.sh /usr/local/bin/write-opencode-config.sh
-RUN chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh /usr/local/bin/write-codex-config.sh /usr/local/bin/write-opencode-config.sh
+COPY write-gemini-config.sh   /usr/local/bin/write-gemini-config.sh
+RUN chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh /usr/local/bin/write-codex-config.sh /usr/local/bin/write-opencode-config.sh /usr/local/bin/write-gemini-config.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

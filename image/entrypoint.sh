@@ -62,6 +62,27 @@ case "$AGENT" in
         opencode run "${PROMPT}" -m "drydock/${MODEL}" \
         --dangerously-skip-permissions --format json
     ;;
+  gemini)
+    # The gateway injects GOOGLE_GEMINI_BASE_URL + GEMINI_API_KEY (per-task
+    # bearer). The CLI (API-key mode) sends the bearer in x-goog-api-key; the
+    # gateway admits it and swaps in the real key. A settings.json pinning
+    # api-key auth is MANDATORY (env alone makes 0.49.0 pick a rejected auth
+    # type); it also disables phone-home so the CLI stays within egress limits.
+    : "${GOOGLE_GEMINI_BASE_URL:?missing GOOGLE_GEMINI_BASE_URL}"
+    : "${GEMINI_API_KEY:?missing GEMINI_API_KEY}"
+    MODEL="${DRYDOCK_MODEL:-gemini-2.5-pro}"
+    export GEMINI_DIR=/home/agent/.gemini
+    /usr/local/bin/write-gemini-config.sh "$GEMINI_DIR"
+    chown -R agent:agent "$GEMINI_DIR"
+    # VM is the isolation boundary: trust the workspace, skip the trust prompt.
+    exec gosu agent env \
+        "HOME=/home/agent" \
+        "GEMINI_DIR=$GEMINI_DIR" \
+        "GOOGLE_GEMINI_BASE_URL=$GOOGLE_GEMINI_BASE_URL" \
+        "GEMINI_API_KEY=$GEMINI_API_KEY" \
+        "GEMINI_CLI_TRUST_WORKSPACE=true" \
+        gemini -p "${PROMPT}" -m "${MODEL}" --skip-trust
+    ;;
   *)
     echo "drydock: unknown DRYDOCK_AGENT=$AGENT" >&2
     exit 64
