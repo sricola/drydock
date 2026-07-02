@@ -3,9 +3,49 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestAuthAgents_ExcludesOpencode asserts that authAgents() does not include
+// "opencode", which has no OAuthBackend and therefore cannot be bootstrapped
+// via `drydock auth`.
+func TestAuthAgents_ExcludesOpencode(t *testing.T) {
+	for _, a := range authAgents() {
+		if a == "opencode" {
+			t.Errorf("authAgents() must not include %q (no OAuthBackend)", a)
+		}
+	}
+}
+
+// TestAuthAgents_IncludesAuthCapable asserts that authAgents() includes every
+// agent that has an OAuthBackend wired (currently claude and codex).
+func TestAuthAgents_IncludesAuthCapable(t *testing.T) {
+	want := []string{"claude", "codex"}
+	got := authAgents()
+	for _, w := range want {
+		found := false
+		for _, a := range got {
+			if a == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("authAgents() missing auth-capable agent %q; got %v", w, got)
+		}
+	}
+}
+
+// TestAuthUsage_ExcludesOpencode asserts that the usage string produced by
+// authAgents does not advertise opencode as an auth subcommand.
+func TestAuthUsage_ExcludesOpencode(t *testing.T) {
+	usage := strings.Join(authAgents(), "|")
+	if strings.Contains(usage, "opencode") {
+		t.Errorf("auth usage string %q must not contain opencode", usage)
+	}
+}
 
 func TestParseClaudeCreds(t *testing.T) {
 	raw := []byte(`{"claudeAiOauth":{"accessToken":"a1","refreshToken":"r1","expiresAt":1750000000000}}`)

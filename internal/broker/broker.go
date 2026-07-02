@@ -22,6 +22,7 @@ import (
 	"drydock/internal/agent"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
+	"drydock/internal/provider"
 	"drydock/internal/remote"
 	"drydock/internal/runner"
 	"drydock/internal/stage"
@@ -1042,7 +1043,7 @@ func (b *Broker) resolveAgent(taskAgent string) (name string, prov creds.Provide
 	}
 	vendor, known := agent.Vendor(name)
 	if !known {
-		return name, nil, http.StatusBadRequest, "unknown agent: " + name + " (want claude|codex)"
+		return name, nil, http.StatusBadRequest, "unknown agent: " + name + " (want " + strings.Join(provider.Agents(), "|") + ")"
 	}
 	prov = b.Providers[vendor]
 	if prov == nil {

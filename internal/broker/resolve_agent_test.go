@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"drydock/internal/creds"
+	"drydock/internal/provider"
 )
 
 // fakeProvider satisfies creds.Provider for unit tests that do not exercise
@@ -42,5 +43,26 @@ func TestResolveAgent(t *testing.T) {
 				t.Fatalf("msg %q missing %q", msg, c.wantMsgSub)
 			}
 		})
+	}
+}
+
+// TestResolveAgent_UnknownNameAllProviders asserts that the unknown-agent error
+// message names every agent in the registry. This test drives the requirement
+// that the error string is derived from provider.Agents() rather than a
+// hardcoded subset.
+func TestResolveAgent_UnknownNameAllProviders(t *testing.T) {
+	fake := fakeProvider{}
+	b := &Broker{
+		Providers:    map[string]creds.Provider{"anthropic": fake},
+		DefaultAgent: "",
+	}
+	_, _, status, msg := b.resolveAgent("gpt5")
+	if status != 400 {
+		t.Fatalf("want status 400, got %d", status)
+	}
+	for _, a := range provider.Agents() {
+		if !strings.Contains(msg, a) {
+			t.Errorf("unknown-agent error %q missing registered agent %q", msg, a)
+		}
 	}
 }
