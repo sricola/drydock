@@ -87,10 +87,6 @@ func AdapterFor(repoRef, platform string) Adapter {
 // to capture output without polluting test output.
 var stderr io.Writer = os.Stderr
 
-type nilWriter struct{}
-
-func (nilWriter) Write(p []byte) (int, error) { return len(p), nil }
-
 // runCLI is the shared shell-out shape. Adapters only differ by argv. It is a
 // package var (not a plain func) so tests can swap it to capture the argv each
 // adapter builds without invoking the real vendor CLI.
