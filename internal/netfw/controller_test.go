@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"drydock/internal/egress"
 )
 
 func TestSquidController_AddRemoveTask(t *testing.T) {
@@ -16,7 +18,10 @@ func TestSquidController_AddRemoveTask(t *testing.T) {
 
 	c := NewSquidController("/bin/squid", filepath.Join(dir, "squid.conf"), dir)
 
-	if err := c.AddTask("task-abc", "sekret", []string{"api.github.com", "pypi.org"}); err != nil {
+	if err := c.AddTask("task-abc", "sekret", []egress.Domain{
+		{Host: "api.github.com", Ports: []int{443}},
+		{Host: "pypi.org", Ports: []int{443, 8080}},
+	}); err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
 
@@ -25,28 +30,29 @@ func TestSquidController_AddRemoveTask(t *testing.T) {
 	if !strings.Contains(string(tok), "task-abc sekret") {
 		t.Errorf("token file missing entry: %q", tok)
 	}
-	// Domains file: one host per line.
-	dom, _ := os.ReadFile(filepath.Join(dir, "task-acls", "task-abc.domains"))
-	if string(dom) != "api.github.com\npypi.org\n" {
-		t.Errorf("domains = %q", dom)
-	}
-	// Fragment: fast ACLs (dstdomain) before slow proxy_auth in the rule.
+	// Fragment: per-domain dstdomain+port ACL pairs, each allow rule requiring
+	// the port ACL, with the slow proxy_auth (u_) ACL LAST so a non-matching
+	// host/port short-circuits before any 407.
 	frag, _ := os.ReadFile(filepath.Join(dir, "task-acls", "task-abc.conf"))
 	fs := string(frag)
 	for _, want := range []string{
 		`acl u_task-abc proxy_auth task-abc`,
-		`acl d_task-abc dstdomain "` + filepath.Join(dir, "task-acls", "task-abc.domains") + `"`,
-		`http_access allow CONNECT SSL_ports d_task-abc u_task-abc`,
-		`http_access allow d_task-abc u_task-abc`,
+		`acl d_task-abc_0 dstdomain api.github.com`,
+		`acl p_task-abc_0 port 443`,
+		`http_access allow CONNECT SSL_ports d_task-abc_0 p_task-abc_0 u_task-abc`,
+		`http_access allow d_task-abc_0 p_task-abc_0 u_task-abc`,
+		`acl d_task-abc_1 dstdomain pypi.org`,
+		`acl p_task-abc_1 port 443 8080`,
+		`http_access allow CONNECT SSL_ports d_task-abc_1 p_task-abc_1 u_task-abc`,
+		`http_access allow d_task-abc_1 p_task-abc_1 u_task-abc`,
 	} {
 		if !strings.Contains(fs, want) {
 			t.Errorf("fragment missing %q\n%s", want, fs)
 		}
 	}
-	// d_ (dstdomain) must appear before u_ (proxy_auth) in the CONNECT rule.
-	rule := "http_access allow CONNECT SSL_ports d_task-abc u_task-abc"
-	if !strings.Contains(fs, rule) {
-		t.Errorf("CONNECT rule must order dstdomain before proxy_auth: %s", fs)
+	// No unrestricted (port-less) allow rule may survive for a widened domain.
+	if bareAllowRE.MatchString(fs) {
+		t.Errorf("widened fragment emitted an unrestricted allow rule:\n%s", fs)
 	}
 	if reconfigs != 1 {
 		t.Errorf("AddTask reconfigs = %d, want 1", reconfigs)
@@ -74,8 +80,8 @@ func TestSquidController_RemovePreservesOtherTasks(t *testing.T) {
 	squidReconfigure = func(_, _ string) error { return nil }
 
 	c := NewSquidController("/bin/squid", filepath.Join(dir, "squid.conf"), dir)
-	_ = c.AddTask("task-1", "s1", []string{"a.com"})
-	_ = c.AddTask("task-2", "s2", []string{"b.com"})
+	_ = c.AddTask("task-1", "s1", []egress.Domain{{Host: "a.com", Ports: []int{443}}})
+	_ = c.AddTask("task-2", "s2", []egress.Domain{{Host: "b.com", Ports: []int{443}}})
 	_ = c.RemoveTask("task-1")
 
 	tok, _ := os.ReadFile(filepath.Join(dir, "task-tokens"))
@@ -97,7 +103,7 @@ func TestSquidController_RemoveMissingIsIdempotent(t *testing.T) {
 	if err := c.RemoveTask("never-added"); err != nil {
 		t.Errorf("RemoveTask on a missing user should be a no-op, got %v", err)
 	}
-	_ = c.AddTask("task-1", "s1", []string{"a.com"})
+	_ = c.AddTask("task-1", "s1", []egress.Domain{{Host: "a.com", Ports: []int{443}}})
 	if err := c.RemoveTask("task-1"); err != nil {
 		t.Fatalf("first RemoveTask: %v", err)
 	}

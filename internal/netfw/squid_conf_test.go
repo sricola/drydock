@@ -8,17 +8,18 @@ import (
 )
 
 func TestCompileSquidConf_AuthAndInclude(t *testing.T) {
-	conf := CompileSquidConf("192.168.66.1:3128", "/run/squid-allow.txt", "/run",
+	conf := CompileSquidConf("192.168.66.1:3128", "/run/squid-default-acl.conf", "/run",
 		"/usr/local/bin/brokerd __squid-authhelper /run/task-tokens")
 
 	wantSubstrings := []string{
 		"http_port 192.168.66.1:3128",
 		`auth_param basic program /usr/local/bin/brokerd __squid-authhelper /run/task-tokens`,
-		"acl default_dst dstdomain \"/run/squid-allow.txt\"",
-		"http_access allow CONNECT default_dst SSL_ports",
-		"http_access allow default_dst",
+		"acl SSL_ports port 443",
+		"http_access deny CONNECT !SSL_ports",
+		"include /run/squid-default-acl.conf",
 		"include /run/task-acls/*.conf",
 		"http_access deny all",
+		"access_log /run/access.log squid", // must write logs into runDir, never "none"
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(conf, s) {

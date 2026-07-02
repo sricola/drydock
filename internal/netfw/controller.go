@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"drydock/internal/egress"
 )
 
 // squidReconfigure applies a live config reload. Package var so tests swap it.
@@ -38,10 +40,13 @@ func (c *SquidController) domainsPath(u string) string {
 }
 func (c *SquidController) fragPath(u string) string { return filepath.Join(c.aclDir(), u+".conf") }
 
-// AddTask registers user→secret + the user's allowed domains, writes the ACL
-// fragment, and reconfigures. ACL ordering: fast dstdomain before slow
-// proxy_auth, so non-extra hosts never trigger a 407.
-func (c *SquidController) AddTask(user, secret string, domains []string) error {
+// AddTask registers user→secret + the user's widened domains, writes the ACL
+// fragment, and reconfigures. Each domain gets a dstdomain + port ACL pair so
+// squid enforces the per-domain ports (not just the hostname). ACL ordering
+// within each allow rule: fast dstdomain/port before the slow proxy_auth ACL,
+// so a request for a host/port this task never widened short-circuits before
+// squid ever prompts for auth (no spurious 407).
+func (c *SquidController) AddTask(user, secret string, domains []egress.Domain) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := os.MkdirAll(c.aclDir(), 0o755); err != nil {
@@ -50,17 +55,17 @@ func (c *SquidController) AddTask(user, secret string, domains []string) error {
 	if err := c.upsertToken(user, secret); err != nil {
 		return err
 	}
-	// 0o600: per-task squid config read only by the broker-owned squid; no other
-	// local user needs them.
-	if err := os.WriteFile(c.domainsPath(user), []byte(strings.Join(domains, "\n")+"\n"), 0o600); err != nil {
-		return err
+	var b strings.Builder
+	fmt.Fprintf(&b, "acl u_%s proxy_auth %s\n", user, user)
+	for i, d := range domains {
+		writeDomainACL(&b,
+			fmt.Sprintf("d_%s_%d", user, i),
+			fmt.Sprintf("p_%s_%d", user, i),
+			d, "u_"+user)
 	}
-	frag := fmt.Sprintf(`acl u_%s proxy_auth %s
-acl d_%s dstdomain "%s"
-http_access allow CONNECT SSL_ports d_%s u_%s
-http_access allow d_%s u_%s
-`, user, user, user, c.domainsPath(user), user, user, user, user)
-	if err := os.WriteFile(c.fragPath(user), []byte(frag), 0o600); err != nil {
+	// 0o600: per-task squid config read only by the broker-owned squid; no other
+	// local user needs it.
+	if err := os.WriteFile(c.fragPath(user), []byte(b.String()), 0o600); err != nil {
 		return err
 	}
 	return squidReconfigure(c.binPath, c.confPath)

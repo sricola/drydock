@@ -10,32 +10,34 @@ import (
 	"syscall"
 )
 
-// CompileSquidConf renders a squid.conf that binds bindAddr and allows CONNECT
-// to :443 (and plain GET) for hosts in allowlistPath (default dstdomain file),
-// with no auth. Per-task widening fragments are pulled in via the trailing
-// include; each fragment authorizes a single task's extra hosts behind a
-// proxy_auth ACL. helperCmd is the full "program ..." value for the basic-auth
-// auth_param (the brokerd binary re-invoked as __squid-authhelper <tokenfile>).
-func CompileSquidConf(bindAddr, allowlistPath, runDir, helperCmd string) string {
+// CompileSquidConf renders a squid.conf that binds bindAddr and enforces the
+// default egress policy from defaultACLPath (a generated block of per-domain
+// dstdomain+port ACLs and their allow rules — see CompileSquidAllowlist), with
+// no auth. That include sits after the SSL_ports/CONNECT ACLs it references and
+// after the global `deny CONNECT !SSL_ports` guard (CONNECT stays 443-only).
+// Per-task widening fragments are pulled in via the trailing include; each
+// fragment authorizes a single task's extra hosts (with their own port ACLs)
+// behind a proxy_auth ACL. helperCmd is the full "program ..." value for the
+// basic-auth auth_param (the brokerd binary re-invoked as __squid-authhelper
+// <tokenfile>).
+func CompileSquidConf(bindAddr, defaultACLPath, runDir, helperCmd string) string {
 	return fmt.Sprintf(`http_port %s
 auth_param basic program %s
 auth_param basic children 2 startup=0 idle=1
-acl default_dst dstdomain "%s"
 acl SSL_ports port 443
 acl CONNECT method CONNECT
 http_access deny CONNECT !SSL_ports
-http_access allow CONNECT default_dst SSL_ports
-http_access allow default_dst
+include %s
 include %s/task-acls/*.conf
 http_access deny all
 dns_nameservers 1.1.1.1 8.8.8.8
 cache deny all
 cache_log %s/cache.log
-access_log none
+access_log %s/access.log squid
 pid_filename %s/squid.pid
 forwarded_for delete
 via off
-`, bindAddr, helperCmd, allowlistPath, runDir, runDir, runDir)
+`, bindAddr, helperCmd, defaultACLPath, runDir, runDir, runDir, runDir)
 }
 
 // taskACLPlaceholder is a comment-only fragment kept in task-acls/ so squid's
@@ -87,9 +89,12 @@ func FindSquid() (string, error) {
 	return "", fmt.Errorf("netfw: squid binary not found (brew install squid)")
 }
 
-// StartSquid writes the allowlist + conf into runDir and launches squid in the
-// foreground (-N) bound to bindAddr (e.g. 192.168.66.1:3128).
-func StartSquid(binPath, bindAddr, allowlist, runDir, helperCmd string) (*Squid, error) {
+// StartSquid writes the generated default-ACL block + conf into runDir and
+// launches squid in the foreground (-N) bound to bindAddr (e.g.
+// 192.168.66.1:3128). defaultACL is the CompileSquidAllowlist output — a squid
+// config fragment of per-domain dstdomain+port ACLs and allow rules — which the
+// conf pulls in via `include`.
+func StartSquid(binPath, bindAddr, defaultACL, runDir, helperCmd string) (*Squid, error) {
 	// squid.conf interpolates runDir into unquoted paths (the include glob,
 	// pid_filename, cache_log) and the auth helper command, none of which squid
 	// parses with embedded whitespace — and the include glob can't be quoted
@@ -101,12 +106,12 @@ func StartSquid(binPath, bindAddr, allowlist, runDir, helperCmd string) (*Squid,
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
 	}
-	allowPath := filepath.Join(runDir, "squid-allow.txt")
+	defaultACLPath := filepath.Join(runDir, "squid-default-acl.conf")
 	confPath := filepath.Join(runDir, "squid.conf")
-	if err := os.WriteFile(allowPath, []byte(allowlist), 0o644); err != nil {
+	if err := os.WriteFile(defaultACLPath, []byte(defaultACL), 0o644); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(confPath, []byte(CompileSquidConf(bindAddr, allowPath, runDir, helperCmd)), 0o644); err != nil {
+	if err := os.WriteFile(confPath, []byte(CompileSquidConf(bindAddr, defaultACLPath, runDir, helperCmd)), 0o644); err != nil {
 		return nil, err
 	}
 	// Clear stale per-task widening state from a prior hard-killed broker.

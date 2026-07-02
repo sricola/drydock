@@ -3,6 +3,7 @@ package egress
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -43,6 +44,15 @@ func ValidateHost(host string) error {
 	}
 	if len(host) > 253 {
 		return fmt.Errorf("egress: host too long: %q", host)
+	}
+	// IP address literals are rejected before the hostname regex: squid's
+	// dstdomain ACL treats an IP literal as an exact IP match rather than a
+	// hostname, but the egress config is for hostname-based policy only.
+	// Allowing an IP would let a user pin a policy entry to a current IP that
+	// may rotate, silently widening egress when that IP is reused by a
+	// different host.
+	if net.ParseIP(host) != nil {
+		return fmt.Errorf("egress: IP address literals not allowed: %q", host)
 	}
 	if strings.HasPrefix(host, ".") || strings.HasPrefix(host, "*") {
 		return fmt.Errorf("egress: wildcard host not allowed: %q", host)
@@ -99,16 +109,4 @@ func Load(path string) (Config, error) {
 		return cfg, fmt.Errorf("egress config %s: %w", path, err)
 	}
 	return cfg, nil
-}
-
-// CompileAllowlist renders "<host> <port>" lines consumed by init-firewall.sh.
-// Default domains come first, then approved per-task extras.
-func CompileAllowlist(cfg Config, extra []Domain) string {
-	var b strings.Builder
-	for _, d := range append(append([]Domain{}, cfg.Default.Domains...), extra...) {
-		for _, p := range d.Ports {
-			fmt.Fprintf(&b, "%s %d\n", d.Host, p)
-		}
-	}
-	return b.String()
 }

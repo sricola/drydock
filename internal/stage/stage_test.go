@@ -68,16 +68,18 @@ func TestPrepare_SeparatesGitFromWorkTree(t *testing.T) {
 
 func TestWriteTaskFiles(t *testing.T) {
 	s := prepare(t, makeOriginRepo(t))
-	if err := s.WriteTaskFiles("do the thing", "api.anthropic.com 443\n"); err != nil {
+	if err := s.WriteTaskFiles("do the thing"); err != nil {
 		t.Fatalf("WriteTaskFiles: %v", err)
 	}
 	p, _ := os.ReadFile(filepath.Join(s.WorkDir, ".task", "prompt.txt"))
 	if string(p) != "do the thing" {
 		t.Errorf("prompt.txt = %q", p)
 	}
-	a, _ := os.ReadFile(filepath.Join(s.WorkDir, ".task", "allowlist.txt"))
-	if string(a) != "api.anthropic.com 443\n" {
-		t.Errorf("allowlist.txt = %q", a)
+	// Egress is enforced host-side by squid; no allowlist file is written into
+	// the VM-visible work tree (nothing in-VM reads it, and a bogus "allowlist"
+	// there would falsely imply in-VM enforcement).
+	if _, err := os.Stat(filepath.Join(s.WorkDir, ".task", "allowlist.txt")); !os.IsNotExist(err) {
+		t.Errorf("allowlist.txt should not be written into the work tree: err=%v", err)
 	}
 }
 
@@ -93,11 +95,11 @@ func TestCaptureDiff_SeesChange(t *testing.T) {
 	}
 }
 
-// The .task control dir must never leak into the diff (it holds the agent prompt
-// and the compiled egress allowlist, which would otherwise be pushed into the PR).
+// The .task control dir must never leak into the diff (it holds the agent
+// prompt, which would otherwise be pushed into the PR).
 func TestCaptureDiff_ExcludesTaskDir(t *testing.T) {
 	s := prepare(t, makeOriginRepo(t))
-	if err := s.WriteTaskFiles("secret prompt", "api.anthropic.com 443\n"); err != nil {
+	if err := s.WriteTaskFiles("secret prompt"); err != nil {
 		t.Fatalf("WriteTaskFiles: %v", err)
 	}
 	os.WriteFile(filepath.Join(s.WorkDir, "README.md"), []byte("hello\nworld\n"), 0o644)

@@ -28,6 +28,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"drydock/internal/egress"
 )
 
 const (
@@ -58,14 +60,16 @@ func TestEgressWidening_E2E(t *testing.T) {
 	tokenPath := filepath.Join(runDir, "task-tokens")
 	helperCmd := fmt.Sprintf("%s __squid-authhelper %s", helperBin, tokenPath)
 
-	// Default allowlist deliberately does NOT contain the widened host, so the
+	// Default ACL block deliberately does NOT contain the widened host, so the
 	// only way the VM reaches it is via the per-task widening credential.
-	allowPath := filepath.Join(runDir, "squid-allow.txt")
-	if err := os.WriteFile(allowPath, []byte("registry.npmjs.org\n"), 0o644); err != nil {
+	var defCfg egress.Config
+	defCfg.Default.Domains = []egress.Domain{{Host: "registry.npmjs.org", Ports: []int{443}}}
+	defaultACLPath := filepath.Join(runDir, "squid-default-acl.conf")
+	if err := os.WriteFile(defaultACLPath, []byte(CompileSquidAllowlist(defCfg)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	confPath := filepath.Join(runDir, "squid.conf")
-	if err := os.WriteFile(confPath, []byte(CompileSquidConf(e2eProxyAddr, allowPath, runDir, helperCmd)), 0o644); err != nil {
+	if err := os.WriteFile(confPath, []byte(CompileSquidConf(e2eProxyAddr, defaultACLPath, runDir, helperCmd)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := ResetTaskState(runDir); err != nil {
@@ -101,7 +105,7 @@ func TestEgressWidening_E2E(t *testing.T) {
 	// 3) Register the per-task widening credential via the real controller.
 	const user, secret = "task-e2e", "e2e-secret-xyz"
 	ctl := NewSquidController(squidBin, confPath, runDir)
-	if err := ctl.AddTask(user, secret, []string{e2eWidened}); err != nil {
+	if err := ctl.AddTask(user, secret, []egress.Domain{{Host: e2eWidened, Ports: []int{443}}}); err != nil {
 		t.Fatalf("AddTask: %v", err)
 	}
 	t.Cleanup(func() { _ = ctl.RemoveTask(user) })
