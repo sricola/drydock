@@ -85,6 +85,27 @@ func TestOAuthProviders_FilenameConsistency(t *testing.T) {
 	}
 }
 
+// TestOAuthFile_BackwardCompat pins the on-disk credential filenames to their
+// exact historical values. These names are a compatibility contract: existing
+// installs have ~/.drydock/<name> and brokerd/doctor resolve the same path, so
+// a rename would silently orphan users' stored credentials. The consistency
+// test above only proves write==read within one run; this pins the literal.
+func TestOAuthFile_BackwardCompat(t *testing.T) {
+	want := map[string]string{
+		"claude": "claude-oauth.json",
+		"codex":  "codex-oauth.json",
+	}
+	for agent, name := range want {
+		p, ok := ByAgent(agent)
+		if !ok {
+			t.Fatalf("ByAgent(%q) not found", agent)
+		}
+		if p.OAuthFile != name {
+			t.Errorf("%s: OAuthFile = %q, want %q (renaming breaks existing credential files)", agent, p.OAuthFile, name)
+		}
+	}
+}
+
 func TestRegistry_OpenAICompatRow(t *testing.T) {
 	p, ok := ByAgent("opencode")
 	if !ok || p.Vendor != "openai-compat" {

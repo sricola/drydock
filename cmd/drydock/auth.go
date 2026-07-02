@@ -155,7 +155,10 @@ func bootstrapClaudeCred(cfgDir string) error {
 	if err != nil {
 		return err
 	}
-	p, _ := provider.ByAgent("claude")
+	p, ok := provider.ByAgent("claude")
+	if !ok {
+		return fmt.Errorf("auth: claude provider not registered")
+	}
 	return gateway.FileCredStore(filepath.Join(cfgDir, p.OAuthFile)).Save(snap)
 }
 
@@ -224,7 +227,10 @@ func bootstrapCodexCred(cfgDir string) error {
 	if err != nil {
 		return err
 	}
-	p, _ := provider.ByAgent("codex")
+	p, ok := provider.ByAgent("codex")
+	if !ok {
+		return fmt.Errorf("auth: codex provider not registered")
+	}
 	store := gateway.NewCodexStore(filepath.Join(cfgDir, p.OAuthFile))
 	return store.Put(snap, account)
 }
