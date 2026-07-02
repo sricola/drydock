@@ -9,6 +9,24 @@ import (
 	"drydock/internal/egress"
 )
 
+func TestSquidController_Rotate(t *testing.T) {
+	dir := t.TempDir()
+	var gotBin, gotConf string
+	var calls int
+	orig := squidRotate
+	t.Cleanup(func() { squidRotate = orig })
+	squidRotate = func(bin, conf string) error { calls++; gotBin, gotConf = bin, conf; return nil }
+
+	confPath := filepath.Join(dir, "squid.conf")
+	c := NewSquidController("/bin/squid", confPath, dir)
+	if err := c.Rotate(); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if calls != 1 || gotBin != "/bin/squid" || gotConf != confPath {
+		t.Errorf("Rotate invoked squid rotate wrong: calls=%d bin=%q conf=%q", calls, gotBin, gotConf)
+	}
+}
+
 func TestSquidController_AddRemoveTask(t *testing.T) {
 	dir := t.TempDir()
 	var reconfigs int

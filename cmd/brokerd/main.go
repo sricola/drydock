@@ -192,6 +192,18 @@ func main() {
 		slog.Info("squid listening", "addr", proxyAddr)
 		confPath := filepath.Join(cfg.SquidRunDir, "squid.conf")
 		squidCtl = netfw.NewSquidController(bin, confPath, cfg.SquidRunDir)
+		// Roll squid's access/cache logs daily so they can't grow without bound
+		// on a broker that runs for weeks. `logfile_rotate 10` in the conf caps
+		// retained generations. The goroutine dies with the process on exit.
+		go func(ctl *netfw.SquidController) {
+			t := time.NewTicker(24 * time.Hour)
+			defer t.Stop()
+			for range t.C {
+				if rerr := ctl.Rotate(); rerr != nil {
+					slog.Warn("squid log rotate failed", "err", rerr)
+				}
+			}
+		}(squidCtl)
 	}
 
 	// Stop squid and remove the anchor. Used both on signal and on a fatal

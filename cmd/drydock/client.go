@@ -60,8 +60,9 @@ func brokerdDown(err error) bool {
 	if err == nil {
 		return false
 	}
-	if os.Getenv("BROKER_ADDR") != "" {
-		// TCP mode — most "refused" looks the same; don't second-guess.
+	if brokerclient.ResolveAddr() != "" {
+		// TCP mode (BROKER_ADDR env or config.yaml broker.addr) — most "refused"
+		// looks the same; don't second-guess with the socket-file hint.
 		return false
 	}
 	if _, ferr := os.Stat(socketPath()); os.IsNotExist(ferr) {

@@ -20,6 +20,16 @@ var squidReconfigure = func(binPath, confPath string) error {
 	return nil
 }
 
+// squidRotate rolls the access/cache logs, keeping the `logfile_rotate`
+// generations set in the conf. Package var so tests swap it.
+var squidRotate = func(binPath, confPath string) error {
+	out, err := exec.Command(binPath, "-k", "rotate", "-f", confPath).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("netfw: squid rotate: %w\n%s", err, out)
+	}
+	return nil
+}
+
 // SquidController owns the per-task token file and ACL fragments under runDir
 // and serializes all mutations + reconfigures behind a single mutex.
 type SquidController struct {
@@ -88,6 +98,15 @@ func (c *SquidController) RemoveTask(user string) error {
 		return err
 	}
 	return squidReconfigure(c.binPath, c.confPath)
+}
+
+// Rotate rolls squid's access/cache logs so they don't grow without bound on a
+// long-running broker. It keeps the `logfile_rotate` generations from the conf.
+// Serialized behind the same mutex as reconfigures so it can't race a widening.
+func (c *SquidController) Rotate() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return squidRotate(c.binPath, c.confPath)
 }
 
 func (c *SquidController) upsertToken(user, secret string) error {
