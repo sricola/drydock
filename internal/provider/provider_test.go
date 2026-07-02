@@ -163,10 +163,16 @@ func TestGatewayHosts(t *testing.T) {
 			t.Errorf("GatewayHosts() missing %q", h)
 		}
 	}
-	// ConfigBuilt providers (openai-compat) must not appear.
+	// Only providers with a static APIVendor contribute a host; config-built
+	// providers (nil APIVendor, e.g. openai-compat) must contribute nothing, so
+	// the host count must equal the number of static-vendor providers.
+	staticVendors := 0
 	for _, p := range Registry {
-		if p.ConfigBuilt && p.APIVendor == nil {
-			continue // expected: config-built providers are excluded
+		if p.APIVendor != nil {
+			staticVendors++
 		}
+	}
+	if len(hosts) != staticVendors {
+		t.Errorf("GatewayHosts() len=%d, want %d (one per static-APIVendor provider)", len(hosts), staticVendors)
 	}
 }

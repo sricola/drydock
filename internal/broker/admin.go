@@ -40,8 +40,9 @@ func (b *Broker) HandleTasks(w http.ResponseWriter, r *http.Request) {
 		out = append(out, &cp)
 	}
 	b.pendingMu.Unlock()
-	// Stable order: oldest first.
-	slices.SortFunc(out, func(a, b *TaskState) int {
+	// Stable order: oldest first (SortStableFunc keeps registration order for
+	// tasks sharing a StartedAt at nanosecond precision).
+	slices.SortStableFunc(out, func(a, b *TaskState) int {
 		return cmp.Compare(a.StartedAt.UnixNano(), b.StartedAt.UnixNano())
 	})
 	writeJSON(w, out)
