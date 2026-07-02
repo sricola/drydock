@@ -16,7 +16,10 @@ const opencodeScriptRel = "../../image/write-opencode-config.sh"
 func runWriteOpencodeConfig(t *testing.T, gwBase, model, key string) map[string]any {
 	t.Helper()
 	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq not installed; write-opencode-config.sh needs it")
+		if os.Getenv("CI") != "" {
+			t.Fatal("jq must be installed in CI; write-opencode-config.sh requires it")
+		}
+		t.Skip("jq not installed; write-opencode-config.sh needs it (skip in local dev)")
 	}
 	home := t.TempDir()
 	cmd := exec.Command("bash", opencodeScriptRel, gwBase, model, home)

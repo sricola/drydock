@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test redteam redteam-vm demo sbom docs verify-build vet lint image network init clean help
+.PHONY: all build install uninstall test test-squid-live test-squid-e2e redteam redteam-vm demo sbom docs verify-build vet lint image network init clean help
 
 all: build
 
@@ -21,6 +21,8 @@ help:
 	@echo "  install     binaries into \$$PREFIX/bin, image+config into \$$PREFIX/share/drydock (PREFIX=$(PREFIX))"
 	@echo "  uninstall   remove installed binaries + share"
 	@echo "  test        go test -race ./..."
+	@echo "  test-squid-live  proxy-auth path (squidlive tag); requires squid on PATH"
+	@echo "  test-squid-e2e   VM-level egress widening (squide2e tag); requires container runtime + images + squid"
 	@echo "  redteam     run the host-side adversarial containment suite (A3-A6)"
 	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7); macOS + container runtime"
 	@echo "  demo        run the narrated breach demo (real attacks; add VM=1 for A1/A2/A7)"
@@ -60,6 +62,19 @@ uninstall:
 
 test:
 	go test -race -count=1 ./...
+
+# Squid-backed proxy-auth test: boots a real squid on the loopback interface,
+# exercises AddTask/RemoveTask and the brokerd __squid-authhelper end-to-end.
+# Requires: squid on PATH (Homebrew: brew install squid). No container runtime.
+test-squid-live:
+	go test -tags squidlive ./internal/netfw/ -run TestSquidProxyAuth_Live -v
+
+# Full VM-level egress widening test: real sandbox container on the drydock-egress
+# vmnet, real init-firewall.sh nft default-deny pin, real squid, real auth helper.
+# Requires: container system start; drydock-sandbox:latest + drydock-anchor:latest
+# images (make image); the drydock-egress network (make network); squid on PATH.
+test-squid-e2e:
+	go test -tags squide2e ./internal/netfw/ -run TestEgressWidening_E2E -v
 
 # Integration tests boot brokerd as a subprocess and exercise the HTTP +
 # CLI surface against a real Apple container runtime. Macos-only; requires
