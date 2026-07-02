@@ -558,6 +558,51 @@ func TestServeHTTP_OAuthVendor_StripRequestFields(t *testing.T) {
 	}
 }
 
+func TestServeHTTP_BearerWinsOverGoogleKeyHeader(t *testing.T) {
+	// A valid Authorization: Bearer must admit even when a (bogus) x-goog-api-key
+	// is also present — Authorization takes priority and the key header is not
+	// consulted for admission.
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"gemini-2.5-pro"}`))
+	}))
+	defer up.Close()
+	v := GoogleVendor()
+	v.BaseURL = up.URL
+	g, err := New(Backend{Vendor: v, Cred: StaticKey("REAL-KEY")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := g.Mint("google", 1.0, 0, time.Minute)
+
+	r := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	r.Header.Set("X-Goog-Api-Key", "not-a-real-token")
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200 (valid Bearer must admit regardless of x-goog-api-key)", w.Code)
+	}
+}
+
+func TestServeHTTP_MalformedAuthDoesNotFallBack(t *testing.T) {
+	// A present-but-malformed Authorization must NOT fall back to x-goog-api-key;
+	// a valid token in the key header alongside a bad Authorization is rejected.
+	g, err := New(Backend{Vendor: GoogleVendor(), Cred: StaticKey("REAL-KEY")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := g.Mint("google", 1.0, 0, time.Minute)
+	r := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
+	r.Header.Set("Authorization", "Basic Zm9vOmJhcg==") // malformed (not Bearer)
+	r.Header.Set("X-Goog-Api-Key", tok)                 // valid token, but must be ignored
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 401 {
+		t.Fatalf("status = %d, want 401 (malformed Authorization must not fall back to x-goog-api-key)", w.Code)
+	}
+}
+
 func TestServeHTTP_AdmitsGoogleKeyHeader(t *testing.T) {
 	// Fake upstream records the injected key.
 	var gotKey string

@@ -133,12 +133,16 @@ func (g *Gateway) admit(token string) (*Lease, int) {
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tok := ""
-	if a := r.Header.Get("Authorization"); len(a) > 7 && a[:7] == "Bearer " {
-		tok = a[7:]
-	} else if k := r.Header.Get("X-Goog-Api-Key"); k != "" {
-		// The Gemini CLI (API-key mode) presents the per-task bearer here, not
-		// as an Authorization: Bearer header. Admission is otherwise identical.
-		tok = k
+	auth := r.Header.Get("Authorization")
+	switch {
+	case len(auth) > 7 && auth[:7] == "Bearer ":
+		tok = auth[7:]
+	case auth == "":
+		// Only when there is NO Authorization header do we accept the per-task
+		// bearer from x-goog-api-key — the Gemini CLI (API-key mode) presents it
+		// there. A present-but-malformed Authorization is not a fallback path, so
+		// a stray Google key header can't bypass a bad bearer.
+		tok = r.Header.Get("X-Goog-Api-Key")
 	}
 	lease, status := g.admit(tok)
 	if status != 0 {
