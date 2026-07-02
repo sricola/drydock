@@ -48,6 +48,20 @@ func OpenAIPrices() map[string]Price {
 	}
 }
 
+// GooglePrices seeds the per-task budget gate for Gemini tasks. USD per 1M
+// tokens, approximate (≤200k-context tier; the >200k tier carries a premium not
+// modeled here). "default" is keyed to Pro (the family high end) so a new model
+// can't overrun the budget before this table catches up. Keys match the
+// modelVersion string parseGoogleUsage extracts.
+func GooglePrices() map[string]Price {
+	return map[string]Price{
+		"gemini-2.5-pro":        {InputPer1M: 1.25, OutputPer1M: 10},
+		"gemini-2.5-flash":      {InputPer1M: 0.30, OutputPer1M: 2.50},
+		"gemini-2.5-flash-lite": {InputPer1M: 0.10, OutputPer1M: 0.40},
+		"default":               {InputPer1M: 1.25, OutputPer1M: 10},
+	}
+}
+
 func cost(prices map[string]Price, model string, in, out int) float64 {
 	p, ok := prices[model]
 	if !ok {

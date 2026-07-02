@@ -124,3 +124,48 @@ func openaiUsageFromJSON(b []byte) (model string, in, out int, ok bool) {
 	}
 	return model, in, out, true
 }
+
+// parseGoogleUsage extracts (model, input, output) from a Gemini response.
+// Input = promptTokenCount; output = candidatesTokenCount + thoughtsTokenCount
+// (Gemini 2.5 bills thinking tokens as output). Handles non-streaming JSON and
+// SSE (alt=sse), keeping the last usageMetadata seen (the final chunk carries
+// the cumulative totals). model comes from modelVersion.
+func parseGoogleUsage(body []byte, contentType string) (model string, in, out int, ok bool) {
+	if strings.Contains(contentType, "text/event-stream") {
+		for _, line := range strings.Split(string(body), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data == "" {
+				continue
+			}
+			if m, i, o, k := googleUsageFromJSON([]byte(data)); k {
+				model, in, out, ok = m, i, o, k
+			}
+		}
+		return
+	}
+	return googleUsageFromJSON(body)
+}
+
+func googleUsageFromJSON(b []byte) (model string, in, out int, ok bool) {
+	var m struct {
+		ModelVersion  string `json:"modelVersion"`
+		UsageMetadata *struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			ThoughtsTokenCount   int `json:"thoughtsTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if json.Unmarshal(b, &m) != nil || m.UsageMetadata == nil {
+		return "", 0, 0, false
+	}
+	in = m.UsageMetadata.PromptTokenCount
+	out = m.UsageMetadata.CandidatesTokenCount + m.UsageMetadata.ThoughtsTokenCount
+	if in == 0 && out == 0 {
+		return "", 0, 0, false
+	}
+	return m.ModelVersion, in, out, true
+}

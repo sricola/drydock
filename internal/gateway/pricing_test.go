@@ -22,6 +22,24 @@ func TestCost_FallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestGooglePrices_MetersKnownAndDefault(t *testing.T) {
+	p := GooglePrices()
+	if _, ok := p["gemini-2.5-pro"]; !ok {
+		t.Fatal("missing gemini-2.5-pro")
+	}
+	if _, ok := p["default"]; !ok {
+		t.Fatal("missing default fallback")
+	}
+	// 1M in + 1M out on Pro = 1.25 + 10 = 11.25
+	if got := cost(p, "gemini-2.5-pro", 1_000_000, 1_000_000); got != 11.25 {
+		t.Errorf("pro cost = %v, want 11.25", got)
+	}
+	// Unknown model falls back to default (Pro high end), not $0.
+	if got := cost(p, "gemini-9-ultra", 1_000_000, 0); got != 1.25 {
+		t.Errorf("unknown-model input cost = %v, want 1.25 (default)", got)
+	}
+}
+
 // The seeded table must (a) cover the current 4.x families, (b) have a
 // fallback that's at least as expensive as the priciest known model, so an
 // unknown release can't accidentally undercount and overrun the budget.

@@ -66,3 +66,28 @@ func TestParseUsage_SSE(t *testing.T) {
 		t.Fatalf("got (%q,%d,%d,%v)", model, in, out, ok)
 	}
 }
+
+func TestParseGoogleUsage_NonStreaming(t *testing.T) {
+	body := []byte(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],
+		"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":40,"thoughtsTokenCount":10,"totalTokenCount":150},
+		"modelVersion":"gemini-2.5-pro"}`)
+	model, in, out, ok := parseGoogleUsage(body, "application/json")
+	if !ok || model != "gemini-2.5-pro" || in != 100 || out != 50 { // 40 + 10 thoughts
+		t.Fatalf("got model=%q in=%d out=%d ok=%v; want gemini-2.5-pro/100/50/true", model, in, out, ok)
+	}
+}
+
+func TestParseGoogleUsage_SSEKeepsLast(t *testing.T) {
+	body := []byte("data: {\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":10},\"modelVersion\":\"gemini-2.5-flash\"}\n\n" +
+		"data: {\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":42},\"modelVersion\":\"gemini-2.5-flash\"}\n\n")
+	model, in, out, ok := parseGoogleUsage(body, "text/event-stream")
+	if !ok || model != "gemini-2.5-flash" || in != 100 || out != 42 {
+		t.Fatalf("got model=%q in=%d out=%d ok=%v; want gemini-2.5-flash/100/42/true (last wins)", model, in, out, ok)
+	}
+}
+
+func TestParseGoogleUsage_NoUsage(t *testing.T) {
+	if _, _, _, ok := parseGoogleUsage([]byte(`{"candidates":[]}`), "application/json"); ok {
+		t.Error("a body with no usageMetadata must return ok=false")
+	}
+}

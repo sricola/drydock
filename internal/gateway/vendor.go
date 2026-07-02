@@ -126,12 +126,6 @@ func stripQueryParam(u *url.URL, key string) {
 	}
 }
 
-// --- Task 2 replaces these two stub bodies ---
-func parseGoogleUsage(body []byte, contentType string) (model string, in, out int, ok bool) {
-	return "", 0, 0, false
-}
-func GooglePrices() map[string]Price { return map[string]Price{} }
-
 // OpenAICompatVendor is a config-driven OpenAI-compatible upstream (Gemini's
 // /v1beta/openai endpoint, OpenRouter, a local server, …). It reuses OpenAI's
 // bearer auth and usage parsing; the operator supplies the base URL, an
