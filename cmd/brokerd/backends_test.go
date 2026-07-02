@@ -22,6 +22,7 @@ func TestBuildBackends_OpenAICompat(t *testing.T) {
 	// and build additional backends alongside the compat one.
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
 
 	backends, err := buildBackends(cfg, fileKeys)
 	if err != nil {
@@ -63,6 +64,7 @@ func TestBuildBackends_OpenAICompat_Prices(t *testing.T) {
 	fileKeys := map[string]string{"TEST_OC_KEY": "sk-real"}
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
 
 	backends, err := buildBackends(cfg, fileKeys)
 	if err != nil {
@@ -135,6 +137,7 @@ func TestBuildBackends_Empty(t *testing.T) {
 	// accidentally supply a live key.
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
 
 	_, err := buildBackends(cfg, map[string]string{})
 	if err == nil {
@@ -222,4 +225,40 @@ func TestOpenAICompatWarnings(t *testing.T) {
 			}
 		}
 	})
+}
+
+// hasVendor reports whether any backend in bs has the given vendor name.
+func hasVendor(bs []gateway.Backend, name string) bool {
+	for _, b := range bs {
+		if b.Vendor.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBuildBackends_GeminiOptIn confirms that the google backend is built iff
+// GEMINI_API_KEY resolves — with NO changes to buildBackends (the default
+// api_key branch handles it automatically via the registry row).
+func TestBuildBackends_GeminiOptIn(t *testing.T) {
+	base := &config.Config{} // no auth-mode fields set → api_key default for all
+
+	// Absent key: no google backend.
+	t.Setenv("GEMINI_API_KEY", "")
+	bs, err := buildBackends(base, map[string]string{"ANTHROPIC_API_KEY": "sk-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasVendor(bs, "google") {
+		t.Error("google backend must be absent when GEMINI_API_KEY is unset")
+	}
+
+	// Present key: google backend appears.
+	bs, err = buildBackends(base, map[string]string{"ANTHROPIC_API_KEY": "sk-a", "GEMINI_API_KEY": "sk-g"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasVendor(bs, "google") {
+		t.Error("google backend must be built when GEMINI_API_KEY resolves")
+	}
 }

@@ -7,8 +7,8 @@ import (
 )
 
 func TestRegistry_Agents(t *testing.T) {
-	if got := Agents(); len(got) != 3 || got[0] != "claude" || got[1] != "codex" || got[2] != "opencode" {
-		t.Errorf("Agents() = %v, want [claude codex opencode]", got)
+	if got := Agents(); len(got) != 4 || got[0] != "claude" || got[1] != "codex" || got[2] != "gemini" || got[3] != "opencode" {
+		t.Errorf("Agents() = %v, want [claude codex gemini opencode]", got)
 	}
 }
 
@@ -34,8 +34,13 @@ func TestRegistry_EntriesComplete(t *testing.T) {
 		if p.Agent == "" || p.Vendor == "" || p.Label == "" || p.BaseURLEnv == "" || p.TokenEnv == "" {
 			t.Errorf("incomplete registry entry: %+v", p)
 		}
-		if !p.ConfigBuilt && (p.APIKeyEnv == "" || p.AuthCmd == "" || p.APIVendor == nil) {
-			t.Errorf("static provider missing APIKeyEnv/AuthCmd/APIVendor: %+v", p)
+		if !p.ConfigBuilt && (p.APIKeyEnv == "" || p.APIVendor == nil) {
+			t.Errorf("static provider missing APIKeyEnv/APIVendor: %+v", p)
+		}
+		// AuthCmd is required only for providers that support subscription mode
+		// (OAuthBackend != nil); api-key-only providers (e.g. gemini) may omit it.
+		if !p.ConfigBuilt && p.OAuthBackend != nil && p.AuthCmd == "" {
+			t.Errorf("provider with subscription mode missing AuthCmd (remediation hint): %+v", p)
 		}
 	}
 }
@@ -150,10 +155,11 @@ func TestVendorForAgent(t *testing.T) {
 
 func TestGatewayHosts(t *testing.T) {
 	hosts := GatewayHosts()
-	// The static registry must produce exactly the two gateway-fronted API hosts.
+	// The static registry must produce exactly the gateway-fronted API hosts.
 	want := map[string]bool{
-		"api.anthropic.com": true,
-		"api.openai.com":    true,
+		"api.anthropic.com":                 true,
+		"api.openai.com":                    true,
+		"generativelanguage.googleapis.com": true,
 	}
 	if len(hosts) != len(want) {
 		t.Fatalf("GatewayHosts() len=%d, want %d: got %v", len(hosts), len(want), hosts)
@@ -174,5 +180,34 @@ func TestGatewayHosts(t *testing.T) {
 	}
 	if len(hosts) != staticVendors {
 		t.Errorf("GatewayHosts() len=%d, want %d (one per static-APIVendor provider)", len(hosts), staticVendors)
+	}
+}
+
+func TestRegistry_GeminiRow(t *testing.T) {
+	p, ok := ByAgent("gemini")
+	if !ok {
+		t.Fatal("gemini agent not registered")
+	}
+	if p.Vendor != "google" || p.APIKeyEnv != "GEMINI_API_KEY" ||
+		p.BaseURLEnv != "GOOGLE_GEMINI_BASE_URL" || p.TokenEnv != "GEMINI_API_KEY" {
+		t.Errorf("gemini row fields wrong: %+v", p)
+	}
+	if p.APIVendor == nil {
+		t.Error("gemini must have a static APIVendor (native, not config-built)")
+	}
+	if p.ConfigBuilt || p.OAuthBackend != nil {
+		t.Error("gemini is api-key-only native: ConfigBuilt=false, OAuthBackend=nil")
+	}
+	if !p.NoOperatorDefault {
+		t.Error("gemini must set NoOperatorDefault (operator default_model is claude/codex-oriented)")
+	}
+	if v := p.APIVendor(); v.Name != "google" {
+		t.Errorf("APIVendor().Name = %q, want google", v.Name)
+	}
+}
+
+func TestGatewayHosts_IncludesGemini(t *testing.T) {
+	if !GatewayHosts()["generativelanguage.googleapis.com"] {
+		t.Error("GatewayHosts must include the Gemini API host (gateway-fronted, excluded from squid)")
 	}
 }
