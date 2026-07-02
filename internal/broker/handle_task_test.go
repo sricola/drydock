@@ -565,6 +565,88 @@ func assertAuditHasResult(t *testing.T, auditRoot string) {
 	t.Fatalf("assertAuditHasResult: no *.jsonl in %s contains a {\"type\":\"result\"} line", auditRoot)
 }
 
+// sentinelKeyGrant models the real security boundary: a provider mints an
+// ephemeral bearer for the sandbox while the *real* upstream API key stays on
+// the host and is never handed to the VM. realKey is the sentinel that must
+// NEVER appear in the container env; bearer is the scoped tok_… the VM actually
+// gets. EnvVars deliberately emits only the bearer — a regression that leaked
+// the real key (e.g. passing ANTHROPIC_API_KEY straight through) would surface
+// realKey in the assembled env and trip the test below.
+type sentinelKeyGrant struct {
+	realKey string
+	bearer  string
+	revoked bool
+}
+
+func (g *sentinelKeyGrant) EnvVars() []string { return []string{"ANTHROPIC_AUTH_TOKEN=" + g.bearer} }
+func (g *sentinelKeyGrant) Revoke() error     { g.revoked = true; return nil }
+func (g *sentinelKeyGrant) Spent() float64    { return 0 }
+
+type sentinelProvider struct{ grant creds.Grant }
+
+func (p *sentinelProvider) Mint(float64) (creds.Grant, error) { return p.grant, nil }
+
+// A1 — the real upstream API key must never enter the sandbox VM. The env the
+// broker assembles and hands to runner.BuildRunArgs (encoded as `--env K=V`
+// args to the container) must carry only the ephemeral bearer and the
+// proxy/base-URL vars — never the sentinel real key the provider holds on the
+// host.
+func TestHandleTask_RealKeyNeverEntersContainerEnv(t *testing.T) {
+	const (
+		realKey = "sk-ant-REALKEY-do-not-leak-3f9a2b"
+		bearer  = "tok_ephemeral_scoped_9c1d"
+	)
+	grant := &sentinelKeyGrant{realKey: realKey, bearer: bearer}
+
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	var gotArgs []string
+	run := func(_ context.Context, args []string, stdout, _ io.Writer) error {
+		gotArgs = append([]string(nil), args...)
+		fmt.Fprintln(stdout, `{"type":"result","subtype":"success"}`)
+		return nil
+	}
+	b := &Broker{
+		Providers:     map[string]creds.Provider{"anthropic": &sentinelProvider{grant}},
+		DefaultAgent:  "claude",
+		ImageRef:      "test-image:latest",
+		StageRoot:     t.TempDir(),
+		AuditRoot:     t.TempDir(),
+		Timeout:       5 * time.Second,
+		Network:       "testnet",
+		GatewayIP:     "10.0.0.1",
+		ProxyPort:     3128,
+		TaskBudget:    1.0,
+		MaxConcurrent: 4,
+		prepareStage:  func(string, string) (taskStage, error) { return st, nil },
+		runAgent:      run,
+		newAdapter:    func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} },
+	}
+
+	rec, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+	if rec.Code != http.StatusOK || term["outcome"] != "pushed" {
+		t.Fatalf("code=%d outcome=%v body=%s", rec.Code, term["outcome"], rec.Body)
+	}
+	if gotArgs == nil {
+		t.Fatal("runAgent was never called; nothing to assert about the container env")
+	}
+
+	joined := strings.Join(gotArgs, "\x00")
+	// The security property: the real key is absent from every arg handed to the
+	// container.
+	if strings.Contains(joined, realKey) {
+		t.Errorf("A1 BREACH: real API key leaked into the container env args: %v", gotArgs)
+	}
+	// Positive control: the ephemeral bearer IS present, so we're inspecting the
+	// real env (the assertion above isn't vacuous).
+	if !strings.Contains(joined, bearer) {
+		t.Errorf("expected the ephemeral bearer %q in the container env, got args: %v", bearer, gotArgs)
+	}
+	// And the audit trail must not carry the real key either.
+	if audit := readOnlyAudit(t, b.AuditRoot); strings.Contains(audit, realKey) {
+		t.Errorf("A1 BREACH: real API key leaked into the audit log:\n%s", audit)
+	}
+}
+
 // A PR-open failure must NOT downgrade a successful push to a failure: the
 // branch is saved, so the result is "pushed" with pr_opened=false.
 func TestHandleTask_PROpenFailure_StillPushed(t *testing.T) {
