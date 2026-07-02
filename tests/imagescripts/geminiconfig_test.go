@@ -36,4 +36,19 @@ func TestWriteGeminiConfig(t *testing.T) {
 	if auth["selectedType"] != "gemini-api-key" {
 		t.Errorf("security.auth.selectedType = %v, want gemini-api-key", auth["selectedType"])
 	}
+	// Phone-home must be off, at the exact 0.49.0 schema paths — a wrong key
+	// name/nesting is silently ignored by the CLI, leaving egress to Google's
+	// telemetry/update endpoints on (which breaks the sandboxed run).
+	tel, _ := s["telemetry"].(map[string]any)
+	if tel["enabled"] != false {
+		t.Errorf("telemetry.enabled = %v, want false", tel["enabled"])
+	}
+	priv, _ := s["privacy"].(map[string]any)
+	if priv["usageStatisticsEnabled"] != false {
+		t.Errorf("privacy.usageStatisticsEnabled = %v, want false", priv["usageStatisticsEnabled"])
+	}
+	gen, _ := s["general"].(map[string]any)
+	if gen["enableAutoUpdate"] != false || gen["enableAutoUpdateNotification"] != false {
+		t.Errorf("general auto-update keys not both false: %v", gen)
+	}
 }
