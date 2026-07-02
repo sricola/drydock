@@ -1,7 +1,10 @@
 // Package-level: an upstream API description.
 package gateway
 
-import "net/http"
+import (
+	"net/http"
+	"net/url"
+)
 
 // Vendor describes one upstream API: where it lives, how to authenticate to it
 // with the real key, and how to read token usage out of its responses.
@@ -89,6 +92,45 @@ func OpenAIVendor() Vendor {
 		Prices:     OpenAIPrices(),
 	}
 }
+
+// GoogleVendor is the generativelanguage.googleapis.com upstream: Google's
+// x-goog-api-key auth, Gemini usageMetadata shapes, Gemini prices. The VM's
+// Gemini CLI (API-key mode) sends the per-task bearer in x-goog-api-key; the
+// gateway admits it (see ServeHTTP) and this Inject swaps in the real key.
+func GoogleVendor() Vendor {
+	return Vendor{
+		Name:    "google",
+		BaseURL: "https://generativelanguage.googleapis.com",
+		Inject: func(r *http.Request, realKey string) {
+			r.Header.Del("Authorization")
+			r.Header.Del("X-Goog-Api-Key")
+			// Defensive: the CLI uses the header, but strip any ?key= so a
+			// per-task bearer can never leak upstream in the query string.
+			stripQueryParam(r.URL, "key")
+			r.Header.Set("X-Goog-Api-Key", realKey)
+		},
+		ParseUsage: parseGoogleUsage,
+		Prices:     GooglePrices(),
+	}
+}
+
+// stripQueryParam removes one query key from u in place, preserving the rest.
+func stripQueryParam(u *url.URL, key string) {
+	if u == nil || u.RawQuery == "" {
+		return
+	}
+	q := u.Query()
+	if q.Has(key) {
+		q.Del(key)
+		u.RawQuery = q.Encode()
+	}
+}
+
+// --- Task 2 replaces these two stub bodies ---
+func parseGoogleUsage(body []byte, contentType string) (model string, in, out int, ok bool) {
+	return "", 0, 0, false
+}
+func GooglePrices() map[string]Price { return map[string]Price{} }
 
 // OpenAICompatVendor is a config-driven OpenAI-compatible upstream (Gemini's
 // /v1beta/openai endpoint, OpenRouter, a local server, …). It reuses OpenAI's

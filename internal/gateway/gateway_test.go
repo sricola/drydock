@@ -558,6 +558,38 @@ func TestServeHTTP_OAuthVendor_StripRequestFields(t *testing.T) {
 	}
 }
 
+func TestServeHTTP_AdmitsGoogleKeyHeader(t *testing.T) {
+	// Fake upstream records the injected key.
+	var gotKey string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("X-Goog-Api-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"gemini-2.5-pro"}`))
+	}))
+	defer up.Close()
+
+	v := GoogleVendor()
+	v.BaseURL = up.URL // redirect upstream to the fake
+	g, err := New(Backend{Vendor: v, Cred: StaticKey("REAL-KEY")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := g.Mint("google", 1.0, 0, time.Minute)
+
+	// Present the bearer ONLY in x-goog-api-key (how the Gemini CLI sends it).
+	r := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
+	r.Header.Set("X-Goog-Api-Key", tok)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200 (token in x-goog-api-key must admit)", w.Code)
+	}
+	if gotKey != "REAL-KEY" {
+		t.Errorf("upstream x-goog-api-key = %q, want REAL-KEY (real key injected, bearer swapped)", gotKey)
+	}
+}
+
 func TestStripJSONObjectFields(t *testing.T) {
 	// Top-level field removed; every other field preserved verbatim. (This is the
 	// real fix: the OAuth endpoint 400s on context_management Claude Code sends.)

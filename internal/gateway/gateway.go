@@ -135,6 +135,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tok := ""
 	if a := r.Header.Get("Authorization"); len(a) > 7 && a[:7] == "Bearer " {
 		tok = a[7:]
+	} else if k := r.Header.Get("X-Goog-Api-Key"); k != "" {
+		// The Gemini CLI (API-key mode) presents the per-task bearer here, not
+		// as an Authorization: Bearer header. Admission is otherwise identical.
+		tok = k
 	}
 	lease, status := g.admit(tok)
 	if status != 0 {
