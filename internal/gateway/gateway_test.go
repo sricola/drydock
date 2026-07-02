@@ -186,13 +186,13 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 func TestRequestCap_RejectsOverLimit(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	tok, _ := g.Mint("anthropic", 100, 2, time.Hour) // maxRequests = 2
-	if _, s := g.check(tok); s != 0 {
+	if _, s := g.admit(tok); s != 0 {
 		t.Fatalf("req1 rejected: %d", s)
 	}
-	if _, s := g.check(tok); s != 0 {
+	if _, s := g.admit(tok); s != 0 {
 		t.Fatalf("req2 rejected: %d", s)
 	}
-	if _, s := g.check(tok); s != http.StatusTooManyRequests {
+	if _, s := g.admit(tok); s != http.StatusTooManyRequests {
 		t.Fatalf("req3 status = %d, want 429", s)
 	}
 }
@@ -201,7 +201,7 @@ func TestRequestCap_ZeroMeansUnlimited(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	tok, _ := g.Mint("anthropic", 100, 0, time.Hour) // 0 = unlimited
 	for i := 0; i < 50; i++ {
-		if _, s := g.check(tok); s != 0 {
+		if _, s := g.admit(tok); s != 0 {
 			t.Fatalf("req %d rejected: %d", i, s)
 		}
 	}

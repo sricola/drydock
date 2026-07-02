@@ -13,6 +13,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -132,20 +133,18 @@ func Defaults() *Config {
 // DefaultPath returns ~/.drydock/config.yaml — where drydock init seeds the
 // file and where brokerd looks for it at boot.
 func DefaultPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	if d := Dir(); d != "" {
+		return filepath.Join(d, "config.yaml")
 	}
-	return filepath.Join(home, ".drydock", "config.yaml")
+	return ""
 }
 
 // EgressPath returns ~/.drydock/egress.yaml.
 func EgressPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	if d := Dir(); d != "" {
+		return filepath.Join(d, "egress.yaml")
 	}
-	return filepath.Join(home, ".drydock", "egress.yaml")
+	return ""
 }
 
 // Dir returns ~/.drydock.
@@ -300,22 +299,22 @@ func (c *Config) applyEnvOverrides() {
 
 func (c *Config) validate() error {
 	if c.Network == "" {
-		return fmt.Errorf("config: network is required")
+		return errors.New("config: network is required")
 	}
 	if c.GatewayIP == "" {
-		return fmt.Errorf("config: gateway_ip is required")
+		return errors.New("config: gateway_ip is required")
 	}
 	if c.MaxConcurrent < 1 {
-		return fmt.Errorf("config: max_concurrent_tasks must be ≥ 1")
+		return errors.New("config: max_concurrent_tasks must be ≥ 1")
 	}
 	if c.TaskBudgetUSD <= 0 {
-		return fmt.Errorf("config: task_budget_usd must be positive")
+		return errors.New("config: task_budget_usd must be positive")
 	}
 	if c.TaskTimeout < time.Second {
-		return fmt.Errorf("config: task_timeout must be ≥ 1s")
+		return errors.New("config: task_timeout must be ≥ 1s")
 	}
 	if c.ApprovalTimeout != 0 && c.ApprovalTimeout < time.Second {
-		return fmt.Errorf("config: approval_timeout must be 0 (wait indefinitely) or ≥ 1s")
+		return errors.New("config: approval_timeout must be 0 (wait indefinitely) or ≥ 1s")
 	}
 	if _, ok := provider.ByAgent(c.DefaultAgent); !ok {
 		return fmt.Errorf("config: default_agent must be one of %v, got %q", provider.Agents(), c.DefaultAgent)

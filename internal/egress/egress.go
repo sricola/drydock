@@ -2,6 +2,7 @@
 package egress
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -40,7 +41,7 @@ var hostnameRE = regexp.MustCompile(
 // names are rejected. Empty input is rejected.
 func ValidateHost(host string) error {
 	if host == "" {
-		return fmt.Errorf("egress: empty host")
+		return errors.New("egress: empty host")
 	}
 	if len(host) > 253 {
 		return fmt.Errorf("egress: host too long: %q", host)
@@ -66,7 +67,7 @@ func ValidateHost(host string) error {
 // ValidatePorts requires at least one port and each in 1..65535.
 func ValidatePorts(ports []int) error {
 	if len(ports) == 0 {
-		return fmt.Errorf("egress: at least one port required")
+		return errors.New("egress: at least one port required")
 	}
 	for _, p := range ports {
 		if p < 1 || p > 65535 {

@@ -103,11 +103,12 @@ func (g *Gateway) spent(token string) float64 {
 	return -1
 }
 
-// check returns (lease, 0) when usable, or (nil, statusCode) to reject.
+// admit returns (lease, 0) when usable, or (nil, statusCode) to reject.
 // The bearer is compared against the stored token with subtle.ConstantTimeCompare
 // so future changes to the lookup path can't silently introduce a timing
-// side-channel on token validation.
-func (g *Gateway) check(token string) (*Lease, int) {
+// side-channel on token validation. Named admit (not check) to reflect that it
+// mutates l.Requests++ on success — it's an authoritative admission decision.
+func (g *Gateway) admit(token string) (*Lease, int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	l := g.leases[token]
@@ -135,7 +136,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if a := r.Header.Get("Authorization"); len(a) > 7 && a[:7] == "Bearer " {
 		tok = a[7:]
 	}
-	lease, status := g.check(tok)
+	lease, status := g.admit(tok)
 	if status != 0 {
 		http.Error(w, http.StatusText(status), status)
 		return

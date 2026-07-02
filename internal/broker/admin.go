@@ -1,8 +1,10 @@
 package broker
 
 import (
+	"cmp"
 	"encoding/json"
 	"net/http"
+	"slices"
 )
 
 // HandleApprove signals the pending task's channel with true. Wire as
@@ -39,11 +41,9 @@ func (b *Broker) HandleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	b.pendingMu.Unlock()
 	// Stable order: oldest first.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1].StartedAt.After(out[j].StartedAt); j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
+	slices.SortFunc(out, func(a, b *TaskState) int {
+		return cmp.Compare(a.StartedAt.UnixNano(), b.StartedAt.UnixNano())
+	})
 	writeJSON(w, out)
 }
 

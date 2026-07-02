@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"drydock/internal/agent"
 	"drydock/internal/audit"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
@@ -291,7 +290,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// labels subscription runs accurately (instead of inferring from the
 	// operator's current config at display time). It is not a `result` event,
 	// so it never affects outcome/cost parsing.
-	taskVendor, _ := agent.Vendor(agentName)
+	taskVendor, _ := provider.VendorForAgent(agentName)
 	subscription := (taskVendor == "anthropic" && b.AnthropicAuth == "subscription") ||
 		(taskVendor == "openai" && b.OpenAIAuth == "subscription")
 	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t,"sensitive":%t}`+"\n", subscription, t.Sensitive)
@@ -518,7 +517,7 @@ func (b *Broker) resolveAgent(taskAgent string) (name string, prov creds.Provide
 	if name == "" {
 		name = "claude"
 	}
-	vendor, known := agent.Vendor(name)
+	vendor, known := provider.VendorForAgent(name)
 	if !known {
 		return name, nil, fmt.Errorf("unknown agent: %s (want %s)", name, strings.Join(provider.Agents(), "|"))
 	}

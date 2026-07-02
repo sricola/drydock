@@ -114,10 +114,59 @@ func TestRegistry_OpenAICompatRow(t *testing.T) {
 	if !p.ConfigBuilt {
 		t.Error("opencode row must be ConfigBuilt (brokerd builds it from config)")
 	}
+	if !p.NeedsModel {
+		t.Error("opencode row must have NeedsModel=true (no built-in model)")
+	}
+	if !p.NoOperatorDefault {
+		t.Error("opencode row must have NoOperatorDefault=true (operator default is claude/codex-oriented)")
+	}
 	if p.APIVendor != nil || p.OAuthBackend != nil {
 		t.Error("config-built provider must have nil APIVendor/OAuthBackend")
 	}
 	if p.BaseURLEnv != "OPENAI_BASE_URL" || p.TokenEnv != "OPENAI_API_KEY" {
 		t.Errorf("opencode env names = %q/%q", p.BaseURLEnv, p.TokenEnv)
+	}
+}
+
+func TestVendorForAgent(t *testing.T) {
+	cases := []struct {
+		name   string
+		vendor string
+		ok     bool
+	}{
+		{"", "anthropic", true},       // empty defaults to claude
+		{"claude", "anthropic", true}, // explicit claude
+		{"codex", "openai", true},     // codex maps to openai
+		{"opencode", "openai-compat", true},
+		{"bogus", "", false},
+	}
+	for _, c := range cases {
+		got, ok := VendorForAgent(c.name)
+		if got != c.vendor || ok != c.ok {
+			t.Errorf("VendorForAgent(%q) = (%q,%v), want (%q,%v)", c.name, got, ok, c.vendor, c.ok)
+		}
+	}
+}
+
+func TestGatewayHosts(t *testing.T) {
+	hosts := GatewayHosts()
+	// The static registry must produce exactly the two gateway-fronted API hosts.
+	want := map[string]bool{
+		"api.anthropic.com": true,
+		"api.openai.com":    true,
+	}
+	if len(hosts) != len(want) {
+		t.Fatalf("GatewayHosts() len=%d, want %d: got %v", len(hosts), len(want), hosts)
+	}
+	for h := range want {
+		if !hosts[h] {
+			t.Errorf("GatewayHosts() missing %q", h)
+		}
+	}
+	// ConfigBuilt providers (openai-compat) must not appear.
+	for _, p := range Registry {
+		if p.ConfigBuilt && p.APIVendor == nil {
+			continue // expected: config-built providers are excluded
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package netfw
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -86,7 +87,7 @@ func FindSquid() (string, error) {
 	if p, err := exec.LookPath("squid"); err == nil {
 		return p, nil
 	}
-	return "", fmt.Errorf("netfw: squid binary not found (brew install squid)")
+	return "", errors.New("netfw: squid binary not found (brew install squid)")
 }
 
 // StartSquid writes the generated default-ACL block + conf into runDir and

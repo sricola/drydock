@@ -3,6 +3,7 @@ package gwcreds
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -137,7 +138,7 @@ func refreshOAuthToken(tokenURL, clientID, refreshToken string) (CredSnapshot, e
 	}
 
 	if result.AccessToken == "" {
-		return CredSnapshot{}, fmt.Errorf("oauth: refresh response had no access_token")
+		return CredSnapshot{}, errors.New("oauth: refresh response had no access_token")
 	}
 
 	return CredSnapshot{

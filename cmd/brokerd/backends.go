@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -101,7 +102,7 @@ func buildBackends(cfg *config.Config, fileKeys map[string]string) ([]gateway.Ba
 		}
 	}
 	if len(backends) == 0 {
-		return nil, fmt.Errorf("set at least one provider's API key (e.g. ANTHROPIC_API_KEY/OPENAI_API_KEY) or enable a subscription mode")
+		return nil, errors.New("set at least one provider's API key (e.g. ANTHROPIC_API_KEY/OPENAI_API_KEY) or enable a subscription mode")
 	}
 	return backends, nil
 }
