@@ -94,6 +94,15 @@ func resolveAPIKey(name string, fileKeys map[string]string) string {
 //lint:ignore U1000 write-only by design — keeps the flock fd alive for the process's life
 var brokerdLock *os.File
 
+// runCmd is the exec seam for container/pkill invocations. The default
+// implementation calls exec.Command(name, args...).CombinedOutput() so
+// production behaviour is identical to what the inline calls were. Tests
+// replace this variable with a fake that records calls without spawning
+// real processes.
+var runCmd = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
+
 func main() {
 	// Hidden subcommand: squid invokes this same binary as its basic-auth
 	// helper (auth_param basic program <brokerd> __squid-authhelper <tokenfile>).
@@ -191,7 +200,7 @@ func main() {
 		if serr := squid.Stop(); serr != nil {
 			slog.Warn("squid stop failed; port 3128 may still be held", "err", serr)
 		}
-		_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
+		_, _ = runCmd("container", "rm", "-f", "drydock-anchor")
 	}
 
 	// Assigned once the broker + HTTP server exist; the signal handler reads
@@ -411,7 +420,7 @@ func waitBindable(addr string) {
 // what drydock was tested against. Strict mode is for production / launchd
 // deployments where silent drift is worse than a refusal to start.
 func checkContainerVersion(strict bool) {
-	out, err := exec.Command("container", "--version").CombinedOutput()
+	out, err := runCmd("container", "--version")
 	if err != nil {
 		die("container CLI not runnable (apple/container required)", "err", err, "stderr", string(out))
 	}
@@ -484,7 +493,7 @@ func findEgressConfig() (string, error) {
 // the easy-orphan window before the new brokerd tries to bind 3128 again.
 func pruneOrphanTasks(stageRoot, auditRoot string) {
 	// Reap orphan task containers.
-	out, err := exec.Command("container", "ls", "-a", "--format", "json").CombinedOutput()
+	out, err := runCmd("container", "ls", "-a", "--format", "json")
 	if err != nil {
 		slog.Warn("orphan prune: container ls failed", "err", err, "stderr", string(out))
 	} else {
@@ -494,14 +503,14 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 		for _, line := range strings.Split(string(out), "\n") {
 			for _, token := range strings.Fields(strings.ReplaceAll(line, `"`, " ")) {
 				if strings.HasPrefix(token, "task-") && len(token) > 5 {
-					_ = exec.Command("container", "delete", "--force", token).Run()
+					_, _ = runCmd("container", "delete", "--force", token)
 					slog.Info("orphan prune: removed container", "name", token)
 				}
 			}
 		}
 	}
 	// Reap orphan squid (very specific argv: "-N -f" only used by drydock).
-	_ = exec.Command("pkill", "-f", "squid -N -f").Run()
+	_, _ = runCmd("pkill", "-f", "squid -N -f")
 
 	// Reap host-side leftovers a crash skipped (the per-task defers never ran).
 	// ORDER MATTERS — do not reorder: the container delete above must precede
@@ -527,10 +536,9 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 // here was a persistent-attack-surface risk if drydock-sandbox were ever
 // compromised.
 func startAnchor(network, image string) {
-	_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
-	cmd := exec.Command("container", "run", "-d", "--name", "drydock-anchor",
-		"--network", network, image)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	_, _ = runCmd("container", "rm", "-f", "drydock-anchor")
+	if out, err := runCmd("container", "run", "-d", "--name", "drydock-anchor",
+		"--network", network, image); err != nil {
 		die("start network anchor failed", "err", err, "stderr", string(out))
 	}
 	slog.Info("network anchor up", "network", network)

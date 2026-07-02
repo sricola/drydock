@@ -2,6 +2,7 @@ package egress
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -81,6 +82,63 @@ func TestDomainJSONIsLowercase(t *testing.T) {
 	want := `[{"host":"x.test","ports":[443]}]`
 	if string(b) != want {
 		t.Fatalf("Domain JSON = %s, want %s (the web UI reads lowercase host/ports)", b, want)
+	}
+}
+
+// TestLoad_FailClosed verifies that Load rejects invalid egress configs
+// (wildcard hosts, IP literals, malformed YAML) and returns an error so the
+// caller never operates with a partial or insecure allowlist.
+func TestLoad_FailClosed(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name:    "leading-dot wildcard host rejected",
+			yaml:    "version: 1\ndefault:\n  domains:\n    - { host: \".example.com\", ports: [443] }\n",
+			wantErr: "wildcard",
+		},
+		{
+			name:    "star wildcard host rejected",
+			yaml:    "version: 1\ndefault:\n  domains:\n    - { host: \"*.example.com\", ports: [443] }\n",
+			wantErr: "wildcard",
+		},
+		{
+			name:    "IP address literal rejected",
+			yaml:    "version: 1\ndefault:\n  domains:\n    - { host: \"10.0.0.1\", ports: [443] }\n",
+			wantErr: "IP address",
+		},
+		{
+			name:    "malformed YAML rejected",
+			yaml:    "version: 1\ndefault:\n  domains: [\n  - bad: yaml: here",
+			wantErr: "parse egress config",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := os.CreateTemp(t.TempDir(), "egress*.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteString(tc.yaml); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+
+			cfg, err := Load(f.Name())
+			if err == nil {
+				t.Fatalf("Load must return error for %q, but got cfg = %+v", tc.name, cfg)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+			// Fail-closed: caller sees the error; no partial config should be trusted.
+			// We assert no domains were loaded from a malformed YAML (cfg is zero there).
+			if tc.wantErr == "parse egress config" && len(cfg.Default.Domains) != 0 {
+				t.Errorf("malformed YAML: cfg.Default.Domains = %v, want empty", cfg.Default.Domains)
+			}
+		})
 	}
 }
 
