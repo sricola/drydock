@@ -11,11 +11,11 @@ sandbox_image:  drydock-sandbox:latest # per-task agent VM image
 anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
 
 # --- Per-task limits ---
-task_budget_usd:        2.0            # hard USD ceiling; gateway rejects after exhaustion
+task_budget_usd:        2.0            # hard USD ceiling; gateway rejects after exhaustion (api_key mode only; ignored in subscription mode)
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
 approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs)
-default_model:          ""             # claude --model fallback (e.g. claude-sonnet-4-6); empty = claude picks. Per-task --model overrides.
+default_model:          ""             # model fallback honored by all agents (e.g. claude-sonnet-4-6); empty = agent picks. Per-task --model overrides.
 default_agent:          claude         # sandbox CLI: claude | codex | opencode. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
@@ -27,6 +27,8 @@ openai_compat:
   base_path:   ""        # e.g. /v1beta/openai
   api_key_env: ""        # name of the host env var holding the real key (never the key itself)
   model:       ""        # model id passed to the agent, e.g. gemini-2.5-pro
+  # prices:              # USD/1M-token rates for budget metering (optional)
+  #   gemini-2.5-pro: {input: 1.25, output: 10.00}
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

@@ -105,6 +105,7 @@ Full operator docs live at **[sricola.github.io/drydock/docs](https://sricola.gi
 
 - [Quickstart](https://sricola.github.io/drydock/docs/quickstart.html) — install to first task.
 - [Authentication](https://sricola.github.io/drydock/docs/authentication.html) — API key or subscription, Claude Code & Codex.
+- [Models](https://sricola.github.io/drydock/docs/models.html) — bring your own OpenAI-compatible endpoint (Gemini, OpenRouter, local).
 - [Submitting tasks](https://sricola.github.io/drydock/docs/submitting-tasks.html) — `drydock submit`, the approval gate, flags, scripting.
 - [Web UI](https://sricola.github.io/drydock/docs/web-ui.html) — the board, approval gate, and history in a local browser app.
 - [Egress & widening](https://sricola.github.io/drydock/docs/egress.html) — the allowlist and per-task widening.
