@@ -73,3 +73,110 @@ func TestNoResultLine(t *testing.T) {
 		t.Errorf("Cost should be - when no result")
 	}
 }
+
+// --- TotalCost ---
+
+func TestTotalCost_LastResultLine(t *testing.T) {
+	p, _ := writeJSONL(t,
+		`{"type":"result","total_cost_usd":0.05}`,
+		`{"type":"result","total_cost_usd":0.11}`,
+	)
+	if c := TotalCost(p); c != 0.11 {
+		t.Errorf("TotalCost = %v, want 0.11", c)
+	}
+}
+
+func TestTotalCost_NoResult(t *testing.T) {
+	p, _ := writeJSONL(t, `{"type":"drydock_meta"}`)
+	if c := TotalCost(p); c != 0 {
+		t.Errorf("TotalCost with no result = %v, want 0", c)
+	}
+}
+
+// --- HasResultLine ---
+
+func TestHasResultLine_Present(t *testing.T) {
+	p, _ := writeJSONL(t,
+		`{"type":"stream_event"}`,
+		`{"type":"result","subtype":"success","is_error":false}`,
+	)
+	has, err := HasResultLine(p)
+	if err != nil || !has {
+		t.Errorf("HasResultLine = (%v,%v), want (true,nil)", has, err)
+	}
+}
+
+func TestHasResultLine_Absent(t *testing.T) {
+	p, _ := writeJSONL(t, `{"type":"stream_event"}`)
+	has, err := HasResultLine(p)
+	if err != nil || has {
+		t.Errorf("HasResultLine = (%v,%v), want (false,nil)", has, err)
+	}
+}
+
+func TestHasResultLine_SubstringInPayloadNotCounted(t *testing.T) {
+	// A line whose text payload contains "type":"result" must NOT be mistaken
+	// for a real terminal result line.
+	p, _ := writeJSONL(t, `{"type":"stream_event","text":"emitted {\"type\":\"result\"} as text"}`)
+	has, err := HasResultLine(p)
+	if err != nil || has {
+		t.Errorf("HasResultLine with substring-only = (%v,%v), want (false,nil)", has, err)
+	}
+}
+
+func TestHasResultLine_MissingFile(t *testing.T) {
+	_, err := HasResultLine("/nonexistent/path/task.jsonl")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
+// --- Reason ---
+
+func TestReason_LastInfraLine(t *testing.T) {
+	p, _ := writeJSONL(t,
+		`{"type":"drydock_meta","subscription":true}`,
+		"[6/6] Starting container [0s]",
+		"/usr/local/bin/entrypoint.sh: line 5: DRYDOCK_GW_IP: missing gateway ip",
+	)
+	got, ok := Reason(p)
+	want := "/usr/local/bin/entrypoint.sh: line 5: DRYDOCK_GW_IP: missing gateway ip"
+	if !ok || got != want {
+		t.Errorf("Reason = %q,%v; want %q,true", got, ok, want)
+	}
+}
+
+func TestReason_NoMeaningfulLine(t *testing.T) {
+	p, _ := writeJSONL(t, `{"type":"result"}`, "[1/6] x")
+	if _, ok := Reason(p); ok {
+		t.Error("want ok=false when only JSON/progress lines are present")
+	}
+}
+
+func TestReason_SkipsJSONArray(t *testing.T) {
+	p, _ := writeJSONL(t,
+		"container failed to start: no route to host",
+		`["progress","starting"]`,
+	)
+	got, ok := Reason(p)
+	want := "container failed to start: no route to host"
+	if !ok || got != want {
+		t.Errorf("Reason = %q,%v; want %q,true", got, ok, want)
+	}
+}
+
+func TestReason_PrefersErrorOverTrailingNoise(t *testing.T) {
+	// codex prints incidental output (a token count) after its real error
+	// line; Reason must surface the error, not the trailing count.
+	p, _ := writeJSONL(t,
+		`{"type":"drydock_meta","subscription":true}`,
+		"ERROR: exceeded retry limit, last status: 429 Too Many Requests",
+		"1,633",
+		`{"type":"result","subtype":"error","is_error":true}`,
+	)
+	got, ok := Reason(p)
+	want := "ERROR: exceeded retry limit, last status: 429 Too Many Requests"
+	if !ok || got != want {
+		t.Errorf("Reason = %q,%v; want %q,true", got, ok, want)
+	}
+}

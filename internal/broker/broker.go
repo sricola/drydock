@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"drydock/internal/agent"
+	"drydock/internal/audit"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
 	"drydock/internal/provider"
@@ -556,7 +557,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		reason := "task failed: " + safeErr(err)
 		ev := map[string]any{"event": "error", "task_id": taskID,
 			"audit": auditPath, "duration_ms": time.Since(taskStart).Milliseconds()}
-		if line, ok := reasonFromAudit(auditPath); ok {
+		if line, ok := audit.Reason(auditPath); ok {
 			// The distilled line is the agent's own output — sanitize it like
 			// any other operator-reflected, attacker-influenceable text.
 			reason = safeStr(line)
@@ -586,7 +587,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	if diff == "" {
 		sw.emit(map[string]any{"event": "result", "outcome": "no_diff",
 			"task_id": taskID, "duration_ms": time.Since(taskStart).Milliseconds(),
-			"cost_usd": auditCost(auditPath)})
+			"cost_usd": audit.TotalCost(auditPath)})
 		return
 	}
 
@@ -635,7 +636,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		"task_id": taskID, "branch": branch, "platform": adapter.Name(),
 		"pr_opened": prErr == nil,
 		"files":     files, "insertions": insertions, "deletions": deletions,
-		"duration_ms": time.Since(taskStart).Milliseconds(), "cost_usd": auditCost(auditPath)}
+		"duration_ms": time.Since(taskStart).Milliseconds(), "cost_usd": audit.TotalCost(auditPath)}
 	if prErr != nil {
 		ev["pr_error"] = safeErr(prErr)
 		ev["pr_hint"] = "branch '" + branch + "' was pushed; open a PR manually (" + adapter.Name() + ")"
