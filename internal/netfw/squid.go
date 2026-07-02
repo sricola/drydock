@@ -35,6 +35,7 @@ dns_nameservers 1.1.1.1 8.8.8.8
 cache deny all
 cache_log %s/cache.log
 access_log %s/access.log squid
+logfile_rotate 10
 pid_filename %s/squid.pid
 forwarded_for delete
 via off
