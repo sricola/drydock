@@ -127,57 +127,48 @@ SECURITY.md residual is updated.
 
 ## Phase 3 — Provider expansion
 
-**Goal:** add a third coding agent (Gemini CLI) without forking the gateway,
-by first paying down the one place provider support is hardcoded — the CLI/config
-layer — then proving the seam with a real new vendor.
+**Goal:** add a native Gemini vendor (3B) as the first proof that a new provider
+is a single registry row, not a five-file edit.
 
-**Why now:** the *gateway* layer is already cleanly additive — a vendor is a
-`Vendor{Name, BaseURL, Inject, ParseUsage, Prices}` value
-(`internal/gateway/vendor.go`) plus a pricing table and a usage parser, and
-nothing downstream enumerates vendors. The *CLI/config* layer is where "exactly
-two providers" is wired in by hand, in five places:
+**Status:** 3A (provider registry refactor) and 3C (generic OpenAI-compatible
+agent) are **landed**. The CLI, config validator, wizard, `drydock start`,
+`drydock doctor`, and `drydock auth` all read from a single provider registry;
+any OpenAI-compatible endpoint (Gemini via its OpenAI-compat API, OpenRouter,
+local models) is already runnable via the `opencode` agent + `openai_compat:`
+config block. Remaining: a native Gemini vendor (3B) with Google's auth header
+and full A1/A2 red-team coverage.
 
-- `internal/agent/agent.go` — a literal `switch` mapping `claude→anthropic`,
-  `codex→openai`; an unknown agent is rejected.
-- `internal/config/config.go` — `default_agent must be claude or codex`
-  validation, plus one `*_auth` key per vendor (`anthropic_auth`, `openai_auth`).
-- the setup wizard's "which agents?" menu (claude / codex / both).
-- `drydock start`'s per-agent credential preflight.
-- `drydock doctor` and `drydock auth`'s per-vendor branches.
-
-Adding Gemini by copy-paste would mean touching all five and growing every
-two-way branch into a three-way one — the classic special-case-on-shared-infra
-smell. Generalize the seam first.
-
-### 3A — Provider registry refactor *(do first; no new provider yet)*
-Introduce one source of truth: a `Provider{Agent, Vendor, AuthModes, …}` table
+### 3A — Provider registry refactor — *landed*
+Introduced one source of truth: a `Provider{Agent, Vendor, AuthModes, …}` table
 that `agent.Vendor`, config validation, the wizard menu, `start`, `doctor`, and
 `auth` all read from instead of hardcoding pairs. Pure refactor — `claude` and
-`codex` still the only entries, behavior byte-identical, existing tests green.
-The deliverable is that adding a row is the *only* edit a new provider needs in
-this layer.
+`codex` still the only native entries, behavior byte-identical, existing tests
+green. Adding a row is the *only* edit a new provider needs in this layer.
 
-### 3B — Gemini (Google) *(first new provider — proves the seam)*
+### 3B — Gemini (Google) *(first native vendor — proves the seam)*
 Add the `gemini → google` row: a `GoogleVendor()` (base URL + `Inject` for the
 Google auth header), a pricing table, a usage parser, the sandbox-image CLI
 install, and red-team coverage (A1 key-exfil, A2 egress) for the new vendor.
-If 3A is right, the CLI/config layer change is one registry row.
+If 3A is right, the CLI/config layer change is one registry row. Note: Gemini
+is already reachable today via the openai-compat lane (`openai_compat:` +
+opencode); 3B adds a native vendor with Google's auth header rather than the
+OpenAI-compat shim.
 
-### 3C — Generic OpenAI-compatible agent *(broadens reach cheaply)*
-Many third-party model gateways speak the OpenAI wire format. A single
-`openai-compat` provider whose base URL + key come from config covers a long
-tail (local models, OpenRouter-style proxies) without a bespoke vendor each.
-Gated on 3A's registry and 3B validating the shape.
+### 3C — Generic OpenAI-compatible agent — *landed*
+A single `openai-compat` provider whose base URL + key come from config covers a
+long tail (local models, OpenRouter-style proxies, Gemini's OpenAI-compat
+endpoint) without a bespoke vendor each. Shipped as the `opencode` agent +
+`openai_compat:` config block; red-team A1 (key isolation) verified for the
+lane.
 
 ### 3D — Config-declared providers *(stretch; only if demand is real)*
 Let an operator declare a vendor entirely in config (name, base URL, auth
-header template, price table) with no Go change. YAGNI until 3B/3C show the
+header template, price table) with no Go change. YAGNI until 3B shows the
 registry's fields are the right ones — don't design the plugin format before
-two real providers have exercised the seam.
+two real native providers have exercised the seam.
 
-**Done when:** a third agent (Gemini) runs end-to-end through the gateway with
-its own red-team coverage, and the CLI/config layer gained it via a registry
-row rather than a new branch in five files.
+**Done when:** a native Gemini vendor runs end-to-end through the gateway with
+its own A1/A2 red-team coverage, added via a single registry row.
 
 ---
 
@@ -243,16 +234,16 @@ remaining edge is either enforced or documented as a stated limit.
 3. **Phase 4 reliability is interleaved, not deferred** — 4.1 (crash recovery)
    and 4.3 (aggregate budget) are correctness gaps and rank ahead of new
    providers; 4.5 (image CVE scan) rides alongside Phase 2's supply-chain work.
-4. **Phase 3 providers gate on 3A** — the registry refactor lands before any
-   new vendor, so Gemini (3B) and the rest are registry rows, not five-file
-   branches.
+4. **Phase 3 providers: 3A landed, 3C landed.** Gemini (3B) is now a single
+   registry row — the seam is proven; add the native vendor when the Google
+   auth-header shape and pricing table are confirmed.
 
 **Prerequisites to flag:**
 - The A1 / A2 / A7 red-team tests need the VM, so full `make redteam` is a
   macOS / Apple-silicon gate; CI runs only the host-side subset (A3–A6).
 - 2.2 notarization requires a paid Apple Developer ID certificate.
-- 3B Gemini and 3C openai-compat need their own A1/A2 red-team coverage before
-  they count as shipped — a new credential path is a new attack surface.
+- 3B Gemini needs its own A1/A2 red-team coverage before it counts as shipped
+  — a new credential path is a new attack surface.
 
 **First concrete deliverable:** the `make redteam` skeleton + the A1 key-exfil
 test — the single most convincing artifact.

@@ -7,6 +7,84 @@ entry below corresponds to a Git tag of the same name.
 
 ## Unreleased
 
+## v0.4.0 — 2026-07-02
+
+### Added
+
+- **Local web UI (`drydock ui`).** A loopback-only browser app — task board,
+  diff review, one-click approve/deny, and run history — served over the broker
+  socket. Navigate to the printed URL; the one-time token in the URL fragment
+  gates access (never sent to the server). `--open` launches the default browser
+  automatically; `--no-token` disables the gate for trusted local setups.
+  `drydock init`, `drydock status`, and `drydock pending` surface the
+  `drydock ui` hint when a task is waiting at the approval gate.
+
+- **Bring your own model — OpenAI-compatible lane.** Any endpoint that speaks
+  the OpenAI wire protocol (Google Gemini, OpenRouter, Ollama, LM Studio, vLLM,
+  …) can now be wired as a drydock agent. Add an `openai_compat:` block to
+  `~/.drydock/config.yaml` with the base URL, optional path, the *name* of the
+  env var holding the real key (never the key itself), and the model id; set
+  `default_agent: opencode`. Tasks then route through the **opencode** agent
+  against your endpoint via the same credential gateway, per-task token, and USD
+  metering as Claude Code and Codex. Optional `prices:` sub-keys enable dollar
+  metering for the model. The setup wizard prompts for an OpenAI-compatible
+  endpoint on first run. `drydock doctor` verifies the lane and red-team A1 (key
+  isolation) covers it: the real host key never enters the VM.
+
+- **Agent-written PR title and body.** After a successful push the broker sends
+  the agent-produced title and description to the remote's PR-open call instead
+  of a generic placeholder. `drydock submit --draft` opens the PR as a draft.
+  `drydock doctor` (and `drydock submit`) preflight the git-host auth (`gh`,
+  `glab`, `tea`) before attempting a push, surfacing auth failures early.
+
+### Changed
+
+- **Provider registry.** The CLI, config validator, setup wizard, `drydock
+  start`, `drydock doctor`, and `drydock auth` all read from a single
+  `Provider{Agent, Vendor, AuthModes}` table instead of hardcoded per-vendor
+  branches. Adding a new agent is a registry row, not a five-file edit. No
+  behavior change for Claude Code or Codex.
+
+- **Relicensed Apache 2.0** (was MIT). All source files and the repository
+  `LICENSE` reflect the change.
+
+### Fixed
+
+- **Per-domain egress port enforcement.** The egress allowlist now enforces the
+  port alongside the hostname: a domain without an explicit port is constrained
+  to the default for its scheme; one with an explicit port (e.g.
+  `registry.npmjs.org:443`) blocks any other port. IP literals in the allowlist
+  are now rejected at validation time — only hostnames are accepted, closing a
+  bypass where a numeric `1.2.3.4` entry could evade the hostname check. The
+  squid access log is now written to `~/.drydock/squid/access.log` so failed
+  egress attempts are inspectable without running `drydock doctor`.
+
+- **Crash-recovery reconciliation.** A `brokerd` killed mid-task previously left
+  orphaned VMs, stale stage dirs, and tasks stuck at `running?` forever. Boot
+  reconciliation now enforces single-instance via `flock`
+  (`~/.drydock/brokerd.lock`) so a second daemon cannot clobber a live task;
+  reaps orphaned `task-*` VMs and squid processes; sweeps stale stage dirs; and
+  resolves crash-interrupted tasks to a distinct `interrupted` outcome in
+  `drydock tasks` instead of `running?`.
+
+- **Security hardening (UI + audit).** The web UI one-time token is verified in
+  constant time (no timing oracle on the gate secret). Audit log reads
+  (`drydock tasks`, web UI history) use `O_NOFOLLOW` so a symlink planted inside
+  the audit dir cannot redirect a read outside it. The history diff overlay in
+  the web UI is read-only to prevent accidental in-browser edits.
+
+- **`opencode` surfaced consistently.** `drydock init`, `drydock status`,
+  `drydock pending`, and `drydock doctor` now show the opencode lane alongside
+  Claude Code and Codex rather than silently omitting it.
+
+### Docs
+
+- **Docs site.** Operator documentation is now a Go-native rendered HTML site
+  with a shared design system, dark mode, and a sidebar — see
+  [sricola.github.io/drydock/docs](https://sricola.github.io/drydock/docs/).
+  New pages: Models / Bring your own model (OpenAI-compatible endpoint setup)
+  and Web UI. Existing pages updated for v0.4.0 features throughout.
+
 ## v0.3.0 — 2026-06-22
 
 ### Added
