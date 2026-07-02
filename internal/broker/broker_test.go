@@ -219,7 +219,6 @@ func TestAcquireSlot_RaceClean(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			if b.acquireSlot() {
-				time.Sleep(2 * time.Millisecond)
 				b.releaseSlot()
 			}
 		}()
@@ -578,10 +577,19 @@ func TestHandleApprove_AlreadySignaledIs409(t *testing.T) {
 func TestHandleTasks_OldestFirst(t *testing.T) {
 	b := &Broker{}
 	b.registerTask("a", "r", "i", nil)
-	time.Sleep(2 * time.Millisecond)
 	b.registerTask("b", "r", "i", nil)
-	time.Sleep(2 * time.Millisecond)
 	b.registerTask("c", "r", "i", nil)
+	// Inject strictly increasing StartedAt values so the oldest-first sort is
+	// exercised deterministically without any timing dependency. A stable sort
+	// on equal timestamps would only preserve slice order, which comes from
+	// random map iteration — distinct timestamps are needed for the test to
+	// actually exercise the timestamp-based ordering.
+	now := time.Now()
+	b.pendingMu.Lock()
+	b.tasks["a"].StartedAt = now
+	b.tasks["b"].StartedAt = now.Add(time.Millisecond)
+	b.tasks["c"].StartedAt = now.Add(2 * time.Millisecond)
+	b.pendingMu.Unlock()
 
 	req := httptest.NewRequest("GET", "/admin/tasks", nil)
 	rr := httptest.NewRecorder()

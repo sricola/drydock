@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"drydock/internal/gateway"
+	"drydock/internal/gwcreds"
 	"drydock/internal/provider"
 )
 
@@ -132,8 +133,8 @@ func TestRedteam_A1_RealKeyNeverInVM(t *testing.T) {
 // the interface.
 type noopStore struct{}
 
-func (noopStore) Load() (gateway.CredSnapshot, error) { return gateway.CredSnapshot{}, nil }
-func (noopStore) Save(gateway.CredSnapshot) error     { return nil }
+func (noopStore) Load() (gwcreds.CredSnapshot, error) { return gwcreds.CredSnapshot{}, nil }
+func (noopStore) Save(gwcreds.CredSnapshot) error     { return nil }
 
 // A1 (OAuth variant) — OAuth access and refresh tokens never enter the VM.
 // We build the EXACT env the broker injects using the OAuth backend with
@@ -148,8 +149,8 @@ func TestRedteam_A1_OAuthTokensNeverInVM(t *testing.T) {
 
 	gw, err := gateway.New(gateway.Backend{
 		Vendor: gateway.AnthropicOAuthVendor(),
-		Cred: gateway.NewOAuthCred(
-			gateway.CredSnapshot{
+		Cred: gwcreds.NewOAuthCred(
+			gwcreds.CredSnapshot{
 				Access:  accessSentinel,
 				Refresh: refreshSentinel,
 				Expiry:  time.Now().Add(time.Hour),
@@ -202,8 +203,8 @@ func TestRedteam_A1_CodexOAuthNeverInVM(t *testing.T) {
 
 	gw, err := gateway.New(gateway.Backend{
 		Vendor: gateway.OpenAIOAuthVendor(account),
-		Cred: gateway.NewOAuthCredCodex(
-			gateway.CredSnapshot{
+		Cred: gwcreds.NewOAuthCredCodex(
+			gwcreds.CredSnapshot{
 				Access:  access,
 				Refresh: refresh,
 				Expiry:  time.Now().Add(time.Hour),

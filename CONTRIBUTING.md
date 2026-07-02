@@ -52,8 +52,12 @@ Integration (`make test-integration`) requires the `container` runtime and is
 macOS-only — it runs locally, not in CI. No real Anthropic or OpenAI spend.
 
 Some tests are gated behind build tags and require a live host (squid, the
-container runtime): `go test -tags squidlive ./internal/netfw/` exercises the
-egress proxy-auth path; `-tags squide2e` runs a full VM-level egress test.
+container runtime):
+
+```bash
+make test-squid-live   # proxy-auth path (squidlive tag); requires squid on PATH, no container runtime
+make test-squid-e2e    # full VM-level egress widening (squide2e tag); requires container runtime + images + squid
+```
 
 ## Known gaps
 
