@@ -133,10 +133,10 @@ func TestLoad_FailClosed(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("error = %q, want substring %q", err.Error(), tc.wantErr)
 			}
-			// Fail-closed: caller sees the error; no partial config should be trusted.
-			// We assert no domains were loaded from a malformed YAML (cfg is zero there).
-			if tc.wantErr == "parse egress config" && len(cfg.Default.Domains) != 0 {
-				t.Errorf("malformed YAML: cfg.Default.Domains = %v, want empty", cfg.Default.Domains)
+			// Fail-closed: on any error Load must return an empty Config so callers
+			// that neglect the error cannot operate on a partial or insecure allowlist.
+			if len(cfg.Default.Domains) != 0 {
+				t.Errorf("%s: cfg.Default.Domains = %v, want empty on error", tc.name, cfg.Default.Domains)
 			}
 		})
 	}

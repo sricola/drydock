@@ -100,13 +100,13 @@ func Load(path string) (Config, error) {
 	var cfg Config
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return cfg, fmt.Errorf("read egress config: %w", err)
+		return Config{}, fmt.Errorf("read egress config: %w", err)
 	}
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return cfg, fmt.Errorf("parse egress config: %w", err)
+		return Config{}, fmt.Errorf("parse egress config: %w", err)
 	}
 	if err := ValidateDomains(cfg.Default.Domains); err != nil {
-		return cfg, fmt.Errorf("egress config %s: %w", path, err)
+		return Config{}, fmt.Errorf("egress config %s: %w", path, err)
 	}
 	return cfg, nil
 }

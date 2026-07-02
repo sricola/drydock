@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"drydock/internal/config"
@@ -32,8 +31,8 @@ func runDoctor() {
 	// 1. The image entrypoint must read DRYDOCK_GW_IP, not the pre-rename
 	// MACAGENT_GW_IP — otherwise every task aborts at boot. Same property
 	// `drydock init` guards on rebuild, just here as a runtime check too.
-	out, err := exec.Command("container", "run", "--rm", "--entrypoint", "/bin/cat",
-		cfg.SandboxImage, "/usr/local/bin/entrypoint.sh").CombinedOutput()
+	out, err := runCmd("container", "run", "--rm", "--entrypoint", "/bin/cat",
+		cfg.SandboxImage, "/usr/local/bin/entrypoint.sh")
 	switch {
 	case err != nil:
 		step("sandbox entrypoint", false, "could not read: "+strings.TrimSpace(string(out)))
@@ -48,8 +47,8 @@ func runDoctor() {
 	// 2. Sandbox must actually boot and report a working `claude --version`.
 	// This is the cheap proof that the image is healthy end-to-end (apt
 	// layer, gosu, claude-code install all worked).
-	out, err = exec.Command("container", "run", "--rm", "--entrypoint", "/bin/sh",
-		cfg.SandboxImage, "-c", "claude --version 2>&1").CombinedOutput()
+	out, err = runCmd("container", "run", "--rm", "--entrypoint", "/bin/sh",
+		cfg.SandboxImage, "-c", "claude --version 2>&1")
 	switch {
 	case err != nil:
 		step("sandbox boot", false, "container run failed: "+strings.TrimSpace(string(out)))
@@ -67,8 +66,8 @@ func runDoctor() {
 	// "not found" here almost always means cfg.SandboxImage predates the v0.1.5
 	// rename (claude-sandbox -> drydock-sandbox, which added Codex), so point
 	// the operator at the fix instead of dumping a raw shell error.
-	out, err = exec.Command("container", "run", "--rm", "--entrypoint", "/bin/sh",
-		cfg.SandboxImage, "-c", "codex --version 2>&1").CombinedOutput()
+	out, err = runCmd("container", "run", "--rm", "--entrypoint", "/bin/sh",
+		cfg.SandboxImage, "-c", "codex --version 2>&1")
 	if codexPresent(string(out), err) {
 		step("codex present", true, strings.TrimSpace(lastLine(string(out))))
 	} else {
@@ -83,12 +82,11 @@ func runDoctor() {
 	// host fails to resolve (DNS dropped) or fails to connect (no route).
 	// Passing means the central isolation claim holds; failing means the
 	// sandbox would leak egress if `drydock submit` were invoked.
-	out, err = exec.Command("container", "run", "--rm", "--user", "root",
+	out, err = runCmd("container", "run", "--rm", "--user", "root",
 		"--entrypoint", "/bin/bash", "--cap-add", "CAP_NET_ADMIN",
 		cfg.SandboxImage, "-lc",
 		`/usr/local/bin/init-firewall.sh 192.168.66.1 8088 3128 &&
-		 curl -sS -m 5 https://example.com/ -o /dev/null -w '%{http_code}\n' 2>/dev/null || echo blocked`,
-	).CombinedOutput()
+		 curl -sS -m 5 https://example.com/ -o /dev/null -w '%{http_code}\n' 2>/dev/null || echo blocked`)
 	got := strings.TrimSpace(string(out))
 	switch {
 	case err != nil && !strings.Contains(got, "blocked"):
