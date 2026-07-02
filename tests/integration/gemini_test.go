@@ -249,55 +249,62 @@ func TestGemini_EndToEnd_TaskCompletesViaGateway(t *testing.T) {
 		postDone <- postResult{statusCode: resp.StatusCode, body: buf[:n]}
 	}()
 
-	// Poll /admin/tasks until the task appears (running or awaiting_approval).
-	// Allow 90 s for the container CLI to start the VM and emit the first
-	// gateway request — Gemini startup is slightly slower than claude due to
-	// the npm-based runtime.
-	var taskID string
-	deadline := time.Now().Add(90 * time.Second)
+	// Poll /admin/tasks until the task reaches "awaiting_approval". That stage is
+	// the real egress proof: it is set only AFTER the Gemini CLI ran to
+	// completion, metered its model calls through the gateway, and produced a
+	// non-empty diff at the push gate. Merely "appearing" in /admin/tasks is NOT
+	// sufficient — registerTask records the task as "running" at the top of
+	// HandleTask, before the container even starts, so a task appears even if
+	// deny-by-default egress blocks every gateway call (or the image lacks
+	// gemini-cli). Allow 180 s for the npm-based CLI to boot the VM, complete the
+	// model round-trip, and capture the diff.
+	var taskID, stage string
+	deadline := time.Now().Add(180 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := h.get("/admin/tasks")
 		if err != nil {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(time.Second)
 			continue
 		}
 		var tasks []map[string]any
 		if jerr := json.NewDecoder(resp.Body).Decode(&tasks); jerr != nil {
 			resp.Body.Close()
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(time.Second)
 			continue
 		}
 		resp.Body.Close()
 		for _, task := range tasks {
-			id, _ := task["id"].(string)
-			if id != "" {
+			if id, _ := task["id"].(string); id != "" {
 				taskID = id
-				break
+				stage, _ = task["stage"].(string)
 			}
 		}
-		if taskID != "" {
+		if stage == "awaiting_approval" {
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(time.Second)
 	}
 
-	if taskID == "" {
-		// The task never appeared; check what POST returned before declaring failure.
+	if stage != "awaiting_approval" {
+		// Did not reach the push gate — the CLI did not complete a metered gateway
+		// round-trip plus a diff. Surface what POST returned (if it already failed)
+		// to distinguish an egress block / missing gemini-cli / empty diff.
 		select {
 		case pr := <-postDone:
 			if pr.err != nil {
-				t.Fatalf("POST /tasks: %v", pr.err)
+				t.Fatalf("POST /tasks failed before the push gate: %v", pr.err)
 			}
-			t.Fatalf("gemini task never appeared in /admin/tasks; POST returned %d: %s",
-				pr.statusCode, pr.body)
+			t.Fatalf("gemini task never reached awaiting_approval (last stage=%q, id=%q); POST returned %d: %s — egress block, missing gemini-cli, or empty diff?",
+				stage, taskID, pr.statusCode, pr.body)
 		default:
-			t.Fatal("gemini task never appeared in /admin/tasks within 90 s (egress block or image missing gemini-cli?)")
+			t.Fatalf("gemini task never reached awaiting_approval within 180 s (last stage=%q) — egress block, missing gemini-cli, or empty diff?", stage)
 		}
 	}
 
-	// Task is live — the CLI reached the gateway, which is the egress-risk
-	// assertion (deny-by-default would have killed the container before the
-	// broker recorded it). Kill the task to cap real spend.
+	// Reached awaiting_approval: the Gemini CLI ran to completion through the
+	// gateway (metered model calls + a captured diff) inside deny-by-default
+	// egress — the egress-risk verification. Kill to unblock the gated
+	// submission and cap real spend.
 	killResp, err := h.client().Post(
 		"http://drydock/admin/kill/"+taskID,
 		"application/json",
