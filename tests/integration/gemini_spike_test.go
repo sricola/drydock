@@ -94,26 +94,49 @@ func TestGeminiBrokering_Spike(t *testing.T) {
 	sentinel := "SENTINEL-" + randHex(t)
 	home := t.TempDir()
 
+	// Task 2 finding: in 0.49.0 getAuthTypeFromEnv() checks GOOGLE_GEMINI_BASE_URL
+	// BEFORE GEMINI_API_KEY and returns a "gateway" auth type that the
+	// non-interactive validateAuthMethod() then rejects ("Invalid auth method
+	// selected."). Pinning security.auth.selectedType to "gemini-api-key" in the
+	// user settings makes it the configuredAuthType (which wins over the env
+	// auto-detect) so the run authenticates in API-key mode; the base-URL
+	// override is still honored by the genai SDK independent of the auth type.
+	geminiDir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
+		t.Fatalf("mkdir .gemini: %v", err)
+	}
+	settings := `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`
+	if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Candidate headless invocation; Task 2 confirms/adjusts the flag.
-	cmd := exec.CommandContext(ctx, "gemini", "-p", "say ok")
+	// Task 2 findings baked into the invocation:
+	//   --skip-trust        : otherwise the CLI refuses to run headless in an
+	//                         untrusted workspace (exit 55).
+	//   -m gemini-2.5-flash : pin a concrete model so OverrideStrategy bypasses
+	//                         the "auto" model router. The router's classifier
+	//                         issues a separate structured-JSON call that our
+	//                         canned fake response can't satisfy, triggering
+	//                         retry-with-backoff that would blow the timeout.
+	//                         With a pinned model there is exactly one turn.
+	//   -p                  : the documented one-shot headless flag.
+	cmd := exec.CommandContext(ctx, "gemini", "--skip-trust", "-m", "gemini-2.5-flash", "-p", "say ok")
 	cmd.Env = append(os.Environ(),
 		"HOME="+home,
-		"GOOGLE_GEMINI_BASE_URL="+srv.URL, // primary override
-		"GEMINI_BASEURL="+srv.URL,         // belt-and-suspenders alternate name
-		"GEMINI_API_KEY="+sentinel,
-		"GEMINI_DIR="+filepath.Join(home, ".gemini"),
-		"GOOGLE_GENAI_USE_GCA=",           // neutralize Cloud/Code-Assist auto-auth
+		"GOOGLE_GEMINI_BASE_URL="+srv.URL, // base-URL override, honored in every auth mode
+		"GEMINI_API_KEY="+sentinel,        // the key the gateway would strip/replace
 		"GOOGLE_GENAI_USE_VERTEXAI=false", // force the Gemini API (not Vertex)
+		"GEMINI_CLI_TRUST_WORKSPACE=true", // pair with --skip-trust for headless
 		"NO_COLOR=1",
 		"TERM=dumb",
 	)
 	out, runErr := cmd.CombinedOutput()
 
 	t.Logf("=== gemini version: %s", geminiVersion(t))
-	t.Logf("=== invocation: gemini -p 'say ok' (exit err: %v)", runErr)
+	t.Logf("=== invocation: gemini --skip-trust -m gemini-2.5-flash -p 'say ok' (exit err: %v)", runErr)
 	t.Logf("=== stdout+stderr:\n%s", out)
 
 	mu.Lock()
