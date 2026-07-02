@@ -185,7 +185,10 @@ func codexPresent(out string, runErr error) bool {
 // An absent binary surfaces as a non-zero exit and/or empty output —
 // almost always a sandbox_image that predates native Gemini.
 func geminiPresent(out string, err error) bool {
-	return err == nil && strings.TrimSpace(out) != ""
+	// Also reject a shell that exits 0 while printing "not found" (defensive;
+	// mirrors codexPresent) — otherwise a pathological image would report a
+	// spurious "gemini present".
+	return err == nil && strings.TrimSpace(out) != "" && !strings.Contains(out, "not found")
 }
 
 // lastLine returns the last non-empty line of s, trimmed. Used for version

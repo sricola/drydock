@@ -71,6 +71,7 @@ func TestGeminiPresent(t *testing.T) {
 		{"not found (nonzero exit)", "", errors.New("exit status 127"), false},
 		{"empty output zero exit", "", nil, false},
 		{"container run error", "", errors.New("container run failed"), false},
+		{"not found with zero exit (defensive)", "/bin/sh: 1: gemini: not found", nil, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
