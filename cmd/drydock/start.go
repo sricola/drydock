@@ -38,7 +38,7 @@ func runStart() {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
 		// best-effort — use defaults if config is missing
-		cfg, _ = func() (*config.Config, error) { return config.Load("") }()
+		cfg, _ = config.Load("")
 	}
 	if cfg == nil {
 		cfg = config.Defaults()

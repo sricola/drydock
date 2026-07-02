@@ -47,15 +47,29 @@ func parseClaudeCreds(raw []byte) (gateway.CredSnapshot, error) {
 	}, nil
 }
 
+// authAgents returns the names of agents whose provider has an OAuthBackend,
+// i.e. agents that `drydock auth` can actually bootstrap credentials for.
+// Agents like opencode (ConfigBuilt, no OAuthBackend) are excluded so they
+// are not advertised as valid auth subcommands.
+func authAgents() []string {
+	var out []string
+	for _, p := range provider.Registry {
+		if p.OAuthBackend != nil {
+			out = append(out, p.Agent)
+		}
+	}
+	return out
+}
+
 // runAuth dispatches `drydock auth <subcommand>`.
 func runAuth(args []string) {
 	consumeHelpFlag("auth", args)
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "drydock auth — usage: drydock auth %s [--status]\n", strings.Join(provider.Agents(), "|"))
+		fmt.Fprintf(os.Stderr, "drydock auth — usage: drydock auth %s [--status]\n", strings.Join(authAgents(), "|"))
 		os.Exit(2)
 	}
 	if _, ok := provider.ByAgent(args[0]); !ok {
-		fmt.Fprintf(os.Stderr, "drydock auth: unknown subcommand %q (want one of %v)\n", args[0], provider.Agents())
+		fmt.Fprintf(os.Stderr, "drydock auth: unknown subcommand %q (want one of %v)\n", args[0], authAgents())
 		os.Exit(2)
 	}
 	switch args[0] {

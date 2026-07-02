@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -28,7 +29,7 @@ func runKill(id string) {
 			// brokerd is up but doesn't track this task; try the
 			// container CLI in case it's an orphan.
 		default:
-			fmt.Fprintf(stderr(), "drydock kill: brokerd returned %s\n", resp.Status)
+			fmt.Fprintf(os.Stderr, "drydock kill: brokerd returned %s\n", resp.Status)
 			return
 		}
 	}
@@ -37,8 +38,8 @@ func runKill(id string) {
 		// brokerd had checked and didn't know the id, when really
 		// brokerd wasn't even running. Be explicit before falling back
 		// to the container CLI orphan-cleanup.
-		fmt.Fprintln(stderr(), "drydock kill:", brokerDownHint)
-		fmt.Fprintln(stderr(), "  attempting best-effort VM cleanup anyway…")
+		fmt.Fprintln(os.Stderr, "drydock kill:", brokerDownHint)
+		fmt.Fprintln(os.Stderr, "  attempting best-effort VM cleanup anyway…")
 	}
 	// Brokerd unreachable or 404 — best-effort VM cleanup.
 	out, ferr := exec.Command("container", "delete", "--force", "task-"+id).CombinedOutput()
@@ -46,9 +47,9 @@ func runKill(id string) {
 	case ferr == nil:
 		fmt.Printf("task %s VM removed (brokerd didn't know about it)\n", id)
 	case isNoSuchContainer(string(out)):
-		fmt.Fprintf(stderr(), "drydock kill: no such task %s\n", id)
+		fmt.Fprintf(os.Stderr, "drydock kill: no such task %s\n", id)
 	default:
-		fmt.Fprintf(stderr(), "drydock kill: container delete: %v\n%s", ferr, out)
+		fmt.Fprintf(os.Stderr, "drydock kill: container delete: %v\n%s", ferr, out)
 	}
 }
 

@@ -363,7 +363,7 @@ max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
 approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs)
 default_model:          ""             # claude --model fallback (e.g. claude-sonnet-4-6); empty = claude picks. Per-task --model overrides.
-default_agent:          claude         # sandbox CLI: claude | codex. Per-task --agent overrides.
+default_agent:          claude         # sandbox CLI: claude | codex | opencode. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
 task_max_requests:      0              # per-task request cap (0 = unlimited)
@@ -411,17 +411,4 @@ func (c *Config) AuthMode(vendor string) string {
 	default:
 		return ""
 	}
-}
-
-// String emits a one-line summary suitable for boot logs (no secrets).
-func (c *Config) String() string {
-	var parts []string
-	parts = append(parts, "network="+c.Network)
-	parts = append(parts, "gw="+c.GatewayIP)
-	parts = append(parts, "budget=$"+strconv.FormatFloat(c.TaskBudgetUSD, 'f', 2, 64))
-	parts = append(parts, "max_concurrent="+strconv.Itoa(c.MaxConcurrent))
-	if c.Broker.Addr != "" {
-		parts = append(parts, "tcp="+c.Broker.Addr)
-	}
-	return strings.Join(parts, " ")
 }

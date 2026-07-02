@@ -212,8 +212,43 @@ func TestRunWizard_CodexApiKeyConsentStores(t *testing.T) {
 		t.Fatalf("choices = %+v", got)
 	}
 	// Consented persist of an already-exported env key → stored, no re-prompt.
-	if config.LoadAPIKeys(config.APIKeysPath())["OPENAI_API_KEY"] != "sk-from-env" {
+	keys, _ := config.LoadAPIKeys(config.APIKeysPath())
+	if keys["OPENAI_API_KEY"] != "sk-from-env" {
 		t.Error("consented API key not persisted to api-keys.env")
+	}
+}
+
+// TestRunWizard_WriteFailureSurfacesError verifies that when the config file
+// cannot be written, the wizard reports an error (not "wrote") so the operator
+// knows the config is stale.
+func TestRunWizard_WriteFailureSurfacesError(t *testing.T) {
+	parent := t.TempDir()
+	// Create the sub-directory but make it read-only so WriteFile fails.
+	sub := filepath.Join(parent, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) }) // restore for cleanup
+
+	configPath := filepath.Join(sub, "config.yaml")
+	var out strings.Builder
+	deps := &wizardDeps{
+		in:              strings.NewReader("1\n1\n"), // agent: Claude, auth: subscription
+		out:             &out,
+		bootstrapClaude: func() error { return nil },
+		bootstrapCodex:  func() error { return nil },
+		configPath:      configPath,
+	}
+	runWizard(deps)
+	got := out.String()
+	if strings.Contains(got, "wrote") {
+		t.Errorf("output must not say 'wrote' on write failure; got: %s", got)
+	}
+	if !strings.Contains(got, "error") {
+		t.Errorf("output must report an error on write failure; got: %s", got)
 	}
 }
 

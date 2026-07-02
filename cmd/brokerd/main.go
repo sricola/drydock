@@ -141,7 +141,7 @@ func main() {
 		die("load egress config", "path", egressPath, "err", err)
 	}
 
-	fileKeys := config.LoadAPIKeys(config.APIKeysPath())
+	fileKeys, _ := config.LoadAPIKeys(config.APIKeysPath())
 
 	gwPort, proxyPort := 8088, 3128
 
@@ -226,6 +226,7 @@ func main() {
 		// Pass the error text as the message so the boot log line is the
 		// specific condition (e.g. "openai_compat.base_url is set but its
 		// api_key_env (FOO) is empty"), identical to the pre-refactor die calls.
+		cleanup()
 		die(err.Error())
 	}
 	gw, err := gateway.New(backends...)

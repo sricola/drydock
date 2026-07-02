@@ -105,7 +105,7 @@ func runDoctor() {
 	// stored OAuth token by calling Current() once. This also refreshes the
 	// token if it is near expiry — no API budget spend beyond the refresh.
 	// Skipped entirely in api_key mode (api-key source is reported instead).
-	fileKeys := config.LoadAPIKeys(config.APIKeysPath())
+	fileKeys, _ := config.LoadAPIKeys(config.APIKeysPath())
 	for _, p := range provider.Registry {
 		if p.ConfigBuilt {
 			continue

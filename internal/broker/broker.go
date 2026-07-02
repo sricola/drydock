@@ -22,6 +22,7 @@ import (
 	"drydock/internal/agent"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
+	"drydock/internal/provider"
 	"drydock/internal/remote"
 	"drydock/internal/runner"
 	"drydock/internal/stage"
@@ -288,8 +289,8 @@ func (b *Broker) registerTask(id, repo, instruction string, cancel context.Cance
 	if b.cancellers == nil {
 		b.cancellers = make(map[string]context.CancelFunc)
 	}
-	if len(instruction) > instructionSnippetMax {
-		instruction = instruction[:instructionSnippetMax] + "…"
+	if r := []rune(instruction); len(r) > instructionSnippetMax {
+		instruction = string(r[:instructionSnippetMax]) + "…"
 	}
 	b.tasks[id] = &TaskState{
 		ID:          id,
@@ -442,6 +443,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	sw.emit(map[string]any{"event": "stage", "stage": "preparing", "task_id": taskID})
 	st, err := prepare(stageDir, t.RepoRef)
 	if err != nil {
+		slog.Warn("task clone failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "clone failed", "check the repo URL and that brokerd can reach it"))
 		return
 	}
@@ -449,6 +451,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	allowlist := egress.CompileAllowlist(b.Cfg, t.EgressExtra)
 	if err := st.WriteTaskFiles(t.Instruction, allowlist); err != nil {
+		slog.Warn("task stage failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "stage failed", ""))
 		return
 	}
@@ -460,6 +463,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 	grant, err := prov.Mint(b.TaskBudget)
 	if err != nil {
+		slog.Warn("task credential mint failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "credential mint failed", ""))
 		return
 	}
@@ -470,6 +474,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// the diff, the prompt, and the full stream-json trace — none of it
 	// should be world-readable.
 	if err := os.MkdirAll(b.AuditRoot, 0o700); err != nil {
+		slog.Warn("task audit setup failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "audit setup failed", ""))
 		return
 	}
@@ -479,6 +484,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		filepath.Join(b.AuditRoot, taskID+".jsonl"),
 		os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
+		slog.Warn("task audit log open failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "audit setup failed", ""))
 		return
 	}
@@ -759,7 +765,7 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 		if ctx.Err() == context.DeadlineExceeded {
 			slog.Warn("task auto-denied at approval gate (approval_timeout reached)", "task_id", taskID, "timeout", b.ApprovalTimeout)
 		} else {
-			slog.Info("task client disconnected before approval; aborting push", "task_id", taskID)
+			slog.Info("task killed or broker shutting down before approval; aborting", "task_id", taskID)
 		}
 		return false
 	}
@@ -1037,7 +1043,7 @@ func (b *Broker) resolveAgent(taskAgent string) (name string, prov creds.Provide
 	}
 	vendor, known := agent.Vendor(name)
 	if !known {
-		return name, nil, http.StatusBadRequest, "unknown agent: " + name + " (want claude|codex)"
+		return name, nil, http.StatusBadRequest, "unknown agent: " + name + " (want " + strings.Join(provider.Agents(), "|") + ")"
 	}
 	prov = b.Providers[vendor]
 	if prov == nil {

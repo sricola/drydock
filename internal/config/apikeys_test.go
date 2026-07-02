@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bufio"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,7 +14,10 @@ func TestLoadAPIKeys_ParsesAndIgnoresBlanksAndComments(t *testing.T) {
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := LoadAPIKeys(p)
+	got, err := LoadAPIKeys(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got["ANTHROPIC_API_KEY"] != "sk-ant-x" || got["OPENAI_API_KEY"] != "sk-o" {
 		t.Fatalf("LoadAPIKeys = %v", got)
 	}
@@ -28,7 +33,10 @@ func TestLoadAPIKeys_IgnoresUnknownKeys(t *testing.T) {
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := LoadAPIKeys(p)
+	got, err := LoadAPIKeys(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got["ANTHROPIC_API_KEY"] != "sk-ant-x" {
 		t.Errorf("known key not loaded: %v", got)
 	}
@@ -41,7 +49,11 @@ func TestLoadAPIKeys_IgnoresUnknownKeys(t *testing.T) {
 }
 
 func TestLoadAPIKeys_MissingFileIsEmpty(t *testing.T) {
-	if got := LoadAPIKeys(filepath.Join(t.TempDir(), "nope.env")); len(got) != 0 {
+	got, err := LoadAPIKeys(filepath.Join(t.TempDir(), "nope.env"))
+	if err != nil {
+		t.Fatalf("missing file should return nil error, got %v", err)
+	}
+	if len(got) != 0 {
 		t.Errorf("missing file should yield empty map, got %v", got)
 	}
 }
@@ -58,11 +70,34 @@ func TestWriteAPIKey_UpsertsPreservesOtherAnd0600(t *testing.T) {
 	if err := WriteAPIKey(p, "ANTHROPIC_API_KEY", "sk-ant-2"); err != nil {
 		t.Fatal(err)
 	}
-	got := LoadAPIKeys(p)
+	got, err := LoadAPIKeys(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got["ANTHROPIC_API_KEY"] != "sk-ant-2" || got["OPENAI_API_KEY"] != "sk-o-1" {
 		t.Fatalf("upsert lost a key: %v", got)
 	}
 	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
 		t.Errorf("mode = %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+// TestLoadAPIKeys_ScannerError verifies that a bufio.Scanner token-too-long
+// error is returned rather than silently dropping lines that follow.
+func TestLoadAPIKeys_ScannerError(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "api-keys.env")
+	// First line is a valid key; second line exceeds bufio.MaxScanTokenSize
+	// so the scanner will fail mid-file.
+	line := "ANTHROPIC_API_KEY=sk-ant-x\n" + strings.Repeat("a", bufio.MaxScanTokenSize+1) + "\n"
+	if err := os.WriteFile(p, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadAPIKeys(p)
+	if err == nil {
+		t.Error("expected scanner error on oversized line, got nil")
+	}
+	// The key scanned before the error must still be in the result.
+	if got["ANTHROPIC_API_KEY"] != "sk-ant-x" {
+		t.Errorf("key scanned before error missing; got %v", got)
 	}
 }

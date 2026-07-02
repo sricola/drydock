@@ -260,8 +260,15 @@ func runWizard(d *wizardDeps) wizardChoices {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(d.configPath), 0o700); err == nil {
-		_ = os.WriteFile(d.configPath, []byte(renderConfig(c)), 0o644)
+	if err := os.MkdirAll(filepath.Dir(d.configPath), 0o700); err != nil {
+		fmt.Fprintf(d.out, "\nerror: could not create config directory: %v\n", err)
+		fmt.Fprintln(d.out, "start:  drydock start      first task:  drydock submit --repo <url> --instruction \"…\"")
+		return c
+	}
+	if err := os.WriteFile(d.configPath, []byte(renderConfig(c)), 0o644); err != nil {
+		fmt.Fprintf(d.out, "\nerror: could not write %s: %v\n", d.configPath, err)
+		fmt.Fprintln(d.out, "start:  drydock start      first task:  drydock submit --repo <url> --instruction \"…\"")
+		return c
 	}
 	fmt.Fprintf(d.out, "\nwrote %s · default_agent: %s\n", d.configPath, c.DefaultAgent)
 	fmt.Fprintln(d.out, "start:  drydock start      first task:  drydock submit --repo <url> --instruction \"…\"")

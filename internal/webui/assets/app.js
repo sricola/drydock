@@ -361,7 +361,7 @@ function dangerButton(label, fn){
   let armed = false, timer = null;
   b.onclick = () => {
     if (armed){ clearTimeout(timer); fn(); return; }
-    armed = true; b.dataset.orig = label; b.textContent = "Confirm?"; b.classList.add("confirming");
+    armed = true; b.textContent = "Confirm?"; b.classList.add("confirming");
     timer = setTimeout(() => { armed = false; b.textContent = label; b.classList.remove("confirming"); }, 3000);
   };
   return b;
@@ -537,7 +537,7 @@ function renderSubmit() {
   app().replaceChildren(el("h2", { text: "Submit a task" }), form);
 }
 let newTaskID = null;
-function label(text, input) { return el("label", {}, el("span", { text }), input); }
+function label(text, input) { return el("label", {}, el("span", { class: "lab", text }), input); }
 views.submit = renderSubmit;
 
 // =================== HISTORY ===================

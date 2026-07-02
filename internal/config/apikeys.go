@@ -35,12 +35,13 @@ func APIKeysPath() string {
 // ignored, as are any keys outside knownAPIKeys — load and WriteAPIKey agree on
 // the managed key set, so an unrecognized line can't be loaded one moment and
 // silently dropped on the next rewrite. A missing or unreadable file yields an
-// empty map (the store is optional), not an error.
-func LoadAPIKeys(path string) map[string]string {
+// empty map and nil error (the store is optional). A scanner error (e.g. a line
+// exceeding bufio.MaxScanTokenSize) returns the keys scanned so far and the error.
+func LoadAPIKeys(path string) (map[string]string, error) {
 	out := map[string]string{}
 	f, err := os.Open(path)
 	if err != nil {
-		return out
+		return out, nil
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -59,13 +60,16 @@ func LoadAPIKeys(path string) map[string]string {
 		}
 		out[k] = strings.TrimSpace(v)
 	}
-	return out
+	if err := sc.Err(); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 // WriteAPIKey upserts key=value in the store at path, preserving the other
 // recognized key. 0600, atomic temp+rename; the parent dir is created 0700.
 func WriteAPIKey(path, key, value string) error {
-	keys := LoadAPIKeys(path)
+	keys, _ := LoadAPIKeys(path)
 	keys[key] = value
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

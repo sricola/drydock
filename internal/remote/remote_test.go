@@ -1,8 +1,10 @@
 package remote
 
 import (
+	"bytes"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -172,5 +174,19 @@ func TestAvailable(t *testing.T) {
 	// PushOnly is always available.
 	if err := (PushOnlyAdapter{}).Available(); err != nil {
 		t.Errorf("push-only must always be available: %v", err)
+	}
+}
+
+// TestAdapterFor_UnknownPlatformWarnsToSink verifies that an unrecognized
+// platform string causes a warning to be written to the injectable stderr sink.
+func TestAdapterFor_UnknownPlatformWarnsToSink(t *testing.T) {
+	var buf bytes.Buffer
+	orig := stderr
+	stderr = &buf
+	t.Cleanup(func() { stderr = orig })
+
+	_ = AdapterFor("https://github.com/o/r", "huggingface")
+	if !strings.Contains(buf.String(), "huggingface") {
+		t.Errorf("expected unknown-platform warning in injected sink; got: %q", buf.String())
 	}
 }

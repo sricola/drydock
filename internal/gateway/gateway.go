@@ -165,6 +165,9 @@ func stripRequestFields(r *http.Request, fields []string) {
 	raw, err := io.ReadAll(r.Body)
 	_ = r.Body.Close()
 	if err != nil {
+		// Restore whatever bytes were read before the error so downstream
+		// sees a readable body rather than a closed/empty one.
+		r.Body = io.NopCloser(bytes.NewReader(raw))
 		return
 	}
 	body := raw
