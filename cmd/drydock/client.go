@@ -1,17 +1,14 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"drydock/internal/config"
-	"drydock/internal/sockpath"
+	"drydock/internal/brokerclient"
 )
 
 // taskState mirrors broker.TaskState. We don't import the broker package
@@ -44,39 +41,15 @@ func fetchTasks() ([]taskState, error) {
 	return out, nil
 }
 
-// socketPath returns the Unix socket path for the broker. Resolution order
-// mirrors brokerd and auditDir: env override → config.yaml broker.socket →
-// package default.
-func socketPath() string {
-	if v := os.Getenv("BROKER_SOCKET"); v != "" {
-		return v
-	}
-	if cfg, err := config.Load(config.DefaultPath()); err == nil && cfg.Broker.Socket != "" {
-		return cfg.Broker.Socket
-	}
-	return sockpath.Default()
-}
+// socketPath returns the Unix socket path for the broker. Delegates to the
+// shared brokerclient resolver so env/config logic lives in one place.
+func socketPath() string { return brokerclient.ResolveSocketPath() }
 
 // brokerClient returns an HTTP client and base URL for talking to the broker.
 // Resolution order: BROKER_ADDR env → config.yaml broker.addr → Unix socket
-// (via socketPath), matching brokerd's listen() precedence.
+// (via socketPath). Delegates all client construction to the shared helper.
 func brokerClient() (*http.Client, string) {
-	if tcp := os.Getenv("BROKER_ADDR"); tcp != "" {
-		return &http.Client{Timeout: 5 * time.Second}, "http://" + tcp
-	}
-	if cfg, err := config.Load(config.DefaultPath()); err == nil && cfg.Broker.Addr != "" {
-		return &http.Client{Timeout: 5 * time.Second}, "http://" + cfg.Broker.Addr
-	}
-	sock := socketPath()
-	c := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", sock)
-			},
-		},
-	}
-	return c, "http://brokerd"
+	return brokerclient.New(nil, 5*time.Second)
 }
 
 // brokerdDown reports whether err comes from "brokerd isn't running" — the

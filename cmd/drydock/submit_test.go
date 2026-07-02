@@ -10,20 +10,20 @@ import (
 func TestParseEgressExtras(t *testing.T) {
 	cases := []struct {
 		in      []string
-		want    []reqDomain
+		want    []domain
 		wantErr bool
 	}{
 		{nil, nil, false},
 		{[]string{}, nil, false},
 		{
 			in: []string{"api.example.com:443"},
-			want: []reqDomain{
+			want: []domain{
 				{Host: "api.example.com", Ports: []int{443}},
 			},
 		},
 		{
 			in: []string{"a.example.com:443,8443", "b.example.com:80"},
-			want: []reqDomain{
+			want: []domain{
 				{Host: "a.example.com", Ports: []int{443, 8443}},
 				{Host: "b.example.com", Ports: []int{80}},
 			},
@@ -31,7 +31,7 @@ func TestParseEgressExtras(t *testing.T) {
 		// Trims whitespace inside the port list.
 		{
 			in: []string{"a.example.com:443, 8443"},
-			want: []reqDomain{
+			want: []domain{
 				{Host: "a.example.com", Ports: []int{443, 8443}},
 			},
 		},

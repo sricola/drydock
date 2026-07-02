@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	ossignal "os/signal"
@@ -16,26 +15,23 @@ import (
 	"strings"
 	"syscall"
 
+	"drydock/internal/brokerclient"
 	"drydock/internal/remote"
 )
 
 // taskRequest mirrors the broker.Task JSON shape. We don't import broker
 // to keep the CLI lean; the contract is stable.
+// EgressExtra reuses the domain type defined in client.go (same package).
 type taskRequest struct {
-	RepoRef     string      `json:"repo_ref"`
-	Instruction string      `json:"instruction"`
-	EgressExtra []reqDomain `json:"egress_extra,omitempty"`
-	Sensitive   bool        `json:"sensitive,omitempty"`
-	AutoApprove bool        `json:"auto_approve,omitempty"`
-	Platform    string      `json:"platform,omitempty"`
-	Model       string      `json:"model,omitempty"`
-	Agent       string      `json:"agent,omitempty"`
-	Draft       bool        `json:"draft,omitempty"`
-}
-
-type reqDomain struct {
-	Host  string `json:"host"`
-	Ports []int  `json:"ports"`
+	RepoRef     string   `json:"repo_ref"`
+	Instruction string   `json:"instruction"`
+	EgressExtra []domain `json:"egress_extra,omitempty"`
+	Sensitive   bool     `json:"sensitive,omitempty"`
+	AutoApprove bool     `json:"auto_approve,omitempty"`
+	Platform    string   `json:"platform,omitempty"`
+	Model       string   `json:"model,omitempty"`
+	Agent       string   `json:"agent,omitempty"`
+	Draft       bool     `json:"draft,omitempty"`
 }
 
 // repeatedFlag is a string flag that can be passed more than once.
@@ -163,12 +159,13 @@ func readInstruction(inline, file string, positional []string) (string, error) {
 }
 
 // parseEgressExtras parses N strings of form "host:port[,port,port]" into
-// the structured shape brokerd expects.
-func parseEgressExtras(raw []string) ([]reqDomain, error) {
+// the structured shape brokerd expects. Returns []domain (same type as
+// used by taskState.EgressExtra in client.go).
+func parseEgressExtras(raw []string) ([]domain, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	out := make([]reqDomain, 0, len(raw))
+	out := make([]domain, 0, len(raw))
 	for _, entry := range raw {
 		i := strings.Index(entry, ":")
 		if i <= 0 || i == len(entry)-1 {
@@ -185,7 +182,7 @@ func parseEgressExtras(raw []string) ([]reqDomain, error) {
 			}
 			ports = append(ports, n)
 		}
-		out = append(out, reqDomain{Host: host, Ports: ports})
+		out = append(out, domain{Host: host, Ports: ports})
 	}
 	return out, nil
 }
@@ -200,24 +197,9 @@ func postSubmit(req taskRequest, jsonOut, quiet bool) error {
 		return err
 	}
 
-	// Long-lived client: no timeout. Tasks legitimately take tens of
+	// Long-lived client: no timeout (0). Tasks legitimately take tens of
 	// minutes; the existing 5s-timeout brokerClient is for admin pokes.
-	var client *http.Client
-	var base string
-	if tcp := os.Getenv("BROKER_ADDR"); tcp != "" {
-		client = &http.Client{}
-		base = "http://" + tcp
-	} else {
-		sock := socketPath()
-		client = &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-					return net.Dial("unix", sock)
-				},
-			},
-		}
-		base = "http://brokerd"
-	}
+	client, base := brokerclient.New(nil, 0)
 
 	// ^C cancels the in-flight POST and detaches the local stream, but does NOT
 	// kill the task — brokerd's taskCtx is rooted at Background. The task keeps
