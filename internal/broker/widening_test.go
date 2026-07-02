@@ -11,18 +11,18 @@ import (
 type fakeSquid struct {
 	added   []string
 	removed []string
-	domains map[string][]string
+	domains map[string][]egress.Domain
 	secrets map[string]string // user -> secret handed to AddTask
 	addErr  error             // when set, AddTask fails (registration error)
 }
 
-func (f *fakeSquid) AddTask(user, secret string, domains []string) error {
+func (f *fakeSquid) AddTask(user, secret string, domains []egress.Domain) error {
 	if f.addErr != nil {
 		return f.addErr
 	}
 	f.added = append(f.added, user)
 	if f.domains == nil {
-		f.domains = map[string][]string{}
+		f.domains = map[string][]egress.Domain{}
 		f.secrets = map[string]string{}
 	}
 	f.domains[user] = domains
@@ -46,7 +46,8 @@ func TestSetupWidening_RegistersAndReturnsAuth(t *testing.T) {
 	if len(fs.added) != 1 || fs.added[0] != "task-abc123" {
 		t.Fatalf("AddTask users = %v, want [task-abc123]", fs.added)
 	}
-	if got := fs.domains["task-abc123"]; len(got) != 1 || got[0] != "api.github.com" {
+	if got := fs.domains["task-abc123"]; len(got) != 1 || got[0].Host != "api.github.com" ||
+		len(got[0].Ports) != 1 || got[0].Ports[0] != 443 {
 		t.Errorf("registered domains = %v", got)
 	}
 	// proxyAuth must be "user:secret@" with a non-empty secret, and the secret

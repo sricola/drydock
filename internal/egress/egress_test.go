@@ -68,21 +68,6 @@ func TestValidateDomains_DuplicatesRejected(t *testing.T) {
 	}
 }
 
-func TestCompileAllowlist_DefaultPlusExtra(t *testing.T) {
-	cfg := Config{}
-	cfg.Default.Domains = []Domain{
-		{Host: "api.anthropic.com", Ports: []int{443}},
-		{Host: "pypi.org", Ports: []int{443}},
-	}
-	extra := []Domain{{Host: "internal.example.com", Ports: []int{443, 8443}}}
-
-	got := CompileAllowlist(cfg, extra)
-	want := "api.anthropic.com 443\npypi.org 443\ninternal.example.com 443\ninternal.example.com 8443\n"
-	if got != want {
-		t.Fatalf("CompileAllowlist mismatch:\n got: %q\nwant: %q", got, want)
-	}
-}
-
 func TestDomainJSONIsLowercase(t *testing.T) {
 	b, err := json.Marshal([]Domain{{Host: "x.test", Ports: []int{443}}})
 	if err != nil {

@@ -26,20 +26,19 @@ import (
 // --- fakes ---
 
 type fakeStage struct {
-	workDir      string
-	diff         string
-	captureErr   error
-	pushErr      error
-	pushed       bool
-	pushBranch   string
-	cleaned      bool
-	gotPrompt    string
-	gotAllowlist string
+	workDir    string
+	diff       string
+	captureErr error
+	pushErr    error
+	pushed     bool
+	pushBranch string
+	cleaned    bool
+	gotPrompt  string
 }
 
 func (f *fakeStage) WorkDir() string { return f.workDir }
-func (f *fakeStage) WriteTaskFiles(prompt, allowlist string) error {
-	f.gotPrompt, f.gotAllowlist = prompt, allowlist
+func (f *fakeStage) WriteTaskFiles(prompt string) error {
+	f.gotPrompt = prompt
 	return nil
 }
 func (f *fakeStage) CaptureDiff() (string, error) { return f.diff, f.captureErr }

@@ -60,17 +60,17 @@ func (s *Stage) git(args ...string) (string, error) {
 	return runGit(s.WorkDir, full...)
 }
 
-// WriteTaskFiles writes the prompt and compiled allowlist into the work tree's
-// .task dir, read by the in-VM entrypoint. Excluded from the captured diff.
-func (s *Stage) WriteTaskFiles(prompt, allowlist string) error {
+// WriteTaskFiles writes the agent prompt into the work tree's .task dir, read by
+// the in-VM entrypoint. Excluded from the captured diff. Egress is enforced
+// host-side by squid (per-domain host+port ACLs); no allowlist file is written
+// into the VM — nothing in-VM reads one, and shipping a bogus "allowlist" there
+// would falsely imply in-VM enforcement.
+func (s *Stage) WriteTaskFiles(prompt string) error {
 	dir := filepath.Join(s.WorkDir, ".task")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(prompt), 0o644); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "allowlist.txt"), []byte(allowlist), 0o644)
+	return os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(prompt), 0o644)
 }
 
 // stageAll stages every change except the control dir and a top-level .git. (A

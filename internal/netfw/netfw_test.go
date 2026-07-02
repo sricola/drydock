@@ -37,15 +37,20 @@ func TestCompileSquidAllowlist_ExcludesModelAPI(t *testing.T) {
 }
 
 func TestCompileSquidConf(t *testing.T) {
-	out := CompileSquidConf("192.168.66.1:3128", "/run/allow.txt", "/run", "/usr/bin/brokerd __squid-authhelper /run/task-tokens")
+	out := CompileSquidConf("192.168.66.1:3128", "/run/squid-default-acl.conf", "/run", "/usr/bin/brokerd __squid-authhelper /run/task-tokens")
 	for _, want := range []string{
 		"http_port 192.168.66.1:3128",
-		`acl default_dst dstdomain "/run/allow.txt"`,
+		"include /run/squid-default-acl.conf",
 		"http_access deny all",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("squid.conf missing %q:\n%s", want, out)
 		}
+	}
+	// The bare dstdomain allow (any port on an allowed host) must be gone; the
+	// default block is now port-restricted via the include.
+	if strings.Contains(out, "http_access allow default_dst") {
+		t.Errorf("conf still emits an unrestricted default_dst allow:\n%s", out)
 	}
 }
 
@@ -56,27 +61,30 @@ func TestCompileSquidAllowlist_EmptyConfig(t *testing.T) {
 	}
 }
 
-func TestCompileSquidAllowlist_OneHostPerLineNoPorts(t *testing.T) {
-	// Squid's dstdomain file is hostname-only; ports must be irrelevant to
-	// the rendered shape regardless of what the YAML says.
+func TestCompileSquidAllowlist_OneBlockPerHost(t *testing.T) {
+	// After the model-API exclusion two hosts remain; each renders a
+	// dstdomain+port ACL pair, so we expect two dstdomain ACLs (dst0, dst1).
 	c := cfg()
 	out := CompileSquidAllowlist(c)
-	if strings.Count(out, "\n") != 2 {
-		t.Errorf("want 2 hosts after model-API exclusion, got: %q", out)
+	if got := strings.Count(out, "dstdomain "); got != 2 {
+		t.Errorf("want 2 dstdomain ACLs after model-API exclusion, got %d:\n%s", got, out)
 	}
-	if strings.Contains(out, "443") {
-		t.Errorf("allowlist must not include ports: %q", out)
+	// Ports ARE now part of the enforced shape (that's the whole point).
+	if !strings.Contains(out, "port 443") {
+		t.Errorf("allowlist must bind the configured port: %q", out)
 	}
 }
 
 func TestCompileSquidConf_DefaultDenyShape(t *testing.T) {
-	out := CompileSquidConf("192.168.66.1:3128", "/tmp/allow", "/tmp/run", "/usr/bin/brokerd __squid-authhelper /tmp/run/task-tokens")
+	out := CompileSquidConf("192.168.66.1:3128", "/tmp/run/squid-default-acl.conf", "/tmp/run", "/usr/bin/brokerd __squid-authhelper /tmp/run/task-tokens")
 	// The order of the http_access lines is the actual access policy.
-	// Reorder them and the proxy opens up — guard the order explicitly.
+	// Reorder them and the proxy opens up — guard the order explicitly. The
+	// per-domain allow rules live in the included default-ACL file, which must
+	// sit between the CONNECT guard and the final deny-all.
 	wantOrder := []string{
 		"http_access deny CONNECT !SSL_ports",
-		"http_access allow CONNECT default_dst SSL_ports",
-		"http_access allow default_dst",
+		"include /tmp/run/squid-default-acl.conf",
+		"include /tmp/run/task-acls/*.conf",
 		"http_access deny all",
 	}
 	prev := -1
@@ -124,17 +132,17 @@ func TestStartSquid_WritesConfAndAllowlist(t *testing.T) {
 		t.Skipf("no `true` on PATH: %v", err)
 	}
 	runDir := t.TempDir()
-	allowlist := "registry.npmjs.org\npypi.org\n"
+	allowlist := "acl dst0 dstdomain registry.npmjs.org\nacl prt0 port 443\n"
 	s, err := StartSquid(trueBin, "127.0.0.1:13128", allowlist, runDir, "/usr/bin/brokerd __squid-authhelper "+runDir+"/task-tokens")
 	if err != nil {
 		t.Fatalf("StartSquid: %v", err)
 	}
 	defer s.Stop()
 
-	if got, err := os.ReadFile(runDir + "/squid-allow.txt"); err != nil {
-		t.Fatalf("allowlist not written: %v", err)
+	if got, err := os.ReadFile(runDir + "/squid-default-acl.conf"); err != nil {
+		t.Fatalf("default ACL not written: %v", err)
 	} else if string(got) != allowlist {
-		t.Errorf("allowlist = %q, want %q", got, allowlist)
+		t.Errorf("default ACL = %q, want %q", got, allowlist)
 	}
 	conf, err := os.ReadFile(runDir + "/squid.conf")
 	if err != nil {
@@ -143,8 +151,8 @@ func TestStartSquid_WritesConfAndAllowlist(t *testing.T) {
 	if !strings.Contains(string(conf), "127.0.0.1:13128") {
 		t.Errorf("conf missing bind addr: %q", conf)
 	}
-	if !strings.Contains(string(conf), runDir+"/squid-allow.txt") {
-		t.Errorf("conf doesn't reference the written allowlist path")
+	if !strings.Contains(string(conf), "include "+runDir+"/squid-default-acl.conf") {
+		t.Errorf("conf doesn't include the written default-ACL path")
 	}
 }
 

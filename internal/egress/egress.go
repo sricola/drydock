@@ -100,15 +100,3 @@ func Load(path string) (Config, error) {
 	}
 	return cfg, nil
 }
-
-// CompileAllowlist renders "<host> <port>" lines consumed by init-firewall.sh.
-// Default domains come first, then approved per-task extras.
-func CompileAllowlist(cfg Config, extra []Domain) string {
-	var b strings.Builder
-	for _, d := range append(append([]Domain{}, cfg.Default.Domains...), extra...) {
-		for _, p := range d.Ports {
-			fmt.Fprintf(&b, "%s %d\n", d.Host, p)
-		}
-	}
-	return b.String()
-}

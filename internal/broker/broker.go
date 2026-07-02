@@ -67,7 +67,7 @@ type Task struct {
 // SquidControl registers/deregisters per-task egress widening with squid.
 // nil on a Broker disables widening enforcement (non-widened tasks and tests).
 type SquidControl interface {
-	AddTask(user, secret string, domains []string) error
+	AddTask(user, secret string, domains []egress.Domain) error
 	RemoveTask(user string) error
 }
 
@@ -127,7 +127,7 @@ type Broker struct {
 // uses realStage, a thin adapter over *stage.Stage.
 type taskStage interface {
 	WorkDir() string
-	WriteTaskFiles(prompt, allowlist string) error
+	WriteTaskFiles(prompt string) error
 	CaptureDiff() (string, error)
 	Push(branch, msg string) error
 	PushEnv() []string
@@ -137,8 +137,8 @@ type taskStage interface {
 type realStage struct{ s *stage.Stage }
 
 func (r realStage) WorkDir() string { return r.s.WorkDir }
-func (r realStage) WriteTaskFiles(prompt, allowlist string) error {
-	return r.s.WriteTaskFiles(prompt, allowlist)
+func (r realStage) WriteTaskFiles(prompt string) error {
+	return r.s.WriteTaskFiles(prompt)
 }
 func (r realStage) CaptureDiff() (string, error)  { return r.s.CaptureDiff() }
 func (r realStage) Push(branch, msg string) error { return r.s.Push(branch, msg) }
@@ -217,11 +217,7 @@ func (b *Broker) setupWidening(taskID string, extras []egress.Domain) (proxyAuth
 		return "", cleanup, err
 	}
 	user := proxyUser(taskID)
-	hosts := make([]string, 0, len(extras))
-	for _, d := range extras {
-		hosts = append(hosts, d.Host)
-	}
-	if err := b.Squid.AddTask(user, secret, hosts); err != nil {
+	if err := b.Squid.AddTask(user, secret, extras); err != nil {
 		return "", cleanup, err
 	}
 	cleanup = func() {
@@ -449,8 +445,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 	defer st.Cleanup() // wipe the host scratch (work tree + host-only git dir)
 
-	allowlist := egress.CompileAllowlist(b.Cfg, t.EgressExtra)
-	if err := st.WriteTaskFiles(t.Instruction, allowlist); err != nil {
+	if err := st.WriteTaskFiles(t.Instruction); err != nil {
 		slog.Warn("task stage failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "stage failed", ""))
 		return
