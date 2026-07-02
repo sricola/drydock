@@ -22,25 +22,31 @@ func TestResolveAgent(t *testing.T) {
 		defaultAg   string
 		providers   map[string]creds.Provider
 		wantName    string
-		wantStatus  int
+		wantErr     bool
 		wantHasProv bool
 		wantMsgSub  string
 	}{
-		{"empty falls back to claude", "", "", map[string]creds.Provider{"anthropic": fake}, "claude", 0, true, ""},
-		{"default agent used", "", "codex", map[string]creds.Provider{"openai": fake}, "codex", 0, true, ""},
-		{"task overrides default", "claude", "codex", map[string]creds.Provider{"anthropic": fake}, "claude", 0, true, ""},
-		{"unknown agent rejected", "gpt5", "", map[string]creds.Provider{"anthropic": fake}, "gpt5", 400, false, "want claude|codex"},
-		{"missing provider rejected", "claude", "", map[string]creds.Provider{}, "claude", 400, false, "no API key configured"},
+		{"empty falls back to claude", "", "", map[string]creds.Provider{"anthropic": fake}, "claude", false, true, ""},
+		{"default agent used", "", "codex", map[string]creds.Provider{"openai": fake}, "codex", false, true, ""},
+		{"task overrides default", "claude", "codex", map[string]creds.Provider{"anthropic": fake}, "claude", false, true, ""},
+		{"unknown agent rejected", "gpt5", "", map[string]creds.Provider{"anthropic": fake}, "gpt5", true, false, "want claude|codex"},
+		{"missing provider rejected", "claude", "", map[string]creds.Provider{}, "claude", true, false, "no API key configured"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			b := &Broker{Providers: c.providers, DefaultAgent: c.defaultAg}
-			name, prov, status, msg := b.resolveAgent(c.taskAgent)
-			if name != c.wantName || status != c.wantStatus || (prov != nil) != c.wantHasProv {
-				t.Fatalf("got (name=%q status=%d hasProv=%v msg=%q)", name, status, prov != nil, msg)
+			name, prov, err := b.resolveAgent(c.taskAgent)
+			gotErr := err != nil
+			if name != c.wantName || gotErr != c.wantErr || (prov != nil) != c.wantHasProv {
+				t.Fatalf("got (name=%q err=%v hasProv=%v)", name, err, prov != nil)
 			}
-			if c.wantMsgSub != "" && !strings.Contains(msg, c.wantMsgSub) {
-				t.Fatalf("msg %q missing %q", msg, c.wantMsgSub)
+			if c.wantMsgSub != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", c.wantMsgSub)
+				}
+				if !strings.Contains(err.Error(), c.wantMsgSub) {
+					t.Fatalf("err %q missing %q", err.Error(), c.wantMsgSub)
+				}
 			}
 		})
 	}
@@ -56,13 +62,13 @@ func TestResolveAgent_UnknownNameAllProviders(t *testing.T) {
 		Providers:    map[string]creds.Provider{"anthropic": fake},
 		DefaultAgent: "",
 	}
-	_, _, status, msg := b.resolveAgent("gpt5")
-	if status != 400 {
-		t.Fatalf("want status 400, got %d", status)
+	_, _, err := b.resolveAgent("gpt5")
+	if err == nil {
+		t.Fatalf("want error, got nil")
 	}
 	for _, a := range provider.Agents() {
-		if !strings.Contains(msg, a) {
-			t.Errorf("unknown-agent error %q missing registered agent %q", msg, a)
+		if !strings.Contains(err.Error(), a) {
+			t.Errorf("unknown-agent error %q missing registered agent %q", err.Error(), a)
 		}
 	}
 }
