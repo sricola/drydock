@@ -3,6 +3,7 @@ package egress
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -43,6 +44,15 @@ func ValidateHost(host string) error {
 	}
 	if len(host) > 253 {
 		return fmt.Errorf("egress: host too long: %q", host)
+	}
+	// IP address literals are rejected before the hostname regex: squid's
+	// dstdomain ACL treats an IP literal as an exact IP match rather than a
+	// hostname, but the egress config is for hostname-based policy only.
+	// Allowing an IP would let a user pin a policy entry to a current IP that
+	// may rotate, silently widening egress when that IP is reused by a
+	// different host.
+	if net.ParseIP(host) != nil {
+		return fmt.Errorf("egress: IP address literals not allowed: %q", host)
 	}
 	if strings.HasPrefix(host, ".") || strings.HasPrefix(host, "*") {
 		return fmt.Errorf("egress: wildcard host not allowed: %q", host)

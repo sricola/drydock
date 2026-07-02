@@ -33,11 +33,11 @@ http_access deny all
 dns_nameservers 1.1.1.1 8.8.8.8
 cache deny all
 cache_log %s/cache.log
-access_log none
+access_log %s/access.log squid
 pid_filename %s/squid.pid
 forwarded_for delete
 via off
-`, bindAddr, helperCmd, defaultACLPath, runDir, runDir, runDir)
+`, bindAddr, helperCmd, defaultACLPath, runDir, runDir, runDir, runDir)
 }
 
 // taskACLPlaceholder is a comment-only fragment kept in task-acls/ so squid's

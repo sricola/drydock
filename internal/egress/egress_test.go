@@ -16,6 +16,11 @@ func TestValidateHost(t *testing.T) {
 		{"a.b.c.d.example.com", ""},
 		{"single", ""},
 		{"127-1.example.com", ""},
+		// IP address literals must be rejected (squid would route direct, bypassing the allowlist)
+		{"10.0.0.1", "IP address"},
+		{"::1", "IP address"},
+		{"192.168.1.1", "IP address"},
+		{"2001:db8::1", "IP address"},
 		// Wildcards rejected (squid dstdomain would silently widen)
 		{".example.com", "wildcard"},
 		{"*.example.com", "wildcard"},

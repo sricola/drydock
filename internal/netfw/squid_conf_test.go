@@ -19,6 +19,7 @@ func TestCompileSquidConf_AuthAndInclude(t *testing.T) {
 		"include /run/squid-default-acl.conf",
 		"include /run/task-acls/*.conf",
 		"http_access deny all",
+		"access_log /run/access.log squid", // must write logs into runDir, never "none"
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(conf, s) {

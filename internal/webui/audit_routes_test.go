@@ -70,3 +70,27 @@ func TestSymlinkRejected(t *testing.T) {
 		t.Fatalf("symlinked diff: got status %d, want 404 — must not follow symlinks", rec.Code)
 	}
 }
+
+// TestHistorySymlinkRejected mirrors TestSymlinkRejected for handleHistory:
+// a .jsonl that is a symlink must NOT be included in the history list — we
+// must not follow the symlink and expose the target's content as an audit record.
+func TestHistorySymlinkRejected(t *testing.T) {
+	dir := t.TempDir()
+	id := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0"
+	// Plant a .jsonl symlink pointing at a file outside the audit dir.
+	if err := os.Symlink("/etc/hosts", filepath.Join(dir, id+".jsonl")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	s := &Server{AuditRoot: dir, Token: "secret"}
+	rec := do(t, s, "GET", "/api/history", "127.0.0.1:7878", "Bearer secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleHistory status = %d, want 200", rec.Code)
+	}
+	var items []HistoryItem
+	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("symlinked .jsonl appeared in history (len=%d) — handleHistory must not follow symlinks", len(items))
+	}
+}

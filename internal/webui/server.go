@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"crypto/subtle"
 	"io"
 	"io/fs"
 	"net"
@@ -111,7 +112,12 @@ func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if s.Token != "" {
-			if r.Header.Get("Authorization") != "Bearer "+s.Token {
+			// Use constant-time comparison to prevent timing side-channels on
+			// token validation; the UI token is a bearer secret and must not leak
+			// its value through response latency differences.
+			got := r.Header.Get("Authorization")
+			want := "Bearer " + s.Token
+			if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}

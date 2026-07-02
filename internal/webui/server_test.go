@@ -88,6 +88,25 @@ func TestEmptyHostRejected(t *testing.T) {
 	}
 }
 
+// TestConstantTimeTokenCompare documents that the auth boundary uses
+// crypto/subtle.ConstantTimeCompare, exercising both the accept and reject paths.
+func TestConstantTimeTokenCompare(t *testing.T) {
+	s := &Server{AuditRoot: "/tmp", Token: "secrettoken"}
+	// Correct bearer must be accepted.
+	if rec := do(t, s, "GET", "/api/tasks", "127.0.0.1:7878", "Bearer secrettoken"); rec.Code == http.StatusForbidden {
+		t.Errorf("correct token rejected by constant-time compare")
+	}
+	// Token with same prefix but extra chars must be rejected — ConstantTimeCompare
+	// returns 0 when lengths differ, so length extension is never silently accepted.
+	if rec := do(t, s, "GET", "/api/tasks", "127.0.0.1:7878", "Bearer secrettokenXXX"); rec.Code != http.StatusForbidden {
+		t.Errorf("length-extended token accepted — constant-time compare must reject mismatched tokens")
+	}
+	// Prefix-only token must be rejected.
+	if rec := do(t, s, "GET", "/api/tasks", "127.0.0.1:7878", "Bearer secret"); rec.Code != http.StatusForbidden {
+		t.Errorf("prefix-only token accepted — must reject")
+	}
+}
+
 func TestNonLoopbackOriginRejected(t *testing.T) {
 	s := testServer()
 	// A cross-origin request (browser-set Origin) must be rejected even with a

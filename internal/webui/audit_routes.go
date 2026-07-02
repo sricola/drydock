@@ -73,9 +73,15 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		path := filepath.Join(s.AuditRoot, name)
-		last, ok := audit.LastResult(path, info.Size())
-		meta := audit.ReadMeta(path)
+		// Open via openAuditFile (O_NOFOLLOW) so a planted symlink
+		// <id>.jsonl → /etc/passwd is refused rather than followed.
+		f := s.openAuditFile(id, ".jsonl")
+		if f == nil {
+			continue // missing or symlink — skip silently
+		}
+		last, ok := audit.LastResultFile(f)
+		meta := audit.ReadMetaFile(f)
+		f.Close()
 		items = append(items, HistoryItem{
 			ID:          id,
 			Outcome:     audit.Outcome(last, ok, meta),

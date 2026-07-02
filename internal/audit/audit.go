@@ -75,6 +75,60 @@ func LastResult(path string, size int64) (Result, bool) {
 	return Result{}, false
 }
 
+// ReadMetaFile reads the drydock_meta line from an already-opened file.
+// The caller is responsible for opening the file with appropriate flags
+// (e.g. O_NOFOLLOW) and for closing it. The file offset is reset to the
+// beginning before reading so callers may interleave ReadMetaFile with
+// LastResultFile in any order.
+func ReadMetaFile(f *os.File) Meta {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return Meta{}
+	}
+	line, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return Meta{}
+	}
+	var m Meta
+	if json.Unmarshal(bytes.TrimSpace(line), &m) != nil || m.Type != "drydock_meta" {
+		return Meta{}
+	}
+	return m
+}
+
+// LastResultFile finds the final {"type":"result",...} line in an
+// already-opened file. Like LastResult but accepts a pre-opened *os.File so
+// the caller can control how the file was opened (e.g. with O_NOFOLLOW to
+// refuse symlinks). ok=false when no result line is present.
+func LastResultFile(f *os.File) (Result, bool) {
+	info, err := f.Stat()
+	if err != nil {
+		return Result{}, false
+	}
+	size := info.Size()
+	const tail = 16 * 1024
+	if size > tail {
+		if _, err := f.Seek(size-tail, io.SeekStart); err != nil {
+			return Result{}, false
+		}
+	} else {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return Result{}, false
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return Result{}, false
+	}
+	lines := bytes.Split(data, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		var x Result
+		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" {
+			return x, true
+		}
+	}
+	return Result{}, false
+}
+
 // HasDuration reports whether a real duration is known. An interrupted task
 // (brokerd died under it) has a synthetic 0ms we must not display as "0s".
 func HasDuration(r Result, ok bool) bool { return ok && r.Subtype != "interrupted" }
