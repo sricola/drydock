@@ -537,7 +537,7 @@ function renderSubmit() {
   app().replaceChildren(el("h2", { text: "Submit a task" }), form);
 }
 let newTaskID = null;
-function label(text, input) { return el("label", {}, el("span", { text }), input); }
+function label(text, input) { return el("label", {}, el("span", { class: "lab", text }), input); }
 views.submit = renderSubmit;
 
 // =================== HISTORY ===================

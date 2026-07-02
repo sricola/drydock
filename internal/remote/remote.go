@@ -7,6 +7,8 @@ package remote
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -80,10 +82,10 @@ func AdapterFor(repoRef, platform string) Adapter {
 	}
 }
 
-// stderr is indirected so tests can swap it.
-var stderr = (interface {
-	Write(p []byte) (int, error)
-})(nilWriter{})
+// stderr is the sink for operator-facing warnings (unknown platform, etc.).
+// Defaults to os.Stderr so warnings actually reach the user; tests can swap it
+// to capture output without polluting test output.
+var stderr io.Writer = os.Stderr
 
 type nilWriter struct{}
 

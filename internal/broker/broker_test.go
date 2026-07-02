@@ -811,3 +811,27 @@ func TestPRContent(t *testing.T) {
 		t.Errorf("multibyte title exceeds 72 runes: %d", len([]rune(mbTitle)))
 	}
 }
+
+// TestRegisterTask_RuneSafeSnippet verifies that the instruction snippet stored
+// in TaskState.Instruction is always valid UTF-8, even when the snippet boundary
+// falls in the middle of a multi-byte rune.
+func TestRegisterTask_RuneSafeSnippet(t *testing.T) {
+	// Build a string where the 140-byte cut point lands inside a 3-byte rune.
+	// 139 ASCII chars ('a') + several '€' (U+20AC, 3 bytes each) gives a byte
+	// length > 140 with the 140th byte being the second byte of '€'.
+	instruction := strings.Repeat("a", 139) + strings.Repeat("€", 5) // 139+15=154 bytes, 144 runes
+	if len(instruction) <= instructionSnippetMax {
+		t.Fatalf("test setup: instruction (%d bytes) must exceed %d", len(instruction), instructionSnippetMax)
+	}
+
+	b := &Broker{StageRoot: t.TempDir(), AuditRoot: t.TempDir()}
+	b.registerTask("task-rune", "repo", instruction, func() {})
+
+	b.pendingMu.Lock()
+	ts := b.tasks["task-rune"]
+	b.pendingMu.Unlock()
+
+	if !utf8.ValidString(ts.Instruction) {
+		t.Errorf("Instruction is not valid UTF-8 after truncation: %q", ts.Instruction)
+	}
+}

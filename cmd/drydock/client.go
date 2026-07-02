@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"drydock/internal/config"
 	"drydock/internal/sockpath"
 )
 
@@ -43,16 +44,28 @@ func fetchTasks() ([]taskState, error) {
 	return out, nil
 }
 
+// socketPath returns the Unix socket path for the broker. Resolution order
+// mirrors brokerd and auditDir: env override → config.yaml broker.socket →
+// package default.
 func socketPath() string {
 	if v := os.Getenv("BROKER_SOCKET"); v != "" {
 		return v
 	}
+	if cfg, err := config.Load(config.DefaultPath()); err == nil && cfg.Broker.Socket != "" {
+		return cfg.Broker.Socket
+	}
 	return sockpath.Default()
 }
 
+// brokerClient returns an HTTP client and base URL for talking to the broker.
+// Resolution order: BROKER_ADDR env → config.yaml broker.addr → Unix socket
+// (via socketPath), matching brokerd's listen() precedence.
 func brokerClient() (*http.Client, string) {
 	if tcp := os.Getenv("BROKER_ADDR"); tcp != "" {
 		return &http.Client{Timeout: 5 * time.Second}, "http://" + tcp
+	}
+	if cfg, err := config.Load(config.DefaultPath()); err == nil && cfg.Broker.Addr != "" {
+		return &http.Client{Timeout: 5 * time.Second}, "http://" + cfg.Broker.Addr
 	}
 	sock := socketPath()
 	c := &http.Client{
