@@ -8,6 +8,13 @@ import (
 	"strings"
 )
 
+// runCmd is the exec seam for container CLI invocations in the drydock
+// client. The default calls exec.Command(name, args...).CombinedOutput() so
+// production behaviour is unchanged. Tests replace it with a fake.
+var runCmd = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
+
 // runKill cancels a task. Preferred path is POST /admin/kill, which fires
 // the brokerd-side context cancel — the container exits cleanly, the
 // approval gate (if reached) unblocks with cancelled=true, and the
@@ -42,7 +49,7 @@ func runKill(id string) {
 		fmt.Fprintln(os.Stderr, "  attempting best-effort VM cleanup anyway…")
 	}
 	// Brokerd unreachable or 404 — best-effort VM cleanup.
-	out, ferr := exec.Command("container", "delete", "--force", "task-"+id).CombinedOutput()
+	out, ferr := runCmd("container", "delete", "--force", "task-"+id)
 	switch {
 	case ferr == nil:
 		fmt.Printf("task %s VM removed (brokerd didn't know about it)\n", id)

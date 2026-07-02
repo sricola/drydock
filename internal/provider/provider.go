@@ -1,13 +1,15 @@
 // Package provider is the single registry of coding-agent CLIs and the upstream
 // API each talks to. The CLI/config layer enumerates providers from here so a
-// new provider is one row, not edits across the codebase. Imports gateway only
-// (never config — the OAuth hook takes cfgDir as a parameter).
+// new provider is one row, not edits across the codebase. Imports gateway and
+// gwcreds only (never config — the OAuth hook takes cfgDir as a parameter).
 package provider
 
 import (
+	"net/url"
 	"path/filepath"
 
 	"drydock/internal/gateway"
+	"drydock/internal/gwcreds"
 )
 
 // Provider is the static description of one agent + its upstream vendor.
@@ -26,6 +28,16 @@ type Provider struct {
 	// OAuthBackend hooks. Such a provider has nil APIVendor and OAuthBackend.
 	ConfigBuilt bool
 
+	// NeedsModel is true for providers that have no built-in default model and
+	// require the operator to supply one via config (e.g. openai_compat.model).
+	// taskModelFor uses this to fall back to the configured compat model.
+	NeedsModel bool
+
+	// NoOperatorDefault is true for providers where the operator's DefaultModel
+	// must not be applied — it would produce a model string that only resolves
+	// in the claude/codex lanes. effectiveDefaultModel returns "" for these.
+	NoOperatorDefault bool
+
 	// OAuthFile is the filename (not full path) of the stored OAuth credential
 	// inside ~/.drydock/. It is the canonical source: auth.go derives the full
 	// path as filepath.Join(cfgDir, p.OAuthFile). OAuthBackend and LoadOAuthSnap
@@ -36,7 +48,7 @@ type Provider struct {
 	// LoadOAuthSnap loads the currently stored OAuth credential snapshot from
 	// cfgDir for display purposes (drydock auth --status). Unlike OAuthBackend,
 	// it does not construct a refreshable Cred — it just reads the file.
-	LoadOAuthSnap func(cfgDir string) (gateway.CredSnapshot, error)
+	LoadOAuthSnap func(cfgDir string) (gwcreds.CredSnapshot, error)
 
 	// AuthLabel is the human-readable entity shown in auth status lines, e.g.
 	// "Claude subscription" or "Codex (ChatGPT) subscription".
@@ -65,15 +77,15 @@ var Registry = []Provider{
 		AuthLabel: "Claude subscription",
 		APIVendor: gateway.AnthropicVendor,
 		OAuthBackend: func(cfgDir string) (gateway.Backend, error) {
-			store := gateway.FileCredStore(filepath.Join(cfgDir, oauthFileClaud))
+			store := gwcreds.FileCredStore(filepath.Join(cfgDir, oauthFileClaud))
 			snap, err := store.Load()
 			if err != nil {
 				return gateway.Backend{}, err
 			}
-			return gateway.Backend{Vendor: gateway.AnthropicOAuthVendor(), Cred: gateway.NewOAuthCred(snap, store)}, nil
+			return gateway.Backend{Vendor: gateway.AnthropicOAuthVendor(), Cred: gwcreds.NewOAuthCred(snap, store)}, nil
 		},
-		LoadOAuthSnap: func(cfgDir string) (gateway.CredSnapshot, error) {
-			return gateway.FileCredStore(filepath.Join(cfgDir, oauthFileClaud)).Load()
+		LoadOAuthSnap: func(cfgDir string) (gwcreds.CredSnapshot, error) {
+			return gwcreds.FileCredStore(filepath.Join(cfgDir, oauthFileClaud)).Load()
 		},
 	},
 	{
@@ -85,22 +97,24 @@ var Registry = []Provider{
 		RefreshOnExpiry: true,
 		APIVendor:       gateway.OpenAIVendor,
 		OAuthBackend: func(cfgDir string) (gateway.Backend, error) {
-			store := gateway.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex))
+			store := gwcreds.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex))
 			snap, err := store.Load()
 			if err != nil {
 				return gateway.Backend{}, err
 			}
-			return gateway.Backend{Vendor: gateway.OpenAIOAuthVendor(store.AccountID()), Cred: gateway.NewOAuthCredCodex(snap, store)}, nil
+			return gateway.Backend{Vendor: gateway.OpenAIOAuthVendor(store.AccountID()), Cred: gwcreds.NewOAuthCredCodex(snap, store)}, nil
 		},
-		LoadOAuthSnap: func(cfgDir string) (gateway.CredSnapshot, error) {
-			return gateway.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex)).Load()
+		LoadOAuthSnap: func(cfgDir string) (gwcreds.CredSnapshot, error) {
+			return gwcreds.NewCodexStore(filepath.Join(cfgDir, oauthFileCodex)).Load()
 		},
 	},
 	{
 		Agent: "opencode", Vendor: "openai-compat", Label: "OpenAI-compatible (bring your own)",
 		APIKeyEnv: "", AuthCmd: "",
 		BaseURLEnv: "OPENAI_BASE_URL", TokenEnv: "OPENAI_API_KEY",
-		ConfigBuilt: true,
+		ConfigBuilt:       true,
+		NeedsModel:        true, // no built-in model; operator must supply openai_compat.model
+		NoOperatorDefault: true, // operator DefaultModel is claude/codex-oriented; must not leak in
 		// APIVendor / OAuthBackend intentionally nil — brokerd builds from config.
 	},
 }
@@ -129,4 +143,34 @@ func Agents() []string {
 		out[i] = p.Agent
 	}
 	return out
+}
+
+// VendorForAgent returns the gateway vendor backing an agent CLI. An empty
+// name defaults to "claude". Unknown agents return ok=false so callers fail
+// closed. This is the single source of truth; the agent package is removed.
+func VendorForAgent(name string) (string, bool) {
+	if name == "" {
+		name = "claude" // empty default is claude specifically, not Registry[0]
+	}
+	if p, ok := ByAgent(name); ok {
+		return p.Vendor, true
+	}
+	return "", false
+}
+
+// GatewayHosts returns the set of API hostnames that are fronted by the
+// credential gateway (excluded from the squid allowlist). The set is derived
+// from the static APIVendor BaseURLs in the registry — ConfigBuilt providers
+// are user-configured and omitted, since their host varies per deployment.
+func GatewayHosts() map[string]bool {
+	hosts := make(map[string]bool)
+	for _, p := range Registry {
+		if p.APIVendor == nil {
+			continue // ConfigBuilt or otherwise absent
+		}
+		if u, err := url.Parse(p.APIVendor().BaseURL); err == nil && u.Host != "" {
+			hosts[u.Host] = true
+		}
+	}
+	return hosts
 }

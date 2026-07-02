@@ -130,23 +130,6 @@ func parseRetention(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%dB", n)
-	}
-	div, exp := int64(unit), 0
-	for v := n / unit; v >= unit; v /= unit {
-		div *= unit
-		exp++
-	}
-	const units = "KMGTPE"
-	if exp >= len(units) {
-		exp = len(units) - 1
-	}
-	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), units[exp])
-}
-
 func runPrune(args []string) {
 	fs := flag.NewFlagSet("drydock prune", flag.ExitOnError)
 	olderRaw := fs.String("older-than", "", "prune tasks whose newest artifact is older than this (e.g. 30d, 2w, 720h). Required.")

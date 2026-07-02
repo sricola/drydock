@@ -32,6 +32,15 @@ func uiURL(port int, token string) string {
 	return base + "#t=" + token
 }
 
+// runUI starts the web UI server. Deliberate loopback-only posture:
+//   - Always binds 127.0.0.1 (never 0.0.0.0) so remote machines can't reach the
+//     UI without an explicit SSH tunnel — the UI can submit tasks, approve diffs,
+//     and kill running work.
+//   - --open uses macOS `open` only (best-effort). xdg-open is intentionally
+//     omitted for now; add it when Linux support is confirmed.
+//   - Ignores BROKER_ADDR: the UI makes its own loopback socket connection to
+//     brokerd via the Unix socket, not via BROKER_ADDR, so remote-broker configs
+//     don't accidentally expose the UI to a foreign brokerd.
 func runUI(args []string) {
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
 	port := fs.Int("port", 7878, "loopback port to bind")

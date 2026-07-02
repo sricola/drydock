@@ -17,16 +17,6 @@ import (
 	"drydock/internal/sharedir"
 )
 
-// tty is true if stdout looks like an interactive terminal. We emit ANSI
-// colors only when true; piping to a log file otherwise produces "[32m" garbage.
-var tty = func() bool {
-	if os.Getenv("NO_COLOR") != "" {
-		return false
-	}
-	fi, err := os.Stdout.Stat()
-	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
-}()
-
 // runInit walks through every prerequisite drydock needs and reports per-step
 // status. Idempotent: re-running after a partial success picks up where the
 // previous run left off. Designed for "I just cloned this — what now?".

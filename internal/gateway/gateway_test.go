@@ -5,9 +5,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"drydock/internal/gwcreds"
 )
 
 // upstream stands in for api.anthropic.com; it asserts the gateway swapped creds.
@@ -183,13 +186,13 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 func TestRequestCap_RejectsOverLimit(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	tok, _ := g.Mint("anthropic", 100, 2, time.Hour) // maxRequests = 2
-	if _, s := g.check(tok); s != 0 {
+	if _, s := g.admit(tok); s != 0 {
 		t.Fatalf("req1 rejected: %d", s)
 	}
-	if _, s := g.check(tok); s != 0 {
+	if _, s := g.admit(tok); s != 0 {
 		t.Fatalf("req2 rejected: %d", s)
 	}
-	if _, s := g.check(tok); s != http.StatusTooManyRequests {
+	if _, s := g.admit(tok); s != http.StatusTooManyRequests {
 		t.Fatalf("req3 status = %d, want 429", s)
 	}
 }
@@ -198,7 +201,7 @@ func TestRequestCap_ZeroMeansUnlimited(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	tok, _ := g.Mint("anthropic", 100, 0, time.Hour) // 0 = unlimited
 	for i := 0; i < 50; i++ {
-		if _, s := g.check(tok); s != 0 {
+		if _, s := g.admit(tok); s != 0 {
 			t.Fatalf("req %d rejected: %d", i, s)
 		}
 	}
@@ -449,6 +452,109 @@ func TestGateway_OpenAICompatMetersAndCaps(t *testing.T) {
 	}
 	if upstreamHit != 2 {
 		t.Errorf("upstream hit %d times, want 2 (third request must be blocked before upstream)", upstreamHit)
+	}
+}
+
+// memCredStore is an in-memory gwcreds.CredStore for tests. It satisfies the
+// interface via structural typing; no Save is expected here because the
+// snapshot is far from expiry and no token refresh is triggered.
+type memCredStore struct{ snap gwcreds.CredSnapshot }
+
+func (m *memCredStore) Load() (gwcreds.CredSnapshot, error) { return m.snap, nil }
+func (m *memCredStore) Save(s gwcreds.CredSnapshot) error   { m.snap = s; return nil }
+
+// TestServeHTTP_OAuthVendor_StripRequestFields verifies the wired path through
+// ServeHTTP for AnthropicOAuthVendor: the gateway must
+//
+//  1. Strip "context_management" from the JSON body (Vendor.StripFields) and
+//     update Content-Length accordingly.
+//  2. Inject OAuth headers (Authorization: Bearer, anthropic-beta) and remove
+//     X-Api-Key before forwarding.
+//
+// It uses a real gwcreds.OAuthCred (the "real OAuth constructor path") with a
+// far-future expiry so no network refresh is attempted.
+func TestServeHTTP_OAuthVendor_StripRequestFields(t *testing.T) {
+	// Upstream captures the rewritten request.
+	var (
+		gotBody          []byte
+		gotAuth          string
+		gotBeta          string
+		gotXApiKey       string
+		gotContentLength string
+	)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		gotAuth = r.Header.Get("Authorization")
+		gotBeta = r.Header.Get("anthropic-beta")
+		gotXApiKey = r.Header.Get("X-Api-Key")
+		gotContentLength = r.Header.Get("Content-Length")
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"model":"claude-opus-4","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer up.Close()
+
+	// Build an OAuthCred via gwcreds (the real constructor). Expiry is far in
+	// the future so Current() returns the canned token without hitting the
+	// network.
+	snap := gwcreds.CredSnapshot{
+		Access:  "real-bearer-token",
+		Refresh: "dummy-refresh",
+		Expiry:  time.Now().Add(time.Hour),
+	}
+	store := &memCredStore{snap: snap}
+	cred := gwcreds.NewOAuthCred(snap, store)
+
+	// AnthropicOAuthVendor is the live vendor constructor; redirect its
+	// BaseURL to the in-process test server.
+	v := AnthropicOAuthVendor()
+	v.BaseURL = up.URL
+
+	g, err := New(Backend{Vendor: v, Cred: cred})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
+
+	// Body contains context_management, which AnthropicOAuthVendor must strip.
+	const body = `{"model":"claude-opus-4","messages":[{"role":"user","content":"hi"}],"context_management":{"edits":[1]}}`
+	req := httptest.NewRequest("POST", "http://gw/v1/messages", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Api-Key", "should-be-removed")
+	req.ContentLength = int64(len(body))
+
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 1. context_management must be absent from the forwarded body.
+	if strings.Contains(string(gotBody), "context_management") {
+		t.Errorf("context_management must be stripped; upstream received: %s", gotBody)
+	}
+	// 2. Other fields must survive.
+	if !strings.Contains(string(gotBody), `"model"`) || !strings.Contains(string(gotBody), `"messages"`) {
+		t.Errorf("model/messages must be preserved; upstream received: %s", gotBody)
+	}
+	// 3. Content-Length must be updated to the stripped body length.
+	wantLen := len(gotBody)
+	if gotContentLength != strconv.Itoa(wantLen) {
+		t.Errorf("Content-Length = %q, want %d (must reflect stripped body)", gotContentLength, wantLen)
+	}
+	if wantLen >= len(body) {
+		t.Errorf("stripped body (%d bytes) must be shorter than original (%d bytes)", wantLen, len(body))
+	}
+	// 4. OAuth headers injected, X-Api-Key removed.
+	if gotAuth != "Bearer real-bearer-token" {
+		t.Errorf("Authorization = %q, want Bearer real-bearer-token", gotAuth)
+	}
+	if gotXApiKey != "" {
+		t.Errorf("X-Api-Key must be absent upstream, got %q", gotXApiKey)
+	}
+	if gotBeta != anthropicOAuthBeta {
+		t.Errorf("anthropic-beta = %q, want %q", gotBeta, anthropicOAuthBeta)
 	}
 }
 

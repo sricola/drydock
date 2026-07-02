@@ -71,16 +71,19 @@ func run() error {
 		}
 		pages = append(pages, Page{Slug: s.slug, Title: title, File: s.slug + ".html"})
 	}
+	// Build a slug→title map once so the render loop is O(n) not O(n²).
+	titleFor := make(map[string]string, len(pages))
+	for _, p := range pages {
+		titleFor[p.Slug] = p.Title
+	}
 	for _, s := range srcs {
 		body, _, err := renderMarkdown(raw[s.slug])
 		if err != nil {
 			return fmt.Errorf("%s: %w", s.path, err)
 		}
-		title := s.slug
-		for _, p := range pages {
-			if p.Slug == s.slug {
-				title = p.Title
-			}
+		title := titleFor[s.slug]
+		if title == "" {
+			title = s.slug
 		}
 		page := renderPage(string(tmpl), body, title, buildSidebar(pages, s.slug), "../")
 		out := filepath.Join(docsDir, s.slug+".html")

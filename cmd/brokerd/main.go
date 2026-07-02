@@ -20,7 +20,6 @@ import (
 	"syscall"
 	"time"
 
-	"drydock/internal/agent"
 	"drydock/internal/broker"
 	"drydock/internal/config"
 	"drydock/internal/creds"
@@ -59,10 +58,11 @@ func initLogging(jsonForced bool) {
 	slog.SetDefault(slog.New(chooseLogHandler(os.Stderr, jsonForced, isTTY)))
 }
 
-// die logs an error attr and exits 1. Replaces log.Fatalf without losing
+// fatal logs an error attr and exits 1. Replaces log.Fatalf without losing
 // the "die loudly when bootstrap fails" UX. The error is wrapped in attrs
-// so the JSON path produces structured output.
-func die(msg string, attrs ...any) {
+// so the JSON path produces structured output. Named fatal (not die) to avoid
+// collision with cmd/drydock's printf-style die helper.
+func fatal(msg string, attrs ...any) {
 	slog.Error(msg, attrs...)
 	os.Exit(1)
 }
@@ -94,6 +94,15 @@ func resolveAPIKey(name string, fileKeys map[string]string) string {
 //lint:ignore U1000 write-only by design — keeps the flock fd alive for the process's life
 var brokerdLock *os.File
 
+// runCmd is the exec seam for container/pkill invocations. The default
+// implementation calls exec.Command(name, args...).CombinedOutput() so
+// production behaviour is identical to what the inline calls were. Tests
+// replace this variable with a fake that records calls without spawning
+// real processes.
+var runCmd = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
+
 func main() {
 	// Hidden subcommand: squid invokes this same binary as its basic-auth
 	// helper (auth_param basic program <brokerd> __squid-authhelper <tokenfile>).
@@ -112,7 +121,7 @@ func main() {
 	// run yet, but the error still reaches stderr.
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
-		die("load config", "path", config.DefaultPath(), "err", err)
+		fatal("load config", "path", config.DefaultPath(), "err", err)
 	}
 
 	initLogging(cfg.LogJSON)
@@ -123,9 +132,9 @@ func main() {
 	lf, err := acquireLock(config.LockPath())
 	if err != nil {
 		if errors.Is(err, errLockHeld) {
-			die("another brokerd is already running on this host", "lock", config.LockPath())
+			fatal("another brokerd is already running on this host", "lock", config.LockPath())
 		}
-		die("cannot acquire brokerd lock", "lock", config.LockPath(), "err", err)
+		fatal("cannot acquire brokerd lock", "lock", config.LockPath(), "err", err)
 	}
 	brokerdLock = lf
 
@@ -135,11 +144,11 @@ func main() {
 	// is the seed template; CWD config/egress.yaml is the dev case.
 	egressPath, err := findEgressConfig()
 	if err != nil {
-		die("locate egress config", "err", err)
+		fatal("locate egress config", "err", err)
 	}
 	egCfg, err := egress.Load(egressPath)
 	if err != nil {
-		die("load egress config", "path", egressPath, "err", err)
+		fatal("load egress config", "path", egressPath, "err", err)
 	}
 
 	fileKeys, _ := config.LoadAPIKeys(config.APIKeysPath())
@@ -167,18 +176,18 @@ func main() {
 		waitBindable(proxyAddr)
 		self, herr := os.Executable()
 		if herr != nil {
-			die("resolve brokerd path for squid auth helper", "err", herr)
+			fatal("resolve brokerd path for squid auth helper", "err", herr)
 		}
 		// squid splits `auth_param basic program` on whitespace with no shell, so
 		// a space in the brokerd path would make it exec the wrong binary and
 		// silently fail every proxy-auth check. Fail fast with a clear message.
 		if strings.ContainsAny(self, " \t") {
-			die("brokerd path contains whitespace, which breaks squid's auth_param helper; install brokerd at a path without spaces", "path", self)
+			fatal("brokerd path contains whitespace, which breaks squid's auth_param helper; install brokerd at a path without spaces", "path", self)
 		}
 		helperCmd := fmt.Sprintf("%s __squid-authhelper %s", self, filepath.Join(cfg.SquidRunDir, "task-tokens"))
 		squid, err = netfw.StartSquid(bin, proxyAddr, netfw.CompileSquidAllowlist(egCfg), cfg.SquidRunDir, helperCmd)
 		if err != nil {
-			die("squid start failed", "err", err)
+			fatal("squid start failed", "err", err)
 		}
 		slog.Info("squid listening", "addr", proxyAddr)
 		confPath := filepath.Join(cfg.SquidRunDir, "squid.conf")
@@ -191,7 +200,7 @@ func main() {
 		if serr := squid.Stop(); serr != nil {
 			slog.Warn("squid stop failed; port 3128 may still be held", "err", serr)
 		}
-		_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
+		_, _ = runCmd("container", "rm", "-f", "drydock-anchor")
 	}
 
 	// Assigned once the broker + HTTP server exist; the signal handler reads
@@ -228,18 +237,18 @@ func main() {
 		// specific condition (e.g. "openai_compat.base_url is set but its
 		// api_key_env (FOO) is empty"), identical to the pre-refactor die calls.
 		cleanup()
-		die(err.Error())
+		fatal(err.Error())
 	}
 	gw, err := gateway.New(backends...)
 	if err != nil {
 		cleanup()
-		die("gateway init failed", "err", err)
+		fatal("gateway init failed", "err", err)
 	}
 	go func() {
 		l := listenWhenReady(gwAddr)
 		slog.Info("gateway listening", "addr", gwAddr)
 		if serr := hardenedServer(gw).Serve(l); serr != nil {
-			die("gateway serve failed", "err", serr)
+			fatal("gateway serve failed", "err", serr)
 		}
 	}()
 
@@ -249,7 +258,7 @@ func main() {
 		if cfg.AuthMode(b.Vendor.Name) == "subscription" {
 			budget = math.MaxFloat64
 		}
-		if b.Vendor.Name == "openai-compat" && len(cfg.OpenAICompat.Prices) == 0 {
+		if pp, ok := provider.ByVendor(b.Vendor.Name); ok && pp.ConfigBuilt && len(cfg.OpenAICompat.Prices) == 0 {
 			budget = math.MaxFloat64
 		}
 		p, _ := provider.ByVendor(b.Vendor.Name)
@@ -274,7 +283,7 @@ func main() {
 	// key: brokerd still starts (other agents may work), but every task that
 	// doesn't pass --agent would be rejected with a 400, which is confusing
 	// to debug after the fact.
-	if v, ok := agent.Vendor(cfg.DefaultAgent); ok {
+	if v, ok := provider.VendorForAgent(cfg.DefaultAgent); ok {
 		if _, have := providers[v]; !have {
 			pReg, _ := provider.ByVendor(v)
 			slog.Warn("default_agent has no API key configured — tasks that don't pass --agent will be rejected",
@@ -332,7 +341,7 @@ func main() {
 	// Blocks until the signal handler calls srv.Shutdown (clean) or the
 	// listener errors.
 	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
-		die("serve failed", "err", err)
+		fatal("serve failed", "err", err)
 	}
 }
 
@@ -362,7 +371,7 @@ func listen(cfg *config.Config, gwAddr, proxyAddr string) (net.Listener, string)
 			"addr", tcpAddr)
 		l, err := net.Listen("tcp", tcpAddr)
 		if err != nil {
-			die("listen failed", "addr", tcpAddr, "err", err)
+			fatal("listen failed", "addr", tcpAddr, "err", err)
 		}
 		slog.Info("brokerd listening", "addr", tcpAddr, "gateway", gwAddr, "squid", proxyAddr)
 		return l, ""
@@ -372,7 +381,7 @@ func listen(cfg *config.Config, gwAddr, proxyAddr string) (net.Listener, string)
 		sock = sockpath.Default()
 	}
 	if err := sockpath.EnsureParent(sock); err != nil {
-		die("mkdir socket parent failed", "sock", sock, "err", err)
+		fatal("mkdir socket parent failed", "sock", sock, "err", err)
 	}
 	_ = os.Remove(sock) // stale socket from a previous crash
 
@@ -382,11 +391,11 @@ func listen(cfg *config.Config, gwAddr, proxyAddr string) (net.Listener, string)
 	l, err := net.Listen("unix", sock)
 	syscall.Umask(oldMask)
 	if err != nil {
-		die("listen failed", "sock", sock, "err", err)
+		fatal("listen failed", "sock", sock, "err", err)
 	}
 	// Belt and braces: enforce 0600 explicitly even if umask gave us 0640.
 	if err := os.Chmod(sock, 0o600); err != nil {
-		die("chmod failed", "sock", sock, "err", err)
+		fatal("chmod failed", "sock", sock, "err", err)
 	}
 	slog.Info("brokerd listening", "addr", "unix://"+sock, "gateway", gwAddr, "squid", proxyAddr)
 	return l, sock
@@ -402,7 +411,7 @@ func waitBindable(addr string) {
 		}
 		time.Sleep(time.Second)
 	}
-	die("addr never became bindable", "addr", addr, "hint", "is the anchor up?")
+	fatal("addr never became bindable", "addr", addr, "hint", "is the anchor up?")
 }
 
 // checkContainerVersion fails closed if the `container` CLI isn't present, and
@@ -411,14 +420,14 @@ func waitBindable(addr string) {
 // what drydock was tested against. Strict mode is for production / launchd
 // deployments where silent drift is worse than a refusal to start.
 func checkContainerVersion(strict bool) {
-	out, err := exec.Command("container", "--version").CombinedOutput()
+	out, err := runCmd("container", "--version")
 	if err != nil {
-		die("container CLI not runnable (apple/container required)", "err", err, "stderr", string(out))
+		fatal("container CLI not runnable (apple/container required)", "err", err, "stderr", string(out))
 	}
 	m := containerVersionRE.FindStringSubmatch(strings.TrimSpace(string(out)))
 	if m == nil {
 		if strict {
-			die("strict mode: could not parse container version", "raw", strings.TrimSpace(string(out)))
+			fatal("strict mode: could not parse container version", "raw", strings.TrimSpace(string(out)))
 		}
 		slog.Warn("could not parse container --version output; proceeding",
 			"raw", strings.TrimSpace(string(out)))
@@ -427,7 +436,7 @@ func checkContainerVersion(strict bool) {
 	version := fmt.Sprintf("%s.%s.%s", m[1], m[2], m[3])
 	if m[1] != supportedContainerMajor {
 		if strict {
-			die("strict mode: container CLI version not supported",
+			fatal("strict mode: container CLI version not supported",
 				"version", version, "tested", supportedContainerMajor+".x")
 		}
 		slog.Warn("container CLI version not in tested range — re-run README smoke test",
@@ -484,7 +493,7 @@ func findEgressConfig() (string, error) {
 // the easy-orphan window before the new brokerd tries to bind 3128 again.
 func pruneOrphanTasks(stageRoot, auditRoot string) {
 	// Reap orphan task containers.
-	out, err := exec.Command("container", "ls", "-a", "--format", "json").CombinedOutput()
+	out, err := runCmd("container", "ls", "-a", "--format", "json")
 	if err != nil {
 		slog.Warn("orphan prune: container ls failed", "err", err, "stderr", string(out))
 	} else {
@@ -494,14 +503,14 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 		for _, line := range strings.Split(string(out), "\n") {
 			for _, token := range strings.Fields(strings.ReplaceAll(line, `"`, " ")) {
 				if strings.HasPrefix(token, "task-") && len(token) > 5 {
-					_ = exec.Command("container", "delete", "--force", token).Run()
+					_, _ = runCmd("container", "delete", "--force", token)
 					slog.Info("orphan prune: removed container", "name", token)
 				}
 			}
 		}
 	}
 	// Reap orphan squid (very specific argv: "-N -f" only used by drydock).
-	_ = exec.Command("pkill", "-f", "squid -N -f").Run()
+	_, _ = runCmd("pkill", "-f", "squid -N -f")
 
 	// Reap host-side leftovers a crash skipped (the per-task defers never ran).
 	// ORDER MATTERS — do not reorder: the container delete above must precede
@@ -527,11 +536,10 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 // here was a persistent-attack-surface risk if drydock-sandbox were ever
 // compromised.
 func startAnchor(network, image string) {
-	_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
-	cmd := exec.Command("container", "run", "-d", "--name", "drydock-anchor",
-		"--network", network, image)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		die("start network anchor failed", "err", err, "stderr", string(out))
+	_, _ = runCmd("container", "rm", "-f", "drydock-anchor")
+	if out, err := runCmd("container", "run", "-d", "--name", "drydock-anchor",
+		"--network", network, image); err != nil {
+		fatal("start network anchor failed", "err", err, "stderr", string(out))
 	}
 	slog.Info("network anchor up", "network", network)
 }
@@ -545,6 +553,6 @@ func listenWhenReady(addr string) net.Listener {
 		}
 		time.Sleep(time.Second)
 	}
-	die("gateway addr never became bindable", "addr", addr)
+	fatal("gateway addr never became bindable", "addr", addr)
 	return nil
 }

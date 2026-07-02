@@ -8,13 +8,14 @@ import (
 	"strings"
 
 	"drydock/internal/egress"
+	"drydock/internal/provider"
 )
 
-// gatewayHosts are reached via the credential gateway, not squid.
-var gatewayHosts = map[string]bool{
-	"api.anthropic.com": true,
-	"api.openai.com":    true,
-}
+// gatewayHosts are reached via the credential gateway, not squid. Derived from
+// the provider registry so a new gateway-fronted upstream is excluded
+// automatically. ConfigBuilt providers (openai-compat) are omitted because
+// their host is operator-supplied and not part of the registry's static set.
+var gatewayHosts = provider.GatewayHosts()
 
 // CompileSquidAllowlist renders the default-domain ACL block: for each allowed
 // host (excluding the model API, which the gateway handles) a dstdomain ACL

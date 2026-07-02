@@ -5,10 +5,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"drydock/internal/provider"
 )
 
-// knownAPIKeys are the only env names the store recognizes.
-var knownAPIKeys = []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
+// knownAPIKeys are the only env names the store recognizes. Derived from the
+// provider registry (rows with a non-empty APIKeyEnv) so a new provider
+// automatically gains a managed key slot without editing this file.
+var knownAPIKeys = func() []string {
+	var keys []string
+	for _, p := range provider.Registry {
+		if p.APIKeyEnv != "" {
+			keys = append(keys, p.APIKeyEnv)
+		}
+	}
+	return keys
+}()
 
 // isKnownAPIKey reports whether name is one the store manages.
 func isKnownAPIKey(name string) bool {

@@ -70,3 +70,32 @@ func die(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "drydock: "+format+"\n", a...)
 	os.Exit(1)
 }
+
+// tty is true if stdout looks like an interactive terminal. We emit ANSI
+// colors only when true; piping to a log file otherwise produces "[32m" garbage.
+var tty = func() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+}()
+
+// humanBytes formats a byte count as a human-readable string (e.g. "1.2KB",
+// "37MB"). Used by prune and submit_render for display.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	const units = "KMGTPE"
+	if exp >= len(units) {
+		exp = len(units) - 1
+	}
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), units[exp])
+}

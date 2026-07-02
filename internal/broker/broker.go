@@ -4,8 +4,6 @@ package broker
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"drydock/internal/agent"
 	"drydock/internal/audit"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
@@ -165,185 +162,6 @@ func runContainer(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	return cmd.Run()
 }
 
-// TaskStage tracks where a task currently is in its lifecycle. Only the
-// non-terminal stages live in Broker.tasks — completed tasks fall out as
-// HandleTask returns.
-type TaskStage string
-
-const (
-	StageAwaitingEgress TaskStage = "awaiting_egress"
-	StageRunning        TaskStage = "running"
-	StagePending        TaskStage = "awaiting_approval"
-	StagePushing        TaskStage = "pushing"
-)
-
-// TaskState is the operator-facing snapshot returned by GET /admin/tasks.
-// EgressExtra is populated only when the task is at the egress gate so
-// the operator can see what's being asked before approving.
-type TaskState struct {
-	ID          string          `json:"id"`
-	Repo        string          `json:"repo"`
-	Instruction string          `json:"instruction"` // truncated for display
-	Stage       TaskStage       `json:"stage"`
-	StartedAt   time.Time       `json:"started_at"`
-	EgressExtra []egress.Domain `json:"egress_extra,omitempty"`
-}
-
-const instructionSnippetMax = 140
-
-func proxyUser(taskID string) string { return "task-" + taskID }
-
-// mintProxySecret returns a random hex secret for a task's proxy credential.
-func mintProxySecret() (string, error) {
-	var b [18]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
-}
-
-// setupWidening registers a per-task squid credential + ACL for the task's
-// extra hosts and returns the "<user>:<secret>@" userinfo to splice into the
-// VM's proxy URL, plus a cleanup that deregisters it. For a non-widened task
-// (no extras) or when squid widening is disabled (b.Squid == nil) it is a
-// no-op: empty proxyAuth and a no-op cleanup (always safe to defer). Fail-closed:
-// a registration error is returned and the caller must abort before the run.
-func (b *Broker) setupWidening(taskID string, extras []egress.Domain) (proxyAuth string, cleanup func(), err error) {
-	cleanup = func() {}
-	if len(extras) == 0 || b.Squid == nil {
-		return "", cleanup, nil
-	}
-	secret, err := mintProxySecret()
-	if err != nil {
-		return "", cleanup, err
-	}
-	user := proxyUser(taskID)
-	if err := b.Squid.AddTask(user, secret, extras); err != nil {
-		return "", cleanup, err
-	}
-	cleanup = func() {
-		if err := b.Squid.RemoveTask(user); err != nil {
-			slog.Warn("egress widening cleanup failed", "user", user, "err", err)
-		}
-	}
-	return user + ":" + secret + "@", cleanup, nil
-}
-
-// newID returns a hex token with 128 bits of entropy. /admin/approve is
-// directly addressable by ID; with 48 bits a local attacker can race
-// approvals if they can enumerate task IDs (e.g., readdir on an audit
-// dir mode 0755 — fixed elsewhere). 128 bits removes online guessing
-// from the attack tree entirely.
-func newID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		// No entropy means we can't mint an unguessable task ID — and the
-		// approval-race threat model leans on that. Fail closed, don't ship zeros.
-		panic("drydock: crypto/rand failed — cannot mint task IDs: " + err.Error())
-	}
-	return hex.EncodeToString(b)
-}
-
-// initSlots lazily builds the concurrency semaphore. Capacity comes from
-// MaxConcurrent (or 2 if unset). Called from HandleTask via sync.Once so
-// existing tests/callers that build a Broker by literal don't have to
-// remember to do this.
-func (b *Broker) initSlots() {
-	n := b.MaxConcurrent
-	if n <= 0 {
-		n = 2
-	}
-	b.slots = make(chan struct{}, n)
-}
-
-// acquireSlot is a non-blocking semaphore-take. Returns false when the cap
-// is hit — the handler returns 503 to the caller.
-func (b *Broker) acquireSlot() bool {
-	b.slotsOnce.Do(b.initSlots)
-	select {
-	case b.slots <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-func (b *Broker) releaseSlot() {
-	select {
-	case <-b.slots:
-	default:
-	}
-}
-
-// registerTask records a task in the live-tasks map under StageRunning,
-// and stashes its cancel hook so POST /admin/kill/{id} can abort it.
-func (b *Broker) registerTask(id, repo, instruction string, cancel context.CancelFunc) {
-	b.pendingMu.Lock()
-	defer b.pendingMu.Unlock()
-	if b.tasks == nil {
-		b.tasks = make(map[string]*TaskState)
-	}
-	if b.cancellers == nil {
-		b.cancellers = make(map[string]context.CancelFunc)
-	}
-	if r := []rune(instruction); len(r) > instructionSnippetMax {
-		instruction = string(r[:instructionSnippetMax]) + "…"
-	}
-	b.tasks[id] = &TaskState{
-		ID:          id,
-		Repo:        repo,
-		Instruction: instruction,
-		Stage:       StageRunning,
-		StartedAt:   time.Now(),
-	}
-	if cancel != nil {
-		b.cancellers[id] = cancel
-	}
-}
-
-func (b *Broker) setStage(id string, s TaskStage) {
-	b.pendingMu.Lock()
-	defer b.pendingMu.Unlock()
-	if t, ok := b.tasks[id]; ok {
-		t.Stage = s
-	}
-}
-
-// setEgressExtra populates the requested-widening hosts on the task state so
-// the operator can see exactly what's being asked at the egress gate. Cleared
-// when the gate resolves.
-func (b *Broker) setEgressExtra(id string, extras []egress.Domain) {
-	b.pendingMu.Lock()
-	defer b.pendingMu.Unlock()
-	if t, ok := b.tasks[id]; ok {
-		t.EgressExtra = extras
-	}
-}
-
-func (b *Broker) unregisterTask(id string) {
-	b.pendingMu.Lock()
-	defer b.pendingMu.Unlock()
-	delete(b.tasks, id)
-	delete(b.cancellers, id)
-}
-
-// CancelAll cancels every in-flight task. Each task's own HandleTask then tears
-// down its VM (force-delete) and returns a cancelled response — so a graceful
-// brokerd shutdown doesn't orphan running VMs or drop clients at the gate. The
-// cancels are collected under the lock and invoked outside it (the cancel paths
-// reacquire pendingMu via the gates/unregister).
-func (b *Broker) CancelAll() {
-	b.pendingMu.Lock()
-	cancels := make([]context.CancelFunc, 0, len(b.cancellers))
-	for _, c := range b.cancellers {
-		cancels = append(cancels, c)
-	}
-	b.pendingMu.Unlock()
-	for _, c := range cancels {
-		c()
-	}
-}
-
 // MaxTaskBodyBytes caps the size of POST /tasks bodies. Generous enough for
 // long instructions but small enough that local-DoS via 1GB instruction
 // strings (or TCP-listener attacks when BROKER_ADDR is set) can't burn
@@ -399,26 +217,8 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// Egress widening: block at the same kind of human-driven gate as the
 	// diff push. Without this the requires_approval flag is a lie —
 	// auto-approve would let any task ask for any host.
-	if len(t.EgressExtra) > 0 && b.Cfg.PerTaskWidening.RequiresApproval {
-		b.setStage(taskID, StageAwaitingEgress)
-		sw.emit(map[string]any{
-			"event": "stage", "stage": "awaiting_egress", "task_id": taskID,
-			"extras":  summariseExtras(t.EgressExtra),
-			"approve": "drydock approve " + taskID,
-			"deny":    "drydock deny " + taskID,
-		})
-		b.setEgressExtra(taskID, t.EgressExtra)
-		ok := b.gateEgressWiden(taskCtx, taskID, t.EgressExtra)
-		b.setEgressExtra(taskID, nil)
-		if !ok {
-			if taskCtx.Err() != nil {
-				sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": taskID})
-				return
-			}
-			sw.emit(errorEvent(taskID, "egress widening denied", ""))
-			return
-		}
-		b.setStage(taskID, StageRunning)
+	if !b.runEgressGate(taskCtx, taskID, t.EgressExtra, sw) {
+		return
 	}
 
 	// Register per-task egress widening (no-op for non-widened tasks). The
@@ -452,9 +252,9 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentName, prov, status, msg := b.resolveAgent(t.Agent)
-	if status != 0 {
-		sw.emit(errorEvent(taskID, msg, ""))
+	agentName, prov, err := b.resolveAgent(t.Agent)
+	if err != nil {
+		sw.emit(errorEvent(taskID, err.Error(), ""))
 		return
 	}
 	grant, err := prov.Mint(b.TaskBudget)
@@ -490,23 +290,13 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// labels subscription runs accurately (instead of inferring from the
 	// operator's current config at display time). It is not a `result` event,
 	// so it never affects outcome/cost parsing.
-	taskVendor, _ := agent.Vendor(agentName)
+	taskVendor, _ := provider.VendorForAgent(agentName)
 	subscription := (taskVendor == "anthropic" && b.AnthropicAuth == "subscription") ||
 		(taskVendor == "openai" && b.OpenAIAuth == "subscription")
 	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t,"sensitive":%t}`+"\n", subscription, t.Sensitive)
 
-	env := append([]string{}, grant.EnvVars()...)
-	env = append(env,
-		fmt.Sprintf("HTTPS_PROXY=http://%s%s:%d", proxyAuth, b.GatewayIP, b.ProxyPort),
-		fmt.Sprintf("HTTP_PROXY=http://%s%s:%d", proxyAuth, b.GatewayIP, b.ProxyPort),
-		// Bypass squid for the credential gateway itself — squid's allowlist
-		// is hostname-based and would deny a CONNECT to the gateway IP.
-		"NO_PROXY=127.0.0.1,localhost,"+b.GatewayIP,
-		"DRYDOCK_GW_IP="+b.GatewayIP,
-	)
-	defaultModel := effectiveDefaultModel(b.DefaultModel, taskVendor)
-	env = append(env, modelEnv(taskModelFor(t.Model, b.OpenAICompatModel, taskVendor), defaultModel)...)
-	env = append(env, "DRYDOCK_AGENT="+agentName)
+	env := buildTaskEnv(grant.EnvVars(), proxyAuth, b.GatewayIP, b.ProxyPort,
+		agentName, t.Model, b.OpenAICompatModel, b.DefaultModel, taskVendor)
 
 	args := runner.BuildRunArgs(runner.Spec{
 		TaskID:     taskID,
@@ -519,6 +309,82 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		CPUs:       4,
 	})
 
+	auditPath := filepath.Join(b.AuditRoot, taskID+".jsonl")
+	taskStart, ok := b.runSandbox(taskCtx, taskID, agentName, t.Model, args, logf, auditPath, grant, sw)
+	if !ok {
+		return
+	}
+
+	diff, err := st.CaptureDiff()
+	if err != nil {
+		sw.emit(errorEvent(taskID, "diff capture failed", ""))
+		return
+	}
+	if diff == "" {
+		sw.emit(map[string]any{"event": "result", "outcome": "no_diff",
+			"task_id": taskID, "duration_ms": time.Since(taskStart).Milliseconds(),
+			"cost_usd": audit.TotalCost(auditPath)})
+		return
+	}
+
+	b.pushAndOpenPR(taskCtx, taskID, diff, t.Instruction, t.AutoApprove, t.Draft,
+		sw, st, t.RepoRef, t.Platform, taskStart, auditPath)
+}
+
+// runEgressGate handles the awaiting_egress stage when the task requests extra
+// egress and requires_approval is set. Returns true to continue, false to abort
+// (the appropriate terminal event has already been emitted).
+func (b *Broker) runEgressGate(ctx context.Context, taskID string, extras []egress.Domain, sw *stream) bool {
+	if len(extras) == 0 || !b.Cfg.PerTaskWidening.RequiresApproval {
+		return true
+	}
+	b.setStage(taskID, StageAwaitingEgress)
+	sw.emit(map[string]any{
+		"event": "stage", "stage": "awaiting_egress", "task_id": taskID,
+		"extras":  summariseExtras(extras),
+		"approve": "drydock approve " + taskID,
+		"deny":    "drydock deny " + taskID,
+	})
+	b.setEgressExtra(taskID, extras)
+	ok := b.gateEgressWiden(ctx, taskID, extras)
+	b.setEgressExtra(taskID, nil)
+	if !ok {
+		if ctx.Err() != nil {
+			sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": taskID})
+			return false
+		}
+		sw.emit(errorEvent(taskID, "egress widening denied", ""))
+		return false
+	}
+	b.setStage(taskID, StageRunning)
+	return true
+}
+
+// buildTaskEnv assembles the env slice passed to the container. It is pure
+// (all inputs explicit) so it can be unit-tested without a Broker.
+func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
+	agentName, taskModel, openAICompatModel, operatorDefaultModel, taskVendor string) []string {
+	env := append([]string{}, grantEnv...)
+	env = append(env,
+		fmt.Sprintf("HTTPS_PROXY=http://%s%s:%d", proxyAuth, gatewayIP, proxyPort),
+		fmt.Sprintf("HTTP_PROXY=http://%s%s:%d", proxyAuth, gatewayIP, proxyPort),
+		// Bypass squid for the credential gateway itself — squid's allowlist
+		// is hostname-based and would deny a CONNECT to the gateway IP.
+		"NO_PROXY=127.0.0.1,localhost,"+gatewayIP,
+		"DRYDOCK_GW_IP="+gatewayIP,
+	)
+	defaultModel := effectiveDefaultModel(operatorDefaultModel, taskVendor)
+	env = append(env, modelEnv(taskModelFor(taskModel, openAICompatModel, taskVendor), defaultModel)...)
+	env = append(env, "DRYDOCK_AGENT="+agentName)
+	return env
+}
+
+// runSandbox runs the agent container, writes to the audit log, and emits the
+// "running" stage event. It returns (taskStart, true) on a successful run.
+// On failure it emits the terminal event and returns (taskStart, false),
+// signalling the caller to return immediately.
+func (b *Broker) runSandbox(taskCtx context.Context, taskID, agentName, taskModel string,
+	args []string, logf io.Writer, auditPath string, grant creds.Grant, sw *stream) (time.Time, bool) {
 	runCtx, runCancel := context.WithTimeout(taskCtx, b.Timeout)
 	defer runCancel()
 	run := b.runAgent
@@ -527,12 +393,13 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 	b.setStage(taskID, StageRunning)
 	runningEv := map[string]any{"event": "stage", "stage": "running", "task_id": taskID, "agent": agentName}
-	if m := t.Model; m != "" {
-		runningEv["model"] = m
+	if taskModel != "" {
+		runningEv["model"] = taskModel
 	} else if b.DefaultModel != "" {
 		runningEv["model"] = b.DefaultModel
 	}
 	sw.emit(runningEv)
+
 	taskStart := time.Now()
 	if err := run(runCtx, args, io.MultiWriter(logf, os.Stdout), logf); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
@@ -544,7 +411,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		if taskCtx.Err() != nil {
 			// Operator killed it, or the client went away. Be explicit.
 			sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": taskID})
-			return
+			return taskStart, false
 		}
 		// If claude never wrote a `result` event (e.g. the entrypoint died
 		// before claude was even exec'd), `drydock tasks` would show this
@@ -553,7 +420,6 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(logf,
 			`{"type":"result","subtype":"error","is_error":true,"duration_ms":%d,"total_cost_usd":0,"num_turns":0}`+"\n",
 			time.Since(taskStart).Milliseconds())
-		auditPath := filepath.Join(b.AuditRoot, taskID+".jsonl")
 		reason := "task failed: " + safeErr(err)
 		ev := map[string]any{"event": "error", "task_id": taskID,
 			"audit": auditPath, "duration_ms": time.Since(taskStart).Milliseconds()}
@@ -565,7 +431,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		}
 		ev["reason"] = reason
 		sw.emit(ev)
-		return
+		return taskStart, false
 	}
 
 	// codex exec doesn't emit Claude's stream-json `result` trailer, so a
@@ -577,33 +443,29 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 			`{"type":"result","subtype":"success","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0}`+"\n",
 			time.Since(taskStart).Milliseconds(), grant.Spent())
 	}
+	return taskStart, true
+}
 
-	diff, err := st.CaptureDiff()
-	if err != nil {
-		sw.emit(errorEvent(taskID, "diff capture failed", ""))
-		return
-	}
-	auditPath := filepath.Join(b.AuditRoot, taskID+".jsonl")
-	if diff == "" {
-		sw.emit(map[string]any{"event": "result", "outcome": "no_diff",
-			"task_id": taskID, "duration_ms": time.Since(taskStart).Milliseconds(),
-			"cost_usd": audit.TotalCost(auditPath)})
-		return
-	}
-
+// pushAndOpenPR handles the diff-approval gate, branch push, and PR creation.
+// It always emits a terminal event (result/outcome=denied|cancelled|pushed, or
+// an error event on push failure). HandleTask should return immediately after
+// calling this — it is the last step in the task lifecycle.
+func (b *Broker) pushAndOpenPR(taskCtx context.Context, taskID, diff, instruction string,
+	autoApprove, draft bool, sw *stream, st taskStage, repoRef, platform string,
+	taskStart time.Time, auditPath string) {
 	files, insertions, deletions := diffStat(diff)
 	b.setStage(taskID, StagePending)
 	// Only announce the approval gate when there's actually a human gate to
 	// wait on. Auto-approve pushes immediately, so an "awaiting_approval"
 	// stage would be a misleading blip in the stream.
-	if !t.AutoApprove {
+	if !autoApprove {
 		sw.emit(map[string]any{"event": "stage", "stage": "awaiting_approval",
 			"task_id": taskID, "diff_bytes": len(diff), "files": files,
 			"approve": "drydock approve " + taskID,
 			"deny":    "drydock deny " + taskID,
 			"review":  "drydock review " + taskID})
 	}
-	if !b.gatePush(taskCtx, taskID, diff, t.AutoApprove) {
+	if !b.gatePush(taskCtx, taskID, diff, autoApprove) {
 		outcome := "denied"
 		if taskCtx.Err() != nil {
 			outcome = "cancelled"
@@ -619,18 +481,18 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	if adapterFor == nil {
 		adapterFor = remote.AdapterFor
 	}
-	adapter := adapterFor(t.RepoRef, t.Platform)
+	adapter := adapterFor(repoRef, platform)
 	sw.emit(map[string]any{"event": "stage", "stage": "pushing", "task_id": taskID, "branch": branch})
-	if err := st.Push(branch, "agent: "+firstLine(t.Instruction)); err != nil {
+	if err := st.Push(branch, "agent: "+firstLine(instruction)); err != nil {
 		sw.emit(errorEvent(taskID, "push failed: "+safeErr(err), "check the remote and push credentials"))
 		return
 	}
 	// Branch is saved. Opening the PR/MR is best-effort — never downgrade a
 	// successful push to a failure.
-	title, body := prContent(t.Instruction, taskID)
+	title, body := prContent(instruction, taskID)
 	prErr := adapter.OpenRequest(remote.Request{
 		WorkDir: st.WorkDir(), Branch: branch, Env: st.PushEnv(),
-		Title: title, Body: body, Draft: t.Draft,
+		Title: title, Body: body, Draft: draft,
 	})
 	ev := map[string]any{"event": "result", "outcome": "pushed",
 		"task_id": taskID, "branch": branch, "platform": adapter.Name(),
@@ -644,386 +506,10 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	sw.emit(ev)
 }
 
-// awaitGate is the shared skeleton for gatePush and gateEgressWiden. It:
-//   - optionally wraps ctx with the operator ApprovalTimeout;
-//   - registers a buffered channel in b.pending under taskID (deregisters on return);
-//   - calls onReady, which must persist the review artifact, log, and fire any
-//     macOS notification specific to this gate;
-//   - blocks until the channel receives a signal or ctx is cancelled.
-//
-// Returns true when the gate is approved, false on deny, kill, or timeout.
-// timeoutMsg is logged at Warn on DeadlineExceeded; cancelMsg is logged at Info
-// on any other ctx cancellation.
-func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg string, onReady func()) bool {
-	if b.ApprovalTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, b.ApprovalTimeout)
-		defer cancel()
-	}
-	ch := make(chan bool, 1)
-	b.pendingMu.Lock()
-	if b.pending == nil {
-		b.pending = make(map[string]chan bool)
-	}
-	b.pending[taskID] = ch
-	b.pendingMu.Unlock()
-	defer func() {
-		b.pendingMu.Lock()
-		delete(b.pending, taskID)
-		b.pendingMu.Unlock()
-	}()
-
-	onReady()
-
-	select {
-	case ok := <-ch:
-		return ok
-	case <-ctx.Done():
-		if ctx.Err() == context.DeadlineExceeded {
-			slog.Warn(timeoutMsg, "task_id", taskID, "timeout", b.ApprovalTimeout)
-		} else {
-			slog.Info(cancelMsg, "task_id", taskID)
-		}
-		return false
-	}
-}
-
-// gateEgressWiden blocks until POST /admin/approve/{id} or /admin/deny/{id}
-// (or the HTTP client disconnects / the task is killed). Returning false
-// aborts the task before any allowlist compilation — the requested hosts
-// never reach squid. Mirrors gatePush so the operator only has to learn one
-// approval flow.
-func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []egress.Domain) bool {
-	return b.awaitGate(ctx, taskID,
-		"task auto-denied at egress gate (approval_timeout reached)",
-		"task cancelled at egress gate",
-		func() {
-			// Persist the request next to the audit so reviewers have a stable
-			// artifact (the in-flight TaskState would disappear on a brokerd crash).
-			widenPath := filepath.Join(b.AuditRoot, taskID+".widen.json")
-			if err := os.MkdirAll(b.AuditRoot, 0o700); err == nil {
-				if payload, jerr := json.MarshalIndent(extras, "", "  "); jerr == nil {
-					if werr := os.WriteFile(widenPath, payload, 0o600); werr != nil {
-						slog.Warn("could not persist egress-widen request", "task_id", taskID, "err", werr)
-					}
-				}
-			}
-			summary := summariseExtras(extras)
-			slog.Info("task awaiting egress widening",
-				"task_id", taskID, "extras", summary,
-				"hint", "drydock approve "+taskID+" | drydock deny "+taskID)
-			b.notifyMac("drydock — task wants more egress",
-				fmt.Sprintf("task %s · %s · drydock approve %s", taskID, summary, taskID))
-		})
-}
-
-func summariseExtras(extras []egress.Domain) string {
-	if len(extras) == 0 {
-		return "no hosts"
-	}
-	parts := make([]string, 0, len(extras))
-	for _, d := range extras {
-		ports := ""
-		for i, p := range d.Ports {
-			if i > 0 {
-				ports += ","
-			}
-			ports += fmt.Sprintf("%d", p)
-		}
-		parts = append(parts, fmt.Sprintf("%s:%s", d.Host, ports))
-	}
-	return strings.Join(parts, " ")
-}
-
-// gatePush blocks until POST /admin/approve/{id} or /admin/deny/{id} (or the
-// HTTP client disconnects). Returning false aborts the push and the diff is
-// returned to the caller without ever touching origin. When auto is true the
-// gate is bypassed — callers must opt in explicitly via Task.AutoApprove.
-func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) bool {
-	if auto {
-		slog.Info("task auto-approve push", "task_id", taskID, "reason", "caller opted in")
-		return true
-	}
-	return b.awaitGate(ctx, taskID,
-		"task auto-denied at approval gate (approval_timeout reached)",
-		"task killed or broker shutting down before approval; aborting",
-		func() {
-			// Persist the diff for the human reviewing it.
-			diffPath := filepath.Join(b.AuditRoot, taskID+".diff")
-			if werr := os.WriteFile(diffPath, []byte(diff), 0o600); werr != nil {
-				slog.Warn("could not persist diff for review", "task_id", taskID, "path", diffPath, "err", werr)
-			}
-			slog.Info("task awaiting approval",
-				"task_id", taskID, "diff_bytes", len(diff), "diff_path", diffPath,
-				"hint", "drydock approve "+taskID+" | drydock deny "+taskID)
-			b.notifyMac("drydock — task awaiting approval",
-				fmt.Sprintf("task %s · %d byte diff · drydock approve %s", taskID, len(diff), taskID))
-		})
-}
-
-// HandleApprove signals the pending task's channel with true. Wire as
-// POST /admin/approve/{id}.
-func (b *Broker) HandleApprove(w http.ResponseWriter, r *http.Request) { b.signal(w, r, true) }
-
-// HandleDeny signals false. Wire as POST /admin/deny/{id}.
-func (b *Broker) HandleDeny(w http.ResponseWriter, r *http.Request) { b.signal(w, r, false) }
-
-// HandlePending returns the set of task IDs currently awaiting approval.
-// Kept as IDs-only for the existing approve/deny CLI path; richer output
-// lives at /admin/tasks.
-func (b *Broker) HandlePending(w http.ResponseWriter, r *http.Request) {
-	b.pendingMu.Lock()
-	ids := make([]string, 0, len(b.pending))
-	for k := range b.pending {
-		ids = append(ids, k)
-	}
-	b.pendingMu.Unlock()
-	writeJSON(w, ids)
-}
-
-// HandleTasks returns rich state for every task currently in flight
-// (running, awaiting approval, or pushing). The result is sorted oldest-
-// first so the CLI table is deterministic.
-func (b *Broker) HandleTasks(w http.ResponseWriter, r *http.Request) {
-	b.pendingMu.Lock()
-	out := make([]*TaskState, 0, len(b.tasks))
-	for _, t := range b.tasks {
-		// Copy so the caller can't mutate the live state and we don't hold
-		// the lock during JSON encoding.
-		cp := *t
-		out = append(out, &cp)
-	}
-	b.pendingMu.Unlock()
-	// Stable order: oldest first.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1].StartedAt.After(out[j].StartedAt); j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
-	writeJSON(w, out)
-}
-
-// notifyMac fires a macOS notification via osascript. Silent no-op when the
-// operator opts out (config notifications: false / DRYDOCK_NO_NOTIFY=1) or
-// when osascript isn't on PATH (i.e. running on Linux for tests/CI). We
-// swallow errors: a missing notification must never block the approval gate.
-func (b *Broker) notifyMac(title, body string) {
-	if !b.Notify {
-		return
-	}
-	if _, err := exec.LookPath("osascript"); err != nil {
-		return
-	}
-	// AppleScript string-escape: backslashes and double quotes both need it.
-	escape := func(s string) string {
-		s = strings.ReplaceAll(s, `\`, `\\`)
-		return strings.ReplaceAll(s, `"`, `\"`)
-	}
-	script := fmt.Sprintf(`display notification "%s" with title "%s"`, escape(body), escape(title))
-	_ = exec.Command("osascript", "-e", script).Run()
-}
-
-// HandleHealth is a liveness/readiness probe. Returns ok plus a coarse
-// breakdown so launchd KeepAlive, `drydock status`, and `drydock init`'s
-// eventual smoke probe can all use the same endpoint.
-func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
-	b.pendingMu.Lock()
-	pending := len(b.pending)
-	var awaitingEgress, running, pendingApproval, pushing int
-	for _, t := range b.tasks {
-		switch t.Stage {
-		case StageAwaitingEgress:
-			awaitingEgress++
-		case StageRunning:
-			running++
-		case StagePending:
-			pendingApproval++
-		case StagePushing:
-			pushing++
-		}
-	}
-	b.pendingMu.Unlock()
-	writeJSON(w, map[string]any{
-		"ok":               true,
-		"pending":          pending, // legacy field; matches old shape
-		"awaiting_egress":  awaitingEgress,
-		"running":          running,
-		"pending_approval": pendingApproval,
-		"pushing":          pushing,
-	})
-}
-
-// HandleKill cancels the per-task context, which aborts the container run
-// (if still in flight) and the gatePush wait (if at the approval gate).
-// Returns 204 on success, 404 if no such live task. The corresponding
-// `POST /tasks` request will return a body with "cancelled": true.
-func (b *Broker) HandleKill(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	b.pendingMu.Lock()
-	cancel, ok := b.cancellers[id]
-	b.pendingMu.Unlock()
-	if !ok {
-		http.Error(w, "no such task", http.StatusNotFound)
-		return
-	}
-	cancel()
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (b *Broker) signal(w http.ResponseWriter, r *http.Request, ok bool) {
-	id := r.PathValue("id")
-	b.pendingMu.Lock()
-	ch, exists := b.pending[id]
-	b.pendingMu.Unlock()
-	if !exists {
-		http.Error(w, "no such pending task", http.StatusNotFound)
-		return
-	}
-	select {
-	case ch <- ok:
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		http.Error(w, "already signaled", http.StatusConflict)
-	}
-}
-
-// firstLine returns the first line of s, sanitized, for a sane commit subject
-// from an attacker-influenced instruction. Strips control characters and
-// ANSI escapes (they'd visually corrupt `git log` and terminal output), and
-// drops a leading '-' so the subject can't be confused for a git option
-// when re-used in some future tool. Capped at 72 chars.
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		// Keep printable ASCII + a tolerant unicode range (no controls).
-		if r >= 0x20 && r != 0x7f {
-			b.WriteRune(r)
-		}
-	}
-	out := strings.TrimSpace(b.String())
-	for len(out) > 0 && out[0] == '-' {
-		out = strings.TrimSpace(out[1:])
-	}
-	if out == "" {
-		out = "agent task"
-	}
-	if r := []rune(out); len(r) > 72 {
-		out = string(r[:72])
-	}
-	return out
-}
-
-// prContent derives a PR title and body from the task instruction. Title is the
-// first line, clipped to 72 chars (PR titles must stay short). Body is the
-// instruction plus a drydock provenance footer, capped at ~4 KB so it never
-// blows argv limits (the full instruction is preserved in the task audit). An
-// empty instruction yields ("",""), so adapters fall back to the CLI's --fill.
-func prContent(instruction, taskID string) (title, body string) {
-	if strings.TrimSpace(instruction) == "" {
-		return "", ""
-	}
-	title = firstLine(instruction)
-	if r := []rune(title); len(r) > 72 {
-		title = string(r[:71]) + "…"
-	}
-	const bodyCap = 4096
-	body = instruction
-	if len(body) > bodyCap {
-		body = body[:bodyCap] + "\n\n[truncated — full instruction in the drydock task audit]"
-	}
-	body += "\n\n---\nGenerated by drydock (task " + taskID + ")."
-	return title, body
-}
-
-// safeErr renders an error for reflection in an HTTP response body. err.Error()
-// can carry attacker-influenced bytes (agent stderr, container-CLI output);
-// reflecting those raw makes upstream SIEM ingestion brittle and lets a clever
-// agent inject ANSI escapes into operator terminals. Strip non-printables and
-// cap.
-func safeErr(err error) string {
-	if err == nil {
-		return ""
-	}
-	return safeStr(err.Error())
-}
-
-// safeStr strips non-printable bytes from operator-reflected text. Any output
-// that traces back to the agent (its stdout/stderr, a distilled audit line) can
-// carry attacker-influenced bytes; reflecting them raw lets a clever agent
-// inject ANSI escapes into operator terminals. Strip non-printables and cap.
-func safeStr(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if r >= 0x20 && r != 0x7f {
-			b.WriteRune(r)
-		}
-	}
-	out := b.String()
-	if len(out) > 200 {
-		out = out[:200] + "…"
-	}
-	return out
-}
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-// errorEvent builds a terminal error event. hint may be empty.
-func errorEvent(taskID, reason, hint string) map[string]any {
-	ev := map[string]any{"event": "error", "task_id": taskID, "reason": reason}
-	if hint != "" {
-		ev["hint"] = hint
-	}
-	return ev
-}
-
-// taskModelFor picks the per-task model before the operator default is applied.
-// An explicit --model always wins. Otherwise the openai-compat vendor
-// (opencode) falls back to the configured openai_compat.model, since that lane
-// has no built-in model the way claude/codex do.
-func taskModelFor(taskModel, openAICompatModel, vendor string) string {
-	if taskModel == "" && vendor == "openai-compat" {
-		return openAICompatModel
-	}
-	return taskModel
-}
-
-// effectiveDefaultModel applies the operator DefaultModel only where it makes
-// sense. The operator default is claude/codex-oriented; it must not leak into
-// the opencode lane (it'd become `-m drydock/<claude-model>` and not resolve).
-// For openai-compat the model comes only from --model or openai_compat.model.
-func effectiveDefaultModel(operatorDefault, vendor string) string {
-	if vendor == "openai-compat" {
-		return ""
-	}
-	return operatorDefault
-}
-
-// modelEnv resolves the model passthrough for a task: the per-task value wins,
-// then the operator default. When both are empty the env stays unset so
-// entrypoint.sh skips `--model` and claude-code picks its own default.
-func modelEnv(taskModel, defaultModel string) []string {
-	switch {
-	case taskModel != "":
-		return []string{"DRYDOCK_MODEL=" + taskModel}
-	case defaultModel != "":
-		return []string{"DRYDOCK_MODEL=" + defaultModel}
-	}
-	return nil
-}
-
 // resolveAgent picks the agent (task value → operator default → "claude") and
-// returns the credential provider for its vendor. status is 0 when usable;
-// otherwise status is the HTTP code and msg the client-facing reason. It is
-// fail-closed: unknown agents and vendors with no configured key are rejected.
-func (b *Broker) resolveAgent(taskAgent string) (name string, prov creds.Provider, status int, msg string) {
+// returns the credential provider for its vendor. Returns an error when the
+// agent is unknown or has no configured key — fail-closed: the task never starts.
+func (b *Broker) resolveAgent(taskAgent string) (name string, prov creds.Provider, err error) {
 	name = taskAgent
 	if name == "" {
 		name = b.DefaultAgent
@@ -1031,13 +517,13 @@ func (b *Broker) resolveAgent(taskAgent string) (name string, prov creds.Provide
 	if name == "" {
 		name = "claude"
 	}
-	vendor, known := agent.Vendor(name)
+	vendor, known := provider.VendorForAgent(name)
 	if !known {
-		return name, nil, http.StatusBadRequest, "unknown agent: " + name + " (want " + strings.Join(provider.Agents(), "|") + ")"
+		return name, nil, fmt.Errorf("unknown agent: %s (want %s)", name, strings.Join(provider.Agents(), "|"))
 	}
 	prov = b.Providers[vendor]
 	if prov == nil {
-		return name, nil, http.StatusBadRequest, "agent unavailable — no API key configured for " + name
+		return name, nil, fmt.Errorf("agent unavailable — no API key configured for %s", name)
 	}
-	return name, prov, 0, ""
+	return name, prov, nil
 }
