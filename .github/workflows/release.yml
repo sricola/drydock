@@ -46,7 +46,9 @@ jobs:
           subject-path: ${{ steps.art.outputs.tarball }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        # cosign-installer publishes v4.x releases but no moving `v4` major tag;
+        # `v3` is the latest resolvable major tag.
+        uses: sigstore/cosign-installer@v3
 
       - name: Sign the tarball (keyless)
         run: |
