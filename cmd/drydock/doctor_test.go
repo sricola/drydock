@@ -59,6 +59,28 @@ func TestClaudeVersionLine_NoMatchFallsBackToTrimmed(t *testing.T) {
 	}
 }
 
+func TestGeminiPresent(t *testing.T) {
+	cases := []struct {
+		name   string
+		out    string
+		err    error
+		wantOK bool
+	}{
+		{"healthy version", "0.49.0", nil, true},
+		{"healthy with progress preamble", "[6/6] Starting container [0s]\n0.49.0\n", nil, true},
+		{"not found (nonzero exit)", "", errors.New("exit status 127"), false},
+		{"empty output zero exit", "", nil, false},
+		{"container run error", "", errors.New("container run failed"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := geminiPresent(c.out, c.err); got != c.wantOK {
+				t.Errorf("geminiPresent(%q, %v) = %v, want %v", c.out, c.err, got, c.wantOK)
+			}
+		})
+	}
+}
+
 func TestAPIKeySource(t *testing.T) {
 	file := map[string]string{"OPENAI_API_KEY": "sk-o"}
 

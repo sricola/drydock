@@ -77,6 +77,19 @@ func runDoctor() {
 		failed = true
 	}
 
+	// 2c. Gemini CLI presence (native google vendor). Absence usually means the
+	// image predates native Gemini — point at `drydock init` rather than a raw
+	// shell error.
+	out, err = runCmd("container", "run", "--rm", "--entrypoint", "/bin/sh",
+		cfg.SandboxImage, "-c", "gemini --version 2>&1")
+	if geminiPresent(string(out), err) {
+		step("gemini present", true, strings.TrimSpace(lastLine(string(out))))
+	} else {
+		step("gemini present", false, "not found in "+cfg.SandboxImage)
+		fmt.Println("    → that image likely predates native Gemini. Fix: run `drydock init` to rebuild")
+		failed = true
+	}
+
 	// 3. The nft egress pin must default-deny output. We install the pin
 	// pointing at an unreachable gateway IP, then confirm a non-allowlisted
 	// host fails to resolve (DNS dropped) or fails to connect (no route).
@@ -166,6 +179,13 @@ func runDoctor() {
 // sandbox_image that predates Codex.
 func codexPresent(out string, runErr error) bool {
 	return runErr == nil && !strings.Contains(out, "not found")
+}
+
+// geminiPresent reports whether `gemini --version` returned a usable version.
+// An absent binary surfaces as a non-zero exit and/or empty output —
+// almost always a sandbox_image that predates native Gemini.
+func geminiPresent(out string, err error) bool {
+	return err == nil && strings.TrimSpace(out) != ""
 }
 
 // lastLine returns the last non-empty line of s, trimmed. Used for version
