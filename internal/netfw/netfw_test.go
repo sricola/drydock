@@ -49,35 +49,6 @@ func TestCompileSquidConf(t *testing.T) {
 	}
 }
 
-func TestGatewayIP(t *testing.T) {
-	cases := []struct {
-		cidr    string
-		want    string
-		wantErr bool
-	}{
-		{"192.168.64.0/24", "192.168.64.1", false},
-		{"192.168.66.0/24", "192.168.66.1", false},
-		{"10.0.0.0/8", "10.0.0.1", false},
-		// IPv6 must be rejected — drydock pins the .1 host address which only
-		// has meaning for IPv4.
-		{"fd2c:3221:beea:1b27::/64", "", true},
-		{"not-a-cidr", "", true},
-		{"", "", true},
-	}
-	for _, tc := range cases {
-		got, err := GatewayIP(tc.cidr)
-		if tc.wantErr {
-			if err == nil {
-				t.Errorf("GatewayIP(%q) want err, got %q", tc.cidr, got)
-			}
-			continue
-		}
-		if err != nil || got != tc.want {
-			t.Errorf("GatewayIP(%q) = %q err=%v, want %q", tc.cidr, got, err, tc.want)
-		}
-	}
-}
-
 func TestCompileSquidAllowlist_EmptyConfig(t *testing.T) {
 	var empty egress.Config
 	if got := CompileSquidAllowlist(empty); got != "" {

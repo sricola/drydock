@@ -25,7 +25,7 @@ main{padding:16px;max-width:900px;margin:0 auto}
 .bar{height:3px;background:var(--surface-2);border-radius:2px;overflow:hidden;margin-top:8px}
 .bar>i{display:block;height:100%;width:38%;background:var(--blue);border-radius:2px;animation:ddb 1.9s ease-in-out infinite}
 @keyframes ddb{0%{margin-left:-40%}100%{margin-left:100%}}
-.badge,.pill{font-size:11px;border-radius:10px;padding:1px 8px;border:1px solid var(--line)}
+.badge{font-size:11px;border-radius:10px;padding:1px 8px;border:1px solid var(--line)}
 .stage-running{color:var(--blue);border-color:#274b6b}
 .stage-awaiting_approval,.stage-awaiting_egress{color:var(--amber);border-color:#7a5a12}
 .stage-pushing{color:var(--muted)}

@@ -361,7 +361,7 @@ function dangerButton(label, fn){
   let armed = false, timer = null;
   b.onclick = () => {
     if (armed){ clearTimeout(timer); fn(); return; }
-    armed = true; b.dataset.orig = label; b.textContent = "Confirm?"; b.classList.add("confirming");
+    armed = true; b.textContent = "Confirm?"; b.classList.add("confirming");
     timer = setTimeout(() => { armed = false; b.textContent = label; b.classList.remove("confirming"); }, 3000);
   };
   return b;

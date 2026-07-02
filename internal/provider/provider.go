@@ -90,11 +90,3 @@ func Agents() []string {
 	}
 	return out
 }
-
-func Labels() []string {
-	out := make([]string, len(Registry))
-	for i, p := range Registry {
-		out[i] = p.Label
-	}
-	return out
-}

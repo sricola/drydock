@@ -2,13 +2,9 @@ package provider
 
 import "testing"
 
-func TestRegistry_AgentsAndLabels(t *testing.T) {
+func TestRegistry_Agents(t *testing.T) {
 	if got := Agents(); len(got) != 3 || got[0] != "claude" || got[1] != "codex" || got[2] != "opencode" {
 		t.Errorf("Agents() = %v, want [claude codex opencode]", got)
-	}
-	labels := Labels()
-	if len(labels) != 3 || labels[0] != "Claude Code (Anthropic)" || labels[1] != "OpenAI Codex" || labels[2] != "OpenAI-compatible (bring your own)" {
-		t.Errorf("Labels() = %v", labels)
 	}
 }
 

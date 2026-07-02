@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,7 +18,7 @@ func runLogs(id string, follow bool) {
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(stdout(), f); err != nil {
+	if _, err := io.Copy(os.Stdout, f); err != nil {
 		die("%v", err)
 	}
 	if !follow {
@@ -29,20 +28,15 @@ func runLogs(id string, follow bool) {
 	// Poll for appended bytes. brokerd writes via os.File which closes/
 	// reopens are not needed — the file stays the same inode, just grows.
 	for {
-		n, err := io.Copy(stdout(), f)
-		if errors.Is(err, io.EOF) || err == nil {
+		n, err := io.Copy(os.Stdout, f)
+		if err == nil {
 			if n > 0 {
 				continue
 			}
 			time.Sleep(250 * time.Millisecond)
 			continue
 		}
-		fmt.Fprintf(stderr(), "drydock logs: %v\n", err)
+		fmt.Fprintf(os.Stderr, "drydock logs: %v\n", err)
 		return
 	}
 }
-
-// Indirected through helpers so other subcommands can override (none today,
-// but it keeps test-friendliness cheap).
-func stdout() io.Writer { return os.Stdout }
-func stderr() io.Writer { return os.Stderr }
