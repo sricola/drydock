@@ -148,7 +148,7 @@ func TestNudgeEgressRecommendations_SilentWhenAllPresent(t *testing.T) {
 // land in the same upgrade hole the nudge exists to address.
 func TestDefaultEgressYAML_ContainsRecommended(t *testing.T) {
 	for _, h := range recommendedEgressHosts {
-		if !strings.Contains(defaultEgressYAML, h) {
+		if !strings.Contains(string(defaultEgressYAML), h) {
 			t.Errorf("defaultEgressYAML missing %q — fresh installs without share-dir template would lack it", h)
 		}
 	}

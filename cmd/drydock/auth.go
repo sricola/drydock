@@ -61,32 +61,92 @@ func authAgents() []string {
 	return out
 }
 
-// runAuth dispatches `drydock auth <subcommand>`.
+// runAuth dispatches `drydock auth <subcommand>`. It is registry-driven:
+// adding a new OAuth provider to provider.Registry automatically makes it
+// available as a subcommand — no switch needed here.
 func runAuth(args []string) {
 	consumeHelpFlag("auth", args)
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "drydock auth — usage: drydock auth %s [--status]\n", strings.Join(authAgents(), "|"))
 		os.Exit(2)
 	}
-	if _, ok := provider.ByAgent(args[0]); !ok {
+	p, ok := provider.ByAgent(args[0])
+	if !ok || p.OAuthBackend == nil {
 		fmt.Fprintf(os.Stderr, "drydock auth: unknown subcommand %q (want one of %v)\n", args[0], authAgents())
 		os.Exit(2)
 	}
-	switch args[0] {
-	case "claude":
-		runAuthClaude(args[1:])
-	case "codex":
-		runAuthCodex(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "drydock auth: %q has no auth implementation wired (provider in registry but not in auth dispatch)\n", args[0])
+	runAuthAgent(p, args[1:])
+}
+
+// bootstraps maps each agent name to its credential-bootstrap function.
+// The bootstrap functions are defined in this package because they rely on
+// platform-specific tooling (macOS Keychain, ~/.codex/auth.json) that belongs
+// in the CLI layer, not in the provider registry (an internal package).
+var bootstraps = map[string]func(cfgDir string) error{
+	"claude": bootstrapClaudeCred,
+	"codex":  bootstrapCodexCred,
+}
+
+// runAuthAgent is the shared implementation of `drydock auth <agent> [--status]`.
+// It replaces the former structural twins runAuthClaude / runAuthCodex.
+func runAuthAgent(p provider.Provider, args []string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "-h", "--help", "help":
+			fmt.Printf("drydock auth %s — %s\n", p.Agent, subHelp["auth"])
+			os.Exit(0)
+		}
+	}
+	statusOnly := len(args) > 0 && (args[0] == "--status" || args[0] == "-status")
+
+	cfgDir := config.Dir()
+	if statusOnly {
+		snap, err := p.LoadOAuthSnap(cfgDir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "auth: no stored credentials —", err)
+			os.Exit(1)
+		}
+		printAgentValidity(p, snap)
+		return
+	}
+
+	fn := bootstraps[p.Agent]
+	if fn == nil {
+		fmt.Fprintf(os.Stderr, "drydock auth: %q has no bootstrap implementation wired\n", p.Agent)
 		os.Exit(2)
 	}
+	if err := fn(cfgDir); err != nil {
+		fmt.Fprintln(os.Stderr, "auth:", err)
+		os.Exit(1)
+	}
+	snap, _ := p.LoadOAuthSnap(cfgDir)
+	printAgentValidity(p, snap)
+}
+
+// printAgentValidity prints a token-free status line showing how long the
+// stored token remains valid. It replaces the former pair printValidity /
+// printCodexValidity, using Provider.AuthLabel for the entity name and
+// Provider.RefreshOnExpiry for the refresh note.
+// The token value itself is never printed.
+func printAgentValidity(p provider.Provider, snap gateway.CredSnapshot) {
+	remaining := time.Until(snap.Expiry)
+	label := p.AuthLabel
+	if remaining <= 0 {
+		msg := "authenticated as " + label + " · token EXPIRED"
+		if p.RefreshOnExpiry {
+			msg += " (will refresh on next use)"
+		}
+		fmt.Println(msg)
+		return
+	}
+	mins := int(math.Round(remaining.Minutes()))
+	fmt.Printf("authenticated as %s · token valid for %dm\n", label, mins)
 }
 
 // bootstrapClaudeCred copies the Claude subscription credential from the macOS
 // Keychain into drydock's store. Returns an error (never exits) so callers —
 // the auth subcommand and the setup wizard — can react.
-func bootstrapClaudeCred() error {
+func bootstrapClaudeCred(cfgDir string) error {
 	out, err := exec.Command("security", "find-generic-password", "-s", keychainService, "-w").Output()
 	if err != nil {
 		return fmt.Errorf("could not read Claude credentials from Keychain — run `claude login` first")
@@ -95,51 +155,8 @@ func bootstrapClaudeCred() error {
 	if err != nil {
 		return err
 	}
-	return gateway.FileCredStore(filepath.Join(config.Dir(), "claude-oauth.json")).Save(snap)
-}
-
-// runAuthClaude implements `drydock auth claude [--status]`.
-func runAuthClaude(args []string) {
-	// Handle help flags before anything else.
-	if len(args) > 0 {
-		switch args[0] {
-		case "-h", "--help", "help":
-			fmt.Printf("drydock auth claude — %s\n", subHelp["auth"])
-			os.Exit(0)
-		}
-	}
-
-	// --status: report current cred validity without re-copying.
-	statusOnly := len(args) > 0 && (args[0] == "--status" || args[0] == "-status")
-
-	if statusOnly {
-		snap, err := gateway.FileCredStore(filepath.Join(config.Dir(), "claude-oauth.json")).Load()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "auth: no stored credentials —", err)
-			os.Exit(1)
-		}
-		printValidity(snap)
-		return
-	}
-
-	if err := bootstrapClaudeCred(); err != nil {
-		fmt.Fprintln(os.Stderr, "auth:", err)
-		os.Exit(1)
-	}
-	snap, _ := gateway.FileCredStore(filepath.Join(config.Dir(), "claude-oauth.json")).Load()
-	printValidity(snap)
-}
-
-// printValidity prints a token-free status line showing how long the token
-// remains valid. The token value itself is never printed.
-func printValidity(snap gateway.CredSnapshot) {
-	remaining := time.Until(snap.Expiry)
-	if remaining <= 0 {
-		fmt.Println("authenticated as Claude subscription · token EXPIRED")
-		return
-	}
-	mins := int(math.Round(remaining.Minutes()))
-	fmt.Printf("authenticated as Claude subscription · token valid for %dm\n", mins)
+	p, _ := provider.ByAgent("claude")
+	return gateway.FileCredStore(filepath.Join(cfgDir, p.OAuthFile)).Save(snap)
 }
 
 // codexAuthFile is the relevant shape of ~/.codex/auth.json (auth_mode
@@ -194,7 +211,7 @@ func parseCodexCreds(raw []byte) (gateway.CredSnapshot, string, error) {
 
 // bootstrapCodexCred copies the ChatGPT/Codex credential from ~/.codex/auth.json
 // into drydock's store. Returns an error (never exits).
-func bootstrapCodexCred() error {
+func bootstrapCodexCred(cfgDir string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("could not determine home directory: %w", err)
@@ -207,46 +224,7 @@ func bootstrapCodexCred() error {
 	if err != nil {
 		return err
 	}
-	store := gateway.NewCodexStore(filepath.Join(config.Dir(), "codex-oauth.json"))
+	p, _ := provider.ByAgent("codex")
+	store := gateway.NewCodexStore(filepath.Join(cfgDir, p.OAuthFile))
 	return store.Put(snap, account)
-}
-
-// runAuthCodex implements `drydock auth codex [--status]`.
-func runAuthCodex(args []string) {
-	if len(args) > 0 {
-		switch args[0] {
-		case "-h", "--help", "help":
-			fmt.Printf("drydock auth codex — %s\n", subHelp["auth"])
-			os.Exit(0)
-		}
-	}
-	statusOnly := len(args) > 0 && (args[0] == "--status" || args[0] == "-status")
-
-	if statusOnly {
-		snap, err := gateway.NewCodexStore(filepath.Join(config.Dir(), "codex-oauth.json")).Load()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "auth: no stored credentials —", err)
-			os.Exit(1)
-		}
-		printCodexValidity(snap)
-		return
-	}
-
-	if err := bootstrapCodexCred(); err != nil {
-		fmt.Fprintln(os.Stderr, "auth:", err)
-		os.Exit(1)
-	}
-	snap, _ := gateway.NewCodexStore(filepath.Join(config.Dir(), "codex-oauth.json")).Load()
-	printCodexValidity(snap)
-}
-
-// printCodexValidity prints a token-free status line. The token and account id
-// are never printed.
-func printCodexValidity(snap gateway.CredSnapshot) {
-	remaining := time.Until(snap.Expiry)
-	if remaining <= 0 {
-		fmt.Println("authenticated as Codex (ChatGPT) subscription · token EXPIRED (will refresh on next use)")
-		return
-	}
-	fmt.Printf("authenticated as Codex (ChatGPT) subscription · token valid for %dm\n", int(math.Round(remaining.Minutes())))
 }
