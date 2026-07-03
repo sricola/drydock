@@ -9,7 +9,7 @@ hostile agent from exfiltrating your code or calling home.
 Two host-side components sit on the seam between the VM and the internet:
 
 - The **credential gateway** (`:8088`) handles the model API
-  (`api.anthropic.com`, `api.openai.com`). The agent talks to the gateway with a
+  (`api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`). The agent talks to the gateway with a
   per-task token; the gateway holds the real key. These hosts are deliberately
   **not** on the proxy allowlist — they route through the gateway, not the proxy.
 - The **squid proxy** (`:3128`) handles all other egress (package registries,

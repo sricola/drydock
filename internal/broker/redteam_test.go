@@ -70,7 +70,8 @@ func TestRedteam_A6_EgressWidenDenied(t *testing.T) {
 		},
 		runAgent: writesResult(""),
 	}
-	b.Cfg.PerTaskWidening.RequiresApproval = true
+	yes := true
+	b.Cfg.PerTaskWidening.RequiresApproval = &yes
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/tasks", strings.NewReader(
@@ -127,7 +128,8 @@ func TestRedteam_A6_AutoApproveCannotBypassWideningGate(t *testing.T) {
 			return nil
 		},
 	}
-	b.Cfg.PerTaskWidening.RequiresApproval = true
+	yes := true
+	b.Cfg.PerTaskWidening.RequiresApproval = &yes
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/tasks", strings.NewReader(

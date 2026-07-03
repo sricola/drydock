@@ -9,13 +9,16 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
-- **Native Gemini vendor (`--agent gemini`).** Google Gemini models now have a
-  first-class native lane: Google `x-goog-api-key` auth brokering, native
-  `usageMetadata` token metering, and `task_budget_usd` enforcement. Set
-  `GEMINI_API_KEY` (host env or `api-keys.env`) — API-key auth only, no
-  subscription mode. Default model `gemini-2.5-pro`; override with
-  `--model gemini-2.5-flash` or `gemini-2.5-flash-lite`. `drydock doctor`
-  reports `gemini present` in the sandbox smoke test.
+- **Native Gemini vendor (`--agent gemini`) — experimental.** Google Gemini
+  models get a native lane: Google `x-goog-api-key` auth brokering, a
+  `usageMetadata` token-metering parser, and a Gemini price table for
+  `task_budget_usd`. Set `GEMINI_API_KEY` (host env or `api-keys.env`) — API-key
+  auth only, no subscription mode. Default model `gemini-2.5-pro`; override with
+  `--model gemini-2.5-flash` or `gemini-2.5-flash-lite`. **Not yet verified
+  end-to-end:** the gateway/parser/pricing have CI unit coverage, but the full
+  in-sandbox run (A1/A2 red-team + a real metered task) is macOS-gated and has
+  not been executed — treat as experimental until `make test-integration`
+  passes on macOS with a real key. ROADMAP 3B stays open until then.
 
 ## v0.4.0 — 2026-07-02
 

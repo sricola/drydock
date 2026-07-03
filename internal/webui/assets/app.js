@@ -493,7 +493,7 @@ function recentRepos(){ try { return JSON.parse(localStorage.getItem("dd.repos")
 function pushRecentRepo(r){ const a = [r, ...recentRepos().filter(x => x !== r)].slice(0, 5); localStorage.setItem("dd.repos", JSON.stringify(a)); }
 const MODEL_SUGGESTIONS = ["", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]; // "" = broker default; update when models change
 
-const AGENTS = ["claude", "codex", "opencode"];
+const AGENTS = ["claude", "codex", "gemini", "opencode"];
 function renderSubmit() {
   if (pollTimer) clearTimeout(pollTimer);
   const form = el("form", { class: "submit-form" });

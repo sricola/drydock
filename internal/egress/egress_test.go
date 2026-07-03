@@ -152,7 +152,27 @@ func TestLoad_ParsesYAML(t *testing.T) {
 		cfg.Default.Domains[1].Host != "api.openai.com" {
 		t.Errorf("Domains = %+v, want [api.anthropic.com, api.openai.com]", cfg.Default.Domains)
 	}
-	if !cfg.PerTaskWidening.RequiresApproval {
-		t.Errorf("RequiresApproval = false, want true")
+	if !cfg.WideningRequiresApproval() {
+		t.Errorf("WideningRequiresApproval() = false, want true")
+	}
+}
+
+// The widening gate must fail closed: a config that OMITS requires_approval (or
+// mistypes the key) must still require approval. Only an explicit false disables.
+func TestWideningRequiresApproval_FailsClosed(t *testing.T) {
+	var absent Config // per_task_widening block never set → RequiresApproval nil
+	if !absent.WideningRequiresApproval() {
+		t.Error("absent requires_approval must fail closed (gate ON)")
+	}
+	no := false
+	yes := true
+	var explicitFalse, explicitTrue Config
+	explicitFalse.PerTaskWidening.RequiresApproval = &no
+	explicitTrue.PerTaskWidening.RequiresApproval = &yes
+	if explicitFalse.WideningRequiresApproval() {
+		t.Error("explicit requires_approval:false must disable the gate")
+	}
+	if !explicitTrue.WideningRequiresApproval() {
+		t.Error("explicit requires_approval:true must enable the gate")
 	}
 }

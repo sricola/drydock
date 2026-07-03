@@ -1,11 +1,19 @@
 # Models
 
-## Gemini (native)
+## Gemini (native) — experimental
 
-drydock supports Google's Gemini models through a **native `gemini` agent** that
-speaks Google's own wire format. This is the first-class path for Gemini:
-Google's auth header (`x-goog-api-key`) and native token metering, not the
-OpenAI-compatibility shim.
+drydock has a **native `gemini` agent** that speaks Google's own wire format:
+Google's auth header (`x-goog-api-key`) and a `usageMetadata` token-metering
+parser, rather than the OpenAI-compatibility shim.
+
+> **Experimental — not yet verified end-to-end.** The gateway, usage parser, and
+> price table have CI unit coverage, but the full in-sandbox run (the CLI making
+> a real metered call through the gateway under deny-by-default egress, plus the
+> A1/A2 red-team) is macOS-gated and has not been executed. Until
+> `make test-integration` passes on macOS with a real `GEMINI_API_KEY`, treat
+> this lane as experimental. If you just need Gemini working today, the
+> [OpenAI-compatible lane](#bring-your-own-openai-compatible-model) routes to
+> Gemini's `/v1beta/openai` endpoint and is a proven path.
 
 ### Requirements
 
