@@ -5,6 +5,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -168,6 +169,47 @@ func runContainer(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // memory unbounded.
 const MaxTaskBodyBytes = 64 << 10
 
+// taskRun holds the per-task state that HandleTask threads through the task
+// lifecycle. It exists so the stateful lifecycle steps (runEgressGate,
+// runSandbox, pushAndOpenPR) can be methods with collapsed signatures instead
+// of free functions carrying nine-to-twelve parameters each. HandleTask builds
+// exactly one taskRun and fills its fields in as they become available; the
+// deferred cleanups (slot release, cancel, unregister, widen cleanup,
+// stage cleanup, log close, grant revoke) deliberately stay in HandleTask's
+// scope so they fire at function return, not when a method returns early.
+type taskRun struct {
+	b   *Broker         // back-reference to the owning broker
+	ctx context.Context // per-task context (rooted at Background, not the request)
+	sw  *stream         // NDJSON event stream to the submit client
+	id  string          // task ID
+
+	// Request-derived, known when the taskRun is built.
+	repoRef     string
+	instruction string
+	egressExtra []egress.Domain
+	autoApprove bool
+	draft       bool
+	platform    string
+	model       string
+
+	// Filled in as HandleTask advances through the lifecycle.
+	proxyAuth  string      // "<user>:<secret>@" widening userinfo (empty if none)
+	st         taskStage   // prepared host stage
+	grant      creds.Grant // minted ephemeral credential
+	agentName  string      // resolved agent ("claude"|"codex"|...)
+	taskVendor string      // vendor for the resolved agent
+	logf       io.Writer   // audit log writer
+	auditPath  string      // path to the audit .jsonl
+	taskStart  time.Time   // set by runSandbox when the agent starts
+}
+
+// errTaskTerminated signals that a lifecycle method has already emitted the
+// task's terminal event (cancelled / error / etc.) and HandleTask must return
+// immediately without emitting anything further. It replaces the old
+// (time.Time, bool) control-flow smuggling out of runSandbox: nil means
+// "continue", a non-nil error means "stop, the terminal event is already out".
+var errTaskTerminated = errors.New("task terminated; terminal event already emitted")
+
 func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxTaskBodyBytes)
 	var t Task
@@ -214,10 +256,27 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	sw := newStream(w)
 	sw.emit(map[string]any{"event": "accepted", "task_id": taskID, "repo": t.RepoRef})
 
+	// All the per-task state below is threaded through the lifecycle steps as
+	// taskRun fields rather than long parameter lists. Fields are filled in as
+	// they become available; the defers above and below stay in this scope.
+	tr := &taskRun{
+		b:           b,
+		ctx:         taskCtx,
+		sw:          sw,
+		id:          taskID,
+		repoRef:     t.RepoRef,
+		instruction: t.Instruction,
+		egressExtra: t.EgressExtra,
+		autoApprove: t.AutoApprove,
+		draft:       t.Draft,
+		platform:    t.Platform,
+		model:       t.Model,
+	}
+
 	// Egress widening: block at the same kind of human-driven gate as the
 	// diff push. Without this the requires_approval flag is a lie —
 	// auto-approve would let any task ask for any host.
-	if !b.runEgressGate(taskCtx, taskID, t.EgressExtra, sw) {
+	if !tr.runEgressGate() {
 		return
 	}
 
@@ -230,6 +289,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer widenCleanup()
+	tr.proxyAuth = proxyAuth
 
 	stageDir := filepath.Join(b.StageRoot, taskID)
 
@@ -245,6 +305,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer st.Cleanup() // wipe the host scratch (work tree + host-only git dir)
+	tr.st = st
 
 	if err := st.WriteTaskFiles(t.Instruction); err != nil {
 		slog.Warn("task stage failed", "task_id", taskID, "err", err)
@@ -264,6 +325,8 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer grant.Revoke()
+	tr.grant = grant
+	tr.agentName = agentName
 
 	// 0o700 keeps another local process from enumerating task IDs and
 	// racing /admin/approve before the operator. The audit dir contains
@@ -285,34 +348,32 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer logf.Close()
+	tr.logf = logf
+	tr.auditPath = filepath.Join(b.AuditRoot, taskID+".jsonl")
 
 	// Record this task's auth mode as the first audit line so `drydock tasks`
 	// labels subscription runs accurately (instead of inferring from the
 	// operator's current config at display time). It is not a `result` event,
 	// so it never affects outcome/cost parsing.
 	taskVendor, _ := provider.VendorForAgent(agentName)
+	tr.taskVendor = taskVendor
 	subscription := (taskVendor == "anthropic" && b.AnthropicAuth == "subscription") ||
 		(taskVendor == "openai" && b.OpenAIAuth == "subscription")
 	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t,"sensitive":%t}`+"\n", subscription, t.Sensitive)
-
-	env := buildTaskEnv(grant.EnvVars(), proxyAuth, b.GatewayIP, b.ProxyPort,
-		agentName, t.Model, b.OpenAICompatModel, b.DefaultModel, taskVendor)
 
 	args := runner.BuildRunArgs(runner.Spec{
 		TaskID:     taskID,
 		Network:    b.Network,
 		ImageRef:   b.ImageRef,
-		Env:        env,
+		Env:        tr.buildEnv(),
 		StageDir:   st.WorkDir(),
 		PromptFile: "/work/.task/prompt.txt",
 		MemoryGB:   4,
 		CPUs:       4,
 	})
 
-	auditPath := filepath.Join(b.AuditRoot, taskID+".jsonl")
-	taskStart, ok := b.runSandbox(taskCtx, taskID, agentName, t.Model, args, logf, auditPath, grant, sw)
-	if !ok {
-		return
+	if err := tr.runSandbox(args); err != nil {
+		return // runSandbox already emitted the terminal event
 	}
 
 	diff, err := st.CaptureDiff()
@@ -322,41 +383,41 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if diff == "" {
 		sw.emit(map[string]any{"event": "result", "outcome": "no_diff",
-			"task_id": taskID, "duration_ms": time.Since(taskStart).Milliseconds(),
-			"cost_usd": audit.TotalCost(auditPath)})
+			"task_id": taskID, "duration_ms": time.Since(tr.taskStart).Milliseconds(),
+			"cost_usd": audit.TotalCost(tr.auditPath)})
 		return
 	}
 
-	b.pushAndOpenPR(taskCtx, taskID, diff, t.Instruction, t.AutoApprove, t.Draft,
-		sw, st, t.RepoRef, t.Platform, taskStart, auditPath)
+	tr.pushAndOpenPR(diff)
 }
 
 // runEgressGate handles the awaiting_egress stage when the task requests extra
 // egress and requires_approval is set. Returns true to continue, false to abort
 // (the appropriate terminal event has already been emitted).
-func (b *Broker) runEgressGate(ctx context.Context, taskID string, extras []egress.Domain, sw *stream) bool {
+func (tr *taskRun) runEgressGate() bool {
+	b, extras := tr.b, tr.egressExtra
 	if len(extras) == 0 || !b.Cfg.WideningRequiresApproval() {
 		return true
 	}
-	b.setStage(taskID, StageAwaitingEgress)
-	sw.emit(map[string]any{
-		"event": "stage", "stage": "awaiting_egress", "task_id": taskID,
+	b.setStage(tr.id, StageAwaitingEgress)
+	tr.sw.emit(map[string]any{
+		"event": "stage", "stage": "awaiting_egress", "task_id": tr.id,
 		"extras":  summariseExtras(extras),
-		"approve": "drydock approve " + taskID,
-		"deny":    "drydock deny " + taskID,
+		"approve": "drydock approve " + tr.id,
+		"deny":    "drydock deny " + tr.id,
 	})
-	b.setEgressExtra(taskID, extras)
-	ok := b.gateEgressWiden(ctx, taskID, extras)
-	b.setEgressExtra(taskID, nil)
+	b.setEgressExtra(tr.id, extras)
+	ok := b.gateEgressWiden(tr.ctx, tr.id, extras)
+	b.setEgressExtra(tr.id, nil)
 	if !ok {
-		if ctx.Err() != nil {
-			sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": taskID})
+		if tr.ctx.Err() != nil {
+			tr.sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": tr.id})
 			return false
 		}
-		sw.emit(errorEvent(taskID, "egress widening denied", ""))
+		tr.sw.emit(errorEvent(tr.id, "egress widening denied", ""))
 		return false
 	}
-	b.setStage(taskID, StageRunning)
+	b.setStage(tr.id, StageRunning)
 	return true
 }
 
@@ -379,131 +440,139 @@ func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
 	return env
 }
 
+// buildEnv assembles the container env from the taskRun's fields. It exists only
+// to collapse the call-site noise — the actual assembly stays in the pure,
+// unit-tested buildTaskEnv free function.
+func (tr *taskRun) buildEnv() []string {
+	return buildTaskEnv(tr.grant.EnvVars(), tr.proxyAuth, tr.b.GatewayIP, tr.b.ProxyPort,
+		tr.agentName, tr.model, tr.b.OpenAICompatModel, tr.b.DefaultModel, tr.taskVendor)
+}
+
 // runSandbox runs the agent container, writes to the audit log, and emits the
-// "running" stage event. It returns (taskStart, true) on a successful run.
-// On failure it emits the terminal event and returns (taskStart, false),
-// signalling the caller to return immediately.
-func (b *Broker) runSandbox(taskCtx context.Context, taskID, agentName, taskModel string,
-	args []string, logf io.Writer, auditPath string, grant creds.Grant, sw *stream) (time.Time, bool) {
-	runCtx, runCancel := context.WithTimeout(taskCtx, b.Timeout)
+// "running" stage event. It records the task start time on the taskRun and
+// returns nil on a successful run. On failure it emits the terminal event
+// (cancelled / error) and returns errTaskTerminated, signalling HandleTask to
+// return immediately without emitting anything further.
+func (tr *taskRun) runSandbox(args []string) error {
+	b := tr.b
+	runCtx, runCancel := context.WithTimeout(tr.ctx, b.Timeout)
 	defer runCancel()
 	run := b.runAgent
 	if run == nil {
 		run = runContainer
 	}
-	b.setStage(taskID, StageRunning)
-	runningEv := map[string]any{"event": "stage", "stage": "running", "task_id": taskID, "agent": agentName}
-	if taskModel != "" {
-		runningEv["model"] = taskModel
+	b.setStage(tr.id, StageRunning)
+	runningEv := map[string]any{"event": "stage", "stage": "running", "task_id": tr.id, "agent": tr.agentName}
+	if tr.model != "" {
+		runningEv["model"] = tr.model
 	} else if b.DefaultModel != "" {
 		runningEv["model"] = b.DefaultModel
 	}
-	sw.emit(runningEv)
+	tr.sw.emit(runningEv)
 
-	taskStart := time.Now()
-	if err := run(runCtx, args, io.MultiWriter(logf, os.Stdout), logf); err != nil {
+	tr.taskStart = time.Now()
+	if err := run(runCtx, args, io.MultiWriter(tr.logf, os.Stdout), tr.logf); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
-		if derr := exec.Command("container", "delete", "--force", "task-"+taskID).Run(); derr != nil {
+		if derr := exec.Command("container", "delete", "--force", "task-"+tr.id).Run(); derr != nil {
 			slog.Warn("force-delete of task VM failed; reaped at next brokerd boot",
-				"task_id", taskID, "err", derr)
+				"task_id", tr.id, "err", derr)
 		}
-		if taskCtx.Err() != nil {
+		if tr.ctx.Err() != nil {
 			// Operator killed it, or the client went away. Be explicit.
-			sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": taskID})
-			return taskStart, false
+			tr.sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": tr.id})
+			return errTaskTerminated
 		}
 		// If claude never wrote a `result` event (e.g. the entrypoint died
 		// before claude was even exec'd), `drydock tasks` would show this
 		// task as `running?` forever. Append a synthetic terminal event so
 		// the audit log is self-describing.
-		_, _ = fmt.Fprintf(logf,
+		_, _ = fmt.Fprintf(tr.logf,
 			`{"type":"result","subtype":"error","is_error":true,"duration_ms":%d,"total_cost_usd":0,"num_turns":0}`+"\n",
-			time.Since(taskStart).Milliseconds())
+			time.Since(tr.taskStart).Milliseconds())
 		reason := "task failed: " + safeErr(err)
-		ev := map[string]any{"event": "error", "task_id": taskID,
-			"audit": auditPath, "duration_ms": time.Since(taskStart).Milliseconds()}
-		if line, ok := audit.Reason(auditPath); ok {
+		ev := map[string]any{"event": "error", "task_id": tr.id,
+			"audit": tr.auditPath, "duration_ms": time.Since(tr.taskStart).Milliseconds()}
+		if line, ok := audit.Reason(tr.auditPath); ok {
 			// The distilled line is the agent's own output — sanitize it like
 			// any other operator-reflected, attacker-influenceable text.
 			reason = safeStr(line)
 			ev["hint"] = "run `drydock doctor` to check the sandbox image"
 		}
 		ev["reason"] = reason
-		sw.emit(ev)
-		return taskStart, false
+		tr.sw.emit(ev)
+		return errTaskTerminated
 	}
 
 	// codex exec doesn't emit Claude's stream-json `result` trailer, so a
 	// completed codex task would read as `running?` in `drydock tasks`.
 	// Synthesize the terminal event from the elapsed time and the metered
 	// gateway spend. (Claude writes its own result line; don't double it.)
-	if agentName != "claude" {
-		_, _ = fmt.Fprintf(logf,
+	if tr.agentName != "claude" {
+		_, _ = fmt.Fprintf(tr.logf,
 			`{"type":"result","subtype":"success","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0}`+"\n",
-			time.Since(taskStart).Milliseconds(), grant.Spent())
+			time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent())
 	}
-	return taskStart, true
+	return nil
 }
 
 // pushAndOpenPR handles the diff-approval gate, branch push, and PR creation.
 // It always emits a terminal event (result/outcome=denied|cancelled|pushed, or
 // an error event on push failure). HandleTask should return immediately after
 // calling this — it is the last step in the task lifecycle.
-func (b *Broker) pushAndOpenPR(taskCtx context.Context, taskID, diff, instruction string,
-	autoApprove, draft bool, sw *stream, st taskStage, repoRef, platform string,
-	taskStart time.Time, auditPath string) {
+func (tr *taskRun) pushAndOpenPR(diff string) {
+	b := tr.b
 	files, insertions, deletions := diffStat(diff)
-	b.setStage(taskID, StagePending)
+	b.setStage(tr.id, StagePending)
 	// Only announce the approval gate when there's actually a human gate to
 	// wait on. Auto-approve pushes immediately, so an "awaiting_approval"
 	// stage would be a misleading blip in the stream.
-	if !autoApprove {
-		sw.emit(map[string]any{"event": "stage", "stage": "awaiting_approval",
-			"task_id": taskID, "diff_bytes": len(diff), "files": files,
-			"approve": "drydock approve " + taskID,
-			"deny":    "drydock deny " + taskID,
-			"review":  "drydock review " + taskID})
+	if !tr.autoApprove {
+		tr.sw.emit(map[string]any{"event": "stage", "stage": "awaiting_approval",
+			"task_id": tr.id, "diff_bytes": len(diff), "files": files,
+			"approve": "drydock approve " + tr.id,
+			"deny":    "drydock deny " + tr.id,
+			"review":  "drydock review " + tr.id})
 	}
-	if !b.gatePush(taskCtx, taskID, diff, autoApprove) {
+	if !b.gatePush(tr.ctx, tr.id, diff, tr.autoApprove) {
 		outcome := "denied"
-		if taskCtx.Err() != nil {
+		if tr.ctx.Err() != nil {
 			outcome = "cancelled"
 		}
-		sw.emit(map[string]any{"event": "result", "outcome": outcome,
-			"task_id": taskID, "diff_bytes": len(diff)})
+		tr.sw.emit(map[string]any{"event": "result", "outcome": outcome,
+			"task_id": tr.id, "diff_bytes": len(diff)})
 		return
 	}
 
-	b.setStage(taskID, StagePushing)
-	branch := "agent/" + taskID
+	b.setStage(tr.id, StagePushing)
+	branch := "agent/" + tr.id
 	adapterFor := b.newAdapter
 	if adapterFor == nil {
 		adapterFor = remote.AdapterFor
 	}
-	adapter := adapterFor(repoRef, platform)
-	sw.emit(map[string]any{"event": "stage", "stage": "pushing", "task_id": taskID, "branch": branch})
-	if err := st.Push(branch, "agent: "+firstLine(instruction)); err != nil {
-		sw.emit(errorEvent(taskID, "push failed: "+safeErr(err), "check the remote and push credentials"))
+	adapter := adapterFor(tr.repoRef, tr.platform)
+	tr.sw.emit(map[string]any{"event": "stage", "stage": "pushing", "task_id": tr.id, "branch": branch})
+	if err := tr.st.Push(branch, "agent: "+firstLine(tr.instruction)); err != nil {
+		tr.sw.emit(errorEvent(tr.id, "push failed: "+safeErr(err), "check the remote and push credentials"))
 		return
 	}
 	// Branch is saved. Opening the PR/MR is best-effort — never downgrade a
 	// successful push to a failure.
-	title, body := prContent(instruction, taskID)
+	title, body := prContent(tr.instruction, tr.id)
 	prErr := adapter.OpenRequest(remote.Request{
-		WorkDir: st.WorkDir(), Branch: branch, Env: st.PushEnv(),
-		Title: title, Body: body, Draft: draft,
+		WorkDir: tr.st.WorkDir(), Branch: branch, Env: tr.st.PushEnv(),
+		Title: title, Body: body, Draft: tr.draft,
 	})
 	ev := map[string]any{"event": "result", "outcome": "pushed",
-		"task_id": taskID, "branch": branch, "platform": adapter.Name(),
+		"task_id": tr.id, "branch": branch, "platform": adapter.Name(),
 		"pr_opened": prErr == nil,
 		"files":     files, "insertions": insertions, "deletions": deletions,
-		"duration_ms": time.Since(taskStart).Milliseconds(), "cost_usd": audit.TotalCost(auditPath)}
+		"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": audit.TotalCost(tr.auditPath)}
 	if prErr != nil {
 		ev["pr_error"] = safeErr(prErr)
 		ev["pr_hint"] = "branch '" + branch + "' was pushed; open a PR manually (" + adapter.Name() + ")"
 	}
-	sw.emit(ev)
+	tr.sw.emit(ev)
 }
 
 // resolveAgent picks the agent (task value → operator default → "claude") and
