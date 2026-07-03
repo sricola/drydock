@@ -176,6 +176,21 @@ func TestOpenAICompatWarnings(t *testing.T) {
 			t.Errorf("want none, got %v", w)
 		}
 	})
+	t.Run("http to non-loopback host warns (cleartext key)", func(t *testing.T) {
+		oc := mk("http://up.test", "", map[string]config.OpenAICompatPrice{"default": price(1, 2)})
+		w := strings.Join(openAICompatWarnings(oc), "\n")
+		if !strings.Contains(w, "cleartext") {
+			t.Errorf("expected cleartext http warning; got %q", w)
+		}
+	})
+	t.Run("http to loopback does not warn", func(t *testing.T) {
+		for _, base := range []string{"http://localhost:8080", "http://127.0.0.1:1234", "http://[::1]:9000"} {
+			oc := mk(base, "", map[string]config.OpenAICompatPrice{"default": price(1, 2)})
+			if w := strings.Join(openAICompatWarnings(oc), "\n"); strings.Contains(w, "cleartext") {
+				t.Errorf("loopback %q must not warn cleartext; got %q", base, w)
+			}
+		}
+	})
 	t.Run("negative input price warns", func(t *testing.T) {
 		oc := mk("https://up.test", "", map[string]config.OpenAICompatPrice{"gpt-x": price(-1, 2), "default": price(1, 2)})
 		w := strings.Join(openAICompatWarnings(oc), "\n")

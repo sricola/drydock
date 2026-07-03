@@ -74,12 +74,13 @@ type Squid struct {
 	runDir string
 }
 
-// FindSquid locates the squid binary (Homebrew layout or PATH).
+// FindSquid locates the squid binary (Homebrew layout, Debian/Ubuntu sbin, or PATH).
 func FindSquid() (string, error) {
 	for _, c := range []string{
 		"/opt/homebrew/opt/squid/sbin/squid",
 		"/opt/homebrew/sbin/squid",
 		"/usr/local/sbin/squid",
+		"/usr/sbin/squid", // Debian/Ubuntu (apt install squid) — used by the CI egress job
 	} {
 		if _, err := os.Stat(c); err == nil {
 			return c, nil

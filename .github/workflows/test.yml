@@ -24,7 +24,33 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.4.0 ./...
 
-  # Integration testing (boot brokerd, run a task, hit the gateway/squid
-  # listeners) requires Apple's `container` runtime which only runs on macOS
-  # Apple silicon. GitHub-hosted runners don't provide that today, so it
-  # lives outside CI. See README "First run" for the manual smoke.
+  # Real egress-enforcement coverage: boot an actual squid against the shipped
+  # CompileSquidConf + SquidController widening, and assert the allowlist is
+  # ENFORCED (allowed host + proxy-auth reaches upstream; no-auth → 407; a host
+  # not in the task's widen set → 403). The go-test job only checks the squid
+  # *config string*; this job proves squid actually denies. No macOS/container
+  # needed — squid + outbound network suffices (the `squidlive` tag).
+  egress-enforcement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: install squid
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squid
+          # The apt postinst may auto-start a system squid on :3128; the test
+          # binds its own instance on :13128, so stop the service to avoid noise.
+          sudo systemctl stop squid || true
+          squid -v || /usr/sbin/squid -v
+      - name: squid egress-allowlist enforcement (squidlive)
+        run: go test -tags squidlive -count=1 -v ./internal/netfw/ -run TestSquidProxyAuth_Live
+
+  # Full VM integration (boot brokerd, run a real task, hit the gateway + the
+  # nft egress pin) requires Apple's `container` runtime which only runs on
+  # macOS Apple silicon. GitHub-hosted runners don't provide that today, so the
+  # A1/A2/A7 VM red-team and the Gemini end-to-end live outside CI. See README
+  # "First run" for the manual smoke: `make test-integration`.
