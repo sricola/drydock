@@ -30,105 +30,89 @@ type Meta struct {
 	Sensitive    bool   `json:"sensitive"`
 }
 
-// ReadMeta returns the drydock_meta first line. Legacy/absent → zero value.
+// readFirstMeta parses the first line of r as a {"type":"drydock_meta"} record.
+// Legacy/absent/malformed → zero value. Shared by ReadMeta and ReadMetaFile.
+func readFirstMeta(r io.Reader) Meta {
+	line, err := bufio.NewReader(r).ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return Meta{}
+	}
+	var m Meta
+	if json.Unmarshal(bytes.TrimSpace(line), &m) != nil || m.Type != "drydock_meta" {
+		return Meta{}
+	}
+	return m
+}
+
+// scanTailForResult reads the last ~16KB of f (from the given size) and returns
+// the final {"type":"result",...} line. found=false when none is present; err is
+// a seek/read error. It tolerates an unterminated trailing line (brokerd may be
+// mid-write). Shared by LastResult, LastResultFile, and HasResultLine.
+func scanTailForResult(f *os.File, size int64) (Result, bool, error) {
+	const tail = 16 * 1024
+	off := int64(0)
+	if size > tail {
+		off = size - tail
+	}
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return Result{}, false, err
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return Result{}, false, err
+	}
+	lines := bytes.Split(data, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		var x Result
+		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" {
+			return x, true, nil
+		}
+	}
+	return Result{}, false, nil
+}
+
+// ReadMeta returns the drydock_meta first line of path. Legacy/absent → zero value.
 func ReadMeta(path string) Meta {
 	f, err := os.Open(path)
 	if err != nil {
 		return Meta{}
 	}
 	defer f.Close()
-	line, err := bufio.NewReader(f).ReadBytes('\n')
-	if err != nil && len(line) == 0 {
-		return Meta{}
-	}
-	var m Meta
-	if json.Unmarshal(bytes.TrimSpace(line), &m) != nil || m.Type != "drydock_meta" {
-		return Meta{}
-	}
-	return m
+	return readFirstMeta(f)
 }
 
 // LastResult finds the final {"type":"result",...} line by reading only the
-// file tail. ok=false when none is present (still running / killed early). It
-// tolerates an unterminated trailing line (brokerd may be mid-write).
+// file tail. ok=false when none is present (still running / killed early).
 func LastResult(path string, size int64) (Result, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return Result{}, false
 	}
 	defer f.Close()
-	const tail = 16 * 1024
-	if size > tail {
-		if _, err := f.Seek(size-tail, io.SeekStart); err != nil {
-			return Result{}, false
-		}
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return Result{}, false
-	}
-	lines := bytes.Split(data, []byte("\n"))
-	for i := len(lines) - 1; i >= 0; i-- {
-		var x Result
-		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" {
-			return x, true
-		}
-	}
-	return Result{}, false
+	r, ok, _ := scanTailForResult(f, size)
+	return r, ok
 }
 
-// ReadMetaFile reads the drydock_meta line from an already-opened file.
-// The caller is responsible for opening the file with appropriate flags
-// (e.g. O_NOFOLLOW) and for closing it. The file offset is reset to the
-// beginning before reading so callers may interleave ReadMetaFile with
-// LastResultFile in any order.
+// ReadMetaFile reads the drydock_meta line from an already-opened file. The
+// caller opens it with appropriate flags (e.g. O_NOFOLLOW) and closes it. The
+// offset is reset to the start first, so callers may interleave ReadMetaFile
+// with LastResultFile in any order.
 func ReadMetaFile(f *os.File) Meta {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return Meta{}
 	}
-	line, err := bufio.NewReader(f).ReadBytes('\n')
-	if err != nil && len(line) == 0 {
-		return Meta{}
-	}
-	var m Meta
-	if json.Unmarshal(bytes.TrimSpace(line), &m) != nil || m.Type != "drydock_meta" {
-		return Meta{}
-	}
-	return m
+	return readFirstMeta(f)
 }
 
-// LastResultFile finds the final {"type":"result",...} line in an
-// already-opened file. Like LastResult but accepts a pre-opened *os.File so
-// the caller can control how the file was opened (e.g. with O_NOFOLLOW to
-// refuse symlinks). ok=false when no result line is present.
+// LastResultFile is LastResult for a pre-opened *os.File, so the caller controls
+// how it was opened (e.g. O_NOFOLLOW to refuse symlinks). ok=false when absent.
 func LastResultFile(f *os.File) (Result, bool) {
 	info, err := f.Stat()
 	if err != nil {
 		return Result{}, false
 	}
-	size := info.Size()
-	const tail = 16 * 1024
-	if size > tail {
-		if _, err := f.Seek(size-tail, io.SeekStart); err != nil {
-			return Result{}, false
-		}
-	} else {
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return Result{}, false
-		}
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return Result{}, false
-	}
-	lines := bytes.Split(data, []byte("\n"))
-	for i := len(lines) - 1; i >= 0; i-- {
-		var x Result
-		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" {
-			return x, true
-		}
-	}
-	return Result{}, false
+	r, ok, _ := scanTailForResult(f, info.Size())
+	return r, ok
 }
 
 // HasDuration reports whether a real duration is known. An interrupted task
@@ -200,25 +184,8 @@ func HasResultLine(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	const tail = 16 * 1024
-	if info.Size() > tail {
-		if _, err := f.Seek(info.Size()-tail, io.SeekStart); err != nil {
-			return false, err
-		}
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return false, err
-	}
-	for _, ln := range bytes.Split(data, []byte("\n")) {
-		var x struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(ln, &x) == nil && x.Type == "result" {
-			return true, nil
-		}
-	}
-	return false, nil
+	_, ok, err := scanTailForResult(f, info.Size())
+	return ok, err
 }
 
 var progressLine = regexp.MustCompile(`^\[\d+/\d+\]`)
