@@ -135,8 +135,13 @@ agent) are **landed**. The CLI, config validator, wizard, `drydock start`,
 `drydock doctor`, and `drydock auth` all read from a single provider registry;
 any OpenAI-compatible endpoint (Gemini via its OpenAI-compat API, OpenRouter,
 local models) is already runnable via the `opencode` agent + `openai_compat:`
-config block. Remaining: a native Gemini vendor (3B) with Google's auth header
-and full A1/A2 red-team coverage.
+config block. **3B (native Gemini vendor) is built and merged but experimental**
+— the code shipped (registry row, `GoogleVendor`, usage parser, pricing, image
+install, entrypoint), and A1/A2 red-team + the `--approval-mode` fix are
+verified (A1/A2 on real container hardware; the CLI-produces-edits-headless
+property via a mocked upstream). It does **not** yet count as landed: the full
+end-to-end run through the gateway against the real Gemini API is macOS-gated and
+needs a real key. Until that passes, the lane is documented as experimental.
 
 ### 3A — Provider registry refactor — *landed*
 Introduced one source of truth: a `Provider{Agent, Vendor, AuthModes, …}` table
@@ -145,14 +150,17 @@ that `agent.Vendor`, config validation, the wizard menu, `start`, `doctor`, and
 `codex` still the only native entries, behavior byte-identical, existing tests
 green. Adding a row is the *only* edit a new provider needs in this layer.
 
-### 3B — Gemini (Google) *(first native vendor — proves the seam)*
-Add the `gemini → google` row: a `GoogleVendor()` (base URL + `Inject` for the
-Google auth header), a pricing table, a usage parser, the sandbox-image CLI
-install, and red-team coverage (A1 key-exfil, A2 egress) for the new vendor.
-If 3A is right, the CLI/config layer change is one registry row. Note: Gemini
-is already reachable today via the openai-compat lane (`openai_compat:` +
-opencode); 3B adds a native vendor with Google's auth header rather than the
-OpenAI-compat shim.
+### 3B — Gemini (Google) *(first native vendor — proves the seam) — built, experimental*
+Shipped: the `gemini → google` row, `GoogleVendor()` (base URL + `x-goog-api-key`
+inject), the `usageMetadata` parser, a pricing table, the sandbox-image CLI
+install, the entrypoint case, and A1/A2 red-team coverage. As predicted, the
+CLI/config layer was one registry row (buildBackends/brokerd unchanged). Verified
+so far: A1 (real key never in VM) and A2 (deny-by-default egress) on real
+container hardware, and the `--approval-mode yolo` fix (the CLI executes edit
+tool calls headless) via a mocked Gemini endpoint. **Still open:** the full
+end-to-end run against the real Gemini API (macOS + real key) — until it passes,
+the lane stays experimental, not landed. Native Gemini differs from the
+openai-compat lane by using Google's own auth header/wire format.
 
 ### 3C — Generic OpenAI-compatible agent — *landed*
 A single `openai-compat` provider whose base URL + key come from config covers a

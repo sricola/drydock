@@ -74,7 +74,7 @@ tasks. The default (non-widened) egress path is unchanged.
 A CONNECT 403 to a host you expected to reach means it isn't on the allowlist:
 
 ```bash
-cat ~/.drydock/squid/squid-allow.txt    # the compiled allowlist
+cat ~/.drydock/squid/squid-default-acl.conf    # the compiled allowlist
 ```
 
 Add it permanently in `egress.yaml`, or per-task with `--egress-extra`. If the
