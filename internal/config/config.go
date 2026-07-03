@@ -69,7 +69,7 @@ type Config struct {
 	DefaultModel string `yaml:"default_model"`
 
 	// DefaultAgent selects the sandbox CLI when a task doesn't pass --agent.
-	// "claude", "codex", or "opencode".
+	// "claude", "codex", "gemini", or "opencode".
 	DefaultAgent string `yaml:"default_agent"`
 
 	// AnthropicAuth selects authentication mode: "api_key" or "subscription".
@@ -362,7 +362,7 @@ max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
 approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs)
 default_model:          ""             # model fallback for Claude Code and Codex (e.g. claude-sonnet-4-6); empty = agent picks. opencode uses openai_compat.model instead. Per-task --model overrides.
-default_agent:          claude         # sandbox CLI: claude | codex | opencode. Per-task --agent overrides.
+default_agent:          claude         # sandbox CLI: claude | codex | gemini | opencode. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
 task_max_requests:      0              # per-task request cap (0 = unlimited)

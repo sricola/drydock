@@ -9,13 +9,16 @@ import (
 // (no Broker, no container) so it can run without any seams or fakes.
 func TestBuildTaskEnv_ContainsExpectedVars(t *testing.T) {
 	const (
-		realKey = "sk-ant-REALKEY-do-not-leak-3f9a2b"
-		bearer  = "tok_ephemeral_scoped_9c1d"
-		gwIP    = "10.0.0.1"
-		proxy   = "3128"
+		bearer = "tok_ephemeral_scoped_9c1d"
+		gwIP   = "10.0.0.1"
+		proxy  = "3128"
 	)
-	// grantEnv carries only the ephemeral bearer — the real upstream key
-	// stays on the host and must never be forwarded.
+	// grantEnv carries only the ephemeral bearer — the real upstream key stays on
+	// the host. buildTaskEnv is never given the real key, so this test does NOT
+	// assert its absence (that would be tautological); the genuine A1 property —
+	// grant.EnvVars() emits only the bearer, never the real key — is proven in
+	// internal/gateway/provider_test.go (TestRedteam_A1_*). Here we only check
+	// buildTaskEnv forwards the grant env and proxy vars, and drops nothing.
 	grantEnv := []string{"ANTHROPIC_AUTH_TOKEN=" + bearer}
 
 	env := buildTaskEnv(grantEnv, "" /*proxyAuth*/, gwIP, 3128,
@@ -23,12 +26,7 @@ func TestBuildTaskEnv_ContainsExpectedVars(t *testing.T) {
 
 	joined := strings.Join(env, "\n")
 
-	// A1 — the real key must NEVER appear in the env handed to the container.
-	if strings.Contains(joined, realKey) {
-		t.Errorf("A1 BREACH: real API key leaked into buildTaskEnv output:\n%s", joined)
-	}
-
-	// Positive control: ephemeral bearer must be present.
+	// The ephemeral bearer must be forwarded to the container.
 	if !strings.Contains(joined, bearer) {
 		t.Errorf("expected bearer %q in env:\n%s", bearer, joined)
 	}

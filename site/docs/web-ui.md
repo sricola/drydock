@@ -28,7 +28,7 @@ the fragment and sends it as a bearer token on every API call.
   same review-before-approve gate as the CLI; **Deny** takes a confirm. `Esc` or
   a backdrop click closes the overlay.
 - **Submit** — start a task: repo, instruction, agent (`claude` / `codex` /
-  `opencode`), and an optional model. The repo URL is validated as you type and
+  `gemini` / `opencode`), and an optional model. The repo URL is validated as you type and
   recent repos are remembered.
 - **History** — past runs from the audit dir: outcome, cost, and duration, each
   with its diff and logs.

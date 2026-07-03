@@ -335,7 +335,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 // egress and requires_approval is set. Returns true to continue, false to abort
 // (the appropriate terminal event has already been emitted).
 func (b *Broker) runEgressGate(ctx context.Context, taskID string, extras []egress.Domain, sw *stream) bool {
-	if len(extras) == 0 || !b.Cfg.PerTaskWidening.RequiresApproval {
+	if len(extras) == 0 || !b.Cfg.WideningRequiresApproval() {
 		return true
 	}
 	b.setStage(taskID, StageAwaitingEgress)

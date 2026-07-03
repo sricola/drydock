@@ -75,7 +75,7 @@ outside drydock:
 | Host filesystem | trusted | drydock writes audit logs, staging, sockets here |
 | Apple `container` runtime + vmnet | trusted | underlies the VM/network boundary |
 | Squid + nft | trusted | enforce the network policy |
-| `claude-code` or `codex` binary inside the VM | **untrusted** | runs the agent loop and the agent's tool calls |
+| the agent CLI binary inside the VM (`claude-code`, `codex`, `gemini`, or `opencode`) | **untrusted** | runs the agent loop and the agent's tool calls |
 | The staged repository contents | **untrusted** | may contain hostile files |
 | The agent's outputs (tool calls, file writes, the captured diff) | **untrusted** | filtered, gated, and made visible before action |
 
@@ -103,11 +103,14 @@ The real key can reach the gateway from two sources: the shell env
 Neither source is ever passed into the VM — the A1 control is unchanged
 regardless of which source the broker loaded the key from.
 
-The gateway now fronts two upstreams: `api.anthropic.com` (Claude Code tasks)
-and `api.openai.com` (Codex tasks). The real key for whichever vendor stays
-host-only in both cases. No new trust assumptions are introduced by the second
-vendor: the same mint/validate/revoke cycle applies; the VM still only ever
-sees a budget-capped bearer token regardless of which upstream backs it.
+The gateway fronts several upstreams: `api.anthropic.com` (Claude Code),
+`api.openai.com` (Codex), `generativelanguage.googleapis.com` (Gemini, native —
+experimental), and any operator-configured OpenAI-compatible endpoint
+(`opencode`). The real key for whichever vendor stays host-only in every case.
+No new trust assumptions are introduced by additional vendors: the same
+mint/validate/revoke cycle applies, and the VM still only ever sees a
+budget-capped bearer token (in `x-goog-api-key` for Gemini, `Authorization:
+Bearer` for the rest) regardless of which upstream backs it.
 
 **Implementation:** `internal/gateway/provider.go` injects only
 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (Claude) or
@@ -295,9 +298,9 @@ publishes security advisories.
   human judgment is load-bearing.
 - **You must keep your host clean.** No drydock defense survives host
   compromise.
-- **You must pin and update `container`, `claude-code`, and `codex`.** All
-  move fast; drydock's claims hold only against the versions it was tested
-  against.
+- **You must pin and update `container` and the agent CLIs** (`claude-code`,
+  `codex`, `gemini`, `opencode`). All move fast; drydock's claims hold only
+  against the versions it was tested against (the image pins each one).
 
 If you find a residual that isn't covered here, open an issue. The model
 moves; this document moves with it.

@@ -90,6 +90,19 @@ func runDoctor() {
 		failed = true
 	}
 
+	// 2d. opencode CLI presence (the openai-compat / bring-your-own-model lane).
+	// Without this check an image missing opencode passes doctor green, then
+	// every `--agent opencode` task dies at the entrypoint.
+	out, err = runCmd("container", "run", "--rm", "--entrypoint", "/bin/sh",
+		cfg.SandboxImage, "-c", "opencode --version 2>&1")
+	if geminiPresent(string(out), err) { // same predicate: bare version, zero exit, no "not found"
+		step("opencode present", true, strings.TrimSpace(lastLine(string(out))))
+	} else {
+		step("opencode present", false, "not found in "+cfg.SandboxImage)
+		fmt.Println("    → that image likely predates the opencode lane. Fix: run `drydock init` to rebuild")
+		failed = true
+	}
+
 	// 3. The nft egress pin must default-deny output. We install the pin
 	// pointing at an unreachable gateway IP, then confirm a non-allowlisted
 	// host fails to resolve (DNS dropped) or fails to connect (no route).

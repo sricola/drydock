@@ -55,7 +55,7 @@ history in a local web app — see [Web UI](web-ui.html).
 ## Variations
 
 ```bash
-# Pick the agent for this task: claude (default) | codex | opencode
+# Pick the agent for this task: claude (default) | codex | gemini | opencode
 drydock submit --repo … --instruction "…" --agent codex
 # opencode runs any OpenAI-compatible model — see Bring your own model
 drydock submit --repo … --instruction "…" --agent opencode

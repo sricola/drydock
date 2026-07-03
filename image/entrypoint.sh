@@ -74,14 +74,24 @@ case "$AGENT" in
     export GEMINI_DIR=/home/agent/.gemini
     /usr/local/bin/write-gemini-config.sh "$GEMINI_DIR"
     chown -R agent:agent "$GEMINI_DIR"
-    # VM is the isolation boundary: trust the workspace, skip the trust prompt.
+    # VM is the isolation boundary, so:
+    #   --approval-mode yolo : auto-approve ALL tool calls (edits/writes/shell).
+    #     Without this the CLI's default "prompt for approval" mode blocks every
+    #     file edit in headless -p mode (no TTV) — the task would produce no diff
+    #     and never reach the push gate. This is the gemini-cli analogue of
+    #     claude's --dangerously-skip-permissions / codex's approvals bypass.
+    #   --skip-trust : clears the separate workspace-trust prompt.
+    # GOOGLE_GENAI_USE_VERTEXAI=false forces the Gemini API (not Vertex), so
+    # traffic stays on GOOGLE_GEMINI_BASE_URL (the gateway) — required by the
+    # validated spike setup.
     exec gosu agent env \
         "HOME=/home/agent" \
         "GEMINI_DIR=$GEMINI_DIR" \
         "GOOGLE_GEMINI_BASE_URL=$GOOGLE_GEMINI_BASE_URL" \
         "GEMINI_API_KEY=$GEMINI_API_KEY" \
+        "GOOGLE_GENAI_USE_VERTEXAI=false" \
         "GEMINI_CLI_TRUST_WORKSPACE=true" \
-        gemini -p "${PROMPT}" -m "${MODEL}" --skip-trust
+        gemini -p "${PROMPT}" -m "${MODEL}" --approval-mode yolo --skip-trust
     ;;
   *)
     echo "drydock: unknown DRYDOCK_AGENT=$AGENT" >&2

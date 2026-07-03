@@ -23,8 +23,18 @@ type Config struct {
 		Domains []Domain `yaml:"domains"`
 	} `yaml:"default"`
 	PerTaskWidening struct {
-		RequiresApproval bool `yaml:"requires_approval"`
+		// *bool so an ABSENT key fails closed (nil → gate on). A bare bool would
+		// decode a missing/mistyped `requires_approval:` to false and silently
+		// disable the human egress-widening gate. Read via WideningRequiresApproval.
+		RequiresApproval *bool `yaml:"requires_approval"`
 	} `yaml:"per_task_widening"`
+}
+
+// WideningRequiresApproval reports whether per-task egress widening must pass the
+// human gate. Fail-closed: an absent `requires_approval:` key (nil) returns true,
+// so only an EXPLICIT `requires_approval: false` disables the gate.
+func (c Config) WideningRequiresApproval() bool {
+	return c.PerTaskWidening.RequiresApproval == nil || *c.PerTaskWidening.RequiresApproval
 }
 
 // hostnameRE accepts an RFC-1035-shaped hostname: dot-separated labels, each
