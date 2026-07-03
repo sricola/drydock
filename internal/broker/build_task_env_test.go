@@ -86,3 +86,17 @@ func TestBuildTaskEnv_OpenAICompatModelNotLeaked(t *testing.T) {
 		t.Errorf("openai_compat.model not forwarded:\n%s", joined)
 	}
 }
+
+// The native google (gemini) vendor sets NoOperatorDefault, so the operator's
+// claude/codex-oriented default_model must not reach the Gemini CLI — the
+// entrypoint supplies the gemini default instead. Guards the call-path
+// consequence of the registry row's NoOperatorDefault field.
+func TestBuildTaskEnv_GoogleModelNotLeaked(t *testing.T) {
+	const opDefault = "claude-sonnet-4-6"
+	env := buildTaskEnv([]string{"TOKEN=x"}, "", "10.0.0.1", 3128,
+		"gemini", "", "", opDefault, "google")
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, opDefault) {
+		t.Errorf("operator default model %q must not leak into the google lane:\n%s", opDefault, joined)
+	}
+}

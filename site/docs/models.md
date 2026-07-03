@@ -1,9 +1,61 @@
-# Bring your own model
+# Models
 
-Beyond Claude Code and Codex, drydock can run **any OpenAI-compatible endpoint**
-— Google Gemini (via its OpenAI-compatible API), OpenRouter, or a local server
-(Ollama, LM Studio, vLLM) — through the same sandbox. The agent is **`opencode`**,
-and as with every drydock task the real key stays host-side: the VM only ever
+## Gemini (native)
+
+drydock supports Google's Gemini models through a **native `gemini` agent** that
+speaks Google's own wire format. This is the first-class path for Gemini:
+Google's auth header (`x-goog-api-key`) and native token metering, not the
+OpenAI-compatibility shim.
+
+### Requirements
+
+- **`GEMINI_API_KEY`** — set in your shell env or stored at
+  `~/.drydock/api-keys.env`. This is the only auth mode: no OAuth, no Google
+  subscription lane.
+- A sandbox image built with `@google/gemini-cli` installed
+  (`drydock init` handles this).
+
+### Run a task
+
+```bash
+export GEMINI_API_KEY=...
+drydock submit --repo … --instruction "…" --agent gemini
+```
+
+Or set `default_agent: gemini` in `~/.drydock/config.yaml` to make it the
+default.
+
+### Models
+
+| Model | Notes |
+|---|---|
+| `gemini-2.5-pro` | Default — best for coding tasks |
+| `gemini-2.5-flash` | Faster, lower cost |
+| `gemini-2.5-flash-lite` | Lightest, lowest cost |
+
+Override per task with `--model gemini-2.5-flash`, or set `default_model` in
+`config.yaml`. With no explicit model the agent defaults to `gemini-2.5-pro`.
+
+### Gemini via the OpenAI-compat lane vs. the native lane
+
+Gemini was reachable earlier via the `opencode` + `openai_compat` lane (see
+below). The native `gemini` agent is the preferred path:
+
+| | `--agent gemini` (native) | `--agent opencode` + `openai_compat` |
+|---|---|---|
+| Wire protocol | Google's native Gemini API | OpenAI chat/completions compat |
+| Auth header | `x-goog-api-key` | `Authorization: Bearer` |
+| Token metering | Native `usageMetadata` | Depends on endpoint reporting usage |
+| Config needed | Just `GEMINI_API_KEY` | `openai_compat:` block in config.yaml |
+
+---
+
+## Bring your own model (OpenAI-compatible lane)
+
+Beyond Claude Code, Codex, and the native Gemini lane, drydock can run **any
+OpenAI-compatible endpoint** — OpenRouter, or a local server (Ollama, LM
+Studio, vLLM) — through the same sandbox. The agent is **`opencode`**, and as
+with every drydock task the real key stays host-side: the VM only ever
 sees a per-task token and the gateway's address.
 
 ## How it works
@@ -55,7 +107,9 @@ as it does for Claude and Codex.
 
 ## Worked examples
 
-**Google Gemini** (its OpenAI-compatible endpoint):
+**Google Gemini via the compat lane** (if you prefer `opencode` over the
+native `--agent gemini`; see [Gemini (native)](#gemini-native) above for the
+first-class path):
 
 ```yaml
 openai_compat:

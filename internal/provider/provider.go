@@ -109,6 +109,15 @@ var Registry = []Provider{
 		},
 	},
 	{
+		Agent: "gemini", Vendor: "google", Label: "Gemini (Google)",
+		APIKeyEnv: "GEMINI_API_KEY", AuthCmd: "", // api-key only; no auth subcommand
+		BaseURLEnv:        "GOOGLE_GEMINI_BASE_URL",
+		TokenEnv:          "GEMINI_API_KEY",
+		APIVendor:         gateway.GoogleVendor,
+		NoOperatorDefault: true, // operator default_model is claude/codex-oriented; the entrypoint supplies the gemini default
+		// OAuthBackend / OAuthFile / LoadOAuthSnap nil; ConfigBuilt false; NeedsModel false.
+	},
+	{
 		Agent: "opencode", Vendor: "openai-compat", Label: "OpenAI-compatible (bring your own)",
 		APIKeyEnv: "", AuthCmd: "",
 		BaseURLEnv: "OPENAI_BASE_URL", TokenEnv: "OPENAI_API_KEY",

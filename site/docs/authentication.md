@@ -1,13 +1,14 @@
 # Authentication
 
-drydock runs **Claude Code** (Anthropic) and **OpenAI Codex** (OpenAI), each
-with a vendor **API key** or your existing **subscription** — and **`opencode`**
-for any OpenAI-compatible endpoint (see [Bring your own model](models.html)).
+drydock runs **Claude Code** (Anthropic), **OpenAI Codex** (OpenAI), and
+**Gemini** (Google) — each with a vendor API key or, for Claude and Codex, your
+existing subscription — and **`opencode`** for any OpenAI-compatible endpoint
+(see [Bring your own model](models.html)).
 
 Whichever you choose, the real credential stays host-side and **never enters the
 VM**: the sandbox only ever sees a per-task token.
 
-Pick the agent per task with `--agent claude|codex|opencode`, or set
+Pick the agent per task with `--agent claude|codex|gemini|opencode`, or set
 `default_agent` in `config.yaml`.
 
 ## The matrix
@@ -16,15 +17,25 @@ Pick the agent per task with `--agent claude|codex|opencode`, or set
 |---|---|---|
 | **Claude Code** | `export ANTHROPIC_API_KEY=…` | `drydock auth claude` + `anthropic_auth: subscription` |
 | **OpenAI Codex** | `export OPENAI_API_KEY=…` | `drydock auth codex` + `openai_auth: subscription` |
+| **Gemini** | `export GEMINI_API_KEY=…` | — API key only, no subscription mode |
 
-An API key is the quickest path. The subscription path lets you reuse a plan you
-already pay for (macOS only; needs the vendor's `claude` / `codex` CLI).
+An API key is the quickest path for all three agents. The subscription path lets
+you reuse a plan you already pay for (Claude and Codex only; macOS only; needs
+the vendor's `claude` / `codex` CLI).
+
+### Gemini: API key only
+
+Gemini (`--agent gemini`) is **API-key auth only** — there is no OAuth /
+subscription lane. Set `GEMINI_API_KEY` in your shell env or store it at
+`~/.drydock/api-keys.env`. See [Models — Gemini (native)](models.html) for
+model choices and the comparison with the OpenAI-compat Gemini route.
 
 ### Bring your own model
 
-`opencode` reaches any OpenAI-compatible endpoint (Gemini, OpenRouter, a local
-server). It's API-key-only — no OAuth — and configured by the `openai_compat`
-block, not the matrix above. See [Bring your own model](models.html).
+`opencode` reaches any OpenAI-compatible endpoint (OpenRouter, a local
+server, or Gemini via its compat lane). It's API-key-only — no OAuth — and
+configured by the `openai_compat` block, not the matrix above. See
+[Bring your own model](models.html).
 
 ## API key
 
@@ -35,6 +46,7 @@ way it never crosses the VM boundary.
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...   # Claude Code tasks
 export OPENAI_API_KEY=sk-...          # OpenAI Codex tasks
+export GEMINI_API_KEY=...             # Gemini tasks (native --agent gemini)
 drydock start
 ```
 

@@ -11,10 +11,11 @@ Both are seeded from defaults the first time; `drydock init` never overwrites
 them. **Env vars win over file values**, so existing scripts keep working. Edit
 `config.yaml` and re-run `drydock start`.
 
-The vendor keys (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) are intentionally
-**not** in these files — they live in your shell env, or at
+The vendor keys (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`) are
+intentionally **not** in these files — they live in your shell env, or at
 `~/.drydock/api-keys.env` (mode `0600`), read host-side and never passed into
-the VM.
+the VM. All three keys are recognized automatically; no extra config is needed
+to declare them.
 
 ## Common settings
 
@@ -22,7 +23,7 @@ the VM.
 |---|---|---|---|
 | `anthropic_auth` | `DRYDOCK_ANTHROPIC_AUTH` | `api_key` | `api_key` uses `ANTHROPIC_API_KEY`; `subscription` uses `~/.drydock/claude-oauth.json` |
 | `openai_auth` | `DRYDOCK_OPENAI_AUTH` | `api_key` | `api_key` uses `OPENAI_API_KEY`; `subscription` uses `~/.drydock/codex-oauth.json` |
-| `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent when `--agent` is omitted (`claude` \| `codex` \| `opencode`) |
+| `default_agent` | `DRYDOCK_DEFAULT_AGENT` | `claude` | Agent when `--agent` is omitted (`claude` \| `codex` \| `gemini` \| `opencode`) |
 | `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | `--model` fallback; empty = the agent picks |
 | `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | Per-task USD ceiling (`api_key` mode only; unused in subscription mode) |
 | `task_max_requests` | `DRYDOCK_TASK_MAX_REQUESTS` | `0` (unlimited) | Hard cap on API round-trips per task — the primary runaway control in subscription mode |
@@ -68,6 +69,19 @@ openai_compat:
 ```
 
 See [Bring your own model](models.html) for worked examples.
+
+## Native Gemini
+
+`--agent gemini` (`default_agent: gemini`) uses Google's native Gemini API
+directly. No `openai_compat:` block is needed — just set `GEMINI_API_KEY` in
+your env or `~/.drydock/api-keys.env`. `GEMINI_API_KEY` is a recognized key
+automatically. There is no subscription mode for Gemini; API key is the only
+auth path.
+
+```yaml
+default_agent: gemini          # make Gemini the default
+default_model: gemini-2.5-flash  # optional model override (default: gemini-2.5-pro)
+```
 
 ## Advanced: runtime, paths, listener
 

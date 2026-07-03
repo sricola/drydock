@@ -7,6 +7,16 @@ entry below corresponds to a Git tag of the same name.
 
 ## Unreleased
 
+### Added
+
+- **Native Gemini vendor (`--agent gemini`).** Google Gemini models now have a
+  first-class native lane: Google `x-goog-api-key` auth brokering, native
+  `usageMetadata` token metering, and `task_budget_usd` enforcement. Set
+  `GEMINI_API_KEY` (host env or `api-keys.env`) — API-key auth only, no
+  subscription mode. Default model `gemini-2.5-pro`; override with
+  `--model gemini-2.5-flash` or `gemini-2.5-flash-lite`. `drydock doctor`
+  reports `gemini present` in the sandbox smoke test.
+
 ## v0.4.0 — 2026-07-02
 
 ### Added
