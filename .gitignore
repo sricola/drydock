@@ -15,3 +15,6 @@
 
 # Per-task scratch (default STAGE_ROOT / AUDIT_ROOT / SQUID_RUN_DIR)
 /tmp/broker/
+
+# subagent-driven-development scratch (briefs/reports/diffs/ledger)
+.superpowers/
