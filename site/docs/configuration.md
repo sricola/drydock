@@ -79,9 +79,11 @@ automatically. There is no subscription mode for Gemini; API key is the only
 auth path.
 
 ```yaml
-default_agent: gemini          # make Gemini the default
-default_model: gemini-2.5-flash  # optional model override (default: gemini-2.5-pro)
+default_agent: gemini          # make Gemini the default (defaults to gemini-2.5-pro)
 ```
+
+`default_model` does not affect Gemini — pick a non-default Gemini model per task
+with `--model gemini-2.5-flash`.
 
 ## Advanced: runtime, paths, listener
 

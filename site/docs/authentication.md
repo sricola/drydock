@@ -19,8 +19,10 @@ Pick the agent per task with `--agent claude|codex|gemini|opencode`, or set
 | **OpenAI Codex** | `export OPENAI_API_KEY=…` | `drydock auth codex` + `openai_auth: subscription` |
 | **Gemini** | `export GEMINI_API_KEY=…` | — API key only, no subscription mode |
 
-An API key is the quickest path for all three agents. The subscription path lets
-you reuse a plan you already pay for (Claude and Codex only; macOS only; needs
+An API key is the quickest path for the three agents in the table above
+(`opencode` is configured separately — see [Bring your own model](models.html)).
+The subscription path lets you reuse a plan you already pay for (Claude and Codex
+only; macOS only; needs
 the vendor's `claude` / `codex` CLI).
 
 ### Gemini: API key only

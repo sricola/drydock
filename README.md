@@ -82,8 +82,11 @@ internet — regardless of what it tries.
 brew install sricola/drydock/drydock
 drydock setup
 
-# give it a credential (or use a subscription — see the auth docs)
+# give it a credential — a vendor API key…
 export ANTHROPIC_API_KEY=sk-ant-...
+# …or skip keys entirely and reuse a plan you already pay for:
+#   drydock auth claude   # Claude Pro/Max  → anthropic_auth: subscription
+#   drydock auth codex    # ChatGPT         → openai_auth: subscription
 drydock start
 
 # in another shell: your first sandboxed task

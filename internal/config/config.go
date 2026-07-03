@@ -64,8 +64,9 @@ type Config struct {
 	// approval can't pin a slot forever.
 	ApprovalTimeout time.Duration `yaml:"approval_timeout"`
 
-	// DefaultModel passes through to `claude --model` for every task that
-	// doesn't supply --model itself. Empty = let claude-code pick.
+	// DefaultModel is the model passed to Claude Code and Codex tasks that don't
+	// supply --model themselves. It does NOT apply to gemini (uses its own
+	// default) or opencode (uses openai_compat.model). Empty = the agent picks.
 	DefaultModel string `yaml:"default_model"`
 
 	// DefaultAgent selects the sandbox CLI when a task doesn't pass --agent.

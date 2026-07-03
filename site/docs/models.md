@@ -12,7 +12,7 @@ parser, rather than the OpenAI-compatibility shim.
 > A1/A2 red-team) is macOS-gated and has not been executed. Until
 > `make test-integration` passes on macOS with a real `GEMINI_API_KEY`, treat
 > this lane as experimental. If you just need Gemini working today, the
-> [OpenAI-compatible lane](#bring-your-own-openai-compatible-model) routes to
+> [OpenAI-compatible lane](#bring-your-own-model-openai-compatible-lane) routes to
 > Gemini's `/v1beta/openai` endpoint and is a proven path.
 
 ### Requirements
@@ -41,13 +41,15 @@ default.
 | `gemini-2.5-flash` | Faster, lower cost |
 | `gemini-2.5-flash-lite` | Lightest, lowest cost |
 
-Override per task with `--model gemini-2.5-flash`, or set `default_model` in
-`config.yaml`. With no explicit model the agent defaults to `gemini-2.5-pro`.
+Override per task with `--model gemini-2.5-flash`. With no explicit model the
+agent defaults to `gemini-2.5-pro`. Note `default_model` in `config.yaml` does
+**not** apply to Gemini (it is Claude/Codex-only) — use `--model` per task.
 
 ### Gemini via the OpenAI-compat lane vs. the native lane
 
-Gemini was reachable earlier via the `opencode` + `openai_compat` lane (see
-below). The native `gemini` agent is the preferred path:
+Gemini is reachable two ways. The `opencode` + `openai_compat` lane (see below)
+is the **proven** path today; the native `gemini` agent is **experimental**
+(see the note above) but speaks Google's own wire format:
 
 | | `--agent gemini` (native) | `--agent opencode` + `openai_compat` |
 |---|---|---|
@@ -115,9 +117,8 @@ as it does for Claude and Codex.
 
 ## Worked examples
 
-**Google Gemini via the compat lane** (if you prefer `opencode` over the
-native `--agent gemini`; see [Gemini (native)](#gemini-native) above for the
-first-class path):
+**Google Gemini via the compat lane** — the proven path today (the native
+`--agent gemini` above is experimental, see [Gemini (native)](#gemini-native-experimental)):
 
 ```yaml
 openai_compat:

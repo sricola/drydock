@@ -9,7 +9,7 @@ VM boot, the egress pin) with no API spend. Then consult the table below.
 |---|---|
 | `192.168.66.1 never became bindable` | `container ls -a` (is the anchor running?), `container network inspect drydock-egress` (gateway IP present?) |
 | Image build fails on `npm install` | Transient registry timeout — rerun `container build` (or `make image`) |
-| Squid CONNECT 403 to an expected host | `cat ~/.drydock/squid/squid-allow.txt`; add it in `egress.yaml` or per-task with `--egress-extra` (see [Egress](egress.html)) |
+| Squid CONNECT 403 to an expected host | `cat ~/.drydock/squid/squid-default-acl.conf`; add it in `egress.yaml` or per-task with `--egress-extra` (see [Egress](egress.html)) |
 | Stale anchor after a crash | `container rm -f drydock-anchor`; the next `drydock start` does this for you |
 | Gateway 401 | Key is wrong or a placeholder (`sk-ant-fake` is *expected* to 401) |
 | VM reaches a host it shouldn't | Confirm `init-firewall.sh` ran inside the VM — overriding `--entrypoint` skips it |
