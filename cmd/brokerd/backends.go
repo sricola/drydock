@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -10,6 +11,18 @@ import (
 	"drydock/internal/gateway"
 	"drydock/internal/provider"
 )
+
+// isLoopbackHost reports whether host (a URL hostname, no port) is loopback —
+// "localhost" or any 127.0.0.0/8 / ::1 address. Cleartext to loopback is safe.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
 
 // openAICompatWarnings inspects the openai_compat lane config and returns one
 // human-readable warning string per detected misconfiguration. Returns nil
@@ -47,6 +60,15 @@ func openAICompatWarnings(oc config.OpenAICompatConfig) []string {
 			warnings = append(warnings, fmt.Sprintf(
 				`openai_compat.base_url has a path (%q); that path is ignored by the gateway — move it to openai_compat.base_path`,
 				p,
+			))
+		}
+		// Plaintext http:// to a non-loopback host sends the real API key in the
+		// clear on the wire (the gateway holds the key and forwards it upstream).
+		// Loopback (a local model) is fine.
+		if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+			warnings = append(warnings, fmt.Sprintf(
+				`openai_compat.base_url is http:// to a non-loopback host (%q); the real API key is sent in cleartext — use https`,
+				u.Host,
 			))
 		}
 	}

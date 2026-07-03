@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test test-squid-live test-squid-e2e test-integration test-gemini-spike redteam redteam-vm demo sbom docs verify-build vet lint image network init clean help
+.PHONY: all build install uninstall test test-squid-live test-squid-e2e test-integration redteam redteam-vm demo sbom docs verify-build vet lint image network init clean help
 
 all: build
 
@@ -23,7 +23,6 @@ help:
 	@echo "  test        go test -race ./..."
 	@echo "  test-squid-live  proxy-auth path (squidlive tag); requires squid on PATH"
 	@echo "  test-squid-e2e   VM-level egress widening (squide2e tag); requires container runtime + images + squid"
-	@echo "  test-gemini-spike  Gemini brokering feasibility spike (needs \`npm i -g @google/gemini-cli\`)"
 	@echo "  redteam     run the host-side adversarial containment suite (A3-A6)"
 	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7); macOS + container runtime"
 	@echo "  demo        run the narrated breach demo (real attacks; add VM=1 for A1/A2/A7)"
@@ -83,12 +82,6 @@ test-squid-e2e:
 # image exist. Does NOT spend Anthropic tokens (uses a placeholder key).
 test-integration: build
 	go test -tags=integration -count=1 -timeout=2m ./tests/...
-
-# Gemini brokering feasibility spike: runs the fake-gateway harness against
-# the real @google/gemini-cli to verify it can be brokered. Requires gemini
-# on PATH (`npm i -g @google/gemini-cli`). Skips cleanly when absent.
-test-gemini-spike: ## Run the Gemini brokering feasibility spike (needs `npm i -g @google/gemini-cli`)
-	go test -tags=geminispike -count=1 -timeout=2m ./tests/integration/ -run TestGeminiBrokering_Spike -v
 
 # redteam runs the adversarial containment suite: each test performs an attack
 # from THREAT_MODEL.md and asserts it is blocked. Host-side claims (A3-A6) run
