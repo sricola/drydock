@@ -147,13 +147,20 @@ func TestSquidProxyAuth_Live(t *testing.T) {
 	}
 }
 
-// expect polls curl until pred(result) holds or an 8s deadline, returning the
+// expect polls curl until pred(result) holds or a 30s deadline, returning the
 // last result. It absorbs squid's async `-k reconfigure` reload so assertions
 // don't race the reload; on a genuine failure pred never holds and the last
 // (failing) result is returned for the caller to assert on.
+//
+// 30s (not 8s): the REACHABLE case dials a real upstream over the network (each
+// curl takes seconds), so few polls fit a short window — and on a slower runner
+// (the CI Debian squid, vs a dev Mac) the reconfigure reload can take longer
+// than 8s, intermittently failing the just-widened allow with a default-deny
+// 403. The deny cases resolve instantly from squid (no upstream dial), so the
+// larger deadline costs them nothing.
 func expect(t *testing.T, pred func(curlResult) bool, bind, user, pass, host string) curlResult {
 	t.Helper()
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		got := curl(t, bind, user, pass, host)
 		if pred(got) || time.Now().After(deadline) {
