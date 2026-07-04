@@ -16,6 +16,7 @@ import (
 
 	"drydock/internal/creds"
 	"drydock/internal/egress"
+	"drydock/internal/gateway"
 	"drydock/internal/remote"
 )
 
@@ -565,38 +566,29 @@ func assertAuditHasResult(t *testing.T, auditRoot string) {
 	t.Fatalf("assertAuditHasResult: no *.jsonl in %s contains a {\"type\":\"result\"} line", auditRoot)
 }
 
-// sentinelKeyGrant models the real security boundary: a provider mints an
-// ephemeral bearer for the sandbox while the *real* upstream API key stays on
-// the host and is never handed to the VM. realKey is the sentinel that must
-// NEVER appear in the container env; bearer is the scoped tok_… the VM actually
-// gets. EnvVars deliberately emits only the bearer — a regression that leaked
-// the real key (e.g. passing ANTHROPIC_API_KEY straight through) would surface
-// realKey in the assembled env and trip the test below.
-type sentinelKeyGrant struct {
-	realKey string
-	bearer  string
-	revoked bool
-}
-
-func (g *sentinelKeyGrant) EnvVars() []string { return []string{"ANTHROPIC_AUTH_TOKEN=" + g.bearer} }
-func (g *sentinelKeyGrant) Revoke() error     { g.revoked = true; return nil }
-func (g *sentinelKeyGrant) Spent() float64    { return 0 }
-
-type sentinelProvider struct{ grant creds.Grant }
-
-func (p *sentinelProvider) Mint(float64) (creds.Grant, error) { return p.grant, nil }
-
 // A1 — the real upstream API key must never enter the sandbox VM. The env the
 // broker assembles and hands to runner.BuildRunArgs (encoded as `--env K=V`
 // args to the container) must carry only the ephemeral bearer and the
-// proxy/base-URL vars — never the sentinel real key the provider holds on the
-// host.
+// proxy/base-URL vars — never the real key the provider holds on the host.
+//
+// This test uses a REAL gateway.Provider backed by gateway.StaticKey so that
+// the assertion is genuine: realKey actually lives inside the gateway and the
+// test verifies it cannot be observed in the container args.
 func TestHandleTask_RealKeyNeverEntersContainerEnv(t *testing.T) {
-	const (
-		realKey = "sk-ant-REALKEY-do-not-leak-3f9a2b"
-		bearer  = "tok_ephemeral_scoped_9c1d"
-	)
-	grant := &sentinelKeyGrant{realKey: realKey, bearer: bearer}
+	const realKey = "sk-ant-REALKEY-do-not-leak-3f9a2b"
+
+	g, err := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey(realKey)})
+	if err != nil {
+		t.Fatalf("gateway.New: %v", err)
+	}
+	prov := &gateway.Provider{
+		GW:         g,
+		Vendor:     "anthropic",
+		BaseURL:    "http://10.0.0.1:8088",
+		BaseURLEnv: "ANTHROPIC_BASE_URL",
+		TokenEnv:   "ANTHROPIC_AUTH_TOKEN",
+		TTL:        time.Minute,
+	}
 
 	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
 	var gotArgs []string
@@ -606,7 +598,7 @@ func TestHandleTask_RealKeyNeverEntersContainerEnv(t *testing.T) {
 		return nil
 	}
 	b := &Broker{
-		Providers:     map[string]creds.Provider{"anthropic": &sentinelProvider{grant}},
+		Providers:     map[string]creds.Provider{"anthropic": prov},
 		DefaultAgent:  "claude",
 		ImageRef:      "test-image:latest",
 		StageRoot:     t.TempDir(),
@@ -631,16 +623,25 @@ func TestHandleTask_RealKeyNeverEntersContainerEnv(t *testing.T) {
 	}
 
 	joined := strings.Join(gotArgs, "\x00")
-	// The security property: the real key is absent from every arg handed to the
-	// container.
+
+	// (a) The security property: the real key is absent from every arg handed to
+	// the container. This is now genuine — realKey lives inside gateway.StaticKey
+	// and never surfaces via EnvVars().
 	if strings.Contains(joined, realKey) {
 		t.Errorf("A1 BREACH: real API key leaked into the container env args: %v", gotArgs)
 	}
-	// Positive control: the ephemeral bearer IS present, so we're inspecting the
-	// real env (the assertion above isn't vacuous).
-	if !strings.Contains(joined, bearer) {
-		t.Errorf("expected the ephemeral bearer %q in the container env, got args: %v", bearer, gotArgs)
+
+	// (b) Positive control: a tok_-prefixed token IS present, proving we're
+	// inspecting the real env assembled by the broker (the assertion above isn't vacuous).
+	if !strings.Contains(joined, "ANTHROPIC_AUTH_TOKEN=tok_") {
+		t.Errorf("expected ANTHROPIC_AUTH_TOKEN=tok_... in container env, got args: %v", gotArgs)
 	}
+
+	// (c) The gateway base URL must be present so the VM can reach the proxy.
+	if !strings.Contains(joined, "ANTHROPIC_BASE_URL=http://10.0.0.1:8088") {
+		t.Errorf("expected ANTHROPIC_BASE_URL=http://10.0.0.1:8088 in container env, got args: %v", gotArgs)
+	}
+
 	// And the audit trail must not carry the real key either.
 	if audit := readOnlyAudit(t, b.AuditRoot); strings.Contains(audit, realKey) {
 		t.Errorf("A1 BREACH: real API key leaked into the audit log:\n%s", audit)

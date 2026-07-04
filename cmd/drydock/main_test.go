@@ -3,7 +3,6 @@ package main
 import (
 	"io"
 	"os"
-	"strings"
 	"testing"
 )
 
@@ -18,15 +17,16 @@ import (
 // subHelp — otherwise `<cmd> --help` prints an empty body. This catches
 // the failure mode where a new subcommand ships without help text.
 func TestSubHelp_CoversEveryAdvertisedCommand(t *testing.T) {
-	// Commands the dispatcher accepts. Keep in sync with main()'s switch.
-	cmds := []string{
-		"init", "start", "submit", "status", "tasks",
-		"logs", "review", "kill", "pending", "approve", "deny",
-		"doctor", "version",
+	// The real source of truth is the switch in main(). These are all the cases;
+	// keep in sync with main()'s switch when adding a new subcommand.
+	mainSwitchCmds := []string{
+		"setup", "init", "start", "submit", "status", "tasks",
+		"logs", "review", "kill", "prune", "pending", "approve", "deny",
+		"doctor", "redteam", "auth", "ui", "version",
 	}
-	for _, c := range cmds {
+	for _, c := range mainSwitchCmds {
 		if _, ok := subHelp[c]; !ok {
-			t.Errorf("subHelp missing entry for %q", c)
+			t.Errorf("subHelp missing entry for %q (present in main() switch)", c)
 		}
 	}
 }
@@ -60,13 +60,8 @@ func TestConsumeHelpFlag_NoOpOnNonHelpArg(t *testing.T) {
 // build leaked a stale value.
 func TestVersion_DefaultsToDev(t *testing.T) {
 	// version is set at package init via -ldflags. In the test binary
-	// there are no ldflags, so we should see the source default.
+	// there are no ldflags, so we should see the source default "dev".
 	if version != "dev" {
-		// Either the test binary was built with -ldflags (e.g. by
-		// `go test -ldflags '-X main.version=…'`) or someone replaced
-		// the literal default. Both are unusual; flag it.
-		if !strings.HasPrefix(version, "v") && version != "dev" {
-			t.Errorf("version = %q, want %q or a v-prefixed tag", version, "dev")
-		}
+		t.Errorf("version = %q, want %q (test binary built without -ldflags override)", version, "dev")
 	}
 }

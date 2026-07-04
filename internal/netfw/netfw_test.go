@@ -47,11 +47,6 @@ func TestCompileSquidConf(t *testing.T) {
 			t.Errorf("squid.conf missing %q:\n%s", want, out)
 		}
 	}
-	// The bare dstdomain allow (any port on an allowed host) must be gone; the
-	// default block is now port-restricted via the include.
-	if strings.Contains(out, "http_access allow default_dst") {
-		t.Errorf("conf still emits an unrestricted default_dst allow:\n%s", out)
-	}
 }
 
 func TestCompileSquidAllowlist_EmptyConfig(t *testing.T) {

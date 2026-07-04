@@ -94,6 +94,20 @@ func TestParseCodexCreds(t *testing.T) {
 	if d := snap.Expiry.Unix() - exp; d < -2 || d > 2 {
 		t.Errorf("expiry from JWT exp wrong: %v vs %v", snap.Expiry.Unix(), exp)
 	}
+
+	// Containment: sensitive JWT claims must not leak into the returned credential snapshot.
+	// The JWT payload carries "SHOULD_NOT_BE_LOGGED" — it must not appear in
+	// the returned snap or account values.
+	const sensitiveClaimVal = "SHOULD_NOT_BE_LOGGED"
+	if strings.Contains(snap.Access, sensitiveClaimVal) {
+		t.Errorf("snap.Access contains sensitive claim value %q", sensitiveClaimVal)
+	}
+	if strings.Contains(snap.Refresh, sensitiveClaimVal) {
+		t.Errorf("snap.Refresh contains sensitive claim value %q", sensitiveClaimVal)
+	}
+	if strings.Contains(account, sensitiveClaimVal) {
+		t.Errorf("account contains sensitive claim value %q", sensitiveClaimVal)
+	}
 }
 
 func TestParseCodexCreds_NotLoggedIn(t *testing.T) {
@@ -153,9 +167,31 @@ func TestParseCodexCreds_AccessTokenNotJWT(t *testing.T) {
 }
 
 // TestBootstrapCores_Exist verifies that bootstrapClaudeCred and bootstrapCodexCred
-// are defined and callable. In CI (not logged in) they return errors — that is the
-// contract: they must return an error, never call os.Exit.
+// are callable with isolated directories and never call os.Exit.
+// The process surviving to the end of the test is the os.Exit assertion.
 func TestBootstrapCores_Exist(t *testing.T) {
-	_ = bootstrapClaudeCred
-	_ = bootstrapCodexCred
+	// Both functions must never call os.Exit. The process surviving to the
+	// end of this test is the os.Exit assertion.
+
+	// Use a temp cfgDir with no credentials stored.
+	cfgDir := t.TempDir()
+
+	// Empty PATH forces the `security` CLI lookup to fail deterministically on any
+	// machine (logged-in or not): exec.Command("security", ...).Output() cannot
+	// resolve the binary, so bootstrapClaudeCred returns its "could not read Claude
+	// credentials" error. This exercises the no-creds error return and proves the
+	// function does not call os.Exit.
+	t.Setenv("PATH", "")
+	if err := bootstrapClaudeCred(cfgDir); err == nil {
+		t.Error("bootstrapClaudeCred: want error when Keychain is unreadable, got nil")
+	}
+
+	// bootstrapCodexCred reads ~/.codex/auth.json via os.UserHomeDir().
+	// Override HOME so it reads from a temp dir with no auth.json.
+	// This always returns an error when the file is absent — isolatable and reliable.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	if err := bootstrapCodexCred(cfgDir); err == nil {
+		t.Error("bootstrapCodexCred: want error when ~/.codex/auth.json absent, got nil")
+	}
 }
