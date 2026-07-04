@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"drydock/internal/config"
 )
@@ -174,4 +176,168 @@ func TestResolveAPIKey_Precedence(t *testing.T) {
 			t.Errorf("got %q, want empty", got)
 		}
 	})
+}
+
+// TestHardenedServer_Timeouts asserts the exact header/idle timeouts that
+// harden the server against slow-loris and idle-keepalive abuse. It also
+// asserts that ReadTimeout and WriteTimeout remain UNSET: POST /tasks blocks
+// for the whole task run and WriteTimeout would sever streaming responses.
+func TestHardenedServer_Timeouts(t *testing.T) {
+	srv := hardenedServer(http.NewServeMux())
+	if srv.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 10s", srv.ReadHeaderTimeout)
+	}
+	if srv.IdleTimeout != 60*time.Second {
+		t.Errorf("IdleTimeout = %v, want 60s", srv.IdleTimeout)
+	}
+	// Must NOT be set: a body/response timeout would kill long-running tasks.
+	if srv.ReadTimeout != 0 {
+		t.Errorf("ReadTimeout = %v, want 0 (unset — POST /tasks blocks for full task run)", srv.ReadTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0 (unset — gateway streams long-lived responses)", srv.WriteTimeout)
+	}
+}
+
+// TestFindEgressConfig_EnvVarTakesPrecedence verifies that EGRESS_CONFIG is
+// tried before any other candidate. This is a security-relevant ordering: the
+// explicit operator override must always win.
+func TestFindEgressConfig_EnvVarTakesPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	egress := filepath.Join(dir, "custom-egress.yaml")
+	if err := os.WriteFile(egress, []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EGRESS_CONFIG", egress)
+	// Isolate from any real ~/.drydock/egress.yaml.
+	t.Setenv("HOME", t.TempDir())
+
+	got, err := findEgressConfig()
+	if err != nil {
+		t.Fatalf("findEgressConfig: %v", err)
+	}
+	if got != egress {
+		t.Errorf("got %q, want %q (EGRESS_CONFIG env var)", got, egress)
+	}
+}
+
+// TestFindEgressConfig_UserFileBeforeCWD verifies that the user-owned
+// ~/.drydock/egress.yaml is found when it exists, and is chosen even when
+// EGRESS_CONFIG is unset.
+func TestFindEgressConfig_UserFileFound(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("EGRESS_CONFIG", "")
+
+	drydockDir := filepath.Join(home, ".drydock")
+	if err := os.MkdirAll(drydockDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userEgress := filepath.Join(drydockDir, "egress.yaml")
+	if err := os.WriteFile(userEgress, []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := findEgressConfig()
+	if err != nil {
+		t.Fatalf("findEgressConfig: %v", err)
+	}
+	if got != userEgress {
+		t.Errorf("got %q, want %q (user file)", got, userEgress)
+	}
+}
+
+// TestFindEgressConfig_NoneFound verifies that when no egress.yaml exists in
+// any candidate location, findEgressConfig returns an error naming the paths it
+// tried (so operators can diagnose the failure).
+func TestFindEgressConfig_NoneFound(t *testing.T) {
+	t.Setenv("EGRESS_CONFIG", "")
+	t.Setenv("HOME", t.TempDir())            // no ~/.drydock/egress.yaml
+	t.Setenv("HOMEBREW_PREFIX", t.TempDir()) // no share-dir copy
+
+	// Chdir to a directory that has no config/egress.yaml.
+	emptyDir := t.TempDir()
+	prev, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(prev) }) //nolint:errcheck
+	if err := os.Chdir(emptyDir); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := findEgressConfig()
+	if err == nil {
+		t.Fatal("want error when no egress.yaml found anywhere")
+	}
+	// The error must list what was tried so operators can diagnose it.
+	if !strings.Contains(err.Error(), "tried") {
+		t.Errorf("error %q should name tried paths", err.Error())
+	}
+}
+
+// TestCheckContainerVersion_ValidVersion logs "container CLI" at Info level and
+// does not exit. This pins the happy-path parse-and-match branch.
+func TestCheckContainerVersion_ValidVersion_LogsInfo(t *testing.T) {
+	var buf bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	origRun := runCmd
+	t.Cleanup(func() { runCmd = origRun })
+	runCmd = func(name string, args ...string) ([]byte, error) {
+		return []byte("container CLI version 1.2.3"), nil
+	}
+
+	checkContainerVersion(false)
+
+	if !strings.Contains(buf.String(), "container CLI") {
+		t.Errorf("expected 'container CLI' info log; got: %s", buf.String())
+	}
+	// The version string must be surfaced so the operator can see it.
+	if !strings.Contains(buf.String(), "1.2.3") {
+		t.Errorf("expected version '1.2.3' in log; got: %s", buf.String())
+	}
+}
+
+// TestCheckContainerVersion_MajorMismatch_NonStrict logs a warning and does
+// not exit. This pins the version-mismatch / non-strict branch.
+func TestCheckContainerVersion_MajorMismatch_NonStrict_Warns(t *testing.T) {
+	var buf bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	origRun := runCmd
+	t.Cleanup(func() { runCmd = origRun })
+	runCmd = func(name string, args ...string) ([]byte, error) {
+		// Major 2 != supportedContainerMajor ("1") — triggers the mismatch path.
+		return []byte("container CLI version 2.0.0"), nil
+	}
+
+	checkContainerVersion(false) // non-strict: must warn, not exit
+
+	if !strings.Contains(buf.String(), "not in tested range") {
+		t.Errorf("expected 'not in tested range' warning; got: %s", buf.String())
+	}
+}
+
+// TestCheckContainerVersion_UnparseableOutput_NonStrict logs a "could not
+// parse" warning and does not exit. This pins the unparseable-output / non-strict
+// branch that fires when `container --version` changes its format.
+func TestCheckContainerVersion_UnparseableOutput_NonStrict_Warns(t *testing.T) {
+	var buf bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	origRun := runCmd
+	t.Cleanup(func() { runCmd = origRun })
+	runCmd = func(name string, args ...string) ([]byte, error) {
+		return []byte("unexpected output — no version line here"), nil
+	}
+
+	checkContainerVersion(false) // non-strict: must warn, not exit
+
+	if !strings.Contains(buf.String(), "could not parse") {
+		t.Errorf("expected 'could not parse' warning; got: %s", buf.String())
+	}
 }

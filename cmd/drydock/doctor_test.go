@@ -82,6 +82,31 @@ func TestGeminiPresent(t *testing.T) {
 	}
 }
 
+// TestLastLine covers the pure string helper used to extract a version string
+// from `container run` output that may have multi-line preamble noise.
+func TestLastLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"single line no newline", "hello", "hello"},
+		{"single line trailing newline", "hello\n", "hello"},
+		{"multi-line returns last non-empty", "line1\nline2\nline3", "line3"},
+		{"multi-line with trailing newline", "line1\nline2\n", "line2"},
+		{"whitespace trimmed", "  spaced  \n", "spaced"},
+		{"container-run preamble", "[6/6] Starting container [0s]\n0.49.0\n", "0.49.0"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := lastLine(c.in)
+			if got != c.want {
+				t.Errorf("lastLine(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestAPIKeySource(t *testing.T) {
 	file := map[string]string{"OPENAI_API_KEY": "sk-o"}
 
