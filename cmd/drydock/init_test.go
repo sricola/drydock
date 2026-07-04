@@ -8,6 +8,53 @@ import (
 	"testing"
 )
 
+func TestMacOSTooOld(t *testing.T) {
+	cases := []struct {
+		ver    string
+		tooOld bool
+	}{
+		{"26.0.0", false}, // exactly the minimum
+		{"26", false},
+		{"26.1.2", false},
+		{"27.0.0", false}, // newer
+		{"25.6.0", true},  // one major below → blocked
+		{"15.5", true},
+		{"1.0", true},
+		{" 26.0 ", false}, // leading/trailing space tolerated
+		{"", false},       // unparseable → don't block
+		{"Tahoe", false},  // unparseable → don't block
+		{"26beta", false}, // "26beta" is not an int major → don't block (won't parse)
+	}
+	for _, c := range cases {
+		if got := macOSTooOld(c.ver); got != c.tooOld {
+			t.Errorf("macOSTooOld(%q) = %v, want %v", c.ver, got, c.tooOld)
+		}
+	}
+}
+
+func TestNetworkPresent(t *testing.T) {
+	// Real `container network ls` format: name-first (NETWORK / SUBNET columns).
+	const ls = "NETWORK         SUBNET\n" +
+		"default         192.168.64.0/24\n" +
+		"drydock-egress  192.168.66.0/24\n"
+	if !networkPresent(ls, "drydock-egress") {
+		t.Error("drydock-egress present in ls output but networkPresent=false")
+	}
+	if networkPresent(ls, "drydock-nonexistent") {
+		t.Error("absent network reported present")
+	}
+	if networkPresent("NETWORK         SUBNET\n", "drydock-egress") {
+		t.Error("header-only output must not match")
+	}
+	if networkPresent("", "drydock-egress") {
+		t.Error("empty output must not match")
+	}
+	// TrimSpace: an indented line still matches on the name column.
+	if !networkPresent("   drydock-egress  192.168.66.0/24\n", "drydock-egress") {
+		t.Error("indented network line should match after trim")
+	}
+}
+
 func TestSandboxImageNudge(t *testing.T) {
 	const built = "drydock-sandbox:latest"
 	cases := []struct {

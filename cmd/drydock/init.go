@@ -216,6 +216,16 @@ func stepWarn(label, detail string) {
 // formula already declares these constraints, but source builds skip that
 // path. Without this check, the failure surfaces 5 steps later as a cryptic
 // `container build` error or vmnet bind failure.
+// macOSTooOld reports whether a `sw_vers -productVersion` string (e.g. "26.0.1")
+// names a macOS major version below the minimum Apple container needs (26,
+// Tahoe). An unparseable version returns false — don't block on a version string
+// we can't read; the downstream container checks will fail loudly if it's real.
+func macOSTooOld(ver string) bool {
+	majorStr := strings.SplitN(strings.TrimSpace(ver), ".", 2)[0]
+	major, err := strconv.Atoi(majorStr)
+	return err == nil && major < 26
+}
+
 func checkPlatform() {
 	if runtime.GOOS != "darwin" {
 		step("platform", false, "drydock requires macOS — Apple container is darwin-only")
@@ -234,9 +244,7 @@ func checkPlatform() {
 		return
 	}
 	ver := strings.TrimSpace(string(out))
-	majorStr := strings.SplitN(ver, ".", 2)[0]
-	major, err := strconv.Atoi(majorStr)
-	if err == nil && major < 26 {
+	if macOSTooOld(ver) {
 		step("platform", false, "macOS "+ver+" — Apple container requires macOS 26 (Tahoe) or newer")
 		os.Exit(1)
 	}
@@ -286,17 +294,27 @@ func ensureContainerSystem() {
 	step("container system", true, "already running")
 }
 
+// networkPresent reports whether `container network ls` output lists a network
+// whose name column (the first field) starts with name. Extracted from
+// ensureNetwork so the parse is testable without the container runtime.
+func networkPresent(lsOutput, name string) bool {
+	for _, line := range strings.Split(lsOutput, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), name) {
+			return true
+		}
+	}
+	return false
+}
+
 func ensureNetwork() {
 	out, err := exec.Command("container", "network", "ls").CombinedOutput()
 	if err != nil {
 		step("network", false, strings.TrimSpace(string(out)))
 		os.Exit(1)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "drydock-egress") {
-			step("network drydock-egress", true, "exists (192.168.66.0/24)")
-			return
-		}
+	if networkPresent(string(out), "drydock-egress") {
+		step("network drydock-egress", true, "exists (192.168.66.0/24)")
+		return
 	}
 	if out, err := exec.Command("container", "network", "create",
 		"--subnet", "192.168.66.0/24", "drydock-egress").CombinedOutput(); err != nil {
