@@ -302,9 +302,8 @@ func startBrokerdOpenAI(t *testing.T, openaiKey string) *brokerdHandle {
 }
 
 // TestBrokerd_CodexTaskReachesAwaitingApproval submits a task with
-// agent:"codex" and asserts the broker registers it (task appears in
-// /admin/tasks as running or awaiting_approval), then kills it to avoid
-// spending real tokens.
+// agent:"codex" and asserts the broker registers it (task reaches
+// awaiting_approval), then kills it to avoid spending real tokens.
 //
 // Skip conditions (any one is sufficient):
 //   - OPENAI_API_KEY unset — no key, no spend
@@ -357,9 +356,9 @@ func TestBrokerd_CodexTaskReachesAwaitingApproval(t *testing.T) {
 		postDone <- postResult{statusCode: resp.StatusCode, body: buf[:n]}
 	}()
 
-	// Poll /admin/tasks until the task appears (running or awaiting_approval).
+	// Poll /admin/tasks until the task reaches awaiting_approval.
 	// Give it up to 60 s for the container CLI to start the VM.
-	var taskID string
+	var taskID, stage string
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := h.get("/admin/tasks")
@@ -375,30 +374,29 @@ func TestBrokerd_CodexTaskReachesAwaitingApproval(t *testing.T) {
 		}
 		resp.Body.Close()
 		for _, task := range tasks {
-			id, _ := task["id"].(string)
-			if id != "" {
+			if id, _ := task["id"].(string); id != "" {
 				taskID = id
-				break
+				stage, _ = task["stage"].(string)
 			}
 		}
-		if taskID != "" {
+		if stage == "awaiting_approval" {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	if taskID == "" {
-		// The task never appeared — it may have been rejected immediately
-		// (e.g. the container CLI is unavailable on this host). Check what
-		// the POST returned before declaring failure.
+	if stage != "awaiting_approval" {
+		// The task never reached awaiting_approval — it may have been rejected
+		// immediately (e.g. the container CLI is unavailable on this host).
+		// Check what the POST returned before declaring failure.
 		select {
 		case pr := <-postDone:
 			if pr.err != nil {
 				t.Fatalf("POST /tasks: %v", pr.err)
 			}
-			t.Fatalf("task never appeared in /admin/tasks; POST returned %d: %s",
-				pr.statusCode, pr.body)
+			t.Fatalf("task never reached awaiting_approval (stage=%q taskID=%q); POST returned %d: %s",
+				stage, taskID, pr.statusCode, pr.body)
 		default:
-			t.Fatal("task never appeared in /admin/tasks within 60 s")
+			t.Fatalf("task never reached awaiting_approval within 60 s (stage=%q taskID=%q)", stage, taskID)
 		}
 	}
 
