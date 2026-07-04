@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -10,6 +11,12 @@ import (
 
 	"drydock/internal/brokerclient"
 )
+
+// errOut is the writer used by printClientErr. Tests replace it to capture
+// output without redirecting the global os.Stderr. Production code is
+// unaffected: errOut is initialised to os.Stderr and never reassigned at
+// runtime.
+var errOut io.Writer = os.Stderr
 
 // taskState mirrors broker.TaskState. We don't import the broker package
 // to keep the CLI lean; the shape is small and the JSON contract is stable.
@@ -81,10 +88,10 @@ const brokerDownHint = "brokerd not running — start it in another shell with `
 // HTTP transport error a first-time user can't act on.
 func printClientErr(err error) {
 	if brokerdDown(err) {
-		fmt.Fprintln(os.Stderr, "drydock:", brokerDownHint)
+		fmt.Fprintln(errOut, "drydock:", brokerDownHint)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "drydock: %v\n", err)
+	fmt.Fprintf(errOut, "drydock: %v\n", err)
 }
 
 func listPending() {
