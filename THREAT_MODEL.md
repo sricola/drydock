@@ -286,6 +286,22 @@ the operator. Another user on the same host cannot reach it. But a
 process running as the operator can. drydock assumes the host's user
 boundary is the relevant trust boundary.
 
+The optional web UI (`drydock ui`) adds a loopback HTTP surface over the
+same admin actions (submit, approve/deny, kill, audit reads). It binds
+`127.0.0.1` only, requires a per-session bearer token (constant-time
+compare; carried in the URL fragment so it never hits server logs), and
+rejects non-loopback `Host`/`Origin` headers — the browser is the one
+operator-level process that runs attacker-supplied code, and these checks
+stop a hostile web page from driving the API via DNS rebinding. Submissions
+through the UI refuse `auto_approve`, and audit reads reject symlinks.
+`--no-token` removes the token gate with a loud warning; use it only on
+single-user machines. The trust boundary itself is unchanged: a native
+process running as the operator could already reach the broker socket
+directly. Verified by: `internal/webui` tests (`TestAuth`,
+`TestHostCheck`, `TestNonLoopbackOriginRejected`,
+`TestConstantTimeTokenCompare`, `TestSymlinkRejected`,
+`TestSubmitRejectsAutoApprove`).
+
 ### N7. Apple `container` runtime escapes
 
 A guest-to-host escape in the VM stack defeats every claim above. We

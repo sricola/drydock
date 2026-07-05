@@ -222,7 +222,15 @@ so it can ship independently.
   Factor the container operations behind an interface so an alternative backend
   (e.g. Linux microVM) is a port, not a rewrite. *Stretch — only once a second
   backend is actually wanted; don't abstract for one implementation.*
-- **4.9 Egress depth (IPv6 / plain-HTTP).** The allowlist proxy is HTTPS/CONNECT
+- **4.9 Web UI surface.** *Shipped.* `drydock ui` serves a loopback SPA
+  (board, diff review, submit, approve/deny/kill, history). It can drive the
+  approval gate, so it is attack surface, and is treated as such: loopback-only
+  bind, per-session bearer token (constant-time compare, URL-fragment
+  transport), `Host`/`Origin` checks against DNS rebinding, symlink-rejecting
+  audit reads, and UI submissions refuse `auto_approve`. Documented under
+  THREAT_MODEL N6 with its enforcing tests. `--no-token` exists for trusted
+  single-user machines and warns loudly.
+- **4.10 Egress depth (IPv6 / plain-HTTP).** The allowlist proxy is HTTPS/CONNECT
   and IPv4-centric; audit and document behavior for IPv6 literals and plain-HTTP
   CONNECT, and either enforce or explicitly state the limit (no silent gaps —
   the honesty constraint applies to egress edges too).
