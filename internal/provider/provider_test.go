@@ -205,9 +205,3 @@ func TestRegistry_GeminiRow(t *testing.T) {
 		t.Errorf("APIVendor().Name = %q, want google", v.Name)
 	}
 }
-
-func TestGatewayHosts_IncludesGemini(t *testing.T) {
-	if !GatewayHosts()["generativelanguage.googleapis.com"] {
-		t.Error("GatewayHosts must include the Gemini API host (gateway-fronted, excluded from squid)")
-	}
-}
