@@ -27,8 +27,13 @@ image/            # drydock-sandbox (hosts claude-code + codex): Dockerfile + en
 image/anchor/     # drydock-anchor: FROM scratch + static Go sleep binary
 tests/integration # //go:build integration — boots brokerd against the real container CLI
 site/             # landing page + docs (site/docs/*.md, rendered by make docs)
-docs/superpowers/ # design specs + implementation plans
 ```
+
+The design specs and implementation plans from the build-out are archived
+on the `design-archive` branch (`git show design-archive:docs/superpowers/`),
+kept out of the working tree so the checkout stays focused on the shipped
+code. They record *why* decisions were made; the code, `THREAT_MODEL.md`, and
+this file carry what a contributor needs day to day.
 
 Three good entry points for understanding the system: **`internal/broker/`**
 (the task lifecycle — gates, concurrency, the egress widening hook),

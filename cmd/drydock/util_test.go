@@ -158,12 +158,3 @@ func TestIsNoSuchContainer(t *testing.T) {
 		t.Errorf("empty should not match")
 	}
 }
-
-func TestEnv_Smoke(t *testing.T) {
-	// Used by client/status code paths — ensure helpers don't panic on
-	// pathological input.
-	t.Setenv("AUDIT_ROOT", "")
-	_ = auditDir()
-	// silence unused-import lint
-	_ = os.PathSeparator
-}

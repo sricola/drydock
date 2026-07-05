@@ -54,19 +54,19 @@ attack-that-fails. Host-side (A3–A6) run in CI via `make redteam`; VM-backed
 carries `Verified by:` links for each. Remaining polish: a nicer per-claim
 green/red report wrapper (currently raw `go test` output).
 
-### 1.2 Adversarial tests for the gaps
-Write the missing tests (A1, A2, A6, A7), each named/labeled to its claim so
-the harness can collect them. Promote A3/A4/A5 into the same convention.
+### 1.2 Adversarial tests for the gaps — *landed*
+The missing tests (A1, A2, A6, A7) are written, each named/labeled to its
+claim; A3/A4/A5 were promoted into the same convention.
 
-### 1.3 `make redteam`
-A target that runs the whole labeled suite and prints a per-claim green/red
-**containment report**. The host-side subset (A3–A6) runs in CI; the VM subset
-(A1, A2, A7) runs on macOS / Apple-silicon. This is the skeptic demo: *clone
-it, run it, watch every attack fail.*
+### 1.3 `make redteam` — *landed*
+A target that runs the whole labeled suite. The host-side subset (A3–A6) runs
+in CI; the VM subset (A1, A2, A7) runs via `make redteam-vm` on macOS /
+Apple-silicon. This is the skeptic demo: *clone it, run it, watch every attack
+fail.* Remaining polish: a per-claim green/red report wrapper (currently raw
+`go test` output).
 
-### 1.4 `THREAT_MODEL.md` "Verified by:" links
-Each A-claim cites its enforcing test (A3/A4 already do) and the doc gains a
-"Reproduce: `make redteam`" header.
+### 1.4 `THREAT_MODEL.md` "Verified by:" links — *landed*
+Every A-claim cites its enforcing test.
 
 **Done when:** `make redteam` is green on a capable host, CI runs the host-side
 subset, and every A1–A7 cites a test.
@@ -82,8 +82,9 @@ yet" residual.
 **Status:** the `release` GitHub Actions workflow now produces, on every tag,
 a CycloneDX SBOM (2.1), keyless cosign signatures, and SLSA build provenance
 (2.3) — attached to the release; consumer checks are in SECURITY.md "Verifying
-a release". Remaining: reproducible-build docs + `govulncheck` (2.4), a
-dependency-pin policy (2.5), and Apple notarization (2.2, needs the paid cert).
+a release". Reproducible builds (2.4) and the dependency-pin policy +
+`govulncheck` CI gate (2.5) have since landed. Remaining: Apple notarization
+(2.2, needs the paid cert).
 
 ### 2.3 Keyless signing + provenance — *do first (free, high signal)*
 `cosign sign-blob` the release tarball; SLSA build provenance via GitHub
@@ -221,7 +222,15 @@ so it can ship independently.
   Factor the container operations behind an interface so an alternative backend
   (e.g. Linux microVM) is a port, not a rewrite. *Stretch — only once a second
   backend is actually wanted; don't abstract for one implementation.*
-- **4.9 Egress depth (IPv6 / plain-HTTP).** The allowlist proxy is HTTPS/CONNECT
+- **4.9 Web UI surface.** *Shipped.* `drydock ui` serves a loopback SPA
+  (board, diff review, submit, approve/deny/kill, history). It can drive the
+  approval gate, so it is attack surface, and is treated as such: loopback-only
+  bind, per-session bearer token (constant-time compare, URL-fragment
+  transport), `Host`/`Origin` checks against DNS rebinding, symlink-rejecting
+  audit reads, and UI submissions refuse `auto_approve`. Documented under
+  THREAT_MODEL N6 with its enforcing tests. `--no-token` exists for trusted
+  single-user machines and warns loudly.
+- **4.10 Egress depth (IPv6 / plain-HTTP).** The allowlist proxy is HTTPS/CONNECT
   and IPv4-centric; audit and document behavior for IPv6 literals and plain-HTTP
   CONNECT, and either enforce or explicitly state the limit (no silent gaps —
   the honesty constraint applies to egress edges too).
@@ -234,24 +243,23 @@ remaining edge is either enforced or documented as a stated limit.
 
 ## Sequencing
 
-1. **Phase 1 first** (1.1 → 1.2 → 1.3 → 1.4) — highest credibility, fully in
-   our control, makes every later phase (and an eventual audit) cheaper.
-2. **Phase 2 in parallel where it's free:** 2.3 (cosign/SLSA) + 2.1 (SBOM)
-   first, then 2.4 / 2.5 (build docs + CI guards), then 2.2 (notarization) once
-   the Apple cert is in hand.
+1. **Phase 1 — complete.** Every A-claim has a runnable attack-that-fails
+   (`make redteam` in CI for A3–A6; `make redteam-vm` for A1/A2/A7).
+2. **Phase 2 — complete except 2.2** (notarization), which waits on the paid
+   Apple Developer ID certificate.
 3. **Phase 4 reliability is interleaved, not deferred** — 4.1 (crash recovery)
-   and 4.3 (aggregate budget) are correctness gaps and rank ahead of new
-   providers; 4.5 (image CVE scan) rides alongside Phase 2's supply-chain work.
-4. **Phase 3 providers: 3A landed, 3C landed.** Gemini (3B) is now a single
-   registry row — the seam is proven; add the native vendor when the Google
-   auth-header shape and pricing table are confirmed.
+   landed; 4.3 (aggregate budget) is the top open correctness gap and ranks
+   ahead of new providers; 4.5 (image CVE scan) rides alongside Phase 2's
+   supply-chain work.
+4. **Phase 3 providers: 3A landed, 3C landed; 3B built, experimental.** The
+   native Gemini vendor shipped as a single registry row — the seam is proven —
+   and stays experimental until the real-key end-to-end run passes (see the
+   Phase 3 status).
 
 **Prerequisites to flag:**
 - The A1 / A2 / A7 red-team tests need the VM, so full `make redteam` is a
   macOS / Apple-silicon gate; CI runs only the host-side subset (A3–A6).
 - 2.2 notarization requires a paid Apple Developer ID certificate.
-- 3B Gemini needs its own A1/A2 red-team coverage before it counts as shipped
-  — a new credential path is a new attack surface.
-
-**First concrete deliverable:** the `make redteam` skeleton + the A1 key-exfil
-test — the single most convincing artifact.
+- 3B's A1/A2 red-team coverage is in place (verified on container hardware);
+  the remaining gate to *landed* is one end-to-end run against the real Gemini
+  API — macOS + a real `GEMINI_API_KEY`.
