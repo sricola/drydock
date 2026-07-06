@@ -115,10 +115,11 @@ but the binaries inside it — what actually runs — are verifiable.
 `govulncheck` runs in CI (`.github/workflows/test.yml`) and **fails the build on
 a known vulnerability** in any dependency.
 
-### 2.2 Signed + notarized macOS binaries — *needs a paid prereq*
+### 2.2 Signed + notarized macOS binaries — *event-driven*
 `codesign` (Developer ID) + `notarytool` + staple so brew-installed binaries
 clear Gatekeeper without the quarantine dance. **Prerequisite: Apple Developer
-Program ($99/yr) + a Developer ID certificate.**
+Program ($99/yr) + a Developer ID certificate.** Enrollment is planned; this
+item holds no backlog slot and fires when the certificate is in hand.
 
 **Done when:** each release ships an SBOM + cosign signature + SLSA provenance,
 macOS binaries are notarized, the build is documented-reproducible, and the
@@ -142,7 +143,9 @@ install, entrypoint), and A1/A2 red-team + the `--approval-mode` fix are
 verified (A1/A2 on real container hardware; the CLI-produces-edits-headless
 property via a mocked upstream). It does **not** yet count as landed: the full
 end-to-end run through the gateway against the real Gemini API is macOS-gated and
-needs a real key. Until that passes, the lane is documented as experimental.
+needs a real key. Until that passes, the lane is documented as experimental
+and **parked** — no further work is planned until a key exists; the
+openai-compat lane is the supported Gemini route meanwhile.
 
 ### 3A — Provider registry refactor — *landed*
 Introduced one source of truth: a `Provider{Agent, Vendor, AuthModes, …}` table
@@ -234,32 +237,63 @@ so it can ship independently.
   and IPv4-centric; audit and document behavior for IPv6 literals and plain-HTTP
   CONNECT, and either enforce or explicitly state the limit (no silent gaps —
   the honesty constraint applies to egress edges too).
+- **4.11 Unattended operation (launchd daemon).** brokerd today lives in a
+  terminal (`drydock start`) and dies with it. Add `drydock daemon install`: a
+  launchd agent (`~/Library/LaunchAgents` plist) so brokerd starts at login and
+  survives reboots, tasks are submittable while the operator is away, and
+  approval gates queue for later pickup (the web UI is the natural pickup
+  point) instead of timing out. Ships *after* 4.3 by design: unattended
+  operation without an aggregate spend ceiling is runaway-by-design — nobody
+  watching *and* nothing bounding total burn. (The single-instance `flock`
+  from 4.1 already makes an accidental second daemon safe.)
 
 **Done when:** a `brokerd` crash leaves no orphaned VM or wedged slot, spend is
-bounded in aggregate, the sandbox image is CVE-scanned in CI, and each
-remaining edge is either enforced or documented as a stated limit.
+bounded in aggregate, brokerd runs unattended across login/reboot, the sandbox
+image is CVE-scanned in CI, and each remaining edge is either enforced or
+documented as a stated limit.
 
 ---
 
-## Sequencing
+## Backlog (ordered)
 
-1. **Phase 1 — complete.** Every A-claim has a runnable attack-that-fails
-   (`make redteam` in CI for A3–A6; `make redteam-vm` for A1/A2/A7).
-2. **Phase 2 — complete except 2.2** (notarization), which waits on the paid
-   Apple Developer ID certificate.
-3. **Phase 4 reliability is interleaved, not deferred** — 4.1 (crash recovery)
-   landed; 4.3 (aggregate budget) is the top open correctness gap and ranks
-   ahead of new providers; 4.5 (image CVE scan) rides alongside Phase 2's
-   supply-chain work.
-4. **Phase 3 providers: 3A landed, 3C landed; 3B built, experimental.** The
-   native Gemini vendor shipped as a single registry row — the seam is proven —
-   and stays experimental until the real-key end-to-end run passes (see the
-   Phase 3 status).
+Phases 1–2 are complete (2.2 excepted, below); 3A/3C landed, 3B parked. What
+remains is one ranked list, updated as items land. The interleave is
+deliberate: correctness and operator items alternate with credibility items —
+Phases 1–2 bought a lot of external credibility while the operator side got
+little, so the top of the list leans operator.
 
-**Prerequisites to flag:**
-- The A1 / A2 / A7 red-team tests need the VM, so full `make redteam` is a
-  macOS / Apple-silicon gate; CI runs only the host-side subset (A3–A6).
-- 2.2 notarization requires a paid Apple Developer ID certificate.
-- 3B's A1/A2 red-team coverage is in place (verified on container hardware);
-  the remaining gate to *landed* is one end-to-end run against the real Gemini
-  API — macOS + a real `GEMINI_API_KEY`.
+1. **4.3 Aggregate budget cap** — the top open correctness gap, and a hard
+   prerequisite for #2: unattended operation without an aggregate spend
+   ceiling is runaway-by-design.
+2. **4.11 Unattended operation (launchd daemon)** — the demo→daily-tool gap;
+   gates and the web UI only matter if brokerd is reliably up.
+3. **4.5 Sandbox-image CVE scan in CI** — cheap (one CI job); the image-side
+   analogue of `govulncheck`.
+4. **4.2 Push partial-failure contract** — ambiguous git states are
+   gate-adjacent; define the failure contract and surface it in the audit row.
+5. **4.4 `drydock retry`** — pairs with the daemon: re-run a prior task from
+   its audit record.
+6. **4.10 Egress depth (IPv6 / plain-HTTP)** — enforce or loudly document;
+   the honesty constraint applied to egress edges.
+7. **4.7 Observability** — wants real multi-run usage first, which unattended
+   operation generates.
+8. **4.6 Agent-CLI bump automation** — low urgency; the red-team suite
+   already gates bumps.
+9. **Phase 1 report wrapper** — per-claim green/red output for `make redteam`;
+   cosmetic, bundle opportunistically.
+
+**Event-driven (no backlog slot):**
+- **2.2 Notarization** — fires when the Apple Developer ID certificate is in
+  hand (enrollment planned).
+
+**Parked:**
+- **3B native Gemini** — experimental until one end-to-end run against the
+  real Gemini API passes (macOS + a real `GEMINI_API_KEY`); its A1/A2
+  red-team coverage is already in place. No further work until a key exists;
+  the openai-compat lane is the supported Gemini route meanwhile.
+- **3D config-declared providers, 4.8 runtime abstraction** — stretch, by
+  this doc's own YAGNI rule.
+
+**Standing note:** the A1/A2/A7 red-team tests need the VM, so full
+`make redteam` is a macOS / Apple-silicon gate; CI runs the host-side subset
+(A3–A6).
