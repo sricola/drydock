@@ -242,10 +242,14 @@ so it can ship independently.
   launchd agent (`~/Library/LaunchAgents` plist) so brokerd starts at login and
   survives reboots, tasks are submittable while the operator is away, and
   approval gates queue for later pickup (the web UI is the natural pickup
-  point) instead of timing out. Ships *after* 4.3 by design: unattended
-  operation without an aggregate spend ceiling is runaway-by-design — nobody
-  watching *and* nothing bounding total burn. (The single-instance `flock`
-  from 4.1 already makes an accidental second daemon safe.)
+  point) instead of timing out. Decoupled from 4.3 (2026-07-06): until the
+  aggregate cap lands, unattended spend is bounded per task, not in total —
+  `task_budget_usd` and `task_max_requests` cap each task, and
+  subscription-mode runs have no metered spend at all. Operators on API keys
+  should size `max_concurrent_tasks × task_budget_usd × expected task rate`
+  with that in mind; the docs for the daemon must state this limit loudly
+  (the honesty constraint). (The single-instance `flock` from 4.1 already
+  makes an accidental second daemon safe.)
 
 **Done when:** a `brokerd` crash leaves no orphaned VM or wedged slot, spend is
 bounded in aggregate, brokerd runs unattended across login/reboot, the sandbox
@@ -262,11 +266,11 @@ deliberate: correctness and operator items alternate with credibility items —
 Phases 1–2 bought a lot of external credibility while the operator side got
 little, so the top of the list leans operator.
 
-1. **4.3 Aggregate budget cap** — the top open correctness gap, and a hard
-   prerequisite for #2: nobody watching *and* nothing bounding total burn
-   (4.11 states the coupling).
-2. **4.11 Unattended operation (launchd daemon)** — the demo→daily-tool gap;
+1. **4.11 Unattended operation (launchd daemon)** — the demo→daily-tool gap;
    gates and the web UI only matter if brokerd is reliably up.
+2. **4.3 Aggregate budget cap** — nothing bounds cross-task spend on an API
+   key; until it lands, unattended worst-case burn is bounded only per task
+   (see 4.11's interim note).
 3. **4.5 Sandbox-image CVE scan in CI** — cheap (one CI job); the image-side
    analogue of `govulncheck`.
 4. **4.2 Push partial-failure contract** — ambiguous git states are
