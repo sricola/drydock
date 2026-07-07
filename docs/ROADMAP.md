@@ -86,12 +86,12 @@ a release". Reproducible builds (2.4) and the dependency-pin policy +
 `govulncheck` CI gate (2.5) have since landed. Remaining: Apple notarization
 (2.2, needs the paid cert).
 
-### 2.3 Keyless signing + provenance — *do first (free, high signal)*
+### 2.3 Keyless signing + provenance — *landed*
 `cosign sign-blob` the release tarball; SLSA build provenance via GitHub
 Actions OIDC (`actions/attest-build-provenance`). No certificate cost
 (Sigstore keyless). Document `cosign verify` + provenance checks for users.
 
-### 2.1 SBOM per release
+### 2.1 SBOM per release — *landed*
 Generate with `syft` over Go modules **and** the sandbox image's apt/npm
 packages; attach SPDX/CycloneDX to each GitHub release.
 
@@ -263,8 +263,8 @@ Phases 1–2 bought a lot of external credibility while the operator side got
 little, so the top of the list leans operator.
 
 1. **4.3 Aggregate budget cap** — the top open correctness gap, and a hard
-   prerequisite for #2: unattended operation without an aggregate spend
-   ceiling is runaway-by-design.
+   prerequisite for #2: nobody watching *and* nothing bounding total burn
+   (4.11 states the coupling).
 2. **4.11 Unattended operation (launchd daemon)** — the demo→daily-tool gap;
    gates and the web UI only matter if brokerd is reliably up.
 3. **4.5 Sandbox-image CVE scan in CI** — cheap (one CI job); the image-side
@@ -284,13 +284,12 @@ little, so the top of the list leans operator.
 
 **Event-driven (no backlog slot):**
 - **2.2 Notarization** — fires when the Apple Developer ID certificate is in
-  hand (enrollment planned).
+  hand.
 
 **Parked:**
 - **3B native Gemini** — experimental until one end-to-end run against the
   real Gemini API passes (macOS + a real `GEMINI_API_KEY`); its A1/A2
-  red-team coverage is already in place. No further work until a key exists;
-  the openai-compat lane is the supported Gemini route meanwhile.
+  red-team coverage is already in place. Details in the Phase 3 status.
 - **3D config-declared providers, 4.8 runtime abstraction** — stretch, by
   this doc's own YAGNI rule.
 
