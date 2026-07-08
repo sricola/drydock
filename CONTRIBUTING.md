@@ -56,6 +56,12 @@ GitHub Actions runs `go build`, `go test -race`, and `go vet` on every push/PR.
 Integration (`make test-integration`) requires the `container` runtime and is
 macOS-only — it runs locally, not in CI. No real Anthropic or OpenAI spend.
 
+The sandbox image is CVE-scanned in CI (`image-scan.yml`: grype + `cmd/cve-gate`).
+If the gate fails, prefer bumping the pinned package/base; to accept a finding
+temporarily, add `{id, reason, expires}` to `image/cve-allowlist.yaml`.
+Local repro needs Docker (`docker build -t s image/ && grype docker:s`) —
+Apple `container`'s OCI export is not grype-readable.
+
 Some tests are gated behind build tags and require a live host (squid, the
 container runtime):
 

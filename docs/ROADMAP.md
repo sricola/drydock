@@ -210,10 +210,12 @@ so it can ship independently.
 - **4.4 `drydock retry`.** Re-run a prior task from its audit record (same repo
   ref, prompt, allowlist) without reconstructing the invocation by hand —
   closes the loop with the per-task audit trail Phase 1 already produces.
-- **4.5 Sandbox-image vulnerability scanning.** The SBOM (2.1) lists the
-  image's packages; nothing yet *scans* them. Run `grype`/`trivy` over the
-  built image in CI and fail on known-critical CVEs — the image-side analogue
-  of `govulncheck` (2.5) for Go deps.
+- **4.5 Sandbox-image CVE scanning.** *Landed.* grype scans the built image
+  daily in CI and on every image-touching PR; the gate fails on fixable
+  High/Critical CVEs not covered by an active allowlist entry. Exceptions live
+  in `image/cve-allowlist.yaml` with a mandatory reason and expiry date —
+  expired entries fail CI again rather than rotting silently. 57 entries seeded
+  from the first baseline: gosu stdlib advisories, toolchain GOROOT src, jq.
 - **4.6 Agent-CLI bump automation.** The pinned agent CLIs
   (`@anthropic-ai/claude-code`, `@openai/codex`) drift; a scheduled job that
   proposes a pinned-version bump PR (with the red-team suite as the gate) keeps
@@ -249,6 +251,16 @@ so it can ship independently.
   (`approval_timeout: 0s`); pickup stays manual (`drydock ui`). The daemon
   docs state the no-aggregate-cap limit loudly — spend is bounded per task
   until 4.3 lands.
+- **4.12 gosu privilege-drop hardening.** The first image CVE baseline
+  found `/usr/sbin/gosu` (Debian, built with go1.19.8) carrying 33 stale
+  stdlib advisories — and it is the entrypoint's root→agent drop, run every
+  task. Replace with util-linux `setpriv` (already-in-base candidate) or a
+  rebuilt/current gosu; clears the largest allowlist cluster before its
+  2026-09-06 expiry.
+- **4.13 Image package currency.** jq/libjq1 sit one deb12 point-release
+  behind a fix (deb12u2); add `apt-get upgrade` or targeted version pins to
+  the Dockerfile flow so Debian security updates land without waiting for a
+  base-image digest bump. Clears the jq allowlist cluster.
 
 **Done when:** a `brokerd` crash leaves no orphaned VM or wedged slot, spend is
 bounded in aggregate, brokerd runs unattended across login/reboot, the sandbox
@@ -268,19 +280,23 @@ little, so the top of the list leans operator.
 1. **4.3 Aggregate budget cap** — nothing bounds cross-task spend on an API
    key; now that unattended operation (4.11) has landed, this is the gap that
    matters most — worst-case burn is bounded only per task.
-2. **4.5 Sandbox-image CVE scan in CI** — cheap (one CI job); the image-side
-   analogue of `govulncheck`.
+2. **4.12 gosu privilege-drop hardening** — security-posture work with a
+   deadline set by the allowlist expiry (2026-09-06); clears the largest CVE
+   cluster.
 3. **4.2 Push partial-failure contract** — ambiguous git states are
    gate-adjacent; define the failure contract and surface it in the audit row.
-4. **4.4 `drydock retry`** — pairs with the daemon: re-run a prior task from
+4. **4.13 Image package currency** — jq/libjq1 one point-release behind a
+   fix; targeted version pins or `apt-get upgrade` clears the jq allowlist
+   cluster.
+5. **4.4 `drydock retry`** — pairs with the daemon: re-run a prior task from
    its audit record.
-5. **4.10 Egress depth (IPv6 / plain-HTTP)** — enforce or loudly document;
+6. **4.10 Egress depth (IPv6 / plain-HTTP)** — enforce or loudly document;
    the honesty constraint applied to egress edges.
-6. **4.7 Observability** — wants real multi-run usage first, which unattended
+7. **4.7 Observability** — wants real multi-run usage first, which unattended
    operation generates.
-7. **4.6 Agent-CLI bump automation** — low urgency; the red-team suite
+8. **4.6 Agent-CLI bump automation** — low urgency; the red-team suite
    already gates bumps.
-8. **Phase 1 report wrapper** — per-claim green/red output for `make redteam`;
+9. **Phase 1 report wrapper** — per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
 
 **Event-driven (no backlog slot):**

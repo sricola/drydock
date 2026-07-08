@@ -111,6 +111,7 @@ demo:
 # the release tarball. Go-native (no external binary); the version is pinned for
 # reproducibility. The release workflow runs this after `make dist`.
 CYCLONEDX_VERSION := v1.7.0
+GRYPE_VERSION := v0.115.0 # image CVE scanner (.github/workflows/image-scan.yml reads this pin)
 sbom:
 	@mkdir -p dist
 	go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@$(CYCLONEDX_VERSION) \

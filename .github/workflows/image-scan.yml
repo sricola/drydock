@@ -1,0 +1,41 @@
+name: image-scan
+
+on:
+  schedule:
+    - cron: "17 7 * * *" # daily; grype pulls a fresh vuln DB each run
+  push:
+    branches: [main]
+    paths:
+      - "image/**"
+      - "cmd/cve-gate/**"
+      - ".github/workflows/image-scan.yml"
+  pull_request:
+    paths:
+      - "image/**"
+      - "cmd/cve-gate/**"
+      - ".github/workflows/image-scan.yml"
+
+jobs:
+  cve-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # CVE applicability for the image's apt/npm/Go packages is
+      # arch-independent; building native amd64 here scans the same package
+      # set the arm64 image ships.
+      - name: build sandbox image
+        run: docker build -t drydock-sandbox:scan image/
+      - name: install grype (pinned)
+        run: |
+          GRYPE_VERSION=$(grep '^GRYPE_VERSION' Makefile | awk '{print $3}')
+          curl -sSfL "https://github.com/anchore/grype/releases/download/${GRYPE_VERSION}/grype_${GRYPE_VERSION#v}_linux_amd64.tar.gz" \
+            | tar xz -C /tmp grype
+          sudo mv /tmp/grype /usr/local/bin/grype
+          grype version
+      - name: scan
+        run: grype docker:drydock-sandbox:scan -o json > grype.json
+      - name: gate
+        run: go run ./cmd/cve-gate --grype grype.json --allowlist image/cve-allowlist.yaml

@@ -96,6 +96,10 @@ carries supply-chain attestations you can check before trusting a binary
 
 - **SBOM** — `drydock.cdx.json` (CycloneDX) lists the module dependencies.
 - **sha256** — the `.sha256` asset matches the value the Homebrew formula pins.
+- **Sandbox-image CVE scanning.** CI scans the built `drydock-sandbox` image
+  daily with grype and fails on fixable High/Critical CVEs. Accepted findings
+  live in `image/cve-allowlist.yaml`, each with a reason and an expiry date —
+  expired exceptions fail CI again rather than rotting silently.
 - **Reproducible binaries** — rebuild the binaries and confirm they match
   byte-for-byte (needs Go 1.26.4 on darwin/arm64, a clean tag checkout):
 
