@@ -19,8 +19,9 @@ import (
 // daemonLabel is the launchd job label; the plist file is named after it.
 const daemonLabel = "so.sri.drydock.brokerd"
 
-// Func vars (not consts) so the integration round-trip can point install at a
-// throwaway label/paths and never touch a real installed daemon.
+// Func vars (not consts) so tests can override path resolution if ever
+// needed; the integration round-trip instead passes throwaway label/paths
+// directly to renderPlist and the launchctl wrappers.
 var (
 	launchAgentsDir = func() string {
 		h, err := os.UserHomeDir()
@@ -84,7 +85,7 @@ func renderPlist(label, brokerdPath, logPath, home string) ([]byte, error) {
 func launchdCredentialAvailable(cfg *config.Config, fileKeys map[string]string, oauthExists func(filename string) bool, getenv func(string) string) (ok bool, shellOnly string) {
 	for _, p := range provider.Registry {
 		if p.ConfigBuilt {
-			continue // config-built providers (openai-compat) have no registry credential; brokerd reads their key from the openai_compat config block
+			continue // config-built providers (openai-compat): the config only names a key env var; if that var is one of the registry-known names it's checked via its own row, and custom names can't be stored host-side — fail closed here
 		}
 		if cfg.AuthMode(p.Vendor) == "subscription" {
 			if p.OAuthFile != "" && oauthExists(p.OAuthFile) {
@@ -287,6 +288,31 @@ func daemonInstall() {
 		fmt.Fprintln(os.Stderr, "drydock daemon install: brokerd did not become healthy within 15s.")
 		fmt.Fprintln(os.Stderr, "launchd will keep retrying (KeepAlive). Last log lines:")
 		fmt.Fprintln(os.Stderr, tailFile(logPath, 20))
+		os.Exit(1)
+	}
+	// Socket is healthy — cross-check that the launchd job itself is running so
+	// a foreground brokerd holding the flock can't mask a crash-looping daemon.
+	launchdRunning := false
+	{
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			if out, err := launchctlPrint(daemonLabel); err == nil {
+				if parseLaunchdState(out).Running {
+					launchdRunning = true
+					break
+				}
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+	if !launchdRunning {
+		fmt.Fprintln(os.Stderr, "drydock daemon install: the broker socket is healthy but the launchd job is not running —")
+		fmt.Fprintln(os.Stderr, "another brokerd (a foreground `drydock start`?) is holding the lock. The daemon will keep")
+		fmt.Fprintln(os.Stderr, "retrying (KeepAlive) and take over when that process exits. Stop it with ^C, then re-run")
+		fmt.Fprintln(os.Stderr, "`drydock daemon status` to confirm the daemon took over.")
 		os.Exit(1)
 	}
 	fmt.Printf("brokerd installed and running (label %s)\n  socket: %s\n  logs:   %s\n", daemonLabel, brokerclient.ResolveSocketPath(), logPath)
