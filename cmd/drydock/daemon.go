@@ -144,7 +144,7 @@ func launchctlBootout(label string) error {
 		return nil
 	}
 	s := string(out)
-	if strings.Contains(s, "No such process") || strings.Contains(s, "not find") || strings.Contains(s, "3: ") {
+	if strings.Contains(s, "No such process") || strings.Contains(s, "not find") {
 		return nil
 	}
 	return fmt.Errorf("launchctl bootout: %s", strings.TrimSpace(s))
@@ -161,7 +161,7 @@ func launchctlKickstart(label string) error {
 func launchctlPrint(label string) (string, error) {
 	out, err := exec.Command("launchctl", "print", launchdDomain()+"/"+label).CombinedOutput()
 	if err != nil {
-		return string(out), fmt.Errorf("launchctl print: job %s not loaded", label)
+		return string(out), fmt.Errorf("launchctl print %s: %s", label, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
 }
