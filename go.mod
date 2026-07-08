@@ -1,6 +1,6 @@
 module drydock
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/yuin/goldmark v1.8.2

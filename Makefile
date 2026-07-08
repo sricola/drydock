@@ -111,6 +111,7 @@ demo:
 # the release tarball. Go-native (no external binary); the version is pinned for
 # reproducibility. The release workflow runs this after `make dist`.
 CYCLONEDX_VERSION := v1.7.0
+GRYPE_VERSION := v0.115.0 # image CVE scanner (.github/workflows/image-scan.yml reads this pin)
 sbom:
 	@mkdir -p dist
 	go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@$(CYCLONEDX_VERSION) \
@@ -182,7 +183,7 @@ dist: clean
 
 # verify-build rebuilds the release binaries with the exact release flags and
 # checks them against a published `*-bin.sha256` — proving they reproduce
-# byte-for-byte. Needs Go 1.26.4 on darwin/arm64 and a CLEAN checkout of the
+# byte-for-byte. Needs Go 1.26.5 on darwin/arm64 and a CLEAN checkout of the
 # tag (so `git describe` matches the released version). Usage:
 #   git checkout vX.Y.Z
 #   gh release download vX.Y.Z -R sricola/drydock -p '*-bin.sha256'
