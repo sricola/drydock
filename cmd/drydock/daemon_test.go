@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"drydock/internal/config"
 )
 
 func TestRenderPlist_Golden(t *testing.T) {
@@ -50,5 +52,43 @@ func TestDaemonPlistPath_UsesLabel(t *testing.T) {
 	p := daemonPlistPath()
 	if !strings.HasSuffix(p, "/Library/LaunchAgents/"+daemonLabel+".plist") {
 		t.Errorf("plist path %q must end with /Library/LaunchAgents/%s.plist", p, daemonLabel)
+	}
+}
+
+func TestLaunchdCredentialAvailable(t *testing.T) {
+	noEnv := func(string) string { return "" }
+	noFile := func(string) bool { return false }
+	cases := []struct {
+		name      string
+		fileKeys  map[string]string
+		oauth     func(string) bool
+		getenv    func(string) string
+		subs      bool // set anthropic_auth: subscription
+		wantOK    bool
+		wantShell string
+	}{
+		{"nothing anywhere", map[string]string{}, noFile, noEnv, false, false, ""},
+		{"file key present", map[string]string{"ANTHROPIC_API_KEY": "sk-ant-x"}, noFile, noEnv, false, true, ""},
+		{"subscription with oauth file", map[string]string{}, func(f string) bool { return f == "claude-oauth.json" }, noEnv, true, true, ""},
+		{"subscription set but oauth file missing", map[string]string{}, noFile, noEnv, true, false, ""},
+		{"env-only key fails and is named", map[string]string{}, noFile,
+			func(k string) string {
+				if k == "ANTHROPIC_API_KEY" {
+					return "sk-ant-x"
+				}
+				return ""
+			}, false, false, "ANTHROPIC_API_KEY"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			if c.subs {
+				cfg.AnthropicAuth = "subscription"
+			}
+			ok, shell := launchdCredentialAvailable(cfg, c.fileKeys, c.oauth, c.getenv)
+			if ok != c.wantOK || shell != c.wantShell {
+				t.Errorf("got (ok=%v, shell=%q), want (ok=%v, shell=%q)", ok, shell, c.wantOK, c.wantShell)
+			}
+		})
 	}
 }

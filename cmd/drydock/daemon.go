@@ -7,6 +7,7 @@ import (
 	"text/template"
 
 	"drydock/internal/config"
+	"drydock/internal/provider"
 )
 
 // daemonLabel is the launchd job label; the plist file is named after it.
@@ -66,4 +67,31 @@ func renderPlist(label, brokerdPath, logPath, home string) ([]byte, error) {
 	var b bytes.Buffer
 	err := plistTmpl.Execute(&b, struct{ Label, BrokerdPath, LogPath, Home string }{label, brokerdPath, logPath, home})
 	return b.Bytes(), err
+}
+
+// launchdCredentialAvailable checks the credential sources brokerd will see
+// UNDER LAUNCHD — which never inherits the shell env. Passing requires a key
+// in ~/.drydock/api-keys.env or, for a vendor in subscription mode, its OAuth
+// file on disk. shellOnly names an env var that would have satisfied
+// `drydock start` but is invisible to launchd, so install's error message can
+// point at the exact fix.
+func launchdCredentialAvailable(cfg *config.Config, fileKeys map[string]string, oauthExists func(filename string) bool, getenv func(string) string) (ok bool, shellOnly string) {
+	for _, p := range provider.Registry {
+		if p.ConfigBuilt {
+			continue // openai-compat: its key env is loaded from api-keys.env below via APIKeyEnv when set
+		}
+		if cfg.AuthMode(p.Vendor) == "subscription" {
+			if p.OAuthFile != "" && oauthExists(p.OAuthFile) {
+				return true, ""
+			}
+			continue
+		}
+		if fileKeys[p.APIKeyEnv] != "" {
+			return true, ""
+		}
+		if getenv(p.APIKeyEnv) != "" {
+			shellOnly = p.APIKeyEnv
+		}
+	}
+	return false, shellOnly
 }
