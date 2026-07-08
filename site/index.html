@@ -44,9 +44,11 @@
 </head>
 <body>
 
+<a class="skip" href="#main">Skip to content</a>
+
 <div class="topbar">
   <div class="wrap">
-    <div class="brand">
+    <a class="brand" href="#top" aria-label="drydock — back to top">
       <svg class="mk" viewBox="0 0 32 32" fill="none" aria-hidden="true">
         <path d="M 16 3 L 27 9.5 L 27 22.5 L 16 29 L 5 22.5 L 5 9.5 Z" stroke-width="2.4" stroke-linejoin="round"/>
         <path d="M 10.5 19 Q 10.5 23.5 12.5 23.5 L 19.5 23.5 Q 21.5 23.5 21.5 19" stroke-width="2" stroke-linecap="round"/>
@@ -54,92 +56,76 @@
         <path d="M 13.5 14 L 16 16 L 13.5 18" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         <path d="M 17 19 L 20 19" stroke-width="2" stroke-linecap="round"/>
       </svg>drydock
-    </div>
+    </a>
     <nav class="nav" aria-label="Site">
-      <a href="#how">how it works</a>
-      <a class="hide-sm" href="#architecture">architecture</a>
-      <a href="docs/threat-model.html">threat model</a>
+      <a class="hide-sm" href="#trust">trust model</a>
+      <a href="#how">how</a>
+      <a class="hide-sm" href="#prove">prove it</a>
       <a href="docs/index.html">docs</a>
-      <a class="hide-sm" href="https://github.com/sricola/drydock">github</a>
+      <a href="https://github.com/sricola/drydock">github</a>
     </nav>
   </div>
 </div>
 
-<main>
-<header class="hero">
+<main id="main">
+<header class="hero" id="top">
   <div class="wrap">
-    <div class="kicker reveal"><span class="bar"></span>macos · local · coding agents on your repos, never the cloud</div>
-    <h1 class="reveal">Let a coding agent run wild on your Mac —<br><span class="t">without trusting it.</span></h1>
-    <p class="lede reveal">drydock runs <b>Claude Code</b>, <b>OpenAI Codex</b>, or <b>any OpenAI-compatible model</b> (Gemini, OpenRouter, local) full-throttle on your own repos, on your own Mac — no permission prompts, no babysitting. Each task runs sealed in a throwaway VM, so the agent <b>can't touch your API key, can't reach the open internet, and can't write to anything but a disposable copy</b>. The only thing that ever comes back is a <span class="ic">git diff</span> — and nothing reaches your real code until you approve it.</p>
-    <ul class="vstack reveal" role="list">
-      <li><b>It never gets your key.</b> Your real API key stays on the host — the agent only ever sees a short-lived, budget-capped token.</li>
-      <li><b>It can't smuggle anything out.</b> The internet is deny-by-default — no exfiltrating your code, no calling home.</li>
-      <li><b>Nothing touches your repo until you say so.</b> You read the diff and approve it before it ever reaches origin.</li>
+    <div class="kicker reveal"><span class="bar"></span>runs entirely on your Mac · nothing leaves without approval</div>
+    <h1 class="reveal">Let a coding agent run&nbsp;wild on your repo&nbsp;— <span class="t">without trusting&nbsp;it.</span></h1>
+    <p class="lede reveal">drydock runs <b>Claude&nbsp;Code</b>, <b>OpenAI&nbsp;Codex</b>, or any OpenAI-compatible model full-throttle on a copy of your repo, sealed inside a throwaway VM on your own Mac. The agent never sees your API key and has no open internet. The only thing that comes back is a <span class="ic">git&nbsp;diff</span> — and nothing touches your real code until you approve it.</p>
+    <ul class="badges reveal" role="list" aria-label="Platform and security properties">
+      <li>macOS 26+</li>
+      <li>Apple silicon</li>
+      <li>100% local</li>
+      <li>deny-by-default internet</li>
+      <li>human-approved push</li>
     </ul>
-    <p class="lede reveal" style="max-width:62ch"><b>Use the plan you already pay for — or an API key.</b> Run <b>Claude&nbsp;Code</b> on your Claude&nbsp;Pro/Max subscription and <b>Codex</b> on your ChatGPT plan, with no API key at all — or set vendor API keys instead. Either way the credential stays on your Mac, never in the VM.</p>
-    <div class="install reveal" id="install">
-      <div class="install-label">Install · macOS · Apple silicon</div>
-      <div class="term install-term">
-        <div class="bar">
-          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-          <span class="ttl">~/$&nbsp;</span>
-          <button class="copy" type="button" data-copy-target="#install-pre"
-                  aria-label="copy install commands to clipboard">
-            <svg class="copy-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <rect x="4.5" y="4.5" width="8" height="9" rx="1.2" stroke="currentColor" stroke-width="1.4"/>
-              <path d="M 3 3 V 11.5 H 2 V 3 A 1 1 0 0 1 3 2 H 10 V 3 Z" fill="currentColor"/>
-            </svg>
-            <svg class="copy-check" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M 3 8 L 7 12 L 13 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span class="copy-label">copy</span>
-          </button>
-        </div>
-<pre id="install-pre"><span class="c"># install drydock, then one command sets up the rest</span>
-brew install sricola/drydock/drydock
-drydock setup   <span class="c"># installs container + squid, then init</span>
-
-<span class="c"># set a vendor key — Claude Code and/or OpenAI Codex</span>
-export <span class="a">ANTHROPIC_API_KEY</span>=<span class="r">sk-ant-…</span>
-<span class="c"># …or skip keys and use a subscription, no API key:</span>
-<span class="c">#   drydock auth claude   (anthropic_auth: subscription)</span>
-<span class="c">#   drydock auth codex    (openai_auth: subscription)</span>
-drydock start</pre>
-      </div>
-      <div class="install-foot">
-        <a href="docs/quickstart.html">quickstart</a>
-        ·
-        <a href="https://github.com/sricola/drydock/releases/tag/v0.4.0">v0.4.0 release notes</a>
-        ·
-        <a href="docs/threat-model.html">threat model</a>
-      </div>
-    </div>
     <div class="herocta reveal">
-      <a class="btn" href="docs/quickstart.html">Get started</a>
+      <a class="btn" href="https://github.com/sricola/drydock">View on GitHub</a>
       <a class="btn-ghost" href="docs/threat-model.html">Read the threat model</a>
     </div>
-    <p class="herostatus reveal"><span class="statustag">working alpha · v0.4.0</span> Single-maintainer, no third-party security audit yet — read the threat model and decide for yourself. <b>Requires macOS&nbsp;26+ on Apple silicon.</b></p>
+    <p class="herostatus reveal"><span class="statustag">working alpha · v0.4.0</span> Single-maintainer. Security architecture is stabilizing; not independently audited. Every containment claim is a runnable test — <a href="#prove">run the attacks yourself</a>.</p>
   </div>
 </header>
 
 <div class="wrap">
 
-<section id="contain">
-  <div class="seclabel reveal">The boundary</div>
-  <h2 class="sr-only">What's contained, and what stays safe</h2>
-  <div class="cstrip reveal">
-    <div class="cz vm">
-      <span class="czl">sealed VM — assume hostile</span>
-      <span class="pill vm">poisoned repo</span>
-      <span class="pill vm">prompt injection</span>
-      <span class="pill vm">the agent, full-throttle</span>
+<section id="trust">
+  <div class="seclabel reveal">Trust model</div>
+  <h2 class="reveal">Your Mac stays trusted. The VM is assumed hostile.</h2>
+  <div class="tmodel reveal" role="img" aria-label="Trust model: your Mac hosts a sealed throwaway VM where the agent works on a copy of the repo. Only a git diff crosses back, and only after your approval.">
+    <div class="tm-node tm-host">
+      <div class="tm-t">your Mac <span class="tm-safe">trusted</span></div>
+      <div class="tm-d">holds the real API key, your repo, your push credentials</div>
     </div>
-    <div class="cgate"><span class="arr">▶</span>gated</div>
-    <div class="cz host">
-      <span class="czl">host — your machine</span>
-      <span class="pill host">your API key · safe</span>
-      <span class="pill host">your repo &amp; push creds · safe</span>
-      <span class="pill host">only an approved diff gets out</span>
+    <div class="tm-link" aria-hidden="true"><span>spawns per task</span></div>
+    <div class="tm-node tm-vm">
+      <div class="tm-t">sealed throwaway VM <span class="tm-hostile">assume hostile</span></div>
+      <div class="tm-d">the agent + a disposable copy of your code · short-lived token, no key · internet deny-by-default · destroyed afterwards</div>
+    </div>
+    <div class="tm-link" aria-hidden="true"><span>only a diff crosses back</span></div>
+    <div class="tm-node tm-gate">
+      <div class="tm-t">git diff → your approval</div>
+      <div class="tm-d">you read it; <span class="ic">drydock approve</span> pushes it — deny and nothing happened</div>
+    </div>
+  </div>
+</section>
+
+<section id="guarantees">
+  <div class="seclabel reveal">Core guarantees</div>
+  <h2 class="sr-only">Core security guarantees</h2>
+  <div class="cards">
+    <div class="card reveal">
+      <h3>Your key never enters the VM</h3>
+      <p>A credential gateway on the host swaps in a short-lived, budget-capped token. The agent can spend its allowance — it can never read, log, or leak the key.</p>
+    </div>
+    <div class="card reveal">
+      <h3>No open internet</h3>
+      <p>Egress is deny-by-default through a host-side proxy. The agent reaches the model API and the package registries you allow — nothing else. Widening is per-task and human-approved.</p>
+    </div>
+    <div class="card reveal">
+      <h3>Only a diff comes back</h3>
+      <p>The VM is destroyed after every task; nothing persists. The work survives as a <span class="ic">git diff</span> that lands only after you read and approve it.</p>
     </div>
   </div>
 </section>
@@ -147,100 +133,98 @@ drydock start</pre>
 <section id="how">
   <div class="seclabel reveal">How it works</div>
   <h2 class="reveal">Three steps. The agent never gets the keys to your machine.</h2>
-  <div class="cards">
-    <div class="card reveal">
-      <div class="idx">/ 01</div>
+  <ol class="steps" role="list">
+    <li class="step reveal">
+      <div class="idx" aria-hidden="true">01</div>
       <h3>Point it at a repo</h3>
-      <p>Give drydock a repo and a task. It spins up a fresh, throwaway VM and drops the agent in with a copy of your code — and nothing else.</p>
-    </div>
-    <div class="card reveal">
-      <div class="idx">/ 02</div>
-      <h3>It runs sealed</h3>
-      <p>No API key, no access to your machine, no open internet. The agent works full-throttle inside the box, reaching only the package registries you allow.</p>
-    </div>
-    <div class="card reveal">
-      <div class="idx">/ 03</div>
+      <p>Give drydock a repo URL and a task. It clones a disposable copy and boots a fresh VM around it.</p>
+    </li>
+    <li class="step reveal">
+      <div class="idx" aria-hidden="true">02</div>
+      <h3>The agent runs sealed</h3>
+      <p>No key, no host access, no open internet. Full-throttle inside the box — no permission prompts, no babysitting.</p>
+    </li>
+    <li class="step reveal">
+      <div class="idx" aria-hidden="true">03</div>
       <h3>You approve the diff</h3>
-      <p>It hands back a <span class="ic">git diff</span>. Read it and run <span class="ic">drydock approve</span> — in the terminal or the <span class="ic">drydock ui</span> web board — and it lands; nothing reaches your real repo until you say so.</p>
+      <p>Review in the terminal or the local web board (<span class="ic">drydock ui</span>), then approve or deny. Approved diffs push to a branch; denied ones vanish with the VM.</p>
+    </li>
+  </ol>
+</section>
+
+<section id="install">
+  <div class="seclabel reveal">Install</div>
+  <h2 class="reveal">Two commands to a sealed first task.</h2>
+  <div class="install reveal">
+    <div class="term install-term">
+      <div class="bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="ttl">~/$&nbsp;</span>
+        <button class="copy" type="button" data-copy-target="#install-pre"
+                aria-label="copy install commands to clipboard">
+          <svg class="copy-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect x="4.5" y="4.5" width="8" height="9" rx="1.2" stroke="currentColor" stroke-width="1.4"/>
+            <path d="M 3 3 V 11.5 H 2 V 3 A 1 1 0 0 1 3 2 H 10 V 3 Z" fill="currentColor"/>
+          </svg>
+          <svg class="copy-check" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M 3 8 L 7 12 L 13 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="copy-label">copy</span>
+        </button>
+      </div>
+<pre id="install-pre"><span class="c"># install, then one command sets up the runtime + proxy</span>
+brew install sricola/drydock/drydock
+drydock setup
+
+<span class="c"># credential: a vendor API key…</span>
+export <span class="a">ANTHROPIC_API_KEY</span>=<span class="r">sk-ant-…</span>
+<span class="c"># …or no key at all — reuse a plan you already pay for:</span>
+<span class="c">#   drydock auth claude   # Claude Pro/Max</span>
+<span class="c">#   drydock auth codex    # ChatGPT</span>
+drydock start</pre>
+    </div>
+    <div class="install-foot">
+      <a href="docs/quickstart.html">quickstart</a>
+      ·
+      <a href="https://github.com/sricola/drydock/releases/tag/v0.4.0">v0.4.0 release notes</a>
+      ·
+      <a href="docs/daemon.html">run unattended <span class="newtag">new · on main</span></a>
     </div>
   </div>
 </section>
 
-<section id="architecture">
-  <div class="seclabel reveal">Architecture</div>
-  <h2 class="reveal">See exactly where the agent can't reach.</h2>
-  <p class="lede reveal" style="max-width:60ch;margin-bottom:8px">Every task runs in a sealed VM. A credential gateway and a deny-by-default egress proxy sit on the seam — so a hostile agent never sees your key, the open internet, or your real repo.</p>
-  <div class="diagram reveal">
-    <div class="head">
-      <div class="zone-h vm">sealed VM — assume hostile</div>
-      <div class="zone-h host">host — your machine</div>
+<section id="works">
+  <div class="seclabel reveal">Works with</div>
+  <h2 class="sr-only">Supported agents and credentials</h2>
+  <div class="works reveal">
+    <div class="works-agents">
+      <span>Claude&nbsp;Code <em>· Anthropic</em></span>
+      <span class="sep" aria-hidden="true">/</span>
+      <span>OpenAI&nbsp;Codex <em>· OpenAI</em></span>
+      <span class="sep" aria-hidden="true">/</span>
+      <span>Any&nbsp;OpenAI-compatible&nbsp;model <em>· Gemini · OpenRouter · local</em></span>
     </div>
-    <div class="grid2">
-      <div class="col vm">
-        <div class="node danger"><div class="nt">coding agent + tools</div><div class="nd">claude / codex, plus curl · npm · pip — all egress is proxied, none direct.</div></div>
-        <div class="node danger"><div class="nt">poisoned repo / deps</div><div class="nd">treated as untrusted input, not a trusted collaborator.</div></div>
-      </div>
-      <div class="seam"></div>
-      <div class="col host">
-        <div class="node key"><div class="nt">real API key</div><div class="nd">stays on the host; the VM only ever holds a short-lived, budget-capped token.</div></div>
-        <div class="node safe"><div class="nt">your repo &amp; push creds</div><div class="nd">the agent works a disposable clone; the diff is gated behind your approval.</div></div>
-        <div class="node"><div class="nt">your egress allowlist</div><div class="nd">pypi · npm · the registries you choose — per-task widening is human-approved.</div></div>
-      </div>
-    </div>
-    <div class="flowrow">
-      <div class="fl">model API</div>
-      <div class="fd"><span class="tok">agent</span> <span class="ar">→</span> credential gateway <span class="ar">:8088</span> <span class="ar">→</span> mints a <span class="real">per-task token</span>, never the key</div>
-    </div>
-    <div class="flowrow">
-      <div class="fl">other egress</div>
-      <div class="fd"><span class="tok">curl · npm · pip</span> <span class="ar">→</span> squid proxy <span class="ar">:3128</span> <span class="ar">→</span> <span class="real">allowlist only</span>, everything else denied</div>
-    </div>
-    <div class="flowrow">
-      <div class="fl">result</div>
-      <div class="fd">work tree <span class="ar">→</span> <span class="real">git diff</span> <span class="ar">→</span> you review &amp; <span class="real">approve</span> <span class="ar">→</span> push</div>
-    </div>
+    <p class="works-note">Bring an <b>API key</b>, or run on your existing <b>Claude&nbsp;Pro/Max</b> or <b>ChatGPT</b> subscription with no key at all. Either way the credential stays on your Mac — the VM only ever sees a per-task token. <a href="docs/authentication.html">Authentication →</a> <a href="docs/models.html">Bring your own model →</a></p>
   </div>
 </section>
 
-<section id="threats">
-  <div class="seclabel reveal">Attack surface</div>
-  <h2 class="reveal">What's contained — and the residual risk.</h2>
-  <table class="tbl reveal">
-    <thead><tr><th>Attack</th><th>What drydock does</th><th>Residual risk</th></tr></thead>
-    <tbody>
-      <tr>
-        <td data-l="Attack">Exfiltrate your API key</td>
-        <td data-l="What drydock does">The real key never enters the VM. The agent gets only a short-lived, budget-capped token via the gateway. <span class="tag host">contained on host</span></td>
-        <td data-l="Residual risk">A leaked token is rate- and budget-limited, and dies with the task. <span class="tag vm">scoped</span></td>
-      </tr>
-      <tr>
-        <td data-l="Attack">Call home / exfiltrate code</td>
-        <td data-l="What drydock does">Egress is deny-by-default; the agent reaches only your allowlist, through the proxy. <span class="tag host">contained on host</span></td>
-        <td data-l="Residual risk">An allow-listed host is still reachable; widening is human-approved per task. <span class="tag vm">your call</span></td>
-      </tr>
-      <tr>
-        <td data-l="Attack">Persist / tamper with your machine</td>
-        <td data-l="What drydock does">The VM is a throwaway, destroyed after each task; the host filesystem is never mounted writable. <span class="tag host">contained on host</span></td>
-        <td data-l="Residual risk">None on the host — any persistence dies with the VM. <span class="tag oos">in-VM only</span></td>
-      </tr>
-      <tr>
-        <td data-l="Attack">Sneak a backdoor into the diff</td>
-        <td data-l="What drydock does">Nothing reaches origin until you read the diff and approve it. <span class="tag host">gated</span></td>
-        <td data-l="Residual risk">drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle one and it lands. <span class="tag oos">on you</span></td>
-      </tr>
-    </tbody>
-  </table>
-  <p class="prose reveal" style="margin-top:18px">The full <a href="docs/threat-model.html">threat model</a> is the contract — it enumerates every attack and what drydock does and doesn't defend.</p>
+<section id="docker">
+  <div class="seclabel reveal">Why not just Docker?</div>
+  <h2 class="reveal">A container shares your kernel. This doesn't.</h2>
+  <div class="prose2 reveal">
+    <p>Docker is a fine tool — it just answers a different question. On macOS, containers share one Linux VM and one kernel, and a container does nothing about the parts that actually leak: your API key in the env, unrestricted egress, and an agent pushing straight to origin.</p>
+    <p>drydock gives every task its own hardware-isolated VM via Apple's <span class="ic">container</span> runtime, and puts the missing controls on the seam: a credential gateway (the key never enters), a deny-by-default egress proxy, and a human approval gate in front of every push. The isolation is the floor, not the feature.</p>
+  </div>
 </section>
 
 <section id="prove">
   <div class="seclabel reveal">Prove it yourself</div>
   <h2 class="reveal">Don't take the threat model's word for it.</h2>
-  <p class="lede reveal" style="max-width:58ch">Every claim above is a real <span class="ic">go test</span> red-team case that runs the actual attack and asserts it fails. Run them on your own machine — <b>no API key, no spend</b>, about five minutes:</p>
-  <div class="install reveal" style="margin-top:18px">
+  <p class="lede reveal">Every containment claim is a real <span class="ic">go&nbsp;test</span> red-team case that runs the actual attack — key exfiltration, hostile egress, cross-task persistence — and asserts it fails. Run them on your own machine. No API key, no spend, about five minutes.</p>
+  <div class="install reveal">
     <div class="term install-term">
       <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">~/$&nbsp;</span>
-        <button class="copy" type="button" data-copy-target="#redteam-pre" aria-label="copy commands to clipboard">
+        <button class="copy" type="button" data-copy-target="#redteam-pre" aria-label="copy red-team commands to clipboard">
           <svg class="copy-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <rect x="4.5" y="4.5" width="8" height="9" rx="1.2" stroke="currentColor" stroke-width="1.4"/>
             <path d="M 3 3 V 11.5 H 2 V 3 A 1 1 0 0 1 3 2 H 10 V 3 Z" fill="currentColor"/>
@@ -257,53 +241,88 @@ drydock redteam
 make demo VM=1</pre>
     </div>
   </div>
-  <figure class="demo reveal" style="margin-top:26px">
+  <figure class="demo reveal">
     <picture>
       <source media="(prefers-reduced-motion: reduce)" srcset="breach-still.png">
       <img src="breach.gif" alt="drydock running real red-team attacks — each one contained live" loading="lazy" width="860">
     </picture>
-    <figcaption><b>Real attacks, contained live.</b> Every green is an actual <code>go&nbsp;test</code> red-team case. <a href="docs/threat-model.html">See the threat model&nbsp;→</a></figcaption>
+    <figcaption><b>Real attacks, contained live.</b> Every green is an actual <code>go&nbsp;test</code> red-team case.</figcaption>
   </figure>
+  <div class="supply reveal">
+    <h3>And verify what you're running</h3>
+    <ul role="list">
+      <li><b>Reproducible binaries</b> — rebuild a release and compare checksums byte-for-byte.</li>
+      <li><b>Signed + attested releases</b> — Sigstore cosign signatures and SLSA build provenance on every tag.</li>
+      <li><b>SBOM per release</b> — a CycloneDX inventory of everything inside.</li>
+      <li><b>Scanned daily</b> — <span class="ic">govulncheck</span> gates every commit; the sandbox image is CVE-scanned in CI, with exceptions public and expiring.</li>
+    </ul>
+    <p><a href="https://github.com/sricola/drydock/blob/main/SECURITY.md">How to verify a release →</a></p>
+  </div>
 </section>
 
-<section id="works">
-  <div class="seclabel reveal">Works with</div>
-  <h2 class="sr-only">Supported agents</h2>
-  <div class="works reveal">
-    <div class="works-agents">
-      <span>Claude&nbsp;Code <em>· Anthropic</em></span>
-      <span class="sep">/</span>
-      <span>OpenAI&nbsp;Codex <em>· OpenAI</em></span>
-      <span class="sep">/</span>
-      <span>Any&nbsp;OpenAI-compatible&nbsp;model <em>· Gemini · OpenRouter · local</em></span>
-    </div>
-    <p class="works-note">Bring an <b>API key</b> — or skip keys entirely and run on your existing <b>Claude&nbsp;Pro/Max</b> or <b>ChatGPT</b> subscription. Either way the credential stays on your Mac, never in the VM. Pick the agent per task with <span class="ic">--agent claude|codex|opencode</span>. <a href="docs/authentication.html">Auth &amp; the subscription caveats →</a> Or bring any OpenAI-compatible endpoint (Gemini, OpenRouter, local) via <span class="ic">opencode</span> — your key stays host-side. <a href="docs/models.html">Bring-your-own-model →</a></p>
-  </div>
+<section id="threats">
+  <div class="seclabel reveal">Attack surface</div>
+  <h2 class="reveal">What's contained — and the residual risk.</h2>
+  <table class="tbl reveal">
+    <thead><tr><th>Attack</th><th>What drydock does</th><th>Residual risk</th></tr></thead>
+    <tbody>
+      <tr>
+        <td data-l="Attack">Exfiltrate your API key</td>
+        <td data-l="What drydock does">The real key never enters the VM. The agent gets only a short-lived, budget-capped token via the gateway. <span class="tag host">contained</span></td>
+        <td data-l="Residual risk">A leaked token is rate- and budget-limited, and dies with the task. <span class="tag vm">scoped</span></td>
+      </tr>
+      <tr>
+        <td data-l="Attack">Call home / exfiltrate code</td>
+        <td data-l="What drydock does">Egress is deny-by-default; the agent reaches only your allowlist, through the proxy. <span class="tag host">contained</span></td>
+        <td data-l="Residual risk">An allow-listed host is still reachable; widening is human-approved per task. <span class="tag vm">your call</span></td>
+      </tr>
+      <tr>
+        <td data-l="Attack">Persist / tamper with your machine</td>
+        <td data-l="What drydock does">The VM is a throwaway, destroyed after each task; the host filesystem is never mounted writable. <span class="tag host">contained</span></td>
+        <td data-l="Residual risk">None on the host — any persistence dies with the VM. <span class="tag oos">in-VM only</span></td>
+      </tr>
+      <tr>
+        <td data-l="Attack">Sneak a backdoor into the diff</td>
+        <td data-l="What drydock does">Nothing reaches origin until you read the diff and approve it. <span class="tag host">gated</span></td>
+        <td data-l="Residual risk">drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle one and it lands. <span class="tag oos">on you</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="prose reveal">The full <a href="docs/threat-model.html">threat model</a> is the contract — it enumerates every attack and what drydock does and doesn't defend.</p>
 </section>
 
 <section id="limits">
   <div class="seclabel reveal">Honest limits</div>
   <h2 class="reveal">What it deliberately doesn't defend.</h2>
   <div class="prose reveal">
-    <p>A containment that overclaims fails quietly, so here's the honest edge: drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. And it trusts the Mac it runs on. It's pre-1.0, single-maintainer, and has had <b>no third-party security audit</b>. The full <a href="docs/threat-model.html">threat model</a> is the contract — read it before you trust it.</p>
+    <p>A containment that overclaims fails quietly, so here's the honest edge. drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. It doesn't vet your dependencies or your logic. And it trusts the Mac it runs on: a compromised host is out of scope. It's pre-1.0, single-maintainer, and has had <b>no third-party security audit</b>. Read the <a href="docs/threat-model.html">threat model</a> before you trust it.</p>
   </div>
 </section>
 
 </div>
 </main>
 
-<footer class="wrap">
-  <div>
-    <svg class="mk" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <path d="M 16 3 L 27 9.5 L 27 22.5 L 16 29 L 5 22.5 L 5 9.5 Z" stroke-width="2" stroke-linejoin="round"/>
-      <path d="M 10.5 19 Q 10.5 23.5 12.5 23.5 L 19.5 23.5 Q 21.5 23.5 21.5 19" stroke-width="1.6" stroke-linecap="round"/>
-      <path d="M 12 23.5 L 20 23.5" stroke-width="1.6" stroke-linecap="round"/>
-      <path d="M 13.5 14 L 16 16 L 13.5 18" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M 17 19 L 20 19" stroke-width="1.6" stroke-linecap="round"/>
-    </svg>drydock — containment for autonomous coding agents
+<footer>
+  <div class="wrap">
+    <div class="foot-brand">
+      <svg class="mk" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <path d="M 16 3 L 27 9.5 L 27 22.5 L 16 29 L 5 22.5 L 5 9.5 Z" stroke-width="2" stroke-linejoin="round"/>
+        <path d="M 10.5 19 Q 10.5 23.5 12.5 23.5 L 19.5 23.5 Q 21.5 23.5 21.5 19" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M 12 23.5 L 20 23.5" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M 13.5 14 L 16 16 L 13.5 18" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M 17 19 L 20 19" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <span>drydock — containment for autonomous coding agents. Local-only by design.</span>
+    </div>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="https://github.com/sricola/drydock">GitHub</a>
+      <a href="docs/threat-model.html">Threat model</a>
+      <a href="docs/index.html">Docs</a>
+      <a href="docs/configuration.html">Configuration</a>
+      <a href="https://github.com/sricola/drydock/blob/main/LICENSE">Apache-2.0</a>
+    </nav>
+    <p class="foot-legal">drydock is an independent project, not affiliated with or endorsed by Anthropic, OpenAI, or Google. Claude, Codex, ChatGPT, Gemini, and other product names are used for identification only. All trademarks are the property of their respective owners.</p>
   </div>
-  <div><a href="docs/index.html">docs</a> · <a href="docs/threat-model.html">threat model</a> · <a href="https://github.com/sricola/drydock">github</a></div>
-  <div style="flex-basis:100%;color:var(--faint)">drydock is an independent project, not affiliated with or endorsed by Anthropic, OpenAI, or Google. Claude, Codex, ChatGPT, Gemini, and other product names are used for identification only. All trademarks are the property of their respective owners.</div>
 </footer>
 
 <script>
@@ -312,7 +331,7 @@ make demo VM=1</pre>
     es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
   },{threshold:.12,rootMargin:"0px 0px -8% 0px"});
   document.querySelectorAll('.reveal').forEach(function(el,i){
-    if(el.closest('.hero')) el.style.transitionDelay=(i*0.08)+'s';
+    if(el.closest('.hero')) el.style.transitionDelay=(i*0.07)+'s';
     io.observe(el);
   });
   // Hero is always above the fold — reveal it as soon as the DOM is ready (and
