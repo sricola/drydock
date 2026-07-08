@@ -257,10 +257,12 @@ so it can ship independently.
   task. Replace with util-linux `setpriv` (already-in-base candidate) or a
   rebuilt/current gosu; clears the largest allowlist cluster before its
   2026-09-06 expiry.
-- **4.13 Image package currency.** jq/libjq1 sit one deb12 point-release
-  behind a fix (deb12u2); add `apt-get upgrade` or targeted version pins to
-  the Dockerfile flow so Debian security updates land without waiting for a
-  base-image digest bump. Clears the jq allowlist cluster.
+- **4.13 Image package currency.** Debian point-release fixes land only when
+  the image is rebuilt — the jq/libjq1 gap found in the first baseline
+  cleared itself on the next fresh build. Make that systematic: `apt-get
+  upgrade` (or targeted pins) in the Dockerfile flow plus a scheduled image
+  rebuild, so security updates don't wait for a base-digest bump or a lucky
+  rebuild.
 
 **Done when:** a `brokerd` crash leaves no orphaned VM or wedged slot, spend is
 bounded in aggregate, brokerd runs unattended across login/reboot, the sandbox
@@ -285,9 +287,9 @@ little, so the top of the list leans operator.
    cluster.
 3. **4.2 Push partial-failure contract** — ambiguous git states are
    gate-adjacent; define the failure contract and surface it in the audit row.
-4. **4.13 Image package currency** — jq/libjq1 one point-release behind a
-   fix; targeted version pins or `apt-get upgrade` clears the jq allowlist
-   cluster.
+4. **4.13 Image package currency** — Debian fixes land only on rebuild; make
+   that systematic with `apt-get upgrade` / targeted pins plus a scheduled
+   rebuild so updates don't wait for a base-digest bump.
 5. **4.4 `drydock retry`** — pairs with the daemon: re-run a prior task from
    its audit record.
 6. **4.10 Egress depth (IPv6 / plain-HTTP)** — enforce or loudly document;
