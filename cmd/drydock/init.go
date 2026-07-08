@@ -14,6 +14,7 @@ import (
 	"drydock/internal/config"
 	"drydock/internal/defaults"
 	"drydock/internal/netfw"
+	"drydock/internal/runner"
 	"drydock/internal/sharedir"
 )
 
@@ -273,25 +274,22 @@ func checkSquid() {
 }
 
 func ensureContainerSystem() {
-	// `container --version` only requires the CLI; `container network ls`
-	// requires the system service. Try the latter to detect "service down".
-	if out, err := exec.Command("container", "network", "ls").CombinedOutput(); err != nil {
-		if strings.Contains(string(out), "XPC connection") || strings.Contains(string(out), "system service") {
-			fmt.Println("  · container system not running — starting (may install kernel on first run)…")
-			cmd := exec.Command("container", "system", "start", "--enable-kernel-install")
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				step("container system", false, err.Error())
-				os.Exit(1)
-			}
-			step("container system", true, "started")
-			return
-		}
-		step("container system", false, strings.TrimSpace(string(out)))
-		os.Exit(1)
+	run := func(args ...string) (string, error) {
+		out, err := exec.Command("container", args...).CombinedOutput()
+		return string(out), err
 	}
-	step("container system", true, "already running")
+	started, err := runner.EnsureContainerSystem(run, func(msg string) {
+		fmt.Println("  · " + msg)
+	})
+	switch {
+	case err != nil:
+		step("container system", false, err.Error())
+		os.Exit(1)
+	case started:
+		step("container system", true, "started")
+	default:
+		step("container system", true, "already running")
+	}
 }
 
 // networkPresent reports whether `container network ls` output lists a network

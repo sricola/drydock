@@ -27,6 +27,7 @@ import (
 	"drydock/internal/gateway"
 	"drydock/internal/netfw"
 	"drydock/internal/provider"
+	"drydock/internal/runner"
 	"drydock/internal/sharedir"
 	"drydock/internal/sockpath"
 	"drydock/internal/stage"
@@ -137,6 +138,20 @@ func main() {
 		fatal("cannot acquire brokerd lock", "lock", config.LockPath(), "err", err)
 	}
 	brokerdLock = lf
+
+	// Unattended boots (launchd, post-reboot) can't rely on `drydock init`
+	// having run this login session — ensure the container runtime is up.
+	// Failure is loud but NOT fatal: exiting would make launchd's KeepAlive
+	// loop; staying up lets tasks fail with a clear per-task error instead.
+	containerRun := func(args ...string) (string, error) {
+		out, err := exec.Command("container", args...).CombinedOutput()
+		return string(out), err
+	}
+	if started, err := runner.EnsureContainerSystem(containerRun, func(msg string) { slog.Info(msg) }); err != nil {
+		slog.Error("container system unavailable — tasks will fail until it is; try `container system start`", "err", err)
+	} else if started {
+		slog.Info("container system started")
+	}
 
 	pruneOrphanTasks(cfg.StageRoot, cfg.AuditRoot)
 
