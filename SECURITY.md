@@ -101,7 +101,7 @@ carries supply-chain attestations you can check before trusting a binary
   live in `image/cve-allowlist.yaml`, each with a reason and an expiry date —
   expired exceptions fail CI again rather than rotting silently.
 - **Reproducible binaries** — rebuild the binaries and confirm they match
-  byte-for-byte (needs Go 1.26.4 on darwin/arm64, a clean tag checkout):
+  byte-for-byte (needs Go 1.26.5 on darwin/arm64, a clean tag checkout):
 
   ```
   git checkout vX.Y.Z

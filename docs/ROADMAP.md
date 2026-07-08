@@ -97,7 +97,7 @@ packages; attach SPDX/CycloneDX to each GitHub release.
 
 ### 2.4 Reproducible builds — *landed*
 The release **binaries are byte-for-byte reproducible** (`-trimpath` + the
-`go 1.26.4` toolchain on darwin/arm64). Each release publishes a per-binary
+`go 1.26.5` toolchain on darwin/arm64). Each release publishes a per-binary
 `*-bin.sha256`, and `make verify-build SUMS=…` rebuilds and checks against it —
 see SECURITY.md "Verifying a release". The tarball itself is not byte-stable
 (tar/gzip metadata); making the archive deterministic is a possible follow-up,
@@ -109,7 +109,7 @@ but the binaries inside it — what actually runs — are verifiable.
   `image/Dockerfile` (re-pull + `container image inspect` to bump);
 - the agent CLIs (`@anthropic-ai/claude-code`, `@openai/codex`) and the Go
   tarball are version-pinned via `ARG`s in the Dockerfile;
-- the Go toolchain is pinned to `go 1.26.4` in `go.mod`;
+- the Go toolchain is pinned to `go 1.26.5` in `go.mod`;
 - `go.sum` pins module checksums.
 
 `govulncheck` runs in CI (`.github/workflows/test.yml`) and **fails the build on

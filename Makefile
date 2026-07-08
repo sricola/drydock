@@ -183,7 +183,7 @@ dist: clean
 
 # verify-build rebuilds the release binaries with the exact release flags and
 # checks them against a published `*-bin.sha256` — proving they reproduce
-# byte-for-byte. Needs Go 1.26.4 on darwin/arm64 and a CLEAN checkout of the
+# byte-for-byte. Needs Go 1.26.5 on darwin/arm64 and a CLEAN checkout of the
 # tag (so `git describe` matches the released version). Usage:
 #   git checkout vX.Y.Z
 #   gh release download vX.Y.Z -R sricola/drydock -p '*-bin.sha256'

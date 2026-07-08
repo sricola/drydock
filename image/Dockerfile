@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Go: Debian bookworm ships 1.19 which is too old to be useful; install the
 # upstream tarball matching the build arch. Adds ~400MB to the image but the
 # alternative is no Go at all.
-ARG GO_VERSION=1.26.4
+ARG GO_VERSION=1.26.5
 RUN ARCH=$(dpkg --print-architecture) && \
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
         | tar -C /usr/local -xz && \
