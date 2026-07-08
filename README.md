@@ -89,13 +89,13 @@ export ANTHROPIC_API_KEY=sk-ant-...
 #   drydock auth codex    # ChatGPT         → openai_auth: subscription
 drydock start
 
-To run brokerd unattended (login start, crash restart): `drydock daemon install` — see [Run unattended](https://sricola.github.io/drydock/docs/daemon.html); note the no-aggregate-cap caveat there.
-
 # in another shell: your first sandboxed task
 drydock submit --repo git@github.com:you/repo \
   --instruction "Add a one-line comment to README.md."
 drydock review <id>     # read the diff, then approve or deny
 ```
+
+To run brokerd unattended (login start, crash restart): `drydock daemon install` — see [Run unattended](https://sricola.github.io/drydock/docs/daemon.html); note the no-aggregate-cap caveat there.
 
 That's the whole loop: the agent runs sealed, hands back a `git diff`, and
 nothing reaches your repo until you approve it. The full walkthrough is in the
