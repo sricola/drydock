@@ -5,9 +5,38 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.5.0 — 2026-07-08
 
 ### Added
+
+- **Unattended operation: the drydock daemon (`drydock daemon`).** `drydock
+  daemon install` runs brokerd as a launchd LaunchAgent
+  (`so.sri.drydock.brokerd`): it starts at login, survives reboots, and
+  restarts on crash (`KeepAlive {SuccessfulExit: false}` — a crash restarts
+  brokerd and triggers boot reconciliation; `drydock daemon uninstall` keeps it
+  down). Install preflights credentials **as launchd will see them** — launchd
+  never inherits your shell, so a key that lives only in a shell `export` fails
+  the preflight by name; keys must be in `~/.drydock/api-keys.env` or OAuth
+  files. If a foreground `drydock start` holds the lock, install refuses to
+  claim success instead of reporting a healthy socket it doesn't own. brokerd
+  now ensures `container system start` at boot, so a reboot needs no manual
+  step. Logs append to `~/.drydock/logs/brokerd.log`. `drydock daemon status`
+  reports launchd state, socket health, and the log path. **⚠️ There is no
+  aggregate spend cap yet (ROADMAP 4.3)** — before walking away, size
+  `max_concurrent_tasks`, `task_budget_usd`, `task_max_requests`, and
+  `task_timeout` with a queue-drain worst case in mind; see the
+  [daemon docs](https://sricola.github.io/drydock/docs/daemon.html).
+
+- **CI CVE-scanning of the sandbox image.** A daily scheduled workflow
+  Docker-builds the sandbox image and scans it with a pinned grype; a new
+  tested gate (`cmd/cve-gate`) fails the run on fixable High/Critical CVEs
+  unless covered by a live entry in `image/cve-allowlist.yaml` — every
+  exception carries a reason and an expiry, expired entries stop suppressing,
+  and allowlist edits themselves trigger the scan so suppression attempts are
+  conspicuous in review. CI also now proves the egress deny-by-default
+  property against a real squid on every PR (allowed host reaches upstream,
+  no-auth → 407, non-allowlisted host → 403) instead of substring-matching the
+  generated config.
 
 - **Native Gemini vendor (`--agent gemini`) — experimental.** Google Gemini
   models get a native lane: Google `x-goog-api-key` auth brokering, a
@@ -19,6 +48,23 @@ entry below corresponds to a Git tag of the same name.
   in-sandbox run (A1/A2 red-team + a real metered task) is macOS-gated and has
   not been executed — treat as experimental until `make test-integration`
   passes on macOS with a real key. ROADMAP 3B stays open until then.
+
+### Fixed
+
+- **Squid access-log growth is now bounded.** v0.4.0 enabled the egress access
+  log for forensics but never rotated it. The generated squid config now caps
+  retained generations (`logfile_rotate 10`) and brokerd rotates the log daily,
+  serialized behind the same lock as reconfigures so a rotation can't race a
+  widening.
+
+- **Wrong "brokerd not running" hint for config-only TCP.** With `broker.addr`
+  set to TCP in `config.yaml` (no `BROKER_ADDR` env), a dial failure printed
+  the unix-socket hint (`run drydock start`). The hint now resolves the address
+  the same way the client does (env → config).
+
+- **Cleartext-key warning for `openai_compat` over `http://`.** A non-loopback
+  `http://` base URL would send the real API key in cleartext; config
+  validation now warns. Loopback (a local model) stays quiet.
 
 ## v0.4.0 — 2026-07-02
 
