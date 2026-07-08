@@ -15,6 +15,7 @@ about a minute.
 - **[Bring your own model](models.html)** — run any OpenAI-compatible endpoint (Gemini, OpenRouter, local) via `opencode`.
 - **[Submitting tasks](submitting-tasks.html)** — `drydock submit`, the approval gate, flags, and scripting.
 - **[Web UI](web-ui.html)** — the board, approval gate, diff, and history in a local browser app.
+- **[Run unattended](daemon.html)** — brokerd as a launchd agent: starts at login, restarts on crash; spend-limit caveats.
 - **[Egress & widening](egress.html)** — the default allowlist, how enforcement works, and per-task widening.
 - **[Configuration](configuration.html)** — `config.yaml` reference and env overrides.
 - **[Troubleshooting](troubleshooting.html)** — `drydock doctor` and common failures.

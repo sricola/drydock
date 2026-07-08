@@ -95,6 +95,8 @@ drydock submit --repo git@github.com:you/repo \
 drydock review <id>     # read the diff, then approve or deny
 ```
 
+To run brokerd unattended (login start, crash restart): `drydock daemon install` — see [Run unattended](https://sricola.github.io/drydock/docs/daemon.html); note the no-aggregate-cap caveat there.
+
 That's the whole loop: the agent runs sealed, hands back a `git diff`, and
 nothing reaches your repo until you approve it. The full walkthrough is in the
 **[Quickstart](https://sricola.github.io/drydock/docs/quickstart.html)**.
