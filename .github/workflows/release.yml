@@ -5,6 +5,12 @@ name: release
 # provenance (the artifact was built by THIS workflow from THIS commit). All
 # of it is attached to the GitHub release. See SECURITY.md "Verifying a
 # release" for the consumer-side checks.
+#
+# After publish, bump-tap pushes the url/sha256/version bump to
+# sricola/homebrew-drydock so the formula can't drift behind releases again
+# (it sat at v0.2.0 through v0.4.0). Formula prose (caveats, license) stays
+# hand-maintained. The job runs after the release is published, so a bump
+# failure never blocks the artifacts — it just fails this workflow loudly.
 on:
   push:
     tags: ["v*"]
@@ -69,3 +75,72 @@ jobs:
             dist/drydock-*-darwin-arm64.tar.gz.pem
             dist/drydock-*-darwin-arm64-bin.sha256
             dist/drydock.cdx.json
+
+  bump-tap:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # release asset download only; tap push uses the PAT
+    steps:
+      # HOMEBREW_TAP_TOKEN: fine-grained PAT, Contents read/write on
+      # sricola/homebrew-drydock ONLY. The default GITHUB_TOKEN cannot push
+      # cross-repo. Checked explicitly so a missing secret fails here with a
+      # clear message instead of as a 403 at push time.
+      - name: Require tap token
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          test -n "$TOKEN" || {
+            echo "::error::HOMEBREW_TAP_TOKEN is not set. Create a fine-grained PAT with Contents read/write on sricola/homebrew-drydock and add it: gh secret set HOMEBREW_TAP_TOKEN -R ${GITHUB_REPOSITORY}"
+            exit 1
+          }
+
+      - uses: actions/checkout@v5
+        with:
+          repository: sricola/homebrew-drydock
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Resolve published tarball sha256
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Guard the workflow_dispatch-against-a-branch case: only tag refs
+          # correspond to a release with assets.
+          case "$TAG" in v*) ;; *) echo "::error::not a tag ref: $TAG"; exit 2 ;; esac
+          sha="$(gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.tar.gz.sha256' -O - | awk '{print $1}')"
+          echo "$sha" | grep -Eq '^[0-9a-f]{64}$' || { echo "::error::bad sha256 from release asset: '$sha'"; exit 2; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Rewrite formula url/sha256/version
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ steps.rel.outputs.sha }}
+        run: |
+          ver="${TAG#v}"
+          sed -i -E \
+            -e "s|download/v[0-9][^/]*/drydock-v[0-9][^-]*-darwin|download/${TAG}/drydock-${TAG}-darwin|" \
+            -e "s|^(  sha256 \")[0-9a-f]{64}(\")|\1${SHA}\2|" \
+            -e "s|^(  version \")[0-9.]+(\")|\1${ver}\2|" \
+            Formula/drydock.rb
+          # sed exits 0 on no-match — verify every field actually landed.
+          grep -Fq "download/${TAG}/drydock-${TAG}-darwin-arm64.tar.gz" Formula/drydock.rb
+          grep -Fq "sha256 \"${SHA}\"" Formula/drydock.rb
+          grep -Fq "version \"${ver}\"" Formula/drydock.rb
+
+      - name: Commit and push
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git add Formula/drydock.rb
+          if git diff --cached --quiet; then
+            echo "formula already at ${TAG} (re-run against an existing tag) — nothing to push"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "drydock ${TAG#v}
+
+          Automated bump by ${GITHUB_REPOSITORY} release workflow (run ${GITHUB_RUN_ID})."
+          git push
