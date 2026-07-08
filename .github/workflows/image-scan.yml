@@ -15,6 +15,9 @@ on:
       - "cmd/cve-gate/**"
       - ".github/workflows/image-scan.yml"
 
+permissions:
+  contents: read
+
 jobs:
   cve-scan:
     runs-on: ubuntu-latest
