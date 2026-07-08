@@ -214,8 +214,11 @@ so it can ship independently.
   daily in CI and on every image-touching PR; the gate fails on fixable
   High/Critical CVEs not covered by an active allowlist entry. Exceptions live
   in `image/cve-allowlist.yaml` with a mandatory reason and expiry date —
-  expired entries fail CI again rather than rotting silently. 57 entries seeded
-  from the first baseline: gosu stdlib advisories, toolchain GOROOT src, jq.
+  expired entries fail CI again rather than rotting silently. Re-baselined to
+  35 entries after the first CI run: 33 gosu stdlib advisories + 2 npm
+  transitives (the local baseline's toolchain-GOROOT and jq clusters were dead
+  in CI — image-mode scanning skips GOROOT src, and a fresh apt pulled the jq
+  fix).
 - **4.6 Agent-CLI bump automation.** The pinned agent CLIs
   (`@anthropic-ai/claude-code`, `@openai/codex`) drift; a scheduled job that
   proposes a pinned-version bump PR (with the red-team suite as the gate) keeps
