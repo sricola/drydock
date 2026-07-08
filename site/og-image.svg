@@ -28,7 +28,7 @@
     <text x="0" y="140" font-size="28" font-family="Newsreader, Georgia, serif"
           fill="#54606b">
       <tspan>A sandbox for autonomous coding</tspan>
-      <tspan x="0" dy="36">agents on macOS — your key stays on the host.</tspan>
+      <tspan x="0" dy="36">agents on macOS. Your key stays on the host.</tspan>
     </text>
     <text x="0" y="290" font-size="20" fill="#54606b" letter-spacing="2">
       sricola.github.io/drydock
