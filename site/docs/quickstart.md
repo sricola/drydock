@@ -38,6 +38,9 @@ instead](authentication.html), no API key required.
 drydock start     # foreground; ^C to stop
 ```
 
+Prefer it always-on? [Run unattended](daemon.html) installs brokerd as a
+launchd agent (read the spend-cap caveat first).
+
 Check it's up:
 
 ```bash
