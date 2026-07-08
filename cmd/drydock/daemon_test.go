@@ -101,3 +101,39 @@ func TestLaunchdCredentialAvailable(t *testing.T) {
 		})
 	}
 }
+
+const launchctlRunningFixture = `so.sri.drydock.brokerd = {
+	active count = 1
+	path = /Users/x/Library/LaunchAgents/so.sri.drydock.brokerd.plist
+	type = LaunchAgent
+	state = running
+
+	program = /usr/local/bin/brokerd
+	pid = 4242
+
+	spawn type = daemon (3)
+}`
+
+const launchctlStoppedFixture = `so.sri.drydock.brokerd = {
+	active count = 0
+	path = /Users/x/Library/LaunchAgents/so.sri.drydock.brokerd.plist
+	state = not running
+
+	last exit code = 1
+}`
+
+func TestParseLaunchdState(t *testing.T) {
+	got := parseLaunchdState(launchctlRunningFixture)
+	if !got.Running || got.PID != "4242" {
+		t.Errorf("running fixture: got %+v, want Running=true PID=4242", got)
+	}
+	got = parseLaunchdState(launchctlStoppedFixture)
+	if got.Running || got.LastExit != "1" {
+		t.Errorf("stopped fixture: got %+v, want Running=false LastExit=1", got)
+	}
+	// Garbage in → best-effort zero values, no panic.
+	got = parseLaunchdState("launchctl print format changed entirely")
+	if got.Running || got.PID != "" || got.LastExit != "" {
+		t.Errorf("garbage: got %+v, want zero-value state", got)
+	}
+}

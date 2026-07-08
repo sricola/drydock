@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"text/template"
 
 	"drydock/internal/config"
@@ -94,4 +97,71 @@ func launchdCredentialAvailable(cfg *config.Config, fileKeys map[string]string, 
 		}
 	}
 	return false, shellOnly
+}
+
+// launchdState is what `drydock daemon status` needs from `launchctl print`.
+// Parsing is best-effort: launchctl's output is not a stable API, so unknown
+// formats degrade to zero values rather than errors (status shows raw state).
+type launchdState struct {
+	Running  bool
+	PID      string
+	LastExit string
+}
+
+func parseLaunchdState(out string) launchdState {
+	var s launchdState
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "state = running":
+			s.Running = true
+		case strings.HasPrefix(line, "pid = "):
+			s.PID = strings.TrimPrefix(line, "pid = ")
+		case strings.HasPrefix(line, "last exit code = "):
+			s.LastExit = strings.TrimPrefix(line, "last exit code = ")
+		}
+	}
+	return s
+}
+
+// gui domain target for the current user, e.g. "gui/501".
+func launchdDomain() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
+
+func launchctlBootstrap(plistPath string) error {
+	out, err := exec.Command("launchctl", "bootstrap", launchdDomain(), plistPath).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("launchctl bootstrap: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// launchctlBootout unloads the job. "No such process"-style failures are not
+// errors: bootout is used as "make sure it isn't loaded" before bootstrap and
+// during uninstall, both of which are happy with an already-absent job.
+func launchctlBootout(label string) error {
+	out, err := exec.Command("launchctl", "bootout", launchdDomain()+"/"+label).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	s := string(out)
+	if strings.Contains(s, "No such process") || strings.Contains(s, "not find") || strings.Contains(s, "3: ") {
+		return nil
+	}
+	return fmt.Errorf("launchctl bootout: %s", strings.TrimSpace(s))
+}
+
+func launchctlKickstart(label string) error {
+	out, err := exec.Command("launchctl", "kickstart", launchdDomain()+"/"+label).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("launchctl kickstart: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func launchctlPrint(label string) (string, error) {
+	out, err := exec.Command("launchctl", "print", launchdDomain()+"/"+label).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("launchctl print: job %s not loaded", label)
+	}
+	return string(out), nil
 }
