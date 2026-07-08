@@ -278,7 +278,7 @@ make demo VM=1</pre>
       </tr>
       <tr>
         <td data-l="Attack">Persist / tamper with your machine</td>
-        <td data-l="What drydock does">The VM is a throwaway, destroyed after each task; the host filesystem is never mounted writable. <span class="tag host">contained</span></td>
+        <td data-l="What drydock does">The VM is a throwaway, destroyed after each task; your real repo and credentials are never mounted into it — the agent works a disposable copy. <span class="tag host">contained</span></td>
         <td data-l="Residual risk">None on the host — any persistence dies with the VM. <span class="tag oos">in-VM only</span></td>
       </tr>
       <tr>

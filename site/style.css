@@ -5,15 +5,15 @@
   --panel2:#f6f5f0;
   --ink:#1a1d22;         /* dark slate */
   --mut:#54606b;
-  --faint:#6d7681;      /* AA-legible on warm paper for small labels + legal */
+  --faint:#646d78;      /* clears AA (5.0:1) on warm paper for small labels + legal */
   --line:rgba(20,25,30,.10);
   --line2:rgba(20,25,30,.18);
   --red:#c92c2c;
   --red-dim:rgba(201,44,44,.07);
   --red-line:rgba(201,44,44,.28);
-  --grn:#0d8d5e;
-  --grn-dim:rgba(13,141,94,.07);
-  --grn-line:rgba(13,141,94,.30);
+  --grn:#0b7e53;        /* deep emerald — clears AA (4.5:1) as small text on paper/panel */
+  --grn-dim:rgba(11,126,83,.07);
+  --grn-line:rgba(11,126,83,.30);
   --amber:#a86600;
   --blue:#2d5fc7;
   --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
@@ -35,12 +35,11 @@ body{
 body::before{
   content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
   background:
-    radial-gradient(120% 80% at 50% -10%,rgba(13,141,94,.05),transparent 60%),
+    radial-gradient(120% 80% at 50% -10%,rgba(11,126,83,.05),transparent 60%),
     radial-gradient(90% 60% at 100% 110%,rgba(45,95,199,.035),transparent 55%);
 }
 .wrap{position:relative;z-index:1;max-width:1080px;margin:0 auto;padding:0 24px}
 a{color:inherit}
-.mono{font-family:var(--mono)}
 .ic{font-family:var(--mono);font-size:.86em;background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:1px 6px;color:var(--ink);white-space:nowrap}
 
 /* ---- top bar (sticky) ---- */
@@ -247,8 +246,8 @@ footer .foot-brand .mk path{stroke:var(--faint)}
 .foot-links a:hover{color:var(--grn)}
 .foot-legal{margin:22px 0 0;font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--faint);max-width:90ch}
 
-::selection{background:rgba(13,141,94,.22)}
-::-moz-selection{background:rgba(13,141,94,.22)}
+::selection{background:rgba(11,126,83,.22)}
+::-moz-selection{background:rgba(11,126,83,.22)}
 
 /* ============================================================
    Augmentations: reduced motion · focus · docs layout
