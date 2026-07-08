@@ -78,7 +78,7 @@ func renderPlist(label, brokerdPath, logPath, home string) ([]byte, error) {
 func launchdCredentialAvailable(cfg *config.Config, fileKeys map[string]string, oauthExists func(filename string) bool, getenv func(string) string) (ok bool, shellOnly string) {
 	for _, p := range provider.Registry {
 		if p.ConfigBuilt {
-			continue // openai-compat: its key env is loaded from api-keys.env below via APIKeyEnv when set
+			continue // config-built providers (openai-compat) have no registry credential; brokerd reads their key from the openai_compat config block
 		}
 		if cfg.AuthMode(p.Vendor) == "subscription" {
 			if p.OAuthFile != "" && oauthExists(p.OAuthFile) {

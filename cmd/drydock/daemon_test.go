@@ -78,6 +78,15 @@ func TestLaunchdCredentialAvailable(t *testing.T) {
 				}
 				return ""
 			}, false, false, "ANTHROPIC_API_KEY"},
+		{"file key for second provider passes despite env-only first",
+			map[string]string{"OPENAI_API_KEY": "sk-openai-x"}, noFile,
+			func(k string) string {
+				if k == "ANTHROPIC_API_KEY" {
+					return "sk-ant-x"
+				}
+				return ""
+			}, false, true, ""},
+		{"gemini file key passes", map[string]string{"GEMINI_API_KEY": "g-x"}, noFile, noEnv, false, true, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
