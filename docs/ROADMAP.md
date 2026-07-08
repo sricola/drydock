@@ -237,19 +237,18 @@ so it can ship independently.
   and IPv4-centric; audit and document behavior for IPv6 literals and plain-HTTP
   CONNECT, and either enforce or explicitly state the limit (no silent gaps —
   the honesty constraint applies to egress edges too).
-- **4.11 Unattended operation (launchd daemon).** brokerd today lives in a
-  terminal (`drydock start`) and dies with it. Add `drydock daemon install`: a
-  launchd agent (`~/Library/LaunchAgents` plist) so brokerd starts at login and
-  survives reboots, tasks are submittable while the operator is away, and
-  approval gates queue for later pickup (the web UI is the natural pickup
-  point) instead of timing out. Decoupled from 4.3 (2026-07-06): until the
-  aggregate cap lands, unattended spend is bounded per task, not in total —
-  `task_budget_usd` and `task_max_requests` cap each task, and
-  subscription-mode runs have no metered spend at all. Operators on API keys
-  should size `max_concurrent_tasks × task_budget_usd × expected task rate`
-  with that in mind; the docs for the daemon must state this limit loudly
-  (the honesty constraint). (The single-instance `flock` from 4.1 already
-  makes an accidental second daemon safe.)
+- **4.11 Unattended operation (launchd daemon).** *Landed.*
+  `drydock daemon install|uninstall|status` manages a launchd LaunchAgent
+  (RunAtLoad; KeepAlive restarts on crash and composes with 4.1's boot
+  reconciliation; the 4.1 `flock` keeps a second brokerd safe). Install
+  preflights credentials **as launchd sees them** (shell env is invisible;
+  api-keys.env / OAuth files only) and refuses to claim success unless the
+  launchd job itself is running — a foreground `drydock start` holding the
+  lock is diagnosed, not masked. brokerd boot now ensures the `container`
+  system service, so a reboot needs no manual step. Gates queue by default
+  (`approval_timeout: 0s`); pickup stays manual (`drydock ui`). The daemon
+  docs state the no-aggregate-cap limit loudly — spend is bounded per task
+  until 4.3 lands.
 
 **Done when:** a `brokerd` crash leaves no orphaned VM or wedged slot, spend is
 bounded in aggregate, brokerd runs unattended across login/reboot, the sandbox
@@ -266,24 +265,22 @@ deliberate: correctness and operator items alternate with credibility items —
 Phases 1–2 bought a lot of external credibility while the operator side got
 little, so the top of the list leans operator.
 
-1. **4.11 Unattended operation (launchd daemon)** — the demo→daily-tool gap;
-   gates and the web UI only matter if brokerd is reliably up.
-2. **4.3 Aggregate budget cap** — nothing bounds cross-task spend on an API
-   key; until it lands, unattended worst-case burn is bounded only per task
-   (see 4.11's interim note).
-3. **4.5 Sandbox-image CVE scan in CI** — cheap (one CI job); the image-side
+1. **4.3 Aggregate budget cap** — nothing bounds cross-task spend on an API
+   key; now that unattended operation (4.11) has landed, this is the gap that
+   matters most — worst-case burn is bounded only per task.
+2. **4.5 Sandbox-image CVE scan in CI** — cheap (one CI job); the image-side
    analogue of `govulncheck`.
-4. **4.2 Push partial-failure contract** — ambiguous git states are
+3. **4.2 Push partial-failure contract** — ambiguous git states are
    gate-adjacent; define the failure contract and surface it in the audit row.
-5. **4.4 `drydock retry`** — pairs with the daemon: re-run a prior task from
+4. **4.4 `drydock retry`** — pairs with the daemon: re-run a prior task from
    its audit record.
-6. **4.10 Egress depth (IPv6 / plain-HTTP)** — enforce or loudly document;
+5. **4.10 Egress depth (IPv6 / plain-HTTP)** — enforce or loudly document;
    the honesty constraint applied to egress edges.
-7. **4.7 Observability** — wants real multi-run usage first, which unattended
+6. **4.7 Observability** — wants real multi-run usage first, which unattended
    operation generates.
-8. **4.6 Agent-CLI bump automation** — low urgency; the red-team suite
+7. **4.6 Agent-CLI bump automation** — low urgency; the red-team suite
    already gates bumps.
-9. **Phase 1 report wrapper** — per-claim green/red output for `make redteam`;
+8. **Phase 1 report wrapper** — per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
 
 **Event-driven (no backlog slot):**
