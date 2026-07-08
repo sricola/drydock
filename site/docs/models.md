@@ -1,12 +1,12 @@
 # Models
 
-## Gemini (native) — experimental
+## Gemini (native): experimental
 
 drydock has a **native `gemini` agent** that speaks Google's own wire format:
 Google's auth header (`x-goog-api-key`) and a `usageMetadata` token-metering
 parser, rather than the OpenAI-compatibility shim.
 
-> **Experimental — not yet verified end-to-end.** The gateway, usage parser, and
+> **Experimental: not yet verified end-to-end.** The gateway, usage parser, and
 > price table have CI unit coverage, but the full in-sandbox run (the CLI making
 > a real metered call through the gateway under deny-by-default egress, plus the
 > A1/A2 red-team) is macOS-gated and has not been executed. Until
@@ -17,7 +17,7 @@ parser, rather than the OpenAI-compatibility shim.
 
 ### Requirements
 
-- **`GEMINI_API_KEY`** — set in your shell env or stored at
+- **`GEMINI_API_KEY`**: set in your shell env or stored at
   `~/.drydock/api-keys.env`. This is the only auth mode: no OAuth, no Google
   subscription lane.
 - A sandbox image built with `@google/gemini-cli` installed
@@ -37,13 +37,13 @@ default.
 
 | Model | Notes |
 |---|---|
-| `gemini-2.5-pro` | Default — best for coding tasks |
+| `gemini-2.5-pro` | Default, best for coding tasks |
 | `gemini-2.5-flash` | Faster, lower cost |
 | `gemini-2.5-flash-lite` | Lightest, lowest cost |
 
 Override per task with `--model gemini-2.5-flash`. With no explicit model the
 agent defaults to `gemini-2.5-pro`. Note `default_model` in `config.yaml` does
-**not** apply to Gemini (it is Claude/Codex-only) — use `--model` per task.
+**not** apply to Gemini (it is Claude/Codex-only). Use `--model` per task.
 
 ### Gemini via the OpenAI-compat lane vs. the native lane
 
@@ -63,8 +63,8 @@ is the **proven** path today; the native `gemini` agent is **experimental**
 ## Bring your own model (OpenAI-compatible lane)
 
 Beyond Claude Code, Codex, and the native Gemini lane, drydock can run **any
-OpenAI-compatible endpoint** — OpenRouter, or a local server (Ollama, LM
-Studio, vLLM) — through the same sandbox. The agent is **`opencode`**, and as
+OpenAI-compatible endpoint** (OpenRouter, or a local server: Ollama, LM
+Studio, vLLM) through the same sandbox. The agent is **`opencode`**, and as
 with every drydock task the real key stays host-side: the VM only ever
 sees a per-task token and the gateway's address.
 
@@ -72,13 +72,13 @@ sees a per-task token and the gateway's address.
 
 `opencode` runs in the throwaway VM pointed at drydock's credential gateway. The
 gateway holds your real key, forwards the request to your configured endpoint,
-and meters the response — exactly like the Claude and Codex lanes. You configure
+and meters the response, exactly like the Claude and Codex lanes. You configure
 *which* endpoint; drydock handles the isolation.
 
 ## Configure
 
 Add an `openai_compat` block to `~/.drydock/config.yaml` (or let the setup wizard
-write it — see below). The real key is referenced by the **name** of a host env
+write it; see below). The real key is referenced by the **name** of a host env
 var; it is never stored in the file.
 
 ```yaml
@@ -112,12 +112,12 @@ drydock submit --repo … --instruction "…" --agent opencode
 ```
 
 The model comes from `openai_compat.model`; pass `--model <id>` to override it
-per task. Everything else — the approval gate, the diff, egress — works exactly
+per task. Everything else (the approval gate, the diff, egress) works exactly
 as it does for Claude and Codex.
 
 ## Worked examples
 
-**Google Gemini via the compat lane** — the proven path today (the native
+**Google Gemini via the compat lane,** the proven path today (the native
 `--agent gemini` above is experimental, see [Gemini (native)](#gemini-native-experimental)):
 
 ```yaml
@@ -150,11 +150,11 @@ openai_compat:
 
 ## The one constraint: chat/completions
 
-The lane speaks the OpenAI **chat/completions** wire format — which is why it
+The lane speaks the OpenAI **chat/completions** wire format, which is why it
 uses `opencode` (Claude Code talks Anthropic's format; Codex talks the OpenAI
 *Responses* API). Any endpoint that serves `/chat/completions` works: Gemini's
 OpenAI endpoint, OpenRouter, and most local servers all do. Models reachable
-*only* via the Responses API or a vendor-native format aren't on this lane — use
+*only* via the Responses API or a vendor-native format aren't on this lane. Use
 `--agent codex` or `--agent claude` for those.
 
 ## Budget

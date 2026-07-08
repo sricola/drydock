@@ -1,6 +1,6 @@
 # drydock roadmap
 
-**North star: security credibility** — make the security claims externally
+**North star: security credibility**: make the security claims externally
 *believable*, not just true in the code.
 
 > A sandbox is only as trustworthy as the attacks it survives *in front of
@@ -13,12 +13,12 @@ break-the-sandbox challenge, then a scoped third-party audit) are deferred
 until Phases 1–2 make drydock self-evidently testable and reproducible.
 
 Honesty constraint (unchanged): no overclaiming. Credibility comes from
-*precise, checkable* claims plus loudly-stated limits — the `THREAT_MODEL.md`
+*precise, checkable* claims plus loudly-stated limits. The `THREAT_MODEL.md`
 A1–A7 / N1–N6 split and the SECURITY.md residuals are the model, and this
 roadmap deepens them rather than papering over them.
 
 **Scope (deliberate non-goal):** drydock is a containment runtime for **coding
-agents on your repos** — clone → isolated run → a diff you approve → push.
+agents on your repos**: clone → isolated run → a diff you approve → push.
 Generalizing to non-coding agents (browser / computer-use, DevOps, arbitrary
 tool execution) is a **post-1.0 non-goal**. The credential-gateway + egress +
 per-task-VM substrate would carry over, but the task model (a repo in, a diff
@@ -27,7 +27,7 @@ copy change. Own the coding niche first.
 
 ---
 
-## Phase 1 — Provable containment
+## Phase 1: Provable containment
 
 **Goal:** every threat-model claim is a runnable attack-that-fails; one command
 runs them all; `THREAT_MODEL.md` links each claim to its enforcing test.
@@ -54,18 +54,18 @@ attack-that-fails. Host-side (A3–A6) run in CI via `make redteam`; VM-backed
 carries `Verified by:` links for each. Remaining polish: a nicer per-claim
 green/red report wrapper (currently raw `go test` output).
 
-### 1.2 Adversarial tests for the gaps — *landed*
+### 1.2 Adversarial tests for the gaps (*landed*)
 The missing tests (A1, A2, A6, A7) are written, each named/labeled to its
 claim; A3/A4/A5 were promoted into the same convention.
 
-### 1.3 `make redteam` — *landed*
+### 1.3 `make redteam` (*landed*)
 A target that runs the whole labeled suite. The host-side subset (A3–A6) runs
 in CI; the VM subset (A1, A2, A7) runs via `make redteam-vm` on macOS /
 Apple-silicon. This is the skeptic demo: *clone it, run it, watch every attack
 fail.* Remaining polish: a per-claim green/red report wrapper (currently raw
 `go test` output).
 
-### 1.4 `THREAT_MODEL.md` "Verified by:" links — *landed*
+### 1.4 `THREAT_MODEL.md` "Verified by:" links (*landed*)
 Every A-claim cites its enforcing test.
 
 **Done when:** `make redteam` is green on a capable host, CI runs the host-side
@@ -73,7 +73,7 @@ subset, and every A1–A7 cites a test.
 
 ---
 
-## Phase 2 — Verifiable supply chain
+## Phase 2: Verifiable supply chain
 
 **Goal:** a third party can independently verify *what* they are running and
 *where* it came from. Closes the SECURITY.md "No SBOM and no signed binaries
@@ -81,30 +81,30 @@ yet" residual.
 
 **Status:** the `release` GitHub Actions workflow now produces, on every tag,
 a CycloneDX SBOM (2.1), keyless cosign signatures, and SLSA build provenance
-(2.3) — attached to the release; consumer checks are in SECURITY.md "Verifying
+(2.3), attached to the release; consumer checks are in SECURITY.md "Verifying
 a release". Reproducible builds (2.4) and the dependency-pin policy +
 `govulncheck` CI gate (2.5) have since landed. Remaining: Apple notarization
 (2.2, needs the paid cert).
 
-### 2.3 Keyless signing + provenance — *landed*
+### 2.3 Keyless signing + provenance (*landed*)
 `cosign sign-blob` the release tarball; SLSA build provenance via GitHub
 Actions OIDC (`actions/attest-build-provenance`). No certificate cost
 (Sigstore keyless). Document `cosign verify` + provenance checks for users.
 
-### 2.1 SBOM per release — *landed*
+### 2.1 SBOM per release (*landed*)
 Generate with `syft` over Go modules **and** the sandbox image's apt/npm
 packages; attach SPDX/CycloneDX to each GitHub release.
 
-### 2.4 Reproducible builds — *landed*
+### 2.4 Reproducible builds (*landed*)
 The release **binaries are byte-for-byte reproducible** (`-trimpath` + the
 `go 1.26.5` toolchain on darwin/arm64). Each release publishes a per-binary
-`*-bin.sha256`, and `make verify-build SUMS=…` rebuilds and checks against it —
-see SECURITY.md "Verifying a release". The tarball itself is not byte-stable
+`*-bin.sha256`, and `make verify-build SUMS=…` rebuilds and checks against it.
+See SECURITY.md "Verifying a release". The tarball itself is not byte-stable
 (tar/gzip metadata); making the archive deterministic is a possible follow-up,
-but the binaries inside it — what actually runs — are verifiable.
+but the binaries inside it (what actually runs) are verifiable.
 
-### 2.5 Dependency-pinning policy — *landed*
-**Pin policy:** every external input is pinned and bumped deliberately —
+### 2.5 Dependency-pinning policy (*landed*)
+**Pin policy:** every external input is pinned and bumped deliberately:
 - the sandbox base image `node:22-bookworm-slim` is pinned **by digest** in
   `image/Dockerfile` (re-pull + `container image inspect` to bump);
 - the agent CLIs (`@anthropic-ai/claude-code`, `@openai/codex`) and the Go
@@ -115,7 +115,7 @@ but the binaries inside it — what actually runs — are verifiable.
 `govulncheck` runs in CI (`.github/workflows/test.yml`) and **fails the build on
 a known vulnerability** in any dependency.
 
-### 2.2 Signed + notarized macOS binaries — *event-driven*
+### 2.2 Signed + notarized macOS binaries (*event-driven*)
 `codesign` (Developer ID) + `notarytool` + staple so brew-installed binaries
 clear Gatekeeper without the quarantine dance. **Prerequisite: Apple Developer
 Program ($99/yr) + a Developer ID certificate.** Enrollment is planned; this
@@ -127,7 +127,7 @@ SECURITY.md residual is updated.
 
 ---
 
-## Phase 3 — Provider expansion
+## Phase 3: Provider expansion
 
 **Goal:** add a native Gemini vendor (3B) as the first proof that a new provider
 is a single registry row, not a five-file edit.
@@ -137,24 +137,24 @@ agent) are **landed**. The CLI, config validator, wizard, `drydock start`,
 `drydock doctor`, and `drydock auth` all read from a single provider registry;
 any OpenAI-compatible endpoint (Gemini via its OpenAI-compat API, OpenRouter,
 local models) is already runnable via the `opencode` agent + `openai_compat:`
-config block. **3B (native Gemini vendor) is built and merged but experimental**
-— the code shipped (registry row, `GoogleVendor`, usage parser, pricing, image
+config block. **3B (native Gemini vendor) is built and merged but experimental**:
+the code shipped (registry row, `GoogleVendor`, usage parser, pricing, image
 install, entrypoint), and A1/A2 red-team + the `--approval-mode` fix are
 verified (A1/A2 on real container hardware; the CLI-produces-edits-headless
 property via a mocked upstream). It does **not** yet count as landed: the full
 end-to-end run through the gateway against the real Gemini API is macOS-gated and
 needs a real key. Until that passes, the lane is documented as experimental
-and **parked** — no further work is planned until a key exists; the
+and **parked**. No further work is planned until a key exists; the
 openai-compat lane is the supported Gemini route meanwhile.
 
-### 3A — Provider registry refactor — *landed*
+### 3A: Provider registry refactor (*landed*)
 Introduced one source of truth: a `Provider{Agent, Vendor, AuthModes, …}` table
 that `agent.Vendor`, config validation, the wizard menu, `start`, `doctor`, and
-`auth` all read from instead of hardcoding pairs. Pure refactor — `claude` and
+`auth` all read from instead of hardcoding pairs. Pure refactor, with `claude` and
 `codex` still the only native entries, behavior byte-identical, existing tests
 green. Adding a row is the *only* edit a new provider needs in this layer.
 
-### 3B — Gemini (Google) *(first native vendor — proves the seam) — built, experimental*
+### 3B: Gemini (Google) *(first native vendor, proves the seam), built, experimental*
 Shipped: the `gemini → google` row, `GoogleVendor()` (base URL + `x-goog-api-key`
 inject), the `usageMetadata` parser, a pricing table, the sandbox-image CLI
 install, the entrypoint case, and A1/A2 red-team coverage. As predicted, the
@@ -162,21 +162,21 @@ CLI/config layer was one registry row (buildBackends/brokerd unchanged). Verifie
 so far: A1 (real key never in VM) and A2 (deny-by-default egress) on real
 container hardware, and the `--approval-mode yolo` fix (the CLI executes edit
 tool calls headless) via a mocked Gemini endpoint. **Still open:** the full
-end-to-end run against the real Gemini API (macOS + real key) — until it passes,
+end-to-end run against the real Gemini API (macOS + real key). Until it passes,
 the lane stays experimental, not landed. Native Gemini differs from the
 openai-compat lane by using Google's own auth header/wire format.
 
-### 3C — Generic OpenAI-compatible agent — *landed*
+### 3C: Generic OpenAI-compatible agent (*landed*)
 A single `openai-compat` provider whose base URL + key come from config covers a
 long tail (local models, OpenRouter-style proxies, Gemini's OpenAI-compat
 endpoint) without a bespoke vendor each. Shipped as the `opencode` agent +
 `openai_compat:` config block; red-team A1 (key isolation) verified for the
 lane.
 
-### 3D — Config-declared providers *(stretch; only if demand is real)*
+### 3D: Config-declared providers *(stretch; only if demand is real)*
 Let an operator declare a vendor entirely in config (name, base URL, auth
 header template, price table) with no Go change. YAGNI until 3B shows the
-registry's fields are the right ones — don't design the plugin format before
+registry's fields are the right ones; don't design the plugin format before
 two real native providers have exercised the seam.
 
 **Done when:** a native Gemini vendor runs end-to-end through the gateway with
@@ -184,10 +184,10 @@ its own A1/A2 red-team coverage, added via a single registry row.
 
 ---
 
-## Phase 4 — Reliability & hardening
+## Phase 4: Reliability & hardening
 
 **Goal:** close the gaps between "works on the happy path" and "survives the
-operator's bad day" — crashes, partial failures, and the slow drift of pinned
+operator's bad day": crashes, partial failures, and the slow drift of pinned
 inputs. These are correctness/durability gaps, not new features; each is scoped
 so it can ship independently.
 
@@ -197,7 +197,7 @@ so it can ship independently.
   second daemon can't clobber a live task; reaps orphan `task-*` VMs and squid
   (pre-existing); sweeps stale stage dirs; and resolves tasks a crash
   interrupted to a distinct `interrupted` outcome instead of a stuck
-  `running?`. (The in-memory concurrency slot was never the gap — a restart
+  `running?`. (The in-memory concurrency slot was never the gap; a restart
   rebuilds the semaphore at full capacity; the slot-pinning bug was the
   approval-gate timeout, fixed separately.)
 - **4.2 Push partial-failure.** The approved-diff push is a multi-step git
@@ -208,27 +208,27 @@ so it can ship independently.
   bounds the daily/total spend across tasks. Add an aggregate ceiling the
   gateway enforces, so a runaway loop of cheap tasks can't drain a key.
 - **4.4 `drydock retry`.** Re-run a prior task from its audit record (same repo
-  ref, prompt, allowlist) without reconstructing the invocation by hand —
-  closes the loop with the per-task audit trail Phase 1 already produces.
+  ref, prompt, allowlist) without reconstructing the invocation by hand.
+  This closes the loop with the per-task audit trail Phase 1 already produces.
 - **4.5 Sandbox-image CVE scanning.** *Landed.* grype scans the built image
   daily in CI and on every image-touching PR; the gate fails on fixable
   High/Critical CVEs not covered by an active allowlist entry. Exceptions live
-  in `image/cve-allowlist.yaml` with a mandatory reason and expiry date —
-  expired entries fail CI again rather than rotting silently. Re-baselined to
+  in `image/cve-allowlist.yaml` with a mandatory reason and expiry date.
+  Expired entries fail CI again rather than rotting silently. Re-baselined to
   35 entries after the first CI run: 33 gosu stdlib advisories + 2 npm
   transitives (the local baseline's toolchain-GOROOT and jq clusters were dead
-  in CI — image-mode scanning skips GOROOT src, and a fresh apt pulled the jq
+  in CI; image-mode scanning skips GOROOT src, and a fresh apt pulled the jq
   fix).
 - **4.6 Agent-CLI bump automation.** The pinned agent CLIs
   (`@anthropic-ai/claude-code`, `@openai/codex`) drift; a scheduled job that
   proposes a pinned-version bump PR (with the red-team suite as the gate) keeps
   them current without unpinning.
 - **4.7 Observability.** Structured run metrics (durations, gate latencies,
-  egress-widen frequency, budget burn) beyond the per-task JSONL — enough to
+  egress-widen frequency, budget burn) beyond the per-task JSONL, enough to
   answer "what is drydock doing across many runs" without grepping audit files.
 - **4.8 Runtime abstraction.** The VM backend is Apple `container`-specific.
   Factor the container operations behind an interface so an alternative backend
-  (e.g. Linux microVM) is a port, not a rewrite. *Stretch — only once a second
+  (e.g. Linux microVM) is a port, not a rewrite. *Stretch: only once a second
   backend is actually wanted; don't abstract for one implementation.*
 - **4.9 Web UI surface.** *Shipped.* `drydock ui` serves a loopback SPA
   (board, diff review, submit, approve/deny/kill, history). It can drive the
@@ -240,7 +240,7 @@ so it can ship independently.
   single-user machines and warns loudly.
 - **4.10 Egress depth (IPv6 / plain-HTTP).** The allowlist proxy is HTTPS/CONNECT
   and IPv4-centric; audit and document behavior for IPv6 literals and plain-HTTP
-  CONNECT, and either enforce or explicitly state the limit (no silent gaps —
+  CONNECT, and either enforce or explicitly state the limit (no silent gaps;
   the honesty constraint applies to egress edges too).
 - **4.11 Unattended operation (launchd daemon).** *Landed.*
   `drydock daemon install|uninstall|status` manages a launchd LaunchAgent
@@ -248,20 +248,20 @@ so it can ship independently.
   reconciliation; the 4.1 `flock` keeps a second brokerd safe). Install
   preflights credentials **as launchd sees them** (shell env is invisible;
   api-keys.env / OAuth files only) and refuses to claim success unless the
-  launchd job itself is running — a foreground `drydock start` holding the
+  launchd job itself is running. A foreground `drydock start` holding the
   lock is diagnosed, not masked. brokerd boot now ensures the `container`
   system service, so a reboot needs no manual step. Gates queue by default
   (`approval_timeout: 0s`); pickup stays manual (`drydock ui`). The daemon
-  docs state the no-aggregate-cap limit loudly — spend is bounded per task
+  docs state the no-aggregate-cap limit loudly. Spend is bounded per task
   until 4.3 lands.
 - **4.12 gosu privilege-drop hardening.** The first image CVE baseline
   found `/usr/sbin/gosu` (Debian, built with go1.19.8) carrying 33 stale
-  stdlib advisories — and it is the entrypoint's root→agent drop, run every
+  stdlib advisories, and it is the entrypoint's root→agent drop, run every
   task. Replace with util-linux `setpriv` (already-in-base candidate) or a
   rebuilt/current gosu; clears the largest allowlist cluster before its
   2026-09-06 expiry.
 - **4.13 Image package currency.** Debian point-release fixes land only when
-  the image is rebuilt — the jq/libjq1 gap found in the first baseline
+  the image is rebuilt. The jq/libjq1 gap found in the first baseline
   cleared itself on the next fresh build. Make that systematic: `apt-get
   upgrade` (or targeted pins) in the Dockerfile flow plus a scheduled image
   rebuild, so security updates don't wait for a base-digest bump or a lucky
@@ -278,41 +278,41 @@ documented as a stated limit.
 
 Phases 1–2 are complete (2.2 excepted, below); 3A/3C landed, 3B parked. What
 remains is one ranked list, updated as items land. The interleave is
-deliberate: correctness and operator items alternate with credibility items —
+deliberate: correctness and operator items alternate with credibility items.
 Phases 1–2 bought a lot of external credibility while the operator side got
 little, so the top of the list leans operator.
 
-1. **4.3 Aggregate budget cap** — nothing bounds cross-task spend on an API
+1. **4.3 Aggregate budget cap**: nothing bounds cross-task spend on an API
    key; now that unattended operation (4.11) has landed, this is the gap that
-   matters most — worst-case burn is bounded only per task.
-2. **4.12 gosu privilege-drop hardening** — security-posture work with a
+   matters most; worst-case burn is bounded only per task.
+2. **4.12 gosu privilege-drop hardening**: security-posture work with a
    deadline set by the allowlist expiry (2026-09-06); clears the largest CVE
    cluster.
-3. **4.2 Push partial-failure contract** — ambiguous git states are
+3. **4.2 Push partial-failure contract**: ambiguous git states are
    gate-adjacent; define the failure contract and surface it in the audit row.
-4. **4.13 Image package currency** — Debian fixes land only on rebuild; make
+4. **4.13 Image package currency**: Debian fixes land only on rebuild; make
    that systematic with `apt-get upgrade` / targeted pins plus a scheduled
    rebuild so updates don't wait for a base-digest bump.
-5. **4.4 `drydock retry`** — pairs with the daemon: re-run a prior task from
+5. **4.4 `drydock retry`**: pairs with the daemon to re-run a prior task from
    its audit record.
-6. **4.10 Egress depth (IPv6 / plain-HTTP)** — enforce or loudly document;
+6. **4.10 Egress depth (IPv6 / plain-HTTP)**: enforce or loudly document;
    the honesty constraint applied to egress edges.
-7. **4.7 Observability** — wants real multi-run usage first, which unattended
+7. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
-8. **4.6 Agent-CLI bump automation** — low urgency; the red-team suite
+8. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
    already gates bumps.
-9. **Phase 1 report wrapper** — per-claim green/red output for `make redteam`;
+9. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
 
 **Event-driven (no backlog slot):**
-- **2.2 Notarization** — fires when the Apple Developer ID certificate is in
+- **2.2 Notarization**: fires when the Apple Developer ID certificate is in
   hand.
 
 **Parked:**
-- **3B native Gemini** — experimental until one end-to-end run against the
+- **3B native Gemini**: experimental until one end-to-end run against the
   real Gemini API passes (macOS + a real `GEMINI_API_KEY`); its A1/A2
   red-team coverage is already in place. Details in the Phase 3 status.
-- **3D config-declared providers, 4.8 runtime abstraction** — stretch, by
+- **3D config-declared providers, 4.8 runtime abstraction**: stretch, by
   this doc's own YAGNI rule.
 
 **Standing note:** the A1/A2/A7 red-team tests need the VM, so full
