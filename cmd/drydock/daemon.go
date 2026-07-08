@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
+	"drydock/internal/brokerclient"
 	"drydock/internal/config"
 	"drydock/internal/provider"
 )
@@ -164,4 +167,174 @@ func launchctlPrint(label string) (string, error) {
 		return string(out), fmt.Errorf("launchctl print %s: %s", label, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+// waitBrokerHealthy polls GET /healthz until 200 or the deadline.
+func waitBrokerHealthy(d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		c, base := brokerclient.New(nil, 2*time.Second)
+		if resp, err := c.Get(base + "/healthz"); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+func tailFile(path string, n int) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "(no log at " + path + ")"
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func runDaemon(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: drydock daemon install|uninstall|status")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "install":
+		daemonInstall()
+	case "uninstall":
+		daemonUninstall()
+	case "status":
+		daemonStatus()
+	default:
+		fmt.Fprintf(os.Stderr, "drydock daemon: unknown subcommand %q (install|uninstall|status)\n", args[0])
+		os.Exit(2)
+	}
+}
+
+func daemonInstall() {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil || cfg == nil {
+		cfg = config.Defaults()
+	}
+	fileKeys, _ := config.LoadAPIKeys(config.APIKeysPath())
+	oauthExists := func(name string) bool {
+		_, err := os.Stat(filepath.Join(config.Dir(), name))
+		return err == nil
+	}
+	ok, shellOnly := launchdCredentialAvailable(cfg, fileKeys, oauthExists, os.Getenv)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "drydock daemon install: no credential brokerd can see under launchd.")
+		fmt.Fprintln(os.Stderr, "launchd does not inherit your shell env — keys must live host-side:")
+		if shellOnly != "" {
+			fmt.Fprintf(os.Stderr, "  %s is set in your shell but invisible to launchd.\n", shellOnly)
+		}
+		fmt.Fprintln(os.Stderr, "  fix: run `drydock setup` to store keys in ~/.drydock/api-keys.env (0600),")
+		fmt.Fprintln(os.Stderr, "  or `drydock auth claude|codex` for subscription mode.")
+		os.Exit(1)
+	}
+
+	brokerd, err := findBrokerd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon install: %v\n  build it: make build && make install\n", err)
+		os.Exit(1)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon install: resolve home: %v\n", err)
+		os.Exit(1)
+	}
+	logPath := daemonLogPath()
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon install: create log dir: %v\n", err)
+		os.Exit(1)
+	}
+	plist, err := renderPlist(daemonLabel, brokerd, logPath, home)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon install: render plist: %v\n", err)
+		os.Exit(1)
+	}
+	pp := daemonPlistPath()
+	if err := os.MkdirAll(filepath.Dir(pp), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon install: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(pp, plist, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon install: write plist: %v\n", err)
+		os.Exit(1)
+	}
+
+	// bootout first so re-install is upgrade/restart; absent job is fine.
+	if err := launchctlBootout(daemonLabel); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon install: %v\n", err)
+		os.Exit(1)
+	}
+	if err := launchctlBootstrap(pp); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon install: %v\n", err)
+		os.Exit(1)
+	}
+	if err := launchctlKickstart(daemonLabel); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon install: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !waitBrokerHealthy(15 * time.Second) {
+		fmt.Fprintln(os.Stderr, "drydock daemon install: brokerd did not become healthy within 15s.")
+		fmt.Fprintln(os.Stderr, "launchd will keep retrying (KeepAlive). Last log lines:")
+		fmt.Fprintln(os.Stderr, tailFile(logPath, 20))
+		os.Exit(1)
+	}
+	fmt.Printf("brokerd installed and running (label %s)\n  socket: %s\n  logs:   %s\n", daemonLabel, brokerclient.ResolveSocketPath(), logPath)
+	fmt.Println("NOTE: no aggregate spend cap yet — per-task budgets only. See the daemon docs.")
+}
+
+func daemonUninstall() {
+	pp := daemonPlistPath()
+	if _, err := os.Stat(pp); os.IsNotExist(err) {
+		fmt.Println("drydock daemon: not installed (no plist at " + pp + ")")
+		return
+	}
+	if err := launchctlBootout(daemonLabel); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon uninstall: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Remove(pp); err != nil {
+		fmt.Fprintf(os.Stderr, "drydock daemon uninstall: remove plist: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("brokerd LaunchAgent removed. A foreground `drydock start` still works as before.")
+}
+
+func daemonStatus() {
+	pp := daemonPlistPath()
+	if _, err := os.Stat(pp); os.IsNotExist(err) {
+		fmt.Println("daemon: not installed — run `drydock daemon install`")
+		os.Exit(1)
+	}
+	out, err := launchctlPrint(daemonLabel)
+	if err != nil {
+		fmt.Printf("daemon: plist present but job not loaded (%v)\n  re-run `drydock daemon install`\n", err)
+		os.Exit(1)
+	}
+	st := parseLaunchdState(out)
+	switch {
+	case st.Running:
+		fmt.Printf("daemon: running (pid %s)\n", st.PID)
+	case st.LastExit != "":
+		fmt.Printf("daemon: not running (last exit code %s)\n", st.LastExit)
+	default:
+		fmt.Println("daemon: loaded, state unknown — raw launchctl output:")
+		fmt.Println(out)
+	}
+	if waitBrokerHealthy(2 * time.Second) {
+		fmt.Println("broker: healthy on " + brokerclient.ResolveSocketPath())
+	} else {
+		fmt.Println("broker: NOT responding on " + brokerclient.ResolveSocketPath())
+	}
+	fmt.Println("logs:   " + daemonLogPath())
 }

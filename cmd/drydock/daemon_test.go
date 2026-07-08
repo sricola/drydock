@@ -1,8 +1,10 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"drydock/internal/config"
 )
@@ -135,5 +137,17 @@ func TestParseLaunchdState(t *testing.T) {
 	got = parseLaunchdState("launchctl print format changed entirely")
 	if got.Running || got.PID != "" || got.LastExit != "" {
 		t.Errorf("garbage: got %+v, want zero-value state", got)
+	}
+}
+
+func TestWaitBrokerHealthy_Timeout(t *testing.T) {
+	// Nothing listening → must return false at the deadline, not hang.
+	t.Setenv("BROKER_SOCKET", filepath.Join(t.TempDir(), "nope.sock"))
+	start := time.Now()
+	if waitBrokerHealthy(600 * time.Millisecond) {
+		t.Fatal("no broker is listening; want false")
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Error("returned far past the deadline")
 	}
 }

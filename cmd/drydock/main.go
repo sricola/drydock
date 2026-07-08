@@ -14,6 +14,7 @@ Setup:
   drydock setup                  one command: install prerequisites (container, squid) + init
   drydock init                   one-time setup: container service, network, image, smoke
   drydock start                  run brokerd in the foreground (expects ANTHROPIC_API_KEY and/or OPENAI_API_KEY)
+  drydock daemon install|uninstall|status   run brokerd unattended via launchd (starts at login, restarts on crash)
   drydock status                 brokerd up?, pending count, recent tasks
   drydock doctor                 smoke-test the sandbox setup (no API spend)
   drydock redteam                run live containment attacks on your sandbox (no API spend)
@@ -59,6 +60,7 @@ var subHelp = map[string]string{
 	"setup":   "first run: install prerequisites (container, squid), then the setup wizard. --reconfigure re-runs the wizard; --yes to skip install prompts.",
 	"init":    "first-time setup: container service, network, sandbox image, ~/.drydock seed. Idempotent.",
 	"start":   "run brokerd in the foreground. Requires ANTHROPIC_API_KEY and/or OPENAI_API_KEY in env. ^C to stop.",
+	"daemon":  "install|uninstall|status — manage the brokerd LaunchAgent (login start, crash restart). Credentials must be host-side (api-keys.env / oauth files).",
 	"status":  "brokerd up?, in-flight stage breakdown, recent task counts.",
 	"tasks":   "list recent runs: id, age, duration, cost, outcome.",
 	"logs":    "<id> [-f] — print the task's stream-json audit log; -f to follow.",
@@ -105,6 +107,9 @@ func main() {
 	case "start":
 		consumeHelpFlag(cmd, subArgs)
 		runStart()
+	case "daemon":
+		consumeHelpFlag(cmd, subArgs)
+		runDaemon(subArgs)
 	case "submit":
 		// `submit` has its own flag.FlagSet which handles -h/--help.
 		runSubmit(subArgs)
