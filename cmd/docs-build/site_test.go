@@ -24,23 +24,38 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
-// TestNoStaleVersion fails if any shipped doc/site file mentions an old version.
-// The version moved to v0.3.0; nothing user-facing should still say v0.2.0.
-func TestNoStaleVersion(t *testing.T) {
-	root := repoRoot(t)
-	files := []string{"README.md", "site/index.html", "THREAT_MODEL.md"}
-	docs, _ := filepath.Glob(filepath.Join(root, "site/docs/*.md"))
-	for _, d := range docs {
-		files = append(files, d[len(root)+1:])
+// currentVersion returns the newest released version heading in CHANGELOG.md
+// (the single source of truth). "## Unreleased" is skipped by the vX.Y.Z shape.
+func currentVersion(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "CHANGELOG.md"))
+	if err != nil {
+		t.Fatalf("read CHANGELOG.md: %v", err)
 	}
-	for _, f := range files {
-		b, err := os.ReadFile(filepath.Join(root, f))
-		if err != nil {
-			continue
-		}
-		if strings.Contains(string(b), "v0.2.0") {
-			t.Errorf("%s still references v0.2.0 (current is v0.3.0)", f)
-		}
+	m := regexp.MustCompile(`(?m)^## (v\d+\.\d+\.\d+)`).FindStringSubmatch(string(b))
+	if m == nil {
+		t.Fatal("no released version heading (## vX.Y.Z) in CHANGELOG.md")
+	}
+	return m[1]
+}
+
+// TestReadmeStatusVersionCurrent pins the README status line to the current
+// release. This is the version claim that goes stale (it did: v0.4.0 lingered
+// two releases). The prior guard was frozen at a literal "v0.2.0" and so caught
+// nothing after v0.3.0; deriving from CHANGELOG keeps it honest automatically.
+func TestReadmeStatusVersionCurrent(t *testing.T) {
+	root := repoRoot(t)
+	want := currentVersion(t)
+	b, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^>\s*\*\*Status:[^(]*\((v\d+\.\d+\.\d+)\)`).FindStringSubmatch(string(b))
+	if m == nil {
+		t.Fatal("README.md has no '> **Status: … (vX.Y.Z)** ' line")
+	}
+	if m[1] != want {
+		t.Errorf("README status says %s but current release is %s (CHANGELOG)", m[1], want)
 	}
 }
 

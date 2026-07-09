@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "THREAT_MODEL.md" # rendered onto the site by cmd/docs-build
+      - "cmd/docs-build/**" # the renderer itself (nav order, templates)
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
