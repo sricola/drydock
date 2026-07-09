@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Self-hosted assets only; no third-party origins. frame-ancestors/HSTS are
+     header-only and can't be set on GitHub Pages (meta ignores them). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; font-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="theme-color" content="#fbfaf6">
 <title>drydock — sandbox Claude Code, Codex &amp; any OpenAI-compatible model on your Mac</title>
 <meta name="description" content="A sandbox for autonomous coding agents on macOS. Per-task hardware-isolated VMs, credential gateway, deny-by-default egress, human-gated diff push.">
 <link rel="canonical" href="https://sricola.github.io/drydock/">
@@ -37,9 +41,8 @@
   "author": { "@type": "Person", "name": "sricola" }
 }
 </script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="fonts/ibm-plex-mono-700.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="fonts/newsreader-400.woff2">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -244,7 +247,7 @@ make demo VM=1</pre>
   <figure class="demo reveal">
     <picture>
       <source media="(prefers-reduced-motion: reduce)" srcset="breach-still.png">
-      <img src="breach.gif" alt="drydock running real red-team attacks — each one contained live" loading="lazy" width="860">
+      <img src="breach.gif" alt="drydock running real red-team attacks — each one contained live" loading="lazy" width="983" height="650">
     </picture>
     <figcaption><b>Real attacks, contained live.</b> Every green is an actual <code>go&nbsp;test</code> red-team case.</figcaption>
   </figure>
@@ -325,49 +328,6 @@ make demo VM=1</pre>
   </div>
 </footer>
 
-<script>
-(function(){
-  var io=new IntersectionObserver(function(es){
-    es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
-  },{threshold:.12,rootMargin:"0px 0px -8% 0px"});
-  document.querySelectorAll('.reveal').forEach(function(el,i){
-    if(el.closest('.hero')) el.style.transitionDelay=(i*0.07)+'s';
-    io.observe(el);
-  });
-  // Hero is always above the fold — reveal it as soon as the DOM is ready (and
-  // again on load) so a slow web-font fetch can't leave it blank.
-  var showHero=function(){document.querySelectorAll('.hero .reveal').forEach(function(el){el.classList.add('in');});};
-  if(document.readyState!=='loading') showHero(); else document.addEventListener('DOMContentLoaded',showHero);
-  window.addEventListener('load',showHero);
-
-  // copy-button handler. Reads the target <pre> textContent (comments included).
-  document.querySelectorAll('.copy[data-copy-target]').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      var target = document.querySelector(btn.dataset.copyTarget);
-      if(!target) return;
-      var text = target.innerText.replace(/ /g,' ');
-      var done = function(){
-        btn.classList.add('is-copied');
-        var label = btn.querySelector('.copy-label');
-        var prev = label ? label.textContent : '';
-        if(label) label.textContent = 'copied';
-        setTimeout(function(){
-          btn.classList.remove('is-copied');
-          if(label) label.textContent = prev;
-        }, 1500);
-      };
-      if(navigator.clipboard && navigator.clipboard.writeText){
-        navigator.clipboard.writeText(text).then(done, function(){});
-      } else {
-        var ta = document.createElement('textarea');
-        ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
-        document.body.appendChild(ta); ta.select();
-        try{ document.execCommand('copy'); done(); } catch(_){}
-        document.body.removeChild(ta);
-      }
-    });
-  });
-})();
-</script>
+<script src="app.js" defer></script>
 </body>
 </html>

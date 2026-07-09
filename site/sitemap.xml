@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>https://sricola.github.io/drydock/</loc>
-    <changefreq>weekly</changefreq>
-    <priority>1.0</priority>
-  </url>
+  <url><loc>https://sricola.github.io/drydock/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/index.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/quickstart.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/authentication.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/models.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/submitting-tasks.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/web-ui.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/daemon.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/egress.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/configuration.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/troubleshooting.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/threat-model.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
 </urlset>

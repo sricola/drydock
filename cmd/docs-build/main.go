@@ -76,6 +76,7 @@ func run() error {
 	for _, p := range pages {
 		titleFor[p.Slug] = p.Title
 	}
+	var slugs []string
 	for _, s := range srcs {
 		body, _, err := renderMarkdown(raw[s.slug])
 		if err != nil {
@@ -85,13 +86,26 @@ func run() error {
 		if title == "" {
 			title = s.slug
 		}
-		page := renderPage(string(tmpl), body, title, buildSidebar(pages, s.slug), "../")
+		page := renderPage(string(tmpl), pageData{
+			PageTitle:   pageTitle(s.slug, title),
+			Description: metaDescription(raw[s.slug]),
+			Canonical:   canonicalURL(s.slug),
+			Content:     body,
+			Sidebar:     buildSidebar(pages, s.slug),
+			Base:        "../",
+		})
 		out := filepath.Join(docsDir, s.slug+".html")
 		if err := os.WriteFile(out, []byte(page), 0o644); err != nil {
 			return err
 		}
+		slugs = append(slugs, s.slug)
 		fmt.Println("==>", out)
 	}
+	// Regenerate the sitemap from the actual page set so it can't drift.
+	if err := os.WriteFile(filepath.Join("site", "sitemap.xml"), []byte(sitemapXML(slugs)), 0o644); err != nil {
+		return err
+	}
+	fmt.Println("==> site/sitemap.xml")
 	return nil
 }
 

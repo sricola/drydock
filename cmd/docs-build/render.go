@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"html"
 	"regexp"
 	"strings"
 
@@ -60,14 +61,27 @@ func renderMarkdown(src []byte) (string, []Heading, error) {
 	return out, heads, nil
 }
 
-// renderPage substitutes the template slots. base is the relative path back to
-// site root (so docs pages link assets as {{base}}style.css).
-func renderPage(tmpl, body, title, sidebar, base string) string {
+// pageData holds the per-page template substitutions.
+type pageData struct {
+	PageTitle   string // <title>/OG title
+	Description string // meta description / OG description (plain text)
+	Canonical   string // absolute canonical URL
+	Content     string // rendered HTML body
+	Sidebar     string // rendered nav
+	Base        string // relative path back to site root
+}
+
+// renderPage substitutes the template slots. Text that lands in an attribute or
+// <title> is HTML-escaped; Content is already trusted HTML and Base/Canonical
+// are our own URLs.
+func renderPage(tmpl string, d pageData) string {
 	r := strings.NewReplacer(
-		"{{title}}", title,
-		"{{content}}", body,
-		"{{sidebar}}", sidebar,
-		"{{base}}", base,
+		"{{pagetitle}}", html.EscapeString(d.PageTitle),
+		"{{description}}", html.EscapeString(d.Description),
+		"{{canonical}}", d.Canonical,
+		"{{content}}", d.Content,
+		"{{sidebar}}", d.Sidebar,
+		"{{base}}", d.Base,
 	)
 	return r.Replace(tmpl)
 }
