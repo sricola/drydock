@@ -84,7 +84,7 @@
       <a class="btn" href="https://github.com/sricola/drydock">View on GitHub</a>
       <a class="btn-ghost" href="docs/threat-model.html">Read the threat model</a>
     </div>
-    <p class="herostatus reveal"><span class="statustag">working alpha · v0.4.0</span> Single-maintainer. Security architecture is stabilizing; not independently audited. Every containment claim is a runnable test — <a href="#prove">run the attacks yourself</a>.</p>
+    <p class="herostatus reveal"><span class="statustag">working alpha · v0.5.1</span> Security architecture is stabilizing; not independently audited. Every containment claim is a runnable test — <a href="#prove">run the attacks yourself</a>.</p>
   </div>
 </header>
 
@@ -186,7 +186,7 @@ drydock start</pre>
     <div class="install-foot">
       <a href="docs/quickstart.html">quickstart</a>
       ·
-      <a href="https://github.com/sricola/drydock/releases/tag/v0.4.0">v0.4.0 release notes</a>
+      <a href="https://github.com/sricola/drydock/releases/latest">latest release notes</a>
       ·
       <a href="docs/daemon.html">run unattended <span class="newtag">new · on main</span></a>
     </div>
@@ -295,7 +295,7 @@ make demo VM=1</pre>
   <div class="seclabel reveal">Honest limits</div>
   <h2 class="reveal">What it deliberately doesn't defend.</h2>
   <div class="prose reveal">
-    <p>A containment that overclaims fails quietly, so here's the honest edge. drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. It doesn't vet your dependencies or your logic. And it trusts the Mac it runs on: a compromised host is out of scope. It's pre-1.0, single-maintainer, and has had <b>no third-party security audit</b>. Read the <a href="docs/threat-model.html">threat model</a> before you trust it.</p>
+    <p>A containment that overclaims fails quietly, so here's the honest edge. drydock makes a malicious diff <em>reviewable</em>, not impossible — approve a subtle backdoor and it lands. It <em>contains</em> prompt injection rather than preventing it. It doesn't vet your dependencies or your logic. And it trusts the Mac it runs on: a compromised host is out of scope. It's pre-1.0 and has had <b>no third-party security audit</b>. Read the <a href="docs/threat-model.html">threat model</a> before you trust it.</p>
   </div>
 </section>
 
