@@ -25,7 +25,7 @@ case "$AGENT" in
     if [ -n "${DRYDOCK_MODEL:-}" ]; then
         MODEL_ARGS=(--model "${DRYDOCK_MODEL}")
     fi
-    exec gosu agent env "CODEX_HOME=$CODEX_HOME" codex exec \
+    exec /usr/local/bin/drop-agent env "CODEX_HOME=$CODEX_HOME" codex exec \
         --dangerously-bypass-approvals-and-sandbox \
         "${MODEL_ARGS[@]}" \
         "${PROMPT}"
@@ -35,7 +35,7 @@ case "$AGENT" in
     if [ -n "${DRYDOCK_MODEL:-}" ]; then
         MODEL_ARGS=(--model "${DRYDOCK_MODEL}")
     fi
-    exec gosu agent claude --bare -p "${PROMPT}" \
+    exec /usr/local/bin/drop-agent claude --bare -p "${PROMPT}" \
         "${MODEL_ARGS[@]}" \
         --dangerously-skip-permissions \
         --output-format stream-json --verbose --include-partial-messages
@@ -55,7 +55,7 @@ case "$AGENT" in
     # The VM is the isolation boundary, so auto-approve all permissions. JSON
     # output gives the operator stream machine-readable events. The apiKey lives
     # in the written config, so opencode (as agent) needs no gateway env itself.
-    exec gosu agent env \
+    exec /usr/local/bin/drop-agent env \
         "HOME=/home/agent" \
         "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" \
         "XDG_DATA_HOME=$XDG_DATA_HOME" \
@@ -84,7 +84,7 @@ case "$AGENT" in
     # GOOGLE_GENAI_USE_VERTEXAI=false forces the Gemini API (not Vertex), so
     # traffic stays on GOOGLE_GEMINI_BASE_URL (the gateway) — required by the
     # validated spike setup.
-    exec gosu agent env \
+    exec /usr/local/bin/drop-agent env \
         "HOME=/home/agent" \
         "GEMINI_DIR=$GEMINI_DIR" \
         "GOOGLE_GEMINI_BASE_URL=$GOOGLE_GEMINI_BASE_URL" \

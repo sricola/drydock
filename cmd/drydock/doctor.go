@@ -46,7 +46,7 @@ func runDoctor() {
 
 	// 2. Sandbox must actually boot and report a working `claude --version`.
 	// This is the cheap proof that the image is healthy end-to-end (apt
-	// layer, gosu, claude-code install all worked).
+	// layer, setpriv drop, claude-code install all worked).
 	out, err = runCmd("container", "run", "--rm", "--entrypoint", "/bin/sh",
 		cfg.SandboxImage, "-c", "claude --version 2>&1")
 	switch {

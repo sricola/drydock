@@ -265,6 +265,37 @@ echo "DIRECT-IP: $(curl -sS -m 4 https://1.1.1.1/ -o /dev/null 2>/dev/null && ec
 	}
 }
 
+// A2 (second leg) — the agent CANNOT rewrite the egress pin. The other A2 test
+// proves the ruleset denies egress, but it runs as root+CAP_NET_ADMIN, so it
+// never exercises the load-bearing half of the claim: "the agent user cannot
+// flush nft." Here root installs the firewall, then drops to the real agent via
+// the production drop-agent script, and *as the agent* we assert nft flush is
+// denied and egress stays blocked afterward. Without setpriv's no-new-privs +
+// emptied bounding set, `gosu` would leave CAP_NET_ADMIN reachable and this
+// would BREACH.
+func TestRedteam_A2_AgentCannotRewriteFirewall(t *testing.T) {
+	requireContainer(t)
+	script := `
+/usr/local/bin/init-firewall.sh 192.168.66.1 8088 3128
+/usr/local/bin/drop-agent bash -c '
+  echo "WHOAMI: $(id -un)"
+  echo "FLUSH: $(nft flush ruleset >/dev/null 2>&1 && echo succeeded || echo denied)"
+  echo "HTTPS-AFTER: $(curl -sS -m 4 https://example.com/ -o /dev/null 2>/dev/null && echo reachable || echo blocked)"
+'
+`
+	out := containerRun(t, "run", "--rm", "--user", "root", "--cap-add", "CAP_NET_ADMIN",
+		"--entrypoint", "/bin/bash", sandboxImage(), "-lc", script)
+	if !strings.Contains(out, "WHOAMI: agent") {
+		t.Fatalf("expected the payload to run as the dropped agent user:\n%s", out)
+	}
+	if !strings.Contains(out, "FLUSH: denied") {
+		t.Errorf("A2 BREACH: the agent was able to flush the nft ruleset:\n%s", out)
+	}
+	if !strings.Contains(out, "HTTPS-AFTER: blocked") {
+		t.Errorf("A2 BREACH: egress was reachable after the agent's flush attempt:\n%s", out)
+	}
+}
+
 // A7 — no task state persists between tasks. Task 1 writes a secret into the VM
 // filesystem and exits (--rm); a fresh task 2 must not see it.
 func TestRedteam_A7_NoStatePersistsBetweenTasks(t *testing.T) {

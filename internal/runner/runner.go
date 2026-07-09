@@ -20,7 +20,8 @@ func BuildRunArgs(s Spec) []string {
 		"run", "--rm",
 		"--name", "task-" + s.TaskID,
 		// entrypoint.sh starts as root to install the nft pin, then drops to
-		// the agent user via gosu. Don't pass --user here, or nft can't flush.
+		// the agent user via setpriv (no-new-privs + empty cap bounding set;
+		// see image/drop-agent.sh). Don't pass --user here, or nft can't flush.
 		"--cap-add", "CAP_NET_ADMIN",
 		"--memory", fmt.Sprintf("%dG", s.MemoryGB),
 		"--cpus", fmt.Sprintf("%d", s.CPUs),

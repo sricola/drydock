@@ -4,8 +4,11 @@
 FROM node:22-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
 # Base toolchain + Python 3.11 (Debian default). Python lives next to Node so
 # the egress allowlist's pypi.org slot has a runtime to land on.
+# Privilege drop uses setpriv (util-linux, already in the base) — not gosu — so
+# the agent drop gets no-new-privs + an emptied capability bounding set, and the
+# image sheds gosu's stale go1.19 CVE cluster. See image/drop-agent.sh.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git ca-certificates curl jq nftables dnsutils ipset gosu \
+      git ca-certificates curl jq nftables dnsutils ipset \
       python3 python3-pip python3-venv \
  && rm -rf /var/lib/apt/lists/*
 
@@ -45,10 +48,18 @@ ARG GEMINI_CLI_VERSION=0.49.0
 RUN npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
 
 RUN useradd -m -u 10001 -s /bin/bash agent
+
+# Strip every SUID/SGID bit in the image. The sandbox never needs setuid: root
+# runs the entrypoint, then drops to `agent` via setpriv. Combined with the
+# --no-new-privs drop, this removes the "stray SUID binary lets the agent climb
+# back to root+CAP_NET_ADMIN" path entirely (defense in depth).
+RUN find / -xdev -perm /6000 -type f -exec chmod -s {} + 2>/dev/null || true
+
 COPY init-firewall.sh         /usr/local/bin/init-firewall.sh
+COPY drop-agent.sh            /usr/local/bin/drop-agent
 COPY entrypoint.sh            /usr/local/bin/entrypoint.sh
 COPY write-codex-config.sh    /usr/local/bin/write-codex-config.sh
 COPY write-opencode-config.sh /usr/local/bin/write-opencode-config.sh
 COPY write-gemini-config.sh   /usr/local/bin/write-gemini-config.sh
-RUN chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh /usr/local/bin/write-codex-config.sh /usr/local/bin/write-opencode-config.sh /usr/local/bin/write-gemini-config.sh
+RUN chmod 0755 /usr/local/bin/init-firewall.sh /usr/local/bin/drop-agent /usr/local/bin/entrypoint.sh /usr/local/bin/write-codex-config.sh /usr/local/bin/write-opencode-config.sh /usr/local/bin/write-gemini-config.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
