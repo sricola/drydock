@@ -13,7 +13,16 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"syscall"
 )
+
+// openRead opens an audit file read-only, refusing to traverse a final-component
+// symlink (O_NOFOLLOW). The audit dir is the source-of-truth integrity artifact;
+// a symlink planted there (by a same-uid process) must not redirect a read out
+// of it. drydock runs on macOS/Linux only, both of which have O_NOFOLLOW.
+func openRead(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+}
 
 type Result struct {
 	Type         string  `json:"type"`
@@ -73,7 +82,7 @@ func scanTailForResult(f *os.File, size int64) (Result, bool, error) {
 
 // ReadMeta returns the drydock_meta first line of path. Legacy/absent → zero value.
 func ReadMeta(path string) Meta {
-	f, err := os.Open(path)
+	f, err := openRead(path)
 	if err != nil {
 		return Meta{}
 	}
@@ -84,7 +93,7 @@ func ReadMeta(path string) Meta {
 // LastResult finds the final {"type":"result",...} line by reading only the
 // file tail. ok=false when none is present (still running / killed early).
 func LastResult(path string, size int64) (Result, bool) {
-	f, err := os.Open(path)
+	f, err := openRead(path)
 	if err != nil {
 		return Result{}, false
 	}
@@ -175,7 +184,7 @@ func TotalCost(path string) float64 {
 // {"type":"result",...} line. Returns (false, nil) when no result is
 // present; returns (false, err) when the file cannot be read.
 func HasResultLine(path string) (bool, error) {
-	f, err := os.Open(path)
+	f, err := openRead(path)
 	if err != nil {
 		return false, err
 	}
@@ -204,7 +213,12 @@ func looksLikeError(ln string) bool {
 // ok is false when nothing meaningful is found, so the caller falls back to
 // a generic error message.
 func Reason(path string) (line string, ok bool) {
-	data, err := os.ReadFile(path)
+	f, err := openRead(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return "", false
 	}

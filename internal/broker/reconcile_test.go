@@ -134,3 +134,24 @@ func TestTerminateStuckAudits_LargeTraceWithResultIsLeftAlone(t *testing.T) {
 		t.Error("large completed trace must be left untouched")
 	}
 }
+
+// TestAppendLine_RefusesSymlink verifies the O_NOFOLLOW hardening: a symlink
+// planted at the audit path must not let the boot-time interrupted-marker write
+// pass through to another file.
+func TestAppendLine_RefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.jsonl")
+	if err := os.WriteFile(target, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.jsonl")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendLine(link, "x\n"); err == nil {
+		t.Fatal("appendLine should refuse a symlinked path (O_NOFOLLOW)")
+	}
+	if b, _ := os.ReadFile(target); len(b) != 0 {
+		t.Errorf("write leaked through the symlink to the target: %q", b)
+	}
+}

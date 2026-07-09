@@ -180,3 +180,20 @@ func TestReason_PrefersErrorOverTrailingNoise(t *testing.T) {
 		t.Errorf("Reason = %q,%v; want %q,true", got, ok, want)
 	}
 }
+
+// TestHasResultLine_RefusesSymlink verifies audit reads use O_NOFOLLOW: a
+// planted symlink in the audit dir can't redirect the outcome read.
+func TestHasResultLine_RefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "t.jsonl")
+	if err := os.WriteFile(target, []byte(`{"type":"result","subtype":"success"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "l.jsonl")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := HasResultLine(link); err == nil {
+		t.Error("HasResultLine should refuse a symlinked audit path (O_NOFOLLOW)")
+	}
+}
