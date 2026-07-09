@@ -125,6 +125,21 @@ func TestValidate_Rejects(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsNegativePrice(t *testing.T) {
+	yaml := "network: x\ngateway_ip: 1.2.3.4\n" +
+		"openai_compat:\n" +
+		"  base_url: https://api.example.com\n" +
+		"  api_key_env: FOO_KEY\n" +
+		"  model: m\n" +
+		"  prices:\n" +
+		"    m: {input: 1.0, output: -2.0}\n"
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Errorf("want negative-price rejection, got %v", err)
+	}
+}
+
 func TestWriteSeed_ValidYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "config.yaml")
 	if err := WriteSeed(path); err != nil {

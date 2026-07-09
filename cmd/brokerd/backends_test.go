@@ -191,18 +191,14 @@ func TestOpenAICompatWarnings(t *testing.T) {
 			}
 		}
 	})
-	t.Run("negative input price warns", func(t *testing.T) {
+	// Negative prices are now a hard config error (see config.validate →
+	// TestValidate_RejectsNegativePrice), not a warning — so they no longer
+	// surface here.
+	t.Run("negative price is not a warning (rejected at validation)", func(t *testing.T) {
 		oc := mk("https://up.test", "", map[string]config.OpenAICompatPrice{"gpt-x": price(-1, 2), "default": price(1, 2)})
 		w := strings.Join(openAICompatWarnings(oc), "\n")
-		if !strings.Contains(w, "gpt-x") || !strings.Contains(w, "negative") {
-			t.Errorf("expected negative-price warning naming gpt-x; got %q", w)
-		}
-	})
-	t.Run("negative output only warns", func(t *testing.T) {
-		oc := mk("https://up.test", "", map[string]config.OpenAICompatPrice{"gpt-x": price(1, -2), "default": price(1, 2)})
-		w := strings.Join(openAICompatWarnings(oc), "\n")
-		if !strings.Contains(w, "gpt-x") || !strings.Contains(w, "negative") {
-			t.Errorf("expected negative-price warning naming gpt-x for negative output; got %q", w)
+		if strings.Contains(w, "negative") {
+			t.Errorf("negative price should be rejected at validation, not warned here; got %q", w)
 		}
 	})
 	t.Run("partial prices without default warns", func(t *testing.T) {

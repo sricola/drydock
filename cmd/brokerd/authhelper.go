@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net/url"
@@ -17,7 +18,11 @@ func runSquidAuthHelper(tokenPath string, in io.Reader, out io.Writer) error {
 	sc := bufio.NewScanner(in)
 	for sc.Scan() {
 		user, pass := parseHelperLine(sc.Text())
-		if user != "" && lookupToken(tokenPath, user) == pass {
+		// Constant-time compare on the per-task proxy secret, matching the
+		// gateway bearer check. An absent user yields "" — reject rather than
+		// letting an empty stored secret match an empty password.
+		secret := lookupToken(tokenPath, user)
+		if user != "" && secret != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(pass)) == 1 {
 			fmt.Fprintln(out, "OK")
 		} else {
 			fmt.Fprintln(out, "ERR")
