@@ -32,6 +32,20 @@ func TestCompileSquidConf_AuthAndInclude(t *testing.T) {
 	if strings.Index(conf, "include /run/task-acls/*.conf") > strings.LastIndex(conf, "http_access deny all") {
 		t.Errorf("include must precede final deny all")
 	}
+	// SSRF guard: the private/loopback/metadata deny must be present AND ordered
+	// before the allowlist includes, or an allowlisted name resolving to a
+	// private IP would slip through.
+	if !strings.Contains(conf, "http_access deny to_local") {
+		t.Errorf("conf missing SSRF guard (http_access deny to_local)\n---\n%s", conf)
+	}
+	for _, cidr := range []string{"127.0.0.0/8", "169.254.0.0/16", "10.0.0.0/8", "192.168.0.0/16"} {
+		if !strings.Contains(conf, cidr) {
+			t.Errorf("SSRF guard missing range %s", cidr)
+		}
+	}
+	if strings.Index(conf, "http_access deny to_local") > strings.Index(conf, "include /run/squid-default-acl.conf") {
+		t.Errorf("SSRF deny must precede the allowlist includes")
+	}
 }
 
 func TestResetTaskState_ClearsStaleButKeepsPlaceholder(t *testing.T) {
