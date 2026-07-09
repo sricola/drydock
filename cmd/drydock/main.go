@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 )
@@ -26,7 +27,8 @@ Tasks:
   drydock tasks                  list recent runs (id, age, duration, cost, outcome)
   drydock logs    <id> [-f]      print (or follow) the task's stream-json audit log
   drydock review  <id>           open the diff in $PAGER, then prompt y/N
-  drydock kill    <id>           tear down the VM and deny if pending
+  drydock retry   <id>           re-run a prior task from its recorded invocation
+  drydock kill    <id>           tear down the VM and deny if pending (alias: cancel)
   drydock prune   <flags>        delete old audit artifacts (--older-than DUR [--keep-last N] [--yes])
 
 Approvals:
@@ -66,6 +68,8 @@ var subHelp = map[string]string{
 	"logs":    "<id> [-f] — print the task's stream-json audit log; -f to follow.",
 	"review":  "<id> — open the diff in $PAGER, prompt y/N to approve or deny.",
 	"kill":    "<id> — tear down the VM and deny if pending.",
+	"cancel":  "<id> — alias for kill: tear down the VM and deny if pending.",
+	"retry":   "<id> — re-run a prior task from its recorded invocation (repo + prompt + flags; re-enters the approval gate).",
 	"prune":   "delete old per-task audit artifacts; --older-than DUR [--keep-last N] [--yes]. Dry-run unless --yes.",
 	"pending": "list task IDs awaiting approval (egress + diff gates both shown).",
 	"approve": "<id> — approve the pending push for <id>.",
@@ -121,14 +125,23 @@ func main() {
 		runTasks()
 	case "logs":
 		consumeHelpFlag(cmd, subArgs)
-		mustArgsRange(2, 3)
-		follow := len(os.Args) == 4 && (os.Args[3] == "-f" || os.Args[3] == "--follow")
-		runLogs(os.Args[2], follow)
+		fs := flag.NewFlagSet("logs", flag.ExitOnError)
+		follow := fs.Bool("f", false, "follow the log as brokerd appends (like tail -f)")
+		fs.BoolVar(follow, "follow", false, "alias for -f")
+		_ = fs.Parse(subArgs)
+		if fs.NArg() != 1 {
+			die("usage: drydock logs <id> [-f]")
+		}
+		runLogs(fs.Arg(0), *follow)
+	case "retry":
+		consumeHelpFlag(cmd, subArgs)
+		mustArgs(2)
+		runRetry(os.Args[2])
 	case "review":
 		consumeHelpFlag(cmd, subArgs)
 		mustArgs(2)
 		runReview(os.Args[2])
-	case "kill":
+	case "kill", "cancel": // cancel is an alias — the verb users reach for first
 		consumeHelpFlag(cmd, subArgs)
 		mustArgs(2)
 		runKill(os.Args[2])
@@ -171,14 +184,6 @@ func main() {
 
 func mustArgs(want int) {
 	if len(os.Args) != want+1 {
-		usage()
-		os.Exit(2)
-	}
-}
-
-func mustArgsRange(min, max int) {
-	n := len(os.Args) - 1
-	if n < min || n > max {
 		usage()
 		os.Exit(2)
 	}
