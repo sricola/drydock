@@ -94,6 +94,11 @@ func effectiveRequestCap(uncapped bool, configured int) int {
 
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
 
+// taskContainerRE matches a drydock task VM name exactly (task- + a 32-hex
+// newID). Anchored so the orphan reaper's `container delete --force` can never
+// fire on an unrelated container that merely has "task-" somewhere in its JSON.
+var taskContainerRE = regexp.MustCompile(`^task-[0-9a-f]{32}$`)
+
 // resolveAPIKey returns the effective key for env-var name. A non-empty
 // exported value wins (so CI `export …` is unchanged); otherwise the value from
 // the host-side api-keys.env store; else "". An env var set to "" deliberately
@@ -425,9 +430,36 @@ func hardenedServer(h http.Handler) *http.Server {
 // (with a loud banner — any process that can reach the port can submit and
 // approve tasks). Returns the listener and the socket path to remove on
 // shutdown ("" for TCP).
+// loopbackHostPort reports whether addr (host:port) binds a loopback address.
+// An empty host (":port", all interfaces), a wildcard (0.0.0.0), or any routable
+// IP is NOT loopback and would expose the admin routes to the sandbox VM. Fails
+// closed on an unparseable address.
+func loopbackHostPort(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func listen(cfg *config.Config, gwAddr, proxyAddr string) (net.Listener, string) {
 	if tcpAddr := cfg.Broker.Addr; tcpAddr != "" {
-		slog.Warn("listening on TCP — any process that can reach this port can submit and approve tasks",
+		// The admin routes (/admin/approve, /deny, /kill) live on this listener.
+		// A non-loopback TCP bind (the gateway IP, 0.0.0.0, a LAN IP) is reachable
+		// from inside the sandbox VM over vmnet — which would let a task's agent
+		// POST its own approval and defeat the human gate. Refuse it fail-closed;
+		// loopback TCP is fine (the VM can't route to the host's 127.0.0.1), and
+		// remote operators can SSH-forward the loopback port or the unix socket.
+		if !loopbackHostPort(tcpAddr) {
+			fatal("broker.addr must be a loopback address (127.0.0.1/::1) — a VM-reachable "+
+				"bind would let a sandboxed agent approve its own pushes; use the unix socket "+
+				"or SSH-forward a loopback port", "addr", tcpAddr)
+		}
+		slog.Warn("listening on TCP (loopback) — any LOCAL process that can reach this port can submit and approve tasks",
 			"addr", tcpAddr)
 		l, err := net.Listen("tcp", tcpAddr)
 		if err != nil {
@@ -557,20 +589,23 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 	if err != nil {
 		slog.Warn("orphan prune: container ls failed", "err", err, "stderr", string(out))
 	} else {
-		// Names look like "task-<hex>"; we don't bother parsing the JSON
-		// shape (which moves across container CLI versions). A substring
-		// is enough and won't match drydock-anchor (handled by startAnchor).
+		// Names look like "task-<32hex>"; we don't parse the JSON shape (it moves
+		// across container CLI versions), but we match each whitespace token
+		// against the EXACT task-name grammar so a "task-" substring in an image
+		// tag or label value can't get an unrelated container force-deleted.
 		for _, line := range strings.Split(string(out), "\n") {
 			for _, token := range strings.Fields(strings.ReplaceAll(line, `"`, " ")) {
-				if strings.HasPrefix(token, "task-") && len(token) > 5 {
+				if taskContainerRE.MatchString(token) {
 					_, _ = runCmd("container", "delete", "--force", token)
 					slog.Info("orphan prune: removed container", "name", token)
 				}
 			}
 		}
 	}
-	// Reap orphan squid (very specific argv: "-N -f" only used by drydock).
-	_, _ = runCmd("pkill", "-f", "squid -N -f")
+	// A stale squid is reaped precisely (by its pidfile, only if actually dead)
+	// in netfw.StartSquid → reapStaleSquid during squid setup. We deliberately
+	// do NOT `pkill -f "squid -N -f"` here — that argv match could kill an
+	// unrelated squid a developer happens to be running with those flags.
 
 	// Reap host-side leftovers a crash skipped (the per-task defers never ran).
 	// ORDER MATTERS — do not reorder: the container delete above must precede

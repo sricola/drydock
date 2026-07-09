@@ -38,7 +38,7 @@ squid_run_dir: ~/.drydock/squid        # squid pid/conf/cache.log
 # --- Broker listener ---
 broker:
   socket: ""                           # empty = per-uid default ($TMPDIR/drydock-$UID/drydock.sock)
-  addr: ""                             # set "host:port" to expose over TCP (warns at boot)
+  addr: ""                             # set "127.0.0.1:PORT" for loopback TCP (non-loopback is refused; SSH-forward for remote)
 
 # --- Behavior ---
 notifications:              true       # macOS notifications on pending approval
