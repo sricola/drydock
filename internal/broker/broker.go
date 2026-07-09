@@ -367,6 +367,20 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		(taskVendor == "openai" && b.OpenAIAuth == "subscription")
 	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t,"sensitive":%t}`+"\n", subscription, t.Sensitive)
 
+	// Persist the invocation so `drydock retry <id>` can re-run this task
+	// without the operator reconstructing repo+prompt+flags by hand. Marshaled
+	// (not fmt'd) so the instruction can't break the JSON. auto_approve is
+	// deliberately NOT recorded — a retry re-enters the approval gate unless the
+	// operator opts back in. Not a `result`/`drydock_meta` line, so it doesn't
+	// affect outcome/cost parsing.
+	if inv, err := json.Marshal(map[string]any{
+		"type": "drydock_task", "repo_ref": t.RepoRef, "instruction": t.Instruction,
+		"agent": t.Agent, "model": t.Model, "platform": t.Platform,
+		"egress_extra": t.EgressExtra, "draft": t.Draft, "sensitive": t.Sensitive,
+	}); err == nil {
+		fmt.Fprintf(logf, "%s\n", inv)
+	}
+
 	args := runner.BuildRunArgs(runner.Spec{
 		TaskID:     taskID,
 		Network:    b.Network,
