@@ -156,7 +156,8 @@ func main() {
 		consumeHelpFlag(cmd, subArgs)
 		runAuth(subArgs)
 	case "ui":
-		runUI(os.Args[2:])
+		consumeHelpFlag(cmd, subArgs)
+		runUI(subArgs)
 	case "version", "--version", "-v":
 		fmt.Println("drydock", version)
 	case "-h", "--help", "help":

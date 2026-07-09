@@ -14,7 +14,19 @@ func runLogs(id string, follow bool) {
 	path := auditPath(id)
 	f, err := os.Open(path)
 	if err != nil {
-		die("%v", err) // err already includes the path
+		// Reattach race: `drydock submit` prints the `logs <id> -f` hint on ^C
+		// before brokerd has created the trace. In follow mode, poll for the
+		// file to appear instead of dying on the advice the tool just gave.
+		if !follow || !os.IsNotExist(err) {
+			die("%v", err) // err already includes the path
+		}
+		for os.IsNotExist(err) {
+			time.Sleep(250 * time.Millisecond)
+			f, err = os.Open(path)
+		}
+		if err != nil {
+			die("%v", err)
+		}
 	}
 	defer f.Close()
 
