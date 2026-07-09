@@ -84,24 +84,30 @@ jobs:
     steps:
       # HOMEBREW_TAP_TOKEN: fine-grained PAT, Contents read/write on
       # sricola/homebrew-drydock ONLY. The default GITHUB_TOKEN cannot push
-      # cross-repo. Checked explicitly so a missing secret fails here with a
-      # clear message instead of as a 403 at push time.
-      - name: Require tap token
+      # cross-repo. When it's absent the tap is bumped by hand, so skip cleanly
+      # (green job + a notice) rather than failing every release. Setting the
+      # secret later activates the automation with no further change. Secrets
+      # can't be used in a job/step `if:`, so gate downstream steps on this
+      # step's output instead.
+      - name: Check tap token
+        id: gate
         env:
           TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          test -n "$TOKEN" || {
-            echo "::error::HOMEBREW_TAP_TOKEN is not set. Create a fine-grained PAT with Contents read/write on sricola/homebrew-drydock and add it: gh secret set HOMEBREW_TAP_TOKEN -R ${GITHUB_REPOSITORY}"
-            exit 1
-          }
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN not set — skipping automated tap bump (bump the formula by hand). To enable: fine-grained PAT with Contents read/write on sricola/homebrew-drydock, then gh secret set HOMEBREW_TAP_TOKEN -R ${GITHUB_REPOSITORY}"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/checkout@v5
+        if: steps.gate.outputs.skip != 'true'
         with:
           repository: sricola/homebrew-drydock
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       - name: Resolve published tarball sha256
         id: rel
+        if: steps.gate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -114,6 +120,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Rewrite formula url/sha256/version
+        if: steps.gate.outputs.skip != 'true'
         env:
           TAG: ${{ github.ref_name }}
           SHA: ${{ steps.rel.outputs.sha }}
@@ -130,6 +137,7 @@ jobs:
           grep -Fq "version \"${ver}\"" Formula/drydock.rb
 
       - name: Commit and push
+        if: steps.gate.outputs.skip != 'true'
         env:
           TAG: ${{ github.ref_name }}
         run: |
