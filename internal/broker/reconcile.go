@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"drydock/internal/audit"
 )
@@ -57,13 +58,17 @@ func TerminateStuckAudits(auditRoot string) (int, error) {
 	return n, firstErr
 }
 
-// appendLine appends s to the file at path.
+// appendLine appends s to the file at path, refusing symlinks (O_NOFOLLOW so a
+// planted <id>.jsonl -> elsewhere can't redirect the boot-time write) and
+// fsyncing so the interrupted marker survives an immediate re-crash.
 func appendLine(path, s string) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	_, err = f.WriteString(s)
-	return err
+	if _, err = f.WriteString(s); err != nil {
+		return err
+	}
+	return f.Sync()
 }

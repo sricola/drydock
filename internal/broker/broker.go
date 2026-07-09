@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"drydock/internal/audit"
@@ -341,13 +342,18 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// 0666 (umask-reduced); be explicit.
 	logf, err := os.OpenFile(
 		filepath.Join(b.AuditRoot, taskID+".jsonl"),
-		os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		slog.Warn("task audit log open failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "audit setup failed", ""))
 		return
 	}
+	// fsync the trace on the way out so a hard crash can't lose the terminal
+	// result line — the audit is the source of truth for outcome/cost, and a
+	// lost last line reads as "running?" forever. Close is registered first so
+	// it runs LAST (LIFO); Sync registered after runs first: flush, then close.
 	defer logf.Close()
+	defer func() { _ = logf.Sync() }()
 	tr.logf = logf
 	tr.auditPath = filepath.Join(b.AuditRoot, taskID+".jsonl")
 
