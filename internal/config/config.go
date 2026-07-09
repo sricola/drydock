@@ -79,7 +79,10 @@ type Config struct {
 	// OpenAIAuth selects authentication mode: "api_key" or "subscription".
 	OpenAIAuth string `yaml:"openai_auth"`
 
-	// TaskMaxRequests is a per-task request cap (0 = unlimited).
+	// TaskMaxRequests is a per-task request cap. 0 = unlimited when a USD budget
+	// is bounding spend; but when no USD budget applies (subscription auth, or a
+	// priceless openai_compat lane) a 0 here fails closed to a default cap
+	// (defaultUncappedRequestCap) so a runaway task can't drain a subscription.
 	TaskMaxRequests int `yaml:"task_max_requests"`
 
 	// OpenAICompat configures a bring-your-own OpenAI-compatible upstream
@@ -338,6 +341,15 @@ func (c *Config) validate() error {
 		if u.Scheme != "https" && !(u.Scheme == "http" && isLocal) {
 			return fmt.Errorf("config: openai_compat.base_url must be https (http allowed only for localhost), got %q", oc.BaseURL)
 		}
+		// A negative price is never legitimate: it makes SpentUSD decrease so the
+		// USD budget never trips — an outright budget defeat. Reject it. (A
+		// missing "default" row stays a warning — the request cap bounds that
+		// case — but a negative number is a config error.)
+		for model, pr := range oc.Prices {
+			if pr.Input < 0 || pr.Output < 0 {
+				return fmt.Errorf("config: openai_compat.prices[%q] has a negative value; a negative price disables the USD budget", model)
+			}
+		}
 	}
 	return nil
 }
@@ -366,7 +378,7 @@ default_model:          ""             # model fallback for Claude Code and Code
 default_agent:          claude         # sandbox CLI: claude | codex | gemini | opencode. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
-task_max_requests:      0              # per-task request cap (0 = unlimited)
+task_max_requests:      0              # per-task request cap. 0 = unlimited when a USD budget bounds spend; with an uncapped budget (subscription / priceless model) 0 falls closed to a built-in default cap
 
 # --- Bring-your-own OpenAI-compatible model (optional; e.g. Gemini, OpenRouter, local) ---
 openai_compat:

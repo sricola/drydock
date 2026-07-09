@@ -35,15 +35,8 @@ func openAICompatWarnings(oc config.OpenAICompatConfig) []string {
 	}
 	var warnings []string
 
-	// Check for negative prices — a negative price means USD budget never trips.
-	for model, pr := range oc.Prices {
-		if pr.Input < 0 || pr.Output < 0 {
-			warnings = append(warnings, fmt.Sprintf(
-				`openai_compat.prices[%q] has a negative value; a negative price makes the USD budget never trip — spend will be uncapped except by task_max_requests`,
-				model,
-			))
-		}
-	}
+	// (Negative prices are rejected in config.validate() — a hard error, not a
+	// warning, since they disable the USD budget entirely.)
 
 	// Check for prices map with no "default" entry — unlisted models meter at $0.
 	if len(oc.Prices) > 0 {

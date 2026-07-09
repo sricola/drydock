@@ -341,3 +341,22 @@ func TestCheckContainerVersion_UnparseableOutput_NonStrict_Warns(t *testing.T) {
 		t.Errorf("expected 'could not parse' warning; got: %s", buf.String())
 	}
 }
+
+func TestEffectiveRequestCap(t *testing.T) {
+	cases := []struct {
+		uncapped   bool
+		configured int
+		want       int
+	}{
+		{true, 0, defaultUncappedRequestCap},  // uncapped + unlimited → fail closed to the default cap
+		{true, -1, defaultUncappedRequestCap}, // negative treated as unset
+		{true, 50, 50},                        // uncapped but operator set a bound → honored
+		{false, 0, 0},                         // a USD budget bounds spend → 0 stays unlimited
+		{false, 200, 200},
+	}
+	for _, c := range cases {
+		if got := effectiveRequestCap(c.uncapped, c.configured); got != c.want {
+			t.Errorf("effectiveRequestCap(%v, %d) = %d, want %d", c.uncapped, c.configured, got, c.want)
+		}
+	}
+}
