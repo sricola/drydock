@@ -407,7 +407,7 @@ func ensureNamedImage(name, subdir, note string) {
 	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 	if err := cmd.Run(); err != nil {
 		step(label, false, err.Error())
-		if hint := imageBuildHint(buf.String()); hint != "" {
+		if hint := imageBuildHint(buf.String(), ctxDir); hint != "" {
 			fmt.Printf("    → %s\n", hint)
 		}
 		os.Exit(1)
@@ -416,17 +416,47 @@ func ensureNamedImage(name, subdir, note string) {
 }
 
 // imageBuildHint returns operator guidance when a `container build` failure
-// matches the signature of Apple container's empty-build-context bug: the local
-// files never reach the builder ("transferring context: 2B"), so a COPY fails
-// on files that are present on disk. Empty when the output doesn't match, so the
-// caller falls back to the raw error for genuine Dockerfile/registry problems.
-func imageBuildHint(buildOutput string) string {
+// matches a known Apple `container` failure mode. Two are recognised:
+//
+//   - Empty build context ("transferring context: 2B", COPY fails on files
+//     present on disk). The proven trigger is a context path that traverses a
+//     symlink; findImageDir resolves those, so if ctxDir still does, say so —
+//     otherwise fall back to the generic runtime guidance.
+//   - In-VM DNS failure ("Temporary failure resolving …"). Happens when the
+//     host's resolvers are loopback proxies (Cloudflare WARP, dnscrypt, some
+//     VPNs): the VM's vmnet DNS forwarder can't reach them, so lookups fail
+//     while raw egress works. `container builder start --dns` sidesteps it.
+//
+// Empty when the output matches neither, so the caller falls back to the raw
+// error for genuine Dockerfile/registry problems.
+func imageBuildHint(buildOutput, ctxDir string) string {
 	o := strings.ToLower(buildOutput)
+
+	if strings.Contains(o, "temporary failure resolving") ||
+		strings.Contains(o, "could not resolve host") {
+		return strings.Join([]string{
+			"DNS is failing inside the build VM. Usual cause: the host's resolvers are loopback",
+			"      proxies (Cloudflare WARP, dnscrypt, some VPNs) that the VM's DNS forwarder can't reach.",
+			"      Check: scutil --dns  (only 127.x nameservers in resolver #1 ⇒ this). Fix:",
+			"        container builder delete --force; container builder start --dns 1.1.1.1",
+			"      then re-run. An already-built image is unaffected.",
+		}, "\n")
+	}
+
 	emptyContext := strings.Contains(o, "transferring context: 2b")
 	copyMiss := strings.Contains(o, "failed to compute cache key") ||
 		(strings.Contains(o, "calculate checksum") && strings.Contains(o, "not found"))
 	if !emptyContext && !copyMiss {
 		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(ctxDir); err == nil && resolved != filepath.Clean(ctxDir) {
+		return strings.Join([]string{
+			"the build context path traverses a symlink — Apple `container` ships an empty context",
+			"      through symlinked paths, so every COPY fails on files that are present on disk.",
+			"        context:  " + ctxDir,
+			"        resolves: " + resolved,
+			"      build from the resolved path: container build -t <name>:latest " + resolved,
+		}, "\n")
 	}
 	return strings.Join([]string{
 		"the build context didn't reach the builder — a known Apple `container` runtime issue, not a drydock problem.",
@@ -468,6 +498,13 @@ func findImageDir(subdir string) (string, error) {
 		}
 		seen[c] = true
 		if _, err := os.Stat(filepath.Join(c, "Dockerfile")); err == nil {
+			// Apple `container` ships an empty build context when the context
+			// path traverses a symlink — and the Homebrew layout always does
+			// (share/drydock -> ../Cellar/drydock/<ver>/share/drydock). Hand
+			// `container build` a fully resolved path.
+			if resolved, rerr := filepath.EvalSymlinks(c); rerr == nil {
+				return resolved, nil
+			}
 			return c, nil
 		}
 	}

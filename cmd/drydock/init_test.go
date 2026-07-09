@@ -101,8 +101,14 @@ func TestFindImageDir_RespectsEnvOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findImageDir: %v", err)
 	}
-	if got != imageDir {
-		t.Errorf("got %q, want %q", got, imageDir)
+	// findImageDir returns a fully resolved path (macOS tempdirs sit behind
+	// the /var -> /private/var symlink), so resolve the expectation too.
+	want, err := filepath.EvalSymlinks(imageDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -232,5 +238,38 @@ func TestFindShareFile_ResolvesBothTemplates(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "config/egress.yaml") {
 		t.Errorf("egress.yaml = %q, want suffix config/egress.yaml", got)
+	}
+}
+
+// TestFindImageDir_ResolvesSymlinks pins the fix for Apple `container`
+// shipping an empty build context when the context path traverses a symlink
+// (the Homebrew layout always does: share/drydock -> ../Cellar/...). The
+// returned dir must be fully resolved so `container build` never sees a
+// symlinked path.
+func TestFindImageDir_ResolvesSymlinks(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "cellar", "image")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "Dockerfile"), []byte("FROM scratch"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "share")
+	if err := os.Symlink(filepath.Join(root, "cellar"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("DRYDOCK_IMAGE_DIR", link)
+	got, err := findImageDir("image")
+	if err != nil {
+		t.Fatalf("findImageDir: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("got %q, want fully-resolved %q", got, want)
 	}
 }
