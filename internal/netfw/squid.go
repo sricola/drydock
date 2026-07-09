@@ -28,6 +28,13 @@ auth_param basic children 2 startup=0 idle=1
 acl SSL_ports port 443
 acl CONNECT method CONNECT
 http_access deny CONNECT !SSL_ports
+# SSRF guard: squid resolves allowlist hostnames itself, on the host, outside
+# the VM's nft pin. Deny any destination resolving to a private, loopback,
+# link-local (incl. cloud metadata 169.254.169.254), or CGNAT address BEFORE
+# the allowlist, so an allowlisted/widened name pointed at an internal IP (or
+# DNS rebinding) can't reach host-local services or the operator's LAN.
+acl to_local dst 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ::1 fc00::/7 fe80::/10
+http_access deny to_local
 include %s
 include %s/task-acls/*.conf
 http_access deny all
