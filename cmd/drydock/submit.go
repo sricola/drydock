@@ -305,6 +305,11 @@ func (t *taskIDTee) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// printPretty renders the pre-v0.3.0 single-object submit response (a brokerd
+// that predates NDJSON streaming). This schema is frozen — an old brokerd won't
+// change — so it doesn't drift from renderer.summary (which handles the modern
+// streamed result event). Kept as a thin cross-version safety net for a new CLI
+// talking to an old brokerd mid-upgrade; deletable once that skew is unsupported.
 func printPretty(w io.Writer, out map[string]any) {
 	id, _ := out["task_id"].(string)
 	switch {
