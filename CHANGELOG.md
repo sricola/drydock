@@ -5,6 +5,24 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Fixed
+
+- **A running brokerd self-heals when its subscription token is refreshed
+  out-of-band.** In subscription mode the OAuth token rotates on every refresh.
+  A second process sharing the credential file — most often `drydock doctor`
+  (which validates by refreshing), but also `drydock auth` or a second broker —
+  would rotate the token the long-running brokerd held in memory, wedging every
+  task on `502 credential unavailable` until brokerd was restarted. Worse, the
+  error told you to run `drydock doctor`, which is exactly what triggered it.
+  brokerd now reloads the credential from disk when a refresh fails and adopts
+  the rotated token, recovering without a restart. A genuinely dead token still
+  fails (no masking, no retry loop). Covers both Claude and Codex subscription.
+
+- **`drydock deny` prints "denied", not "denyd".** The confirmation used a
+  blanket `%sd` suffix that misspelled the past tense of `deny`.
+
 ## v0.5.1 — 2026-07-08
 
 ### Fixed

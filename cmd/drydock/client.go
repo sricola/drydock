@@ -160,6 +160,19 @@ func singleLine(s string) string {
 	return s
 }
 
+// pastTense renders an admin verb's completed-action confirmation. A blanket
+// "%sd" misspells deny→"denyd", so map the known verbs explicitly.
+func pastTense(verb string) string {
+	switch verb {
+	case "approve":
+		return "approved"
+	case "deny":
+		return "denied"
+	default:
+		return verb + "d"
+	}
+}
+
 func signal(verb, id string) {
 	c, base := brokerClient()
 	resp, err := c.Post(base+"/admin/"+verb+"/"+id, "", nil)
@@ -170,7 +183,7 @@ func signal(verb, id string) {
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusNoContent:
-		fmt.Printf("task %s %sd\n", id, verb)
+		fmt.Printf("task %s %s\n", id, pastTense(verb))
 	case http.StatusNotFound:
 		fmt.Fprintf(os.Stderr, "drydock: no such pending task: %s\n", id)
 		os.Exit(1)

@@ -82,7 +82,16 @@ func (c *OAuthCred) Current() (string, error) {
 	if time.Until(c.snap.Expiry) <= oauthRefreshMargin {
 		newSnap, err := c.refresh(c.snap.Refresh)
 		if err != nil {
-			return "", fmt.Errorf("oauth: refresh failed: %w", err)
+			// Our in-memory refresh token may have been rotated out from under
+			// us by another process sharing this credential file (drydock
+			// doctor, drydock auth, a second broker). Reload from disk before
+			// giving up: without this, one external rotation wedges a
+			// long-running brokerd on 502 credential unavailable until restart.
+			recovered, ok := c.recoverFromDisk()
+			if !ok {
+				return "", fmt.Errorf("oauth: refresh failed: %w", err)
+			}
+			newSnap = recovered
 		}
 		// If the new snapshot has no refresh token, keep the old one.
 		if newSnap.Refresh == "" {
@@ -95,6 +104,28 @@ func (c *OAuthCred) Current() (string, error) {
 	}
 
 	return c.snap.Access, nil
+}
+
+// recoverFromDisk handles a refresh failure caused by another process rotating
+// the shared credential file out from under us. It reloads the on-disk
+// snapshot; if that holds a *different* refresh token it either adopts it (when
+// still valid) or re-refreshes with it. It returns ok=false — leaving the
+// caller to surface the original error — when the disk holds nothing new (same
+// or empty refresh token, or an unreadable file), so a genuinely dead token
+// still fails instead of looping.
+func (c *OAuthCred) recoverFromDisk() (CredSnapshot, bool) {
+	disk, err := c.store.Load()
+	if err != nil || disk.Refresh == "" || disk.Refresh == c.snap.Refresh {
+		return CredSnapshot{}, false
+	}
+	if time.Until(disk.Expiry) > oauthRefreshMargin {
+		return disk, true // disk token still valid — adopt it, no refresh needed
+	}
+	fresh, err := c.refresh(disk.Refresh)
+	if err != nil {
+		return CredSnapshot{}, false
+	}
+	return fresh, true
 }
 
 // refreshAnthropic exchanges a refresh token for a new CredSnapshot using the
