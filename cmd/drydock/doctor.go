@@ -82,7 +82,7 @@ func runDoctor() {
 	// shell error.
 	out, err = runCmd("container", "run", "--rm", "--entrypoint", "/bin/sh",
 		cfg.SandboxImage, "-c", "gemini --version 2>&1")
-	if geminiPresent(string(out), err) {
+	if cliVersionPresent(string(out), err) {
 		step("gemini present", true, strings.TrimSpace(lastLine(string(out))))
 	} else {
 		step("gemini present", false, "not found in "+cfg.SandboxImage)
@@ -95,7 +95,7 @@ func runDoctor() {
 	// every `--agent opencode` task dies at the entrypoint.
 	out, err = runCmd("container", "run", "--rm", "--entrypoint", "/bin/sh",
 		cfg.SandboxImage, "-c", "opencode --version 2>&1")
-	if geminiPresent(string(out), err) { // same predicate: bare version, zero exit, no "not found"
+	if cliVersionPresent(string(out), err) { // same predicate: bare version, zero exit, no "not found"
 		step("opencode present", true, strings.TrimSpace(lastLine(string(out))))
 	} else {
 		step("opencode present", false, "not found in "+cfg.SandboxImage)
@@ -202,10 +202,10 @@ func codexPresent(out string, runErr error) bool {
 	return runErr == nil && !strings.Contains(out, "not found")
 }
 
-// geminiPresent reports whether `gemini --version` returned a usable version.
-// An absent binary surfaces as a non-zero exit and/or empty output —
-// almost always a sandbox_image that predates native Gemini.
-func geminiPresent(out string, err error) bool {
+// cliVersionPresent reports whether an agent CLI's `--version` returned a
+// usable version — a bare version string, zero exit, no "not found". Used for
+// both gemini and opencode presence checks (was geminiPresent).
+func cliVersionPresent(out string, err error) bool {
 	// Also reject a shell that exits 0 while printing "not found" (defensive;
 	// mirrors codexPresent) — otherwise a pathological image would report a
 	// spurious "gemini present".

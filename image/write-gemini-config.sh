@@ -14,6 +14,8 @@
 #
 # Usage: write-gemini-config.sh <gemini-dir>
 set -euo pipefail
+# The per-task bearer lands in these files; keep them 0600, not umask-default 0644.
+umask 077
 GEMINI_DIR="${1:?usage: write-gemini-config.sh <gemini-dir>}"
 : "${GEMINI_API_KEY:?missing GEMINI_API_KEY}"
 

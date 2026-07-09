@@ -7,6 +7,8 @@
 #
 # Usage: write-codex-config.sh <gateway-base-url> <codex-home>
 set -euo pipefail
+# The per-task bearer lands in these files; keep them 0600, not umask-default 0644.
+umask 077
 
 GW_BASE="${1:?usage: write-codex-config.sh <gateway-base-url> <codex-home>}"
 CODEX_HOME="${2:?usage: write-codex-config.sh <gateway-base-url> <codex-home>}"

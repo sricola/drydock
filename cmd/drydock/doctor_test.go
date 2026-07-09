@@ -75,8 +75,8 @@ func TestGeminiPresent(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := geminiPresent(c.out, c.err); got != c.wantOK {
-				t.Errorf("geminiPresent(%q, %v) = %v, want %v", c.out, c.err, got, c.wantOK)
+			if got := cliVersionPresent(c.out, c.err); got != c.wantOK {
+				t.Errorf("cliVersionPresent(%q, %v) = %v, want %v", c.out, c.err, got, c.wantOK)
 			}
 		})
 	}

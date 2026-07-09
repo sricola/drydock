@@ -9,6 +9,8 @@
 #
 # Usage: write-opencode-config.sh <gateway-base-url> <model> <xdg-config-home>
 set -euo pipefail
+# The per-task bearer lands in these files; keep them 0600, not umask-default 0644.
+umask 077
 
 GW_BASE="${1:?usage: write-opencode-config.sh <gateway-base-url> <model> <xdg-config-home>}"
 MODEL="${2:?usage: write-opencode-config.sh <gateway-base-url> <model> <xdg-config-home>}"
