@@ -129,3 +129,56 @@ func TestAPIKeySource(t *testing.T) {
 		}
 	})
 }
+
+// TestLoopbackOnlyDNS pins the parser behind doctor's vm-dns advisory: when
+// the host's primary resolver is a loopback proxy (Cloudflare WARP, dnscrypt,
+// some VPNs), Apple `container` VMs get a vmnet forwarder that cannot reach
+// it, and every in-VM DNS lookup fails while raw egress still works.
+func TestLoopbackOnlyDNS(t *testing.T) {
+	warp := `DNS configuration
+
+resolver #1
+  nameserver[0] : 127.0.2.2
+  nameserver[1] : 127.0.2.3
+  flags    : Request A records
+  reach    : 0x00030002 (Reachable,Local Address,Directly Reachable Address)
+
+resolver #2
+  domain   : local
+  options  : mdns
+`
+	normal := `DNS configuration
+
+resolver #1
+  search domain[0] : lan
+  nameserver[0] : 192.168.1.1
+  flags    : Request A records
+
+resolver #2
+  domain   : local
+  options  : mdns
+`
+	mixed := `DNS configuration
+
+resolver #1
+  nameserver[0] : 127.0.0.1
+  nameserver[1] : 8.8.8.8
+`
+	cases := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"warp loopback-only", warp, true},
+		{"router resolver", normal, false},
+		{"loopback plus public fallback", mixed, false},
+		{"empty output", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := loopbackOnlyDNS(tc.out); got != tc.want {
+				t.Errorf("loopbackOnlyDNS = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

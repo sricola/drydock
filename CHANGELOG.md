@@ -5,6 +5,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Fixed
+
+- **Homebrew installs can build images again.** Apple `container` ships an
+  empty build context when the context path traverses a symlink — and the
+  Homebrew layout always does (`share/drydock` → `Cellar/...`), so every fresh
+  brew install failed `drydock setup`/`init` at the sandbox image build with
+  `failed to calculate checksum … not found` on files present on disk.
+  `findImageDir` now hands `container build` a fully resolved path. The
+  empty-context hint also names the symlink cause (with the resolved path)
+  when it applies, instead of blaming the runtime generically.
+
+- **Loopback-DNS breakage diagnosed instead of mystifying.** When the host's
+  resolvers are loopback proxies (Cloudflare WARP, dnscrypt, some VPNs),
+  Apple `container` VMs get no DNS at all — image builds die at `apt-get`
+  with `Temporary failure resolving …` while raw egress works. The build
+  failure now gets a hint naming the cause and the fix
+  (`container builder start --dns 1.1.1.1`), and `drydock doctor` warns
+  up front (advisory, not a failure — existing images keep working).
+
 ## v0.5.0 — 2026-07-08
 
 ### Added

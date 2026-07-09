@@ -125,6 +125,14 @@ func runDoctor() {
 		failed = true
 	}
 
+	// In-VM DNS advisory: a loopback-only host resolver (WARP/dnscrypt/VPN)
+	// breaks DNS inside every `container` VM, so image (re)builds fail at
+	// apt/npm even though everything already built keeps working. Advisory,
+	// not a failure — nothing is broken until the next build.
+	if out, err := runCmd("scutil", "--dns"); err == nil && loopbackOnlyDNS(string(out)) {
+		stepWarn("vm dns", "host resolvers are loopback-only (WARP/VPN?) — image (re)builds will fail; fix: container builder start --dns 1.1.1.1")
+	}
+
 	// 4. For each provider: when subscription auth is configured, validate the
 	// stored OAuth token by calling Current() once. This also refreshes the
 	// token if it is near expiry — no API budget spend beyond the refresh.
@@ -236,4 +244,39 @@ func apiKeySource(envName string, fileKeys map[string]string) string {
 		return "~/.drydock/api-keys.env"
 	}
 	return "none"
+}
+
+// loopbackOnlyDNS reports whether the host's primary resolver (resolver #1 in
+// `scutil --dns` output) lists only loopback nameservers. That's the shape
+// Cloudflare WARP, dnscrypt, and some VPNs leave behind — and the vmnet DNS
+// forwarder that Apple `container` VMs use cannot reach a host-loopback
+// resolver, so every in-VM lookup fails (image builds die at apt/npm) while
+// raw egress still works. A public nameserver alongside the loopback one is
+// fine; the forwarder can use it.
+func loopbackOnlyDNS(scutilOut string) bool {
+	inFirst := false
+	loop, total := 0, 0
+	for _, line := range strings.Split(scutilOut, "\n") {
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "resolver #") {
+			if inFirst {
+				break // end of resolver #1
+			}
+			inFirst = l == "resolver #1"
+			continue
+		}
+		if !inFirst || !strings.HasPrefix(l, "nameserver[") {
+			continue
+		}
+		_, ip, ok := strings.Cut(l, ":")
+		if !ok {
+			continue
+		}
+		ip = strings.TrimSpace(ip)
+		total++
+		if strings.HasPrefix(ip, "127.") || ip == "::1" {
+			loop++
+		}
+	}
+	return total > 0 && loop == total
 }
