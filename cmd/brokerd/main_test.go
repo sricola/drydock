@@ -100,59 +100,50 @@ func TestListen_UnixSocketPermissions(t *testing.T) {
 // TestPruneOrphanTasks_Ordering verifies that the exec calls inside
 // pruneOrphanTasks happen in the documented order: container ls first, then
 // container delete for each found task-* container, then pkill for squid.
-// The comment in the source says "ORDER MATTERS — do not reorder"; this test
-// pins that invariant so a refactor can't silently swap the steps.
-func TestPruneOrphanTasks_Ordering(t *testing.T) {
+// The reaper force-deletes orphan task VMs by their EXACT task-<32hex> name and
+// no longer fuzzy-pkills squid (that's reapStaleSquid's precise, pidfile-based
+// job at squid setup). This pins both: the real task name is deleted, an
+// unrelated "task-"-substring token is not, and no pkill is issued.
+func TestPruneOrphanTasks_AnchoredMatchNoPkill(t *testing.T) {
+	const realTask = "task-6240b146d4a66db701f643b562048d41" // task- + 32 hex
 	var calls []string
 	orig := runCmd
 	t.Cleanup(func() { runCmd = orig })
 
 	runCmd = func(name string, args ...string) ([]byte, error) {
 		calls = append(calls, name+" "+strings.Join(args, " "))
-		// Respond to "container ls" with a JSON fragment that contains one
-		// task-* name; the parser scans fields so it tolerates any JSON shape.
 		if name == "container" && len(args) > 0 && args[0] == "ls" {
-			return []byte(`{"Names":["task-dead1234"]}`), nil
+			// One real task VM plus a decoy whose name merely contains "task-".
+			return []byte(`{"Names":["` + realTask + `","my-task-cache"]}`), nil
 		}
 		return nil, nil
 	}
 
-	stageRoot := t.TempDir()
-	auditRoot := t.TempDir()
-	pruneOrphanTasks(stageRoot, auditRoot)
+	pruneOrphanTasks(t.TempDir(), t.TempDir())
 
-	// Must have at least three calls: ls, delete, pkill.
-	if len(calls) < 3 {
-		t.Fatalf("expected ≥3 runCmd calls, got %d: %v", len(calls), calls)
-	}
-
-	// First call must be the listing.
 	if !strings.HasPrefix(calls[0], "container ls") {
-		t.Errorf("call[0] = %q, want prefix %q", calls[0], "container ls")
+		t.Errorf("call[0] = %q, want the listing first", calls[0])
 	}
-
-	// Locate delete and pkill positions.
-	deleteIdx, pkillIdx := -1, -1
-	for i, c := range calls {
-		if strings.Contains(c, "container delete") && strings.Contains(c, "task-dead1234") {
-			deleteIdx = i
+	deletedReal, deletedDecoy, pkilled := false, false, false
+	for _, c := range calls {
+		if strings.Contains(c, "container delete") && strings.Contains(c, realTask) {
+			deletedReal = true
+		}
+		if strings.Contains(c, "container delete") && strings.Contains(c, "my-task-cache") {
+			deletedDecoy = true
 		}
 		if strings.HasPrefix(c, "pkill") {
-			pkillIdx = i
+			pkilled = true
 		}
 	}
-
-	if deleteIdx < 0 {
-		t.Error("container delete --force task-dead1234 was never called")
+	if !deletedReal {
+		t.Errorf("the real %s VM was not reaped; calls=%v", realTask, calls)
 	}
-	if pkillIdx < 0 {
-		t.Error("pkill -f squid was never called")
+	if deletedDecoy {
+		t.Error("a 'task-'-substring decoy was force-deleted — the match isn't anchored")
 	}
-	// ORDER MATTERS: delete must precede pkill (and both precede stage reap,
-	// which is not an exec call but follows in source order).
-	if deleteIdx >= 0 && pkillIdx >= 0 && deleteIdx > pkillIdx {
-		t.Errorf("container delete (pos %d) must happen before pkill (pos %d); "+
-			"a live container may hold its stage dir open", deleteIdx, pkillIdx)
+	if pkilled {
+		t.Error("reaper still issues a fuzzy pkill; squid reap belongs to reapStaleSquid")
 	}
 }
 
@@ -357,6 +348,34 @@ func TestEffectiveRequestCap(t *testing.T) {
 	for _, c := range cases {
 		if got := effectiveRequestCap(c.uncapped, c.configured); got != c.want {
 			t.Errorf("effectiveRequestCap(%v, %d) = %d, want %d", c.uncapped, c.configured, got, c.want)
+		}
+	}
+}
+
+func TestLoopbackHostPort(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1:8088":    true,
+		"[::1]:8088":        true,
+		"localhost:8088":    true,
+		":8088":             false, // all interfaces — VM-reachable
+		"0.0.0.0:8088":      false,
+		"192.168.66.1:8088": false, // the vmnet gateway — the exact exposure
+		"garbage":           false, // unparseable → fail closed
+	}
+	for addr, want := range cases {
+		if got := loopbackHostPort(addr); got != want {
+			t.Errorf("loopbackHostPort(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+func TestTaskContainerRE(t *testing.T) {
+	if !taskContainerRE.MatchString("task-6240b146d4a66db701f643b562048d41") {
+		t.Error("real task-<32hex> name should match")
+	}
+	for _, bad := range []string{"task-", "task-short", "my-task-6240b146d4a66db701f643b562048d41", "task-6240b146d4a66db701f643b562048d41x", "drydock-anchor"} {
+		if taskContainerRE.MatchString(bad) {
+			t.Errorf("%q should NOT match the anchored task-name grammar", bad)
 		}
 	}
 }
