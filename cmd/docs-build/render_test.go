@@ -22,12 +22,35 @@ func TestRenderMarkdown_HeadingsAndCode(t *testing.T) {
 }
 
 func TestRenderPage_SubstitutesSlots(t *testing.T) {
-	out := renderPage("<title>{{title}}</title><nav>{{sidebar}}</nav><main>{{content}}</main><link href=\"{{base}}style.css\">",
-		"<p>hi</p>", "Quickstart", "<ul>SIDEBAR</ul>", "../")
-	for _, want := range []string{"<title>Quickstart</title>", "<ul>SIDEBAR</ul>", "<p>hi</p>", `href="../style.css"`} {
+	out := renderPage(
+		`<title>{{pagetitle}}</title><meta name="description" content="{{description}}">`+
+			`<link rel="canonical" href="{{canonical}}"><nav>{{sidebar}}</nav>`+
+			`<main>{{content}}</main><link href="{{base}}style.css">`,
+		pageData{
+			PageTitle:   "Quickstart · drydock docs",
+			Description: "Get started fast.",
+			Canonical:   "https://sricola.github.io/drydock/docs/quickstart.html",
+			Content:     "<p>hi</p>",
+			Sidebar:     "<ul>SIDEBAR</ul>",
+			Base:        "../",
+		})
+	for _, want := range []string{
+		"<title>Quickstart · drydock docs</title>",
+		`content="Get started fast."`,
+		`href="https://sricola.github.io/drydock/docs/quickstart.html"`,
+		"<ul>SIDEBAR</ul>", "<p>hi</p>", `href="../style.css"`,
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered page missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+func TestRenderPage_EscapesAttributeText(t *testing.T) {
+	out := renderPage(`<meta content="{{description}}">`,
+		pageData{Description: `a "quoted" & <angled> bit`})
+	if strings.Contains(out, `<angled>`) || strings.Contains(out, `"quoted"`) {
+		t.Errorf("description not HTML-escaped for attribute safety: %s", out)
 	}
 }
 

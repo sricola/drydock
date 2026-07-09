@@ -3,11 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{title}} · drydock docs</title>
-<meta name="description" content="drydock documentation — {{title}}.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; font-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="theme-color" content="#fbfaf6">
+<title>{{pagetitle}}</title>
+<meta name="description" content="{{description}}">
+<link rel="canonical" href="{{canonical}}">
+<meta property="og:type" content="article">
+<meta property="og:title" content="{{pagetitle}}">
+<meta property="og:description" content="{{description}}">
+<meta property="og:url" content="{{canonical}}">
+<meta property="og:image" content="https://sricola.github.io/drydock/og-image.png">
+<meta property="og:site_name" content="drydock">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{pagetitle}}">
+<meta name="twitter:description" content="{{description}}">
+<meta name="twitter:image" content="https://sricola.github.io/drydock/og-image.png">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="{{base}}fonts/newsreader-400.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="{{base}}fonts/ibm-plex-mono-400.woff2">
 <link rel="stylesheet" href="{{base}}style.css">
 <link rel="icon" type="image/svg+xml" href="{{base}}favicon.svg">
 </head>
@@ -18,6 +30,6 @@
 <aside class="docside">{{sidebar}}</aside>
 <main class="doccontent">{{content}}</main>
 </div>
-<footer class="foot"><div class="wrap">drydock · Apache-2.0 · <a href="{{base}}index.html#install">install</a> · <a href="https://github.com/sricola/drydock">github</a><div style="margin-top:8px">drydock is an independent project, not affiliated with or endorsed by Anthropic, OpenAI, or Google. All trademarks are the property of their respective owners.</div></div></footer>
+<footer class="foot"><div class="wrap">drydock · Apache-2.0 · <a href="{{base}}index.html#install">install</a> · <a href="https://github.com/sricola/drydock">github</a><div class="foot-note">drydock is an independent project, not affiliated with or endorsed by Anthropic, OpenAI, or Google. All trademarks are the property of their respective owners.</div></div></footer>
 </body>
 </html>
