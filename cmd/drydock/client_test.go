@@ -105,3 +105,12 @@ func TestPrintClientErr_OtherError_PrintsRawError(t *testing.T) {
 		t.Errorf("raw error %q missing from output; got: %q", myErr.Error(), got)
 	}
 }
+
+func TestPastTense(t *testing.T) {
+	cases := map[string]string{"approve": "approved", "deny": "denied"}
+	for verb, want := range cases {
+		if got := pastTense(verb); got != want {
+			t.Errorf("pastTense(%q) = %q, want %q", verb, got, want)
+		}
+	}
+}

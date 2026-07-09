@@ -327,3 +327,55 @@ func TestOAuthCred_RefreshFailure(t *testing.T) {
 		t.Errorf("Save was called %d time(s) after a refresh failure, want 0", store.saveCalls)
 	}
 }
+
+// TestOAuthCred_RecoversRotatedTokenFromDisk pins the fix for the desync where
+// a second process sharing the credential file (drydock doctor, drydock auth,
+// a second broker) refreshes and *rotates* the token, invalidating the refresh
+// token this long-running OAuthCred holds in memory. Current() must recover by
+// reloading the rotated snapshot from disk instead of failing every gateway
+// request with 502 credential unavailable until brokerd restarts.
+func TestOAuthCred_RecoversRotatedTokenFromDisk(t *testing.T) {
+	// Disk holds the fresh token another process rotated in.
+	store := &memStore{snap: CredSnapshot{Access: "disk-new", Refresh: "r2", Expiry: time.Now().Add(time.Hour)}}
+	c := &OAuthCred{
+		// In-memory snapshot is stale and its refresh token was rotated away.
+		snap:  CredSnapshot{Access: "mem-old", Refresh: "r1", Expiry: time.Now().Add(-time.Minute)},
+		store: store,
+		refresh: func(r string) (CredSnapshot, error) {
+			return CredSnapshot{}, errors.New("token endpoint returned 400")
+		},
+	}
+	got, err := c.Current()
+	if err != nil {
+		t.Fatalf("Current() should recover from disk, got error: %v", err)
+	}
+	if got != "disk-new" {
+		t.Errorf("Current()=%q, want disk-new (adopted the on-disk rotated token)", got)
+	}
+	if c.snap.Refresh != "r2" {
+		t.Errorf("in-memory refresh token not updated from disk: %q", c.snap.Refresh)
+	}
+}
+
+// TestOAuthCred_DeadTokenStillErrors guards against masking a real failure: when
+// the on-disk token matches the stale in-memory one (a genuinely dead refresh
+// token, no external rotation), Current() still surfaces the error and does not
+// loop retrying.
+func TestOAuthCred_DeadTokenStillErrors(t *testing.T) {
+	store := &memStore{snap: CredSnapshot{Access: "same", Refresh: "r1", Expiry: time.Now().Add(-time.Minute)}}
+	calls := 0
+	c := &OAuthCred{
+		snap:  CredSnapshot{Access: "same", Refresh: "r1", Expiry: time.Now().Add(-time.Minute)},
+		store: store,
+		refresh: func(string) (CredSnapshot, error) {
+			calls++
+			return CredSnapshot{}, errors.New("token endpoint returned 400")
+		},
+	}
+	if _, err := c.Current(); err == nil {
+		t.Fatal("expected error for a genuinely dead token, got nil")
+	}
+	if calls != 1 {
+		t.Errorf("refresh attempted %d times, want 1 (no retry when disk == memory)", calls)
+	}
+}

@@ -14,6 +14,7 @@ VM boot, the egress pin) with no API spend. Then consult the table below.
 | Squid CONNECT 403 to an expected host | `cat ~/.drydock/squid/squid-default-acl.conf`; add it in `egress.yaml` or per-task with `--egress-extra` (see [Egress](egress.html)) |
 | Stale anchor after a crash | `container rm -f drydock-anchor`; the next `drydock start` does this for you |
 | Gateway 401 | Key is wrong or a placeholder (`sk-ant-fake` is *expected* to 401) |
+| `502 credential unavailable` on a subscription task | The subscription token expired and the refresh failed. brokerd auto-refreshes and (as of the self-heal fix) reloads a token rotated in by another process; if it persists, the refresh token itself is dead — run `drydock auth claude` (or `codex`) to re-authenticate. |
 | VM reaches a host it shouldn't | Confirm `init-firewall.sh` ran inside the VM — overriding `--entrypoint` skips it |
 | `no usable agent credential` at start | No API key in env / `api-keys.env`, and no `*_auth: subscription` set — see [Authentication](authentication.html) |
 | Subscription task errors after spinning | A `task_max_requests` cap was hit (HTTP 429); the agent retries with backoff before exiting — see [Authentication](authentication.html) |
