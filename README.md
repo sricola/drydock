@@ -47,7 +47,7 @@ internet — regardless of what it tries.
 
 > **Status: working alpha (v0.5.1).** The full task lifecycle works
 > end-to-end — submit → isolated VM → gated diff → push — and drydock ships
-> through a Homebrew tap. It is pre-1.0 and single-maintainer: only `main` is
+> through a Homebrew tap. It is pre-1.0: only `main` is
 > supported, behavior and config can change between minor versions, and it
 > hasn't been hardened by real-world use. **There has been no third-party
 > security audit** — the security model is written down in detail in the

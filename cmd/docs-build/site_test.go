@@ -59,6 +59,26 @@ func TestReadmeStatusVersionCurrent(t *testing.T) {
 	}
 }
 
+// TestLandingStatusVersionCurrent pins the landing page's hero status badge to
+// the current release. This one actually went stale at v0.4.0 while the README
+// guard passed — the badge lives in site/index.html, which the README check
+// never looked at.
+func TestLandingStatusVersionCurrent(t *testing.T) {
+	root := repoRoot(t)
+	want := currentVersion(t)
+	b, err := os.ReadFile(filepath.Join(root, "site/index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`class="statustag">[^<]*?(v\d+\.\d+\.\d+)`).FindStringSubmatch(string(b))
+	if m == nil {
+		t.Fatal(`site/index.html has no '<span class="statustag">… vX.Y.Z' badge`)
+	}
+	if m[1] != want {
+		t.Errorf("landing status badge says %s but current release is %s (CHANGELOG)", m[1], want)
+	}
+}
+
 var hrefRe = regexp.MustCompile(`(?:href|src)="([^"#:?][^":]*?)(?:#[^"]*)?"`)
 
 // TestLandingInternalLinksResolve checks every relative href/src on the landing

@@ -24,6 +24,6 @@ about a minute.
 ## Requirements
 
 drydock runs on **macOS 26+ on Apple silicon** — it's built on Apple's
-`container` runtime and won't run anywhere else. It is pre-1.0, single-maintainer
+`container` runtime and won't run anywhere else. It is pre-1.0
 alpha software with no third-party security audit; the [threat
 model](threat-model.html) is the contract.

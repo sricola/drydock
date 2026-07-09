@@ -1,6 +1,6 @@
 # Contributing to drydock
 
-drydock is pre-1.0 and single-maintainer; only `main` is supported. Issues and
+drydock is pre-1.0; only `main` is supported. Issues and
 PRs are welcome. This file covers the codebase layout, how to build and test,
 and the known gaps where help is most useful. User-facing docs live at
 [sricola.github.io/drydock/docs](https://sricola.github.io/drydock/docs/); the
