@@ -16,7 +16,7 @@ const docsDir = "site/docs"
 var h1Re = regexp.MustCompile(`(?m)^#\s+(.+?)\s*$`)
 
 // order pins sidebar order; files not listed sort after, alphabetically.
-var order = []string{"index", "quickstart", "authentication", "models", "submitting-tasks", "web-ui", "egress", "configuration", "troubleshooting", "threat-model"}
+var order = []string{"index", "quickstart", "authentication", "models", "submitting-tasks", "web-ui", "daemon", "egress", "configuration", "troubleshooting", "threat-model"}
 
 func main() {
 	if err := run(); err != nil {
