@@ -295,6 +295,20 @@ func main() {
 		cleanup()
 		fatal("gateway init failed", "err", err)
 	}
+	if cfg.AggregateBudgetUSD > 0 {
+		var apiKeyVendors []string
+		for _, b := range backends {
+			if cfg.AuthMode(b.Vendor.Name) != "subscription" {
+				apiKeyVendors = append(apiKeyVendors, b.Vendor.Name)
+			}
+		}
+		gw.SetAggregateCap(cfg.AggregateBudgetUSD, cfg.AggregateWindow, apiKeyVendors)
+		if cfg.AggregateWindow > 0 {
+			seedAggregateFromAudit(gw, cfg.AuditRoot, cfg.AggregateWindow, cfg.DefaultAgent)
+		}
+		slog.Info("aggregate budget cap enabled",
+			"usd", cfg.AggregateBudgetUSD, "window", cfg.AggregateWindow, "vendors", apiKeyVendors)
+	}
 	go func() {
 		l := listenWhenReady(gwAddr)
 		slog.Info("gateway listening", "addr", gwAddr)
@@ -345,20 +359,6 @@ func main() {
 	}
 	sort.Strings(avail)
 	slog.Info("agents available", "vendors", avail)
-	if cfg.AggregateBudgetUSD > 0 {
-		var apiKeyVendors []string
-		for _, b := range backends {
-			if cfg.AuthMode(b.Vendor.Name) != "subscription" {
-				apiKeyVendors = append(apiKeyVendors, b.Vendor.Name)
-			}
-		}
-		gw.SetAggregateCap(cfg.AggregateBudgetUSD, cfg.AggregateWindow, apiKeyVendors)
-		if cfg.AggregateWindow > 0 {
-			seedAggregateFromAudit(gw, cfg.AuditRoot, cfg.AggregateWindow, cfg.DefaultAgent)
-		}
-		slog.Info("aggregate budget cap enabled",
-			"usd", cfg.AggregateBudgetUSD, "window", cfg.AggregateWindow, "vendors", apiKeyVendors)
-	}
 	// Fail-loud at boot if the operator default points at a vendor with no
 	// key: brokerd still starts (other agents may work), but every task that
 	// doesn't pass --agent would be rejected with a 400, which is confusing
