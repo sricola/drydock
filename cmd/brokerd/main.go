@@ -306,8 +306,12 @@ func main() {
 		if cfg.AggregateWindow > 0 {
 			seedAggregateFromAudit(gw, cfg.AuditRoot, cfg.AggregateWindow, cfg.DefaultAgent)
 		}
+		// Log the count, not the names: apiKeyVendors is derived from backends
+		// (which also carry the API key), so CodeQL's taint model treats it as
+		// sensitive at a logging sink. The count conveys the same operational
+		// signal (how many providers the cap covers) without the tainted flow.
 		slog.Info("aggregate budget cap enabled",
-			"usd", cfg.AggregateBudgetUSD, "window", cfg.AggregateWindow, "vendors", apiKeyVendors)
+			"usd", cfg.AggregateBudgetUSD, "window", cfg.AggregateWindow, "vendor_count", len(apiKeyVendors))
 	}
 	go func() {
 		l := listenWhenReady(gwAddr)
