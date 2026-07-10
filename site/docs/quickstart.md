@@ -21,7 +21,7 @@ full matrix.
 ## 2. Give it a credential
 
 The quickest path is a vendor API key. It stays **host-side** and never enters
-the VM — the sandbox only ever sees a short-lived, budget-capped token.
+the VM: the sandbox only ever sees a short-lived, budget-capped token.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...    # Claude Code tasks
@@ -83,6 +83,6 @@ Nothing reaches your real repo until you approve. That's the whole loop.
 
 ## Next
 
-- [Submitting tasks](submitting-tasks.html) — agents, models, flags, scripting.
-- [Egress & widening](egress.html) — what the sandbox can reach, and how to widen it.
-- [Threat model](threat-model.html) — what this actually protects you from.
+- [Submitting tasks](submitting-tasks.html): agents, models, flags, scripting.
+- [Egress & widening](egress.html): what the sandbox can reach, and how to widen it.
+- [Threat model](threat-model.html): what this actually protects you from.

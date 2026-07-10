@@ -5,7 +5,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## v0.6.0 — 2026-07-09
+## v0.6.0 (2026-07-09)
 
 A security-hardening release from a full production-readiness review of the
 code and product. Every containment claim that was previously "enforced by
@@ -13,7 +13,7 @@ default kernel behavior" is now explicitly enforced *and* tested.
 
 ### Security
 
-- **The agent can no longer regain `CAP_NET_ADMIN` after the privilege drop —
+- **The agent can no longer regain `CAP_NET_ADMIN` after the privilege drop,
   now enforced and tested.** The sandbox dropped to the `agent` user with
   `gosu`, which changes UID only, leaving the capability bounding set intact; a
   stray SUID binary or config regression could have let the agent flush the nft
@@ -21,12 +21,12 @@ default kernel behavior" is now explicitly enforced *and* tested.
   `--bounding-set`/`--inh-caps`, all SUID/SGID bits are stripped from the image,
   and the in-VM firewall is applied as one atomic `nft -f` transaction with
   input/forward default-drop (was output-only). A new red-team test runs *as the
-  dropped agent* and asserts `nft flush` returns EPERM and egress stays blocked —
+  dropped agent* and asserts `nft flush` returns EPERM and egress stays blocked,
   the load-bearing half of the A2 claim, previously untested. `gosu` is gone,
   which also retires its 35-entry go1.19 CVE-allowlist cluster.
 - **Subscription/priceless lanes are no longer unbounded.** With no USD budget
   (subscription auth, or an `openai_compat` lane with no prices) the only
-  runaway control was `task_max_requests`, which defaults to unlimited — so a
+  runaway control was `task_max_requests`, which defaults to unlimited, so a
   looping task could drain a real Claude/ChatGPT subscription. A 0 there now
   fails closed to a built-in per-task request cap. Negative `openai_compat`
   prices (which disabled the USD budget entirely) are rejected at config load.
@@ -51,30 +51,30 @@ default kernel behavior" is now explicitly enforced *and* tested.
 
 ### Added
 
-- **`drydock retry <id>`** — re-run a prior task from the invocation the broker
+- **`drydock retry <id>`**: re-run a prior task from the invocation the broker
   now records in its trace (repo, prompt, agent, model, platform, egress,
   draft), without reconstructing the `submit` by hand. It re-enters the approval
   gate (`auto_approve` is not carried over).
-- **`drydock cancel <id>`** — an alias for `kill`.
+- **`drydock cancel <id>`**: an alias for `kill`.
 
 ### Fixed
 
 - **`drydock deny` prints "denied", not "denyd".**
-- **`drydock logs <id> -f` no longer dies when the trace doesn't exist yet** —
+- **`drydock logs <id> -f` no longer dies when the trace doesn't exist yet**:
   it polls for the file, fixing the reattach hint `submit` prints on `^C`.
   `logs` also parses `-f` with a proper flag set (order-independent).
 - **`drydock ui -h`** shows curated help like every other subcommand.
 - The orphan-VM reaper matches the exact `task-<32hex>` name (was a loose
   `task-` substring) and no longer fuzzy-`pkill`s squid.
 
-## v0.5.2 — 2026-07-09
+## v0.5.2 (2026-07-09)
 
 ### Fixed
 
 - **A running brokerd self-heals when its subscription token is refreshed
   out-of-band.** In subscription mode the OAuth token rotates on every refresh.
-  A second process sharing the credential file — most often `drydock doctor`
-  (which validates by refreshing), but also `drydock auth` or a second broker —
+  A second process sharing the credential file (most often `drydock doctor`,
+  which validates by refreshing, but also `drydock auth` or a second broker)
   would rotate the token the long-running brokerd held in memory, wedging every
   task on `502 credential unavailable` until brokerd was restarted. Worse, the
   error told you to run `drydock doctor`, which is exactly what triggered it.
@@ -85,12 +85,12 @@ default kernel behavior" is now explicitly enforced *and* tested.
 - **`drydock deny` prints "denied", not "denyd".** The confirmation used a
   blanket `%sd` suffix that misspelled the past tense of `deny`.
 
-## v0.5.1 — 2026-07-08
+## v0.5.1 (2026-07-08)
 
 ### Fixed
 
 - **Homebrew installs can build images again.** Apple `container` ships an
-  empty build context when the context path traverses a symlink — and the
+  empty build context when the context path traverses a symlink, and the
   Homebrew layout always does (`share/drydock` → `Cellar/...`), so every fresh
   brew install failed `drydock setup`/`init` at the sandbox image build with
   `failed to calculate checksum … not found` on files present on disk.
@@ -100,22 +100,22 @@ default kernel behavior" is now explicitly enforced *and* tested.
 
 - **Loopback-DNS breakage diagnosed instead of mystifying.** When the host's
   resolvers are loopback proxies (Cloudflare WARP, dnscrypt, some VPNs),
-  Apple `container` VMs get no DNS at all — image builds die at `apt-get`
+  Apple `container` VMs get no DNS at all, image builds die at `apt-get`
   with `Temporary failure resolving …` while raw egress works. The build
   failure now gets a hint naming the cause and the fix
   (`container builder start --dns 1.1.1.1`), and `drydock doctor` warns
-  up front (advisory, not a failure — existing images keep working).
+  up front (advisory, not a failure; existing images keep working).
 
-## v0.5.0 — 2026-07-08
+## v0.5.0 (2026-07-08)
 
 ### Added
 
 - **Unattended operation: the drydock daemon (`drydock daemon`).** `drydock
   daemon install` runs brokerd as a launchd LaunchAgent
   (`so.sri.drydock.brokerd`): it starts at login, survives reboots, and
-  restarts on crash (`KeepAlive {SuccessfulExit: false}` — a crash restarts
+  restarts on crash (`KeepAlive {SuccessfulExit: false}`; a crash restarts
   brokerd and triggers boot reconciliation; `drydock daemon uninstall` keeps it
-  down). Install preflights credentials **as launchd will see them** — launchd
+  down). Install preflights credentials **as launchd will see them**: launchd
   never inherits your shell, so a key that lives only in a shell `export` fails
   the preflight by name; keys must be in `~/.drydock/api-keys.env` or OAuth
   files. If a foreground `drydock start` holds the lock, install refuses to
@@ -123,7 +123,7 @@ default kernel behavior" is now explicitly enforced *and* tested.
   now ensures `container system start` at boot, so a reboot needs no manual
   step. Logs append to `~/.drydock/logs/brokerd.log`. `drydock daemon status`
   reports launchd state, socket health, and the log path. **⚠️ There is no
-  aggregate spend cap yet (ROADMAP 4.3)** — before walking away, size
+  aggregate spend cap yet (ROADMAP 4.3)**: before walking away, size
   `max_concurrent_tasks`, `task_budget_usd`, `task_max_requests`, and
   `task_timeout` with a queue-drain worst case in mind; see the
   [daemon docs](https://sricola.github.io/drydock/docs/daemon.html).
@@ -131,7 +131,7 @@ default kernel behavior" is now explicitly enforced *and* tested.
 - **CI CVE-scanning of the sandbox image.** A daily scheduled workflow
   Docker-builds the sandbox image and scans it with a pinned grype; a new
   tested gate (`cmd/cve-gate`) fails the run on fixable High/Critical CVEs
-  unless covered by a live entry in `image/cve-allowlist.yaml` — every
+  unless covered by a live entry in `image/cve-allowlist.yaml`; every
   exception carries a reason and an expiry, expired entries stop suppressing,
   and allowlist edits themselves trigger the scan so suppression attempts are
   conspicuous in review. CI also now proves the egress deny-by-default
@@ -139,15 +139,15 @@ default kernel behavior" is now explicitly enforced *and* tested.
   no-auth → 407, non-allowlisted host → 403) instead of substring-matching the
   generated config.
 
-- **Native Gemini vendor (`--agent gemini`) — experimental.** Google Gemini
+- **Native Gemini vendor (`--agent gemini`), experimental.** Google Gemini
   models get a native lane: Google `x-goog-api-key` auth brokering, a
   `usageMetadata` token-metering parser, and a Gemini price table for
-  `task_budget_usd`. Set `GEMINI_API_KEY` (host env or `api-keys.env`) — API-key
+  `task_budget_usd`. Set `GEMINI_API_KEY` (host env or `api-keys.env`); API-key
   auth only, no subscription mode. Default model `gemini-2.5-pro`; override with
   `--model gemini-2.5-flash` or `gemini-2.5-flash-lite`. **Not yet verified
   end-to-end:** the gateway/parser/pricing have CI unit coverage, but the full
   in-sandbox run (A1/A2 red-team + a real metered task) is macOS-gated and has
-  not been executed — treat as experimental until `make test-integration`
+  not been executed; treat as experimental until `make test-integration`
   passes on macOS with a real key. ROADMAP 3B stays open until then.
 
 ### Fixed
@@ -167,19 +167,19 @@ default kernel behavior" is now explicitly enforced *and* tested.
   `http://` base URL would send the real API key in cleartext; config
   validation now warns. Loopback (a local model) stays quiet.
 
-## v0.4.0 — 2026-07-02
+## v0.4.0 (2026-07-02)
 
 ### Added
 
-- **Local web UI (`drydock ui`).** A loopback-only browser app — task board,
-  diff review, one-click approve/deny, and run history — served over the broker
+- **Local web UI (`drydock ui`).** A loopback-only browser app (task board,
+  diff review, one-click approve/deny, and run history) served over the broker
   socket. Navigate to the printed URL; the one-time token in the URL fragment
   gates access (never sent to the server). `--open` launches the default browser
   automatically; `--no-token` disables the gate for trusted local setups.
   `drydock init`, `drydock status`, and `drydock pending` surface the
   `drydock ui` hint when a task is waiting at the approval gate.
 
-- **Bring your own model — OpenAI-compatible lane.** Any endpoint that speaks
+- **Bring your own model: OpenAI-compatible lane.** Any endpoint that speaks
   the OpenAI wire protocol (Google Gemini, OpenRouter, Ollama, LM Studio, vLLM,
   …) can now be wired as a drydock agent. Add an `openai_compat:` block to
   `~/.drydock/config.yaml` with the base URL, optional path, the *name* of the
@@ -214,7 +214,7 @@ default kernel behavior" is now explicitly enforced *and* tested.
   port alongside the hostname: a domain without an explicit port is constrained
   to the default for its scheme; one with an explicit port (e.g.
   `registry.npmjs.org:443`) blocks any other port. IP literals in the allowlist
-  are now rejected at validation time — only hostnames are accepted, closing a
+  are now rejected at validation time; only hostnames are accepted, closing a
   bypass where a numeric `1.2.3.4` entry could evade the hostname check. The
   squid access log is now written to `~/.drydock/squid/access.log` so failed
   egress attempts are inspectable without running `drydock doctor`.
@@ -240,12 +240,12 @@ default kernel behavior" is now explicitly enforced *and* tested.
 ### Docs
 
 - **Docs site.** Operator documentation is now a Go-native rendered HTML site
-  with a shared design system, dark mode, and a sidebar — see
+  with a shared design system, dark mode, and a sidebar; see
   [sricola.github.io/drydock/docs](https://sricola.github.io/drydock/docs/).
   New pages: Models / Bring your own model (OpenAI-compatible endpoint setup)
   and Web UI. Existing pages updated for v0.4.0 features throughout.
 
-## v0.3.0 — 2026-06-22
+## v0.3.0 (2026-06-22)
 
 ### Added
 
@@ -255,7 +255,7 @@ default kernel behavior" is now explicitly enforced *and* tested.
   API key host-side. `--reconfigure` re-runs it; non-TTY runs and existing
   configs without `--reconfigure` keep the previous static seed behavior.
 - **Host-side API-key store (`~/.drydock/api-keys.env`, mode 0600).** API keys
-  can be persisted host-side so the broker finds them across shells — they are
+  can be persisted host-side so the broker finds them across shells; they are
   never copied into the sandbox VM. A non-empty environment variable still
   overrides the stored value, and `drydock doctor` reports each key's source
   (env / api-keys.env / none).
@@ -271,10 +271,10 @@ default kernel behavior" is now explicitly enforced *and* tested.
   the real error (e.g. `entrypoint.sh: DRYDOCK_GW_IP: missing gateway ip`) and
   suggests `drydock doctor`, instead of the opaque `task failed: exit status 1`.
 - **Richer completion summary.** The final line now shows branch, platform,
-  diffstat (files, insertions, deletions), wall-clock duration, and cost —
+  diffstat (files, insertions, deletions), wall-clock duration, and cost,
   e.g. `✓ pushed agent/7f3a… (github) · 4 files +120/-8 · 2m18s · $0.11`.
 - **`--quiet` flag for `drydock submit`.** Suppresses all progress output and
-  prints only the final outcome line — useful in scripts that capture the result
+  prints only the final outcome line, useful in scripts that capture the result
   but don't want interleaved status noise.
 - **`--json` now streams raw NDJSON events** as the task runs (one JSON object
   per line), replacing the previous single-object response. Pipe to `jq -c` to
@@ -285,7 +285,7 @@ default kernel behavior" is now explicitly enforced *and* tested.
 
 - **Per-task egress widening is now actually enforced.** Approved
   `--egress-extra` hosts previously never became reachable: the host-side squid
-  proxy — the per-domain egress enforcement point — was started once with the
+  proxy (the per-domain egress enforcement point) was started once with the
   default allowlist and never reconfigured, so an operator could approve a host
   and the agent would still be blocked. Widening now provisions a per-task squid
   proxy credential (mirroring the credential gateway's per-task token model) that
@@ -315,27 +315,27 @@ default kernel behavior" is now explicitly enforced *and* tested.
   rendered progress. Because brokerd and the CLI ship as one binary, this only
   affects a stale separate install; `drydock version` should match on both sides.
 
-## v0.2.0 — 2026-06-21
+## v0.2.0 (2026-06-21)
 
 ### Added
 
-- **Run Claude Code on your Claude subscription — no API key.** With a Claude
+- **Run Claude Code on your Claude subscription, no API key.** With a Claude
   Pro or Max plan: `claude login` → `drydock auth claude` →
   `anthropic_auth: subscription`. The OAuth credential is held host-side
   (`~/.drydock/claude-oauth.json`, mode 0600), kept fresh by the gateway, and
-  **never enters the VM** — the sandbox still sees only a per-task token. A live
+  **never enters the VM**: the sandbox still sees only a per-task token. A live
   red-team test asserts the access and refresh tokens are absent from the VM
   environment.
-- **Run OpenAI Codex on your ChatGPT subscription — no API key.** The parallel
+- **Run OpenAI Codex on your ChatGPT subscription, no API key.** The parallel
   path: `codex login` → `drydock auth codex` → `openai_auth: subscription`. The
   gateway injects the real OAuth token plus the `chatgpt-account-id` header and
   routes to the Codex backend; the access token, refresh token, and account id
   all stay host-side and never reach the VM (covered by a live red-team test).
 - **Per-task request cap (`task_max_requests`).** The USD budget doesn't apply
   in subscription mode, so this caps how many upstream requests one task may
-  make — the gateway returns HTTP 429 once the cap is hit. Works as defense in
+  make: the gateway returns HTTP 429 once the cap is hit. Works as defense in
   depth for API-key tasks too.
-- **`drydock auth claude` / `drydock auth codex`** — copy the subscription
+- **`drydock auth claude` / `drydock auth codex`**: copy the subscription
   credential from the vendor CLI's login into drydock's host-only store. Status
   output is token-free.
 - **`drydock doctor`** validates a configured subscription token (loads it and
@@ -351,18 +351,18 @@ default kernel behavior" is now explicitly enforced *and* tested.
 
 ### Docs
 
-- Site and README spell out the agent × auth matrix — Claude Code and OpenAI
+- Site and README spell out the agent × auth matrix: Claude Code and OpenAI
   Codex, each usable with an API key **or** a subscription.
 - README / SECURITY / THREAT_MODEL document the subscription blast radius (a
   full-account OAuth token, broader than a scoped key and not per-task
   revocable) and the ToS/rate-limit caveat for headless use.
 - README logo is now visible in GitHub dark mode.
 
-## v0.1.10 — 2026-06-19
+## v0.1.10 (2026-06-19)
 
 ### Added
 
-- **`drydock setup`** — one command from install to ready. It installs the
+- **`drydock setup`**: one command from install to ready. It installs the
   Homebrew prerequisites (Apple `container`, squid), prompting before each
   (`--yes` to skip), then runs `drydock init`. Previously `init` only *checked*
   the prerequisites and exited if they were missing, so the happy path is now
@@ -389,18 +389,18 @@ default kernel behavior" is now explicitly enforced *and* tested.
 - README: a real `drydock redteam` screenshot beside the command, showing the
   A1/A2/A7 containment attacks passing live against the sandbox.
 
-## v0.1.9 — 2026-06-19
+## v0.1.9 (2026-06-19)
 
 ### Added
 
 - **`drydock redteam`** runs drydock's live containment attacks against your
-  own sandbox — on your own Mac, on your actual image — and prints a pass/fail
+  own sandbox (on your own Mac, on your actual image) and prints a pass/fail
   table, so you can verify containment yourself instead of trusting the threat
   model. It runs the VM-backed attacks behind **A1** (the real vendor key never
   enters the VM), **A2** (egress to non-allowlisted hosts is blocked), and
-  **A7** (no state persists between tasks). No API spend — the attacks inspect
+  **A7** (no state persists between tasks). No API spend; the attacks inspect
   the VM env, egress, and filesystem; they never call a model.
-- **Breach demo** — `demo/breach.sh` (`make demo`, `make demo VM=1`) is a
+- **Breach demo**: `demo/breach.sh` (`make demo`, `make demo VM=1`) is a
   narrated runner that executes the real `THREAT_MODEL.md` red-team tests and
   shows them contain actual attacks; every green is a live `go test` pass, not a
   scripted print. Recorded GIFs ship in `demo/` and lead the README and website.
@@ -408,7 +408,7 @@ default kernel behavior" is now explicitly enforced *and* tested.
 ### Fixed
 
 - The `log_json`, `strict_container_version`, and `notifications` keys in
-  `~/.drydock/config.yaml` were parsed but never honored — brokerd read each
+  `~/.drydock/config.yaml` were parsed but never honored; brokerd read each
   one's `DRYDOCK_*` env var directly at the point of use, so setting the YAML
   key did nothing. Config is now loaded first and drives logging, the
   container-version check, and notifications. The env vars keep working (config
@@ -416,12 +416,12 @@ default kernel behavior" is now explicitly enforced *and* tested.
 
 ### Changed
 
-- Front-door copy leads with the local-first stance — *run coding agents on your
-  own Mac like you assume they're already hacked* — across the README tagline
+- Front-door copy leads with the local-first stance (*run coding agents on your
+  own Mac like you assume they're already hacked*) across the README tagline
   and the site hero. The README install now opens with a one-line macOS-26 /
   Apple-silicon eligibility self-check so users self-qualify in seconds.
 
-## v0.1.8 — 2026-06-19
+## v0.1.8 (2026-06-19)
 
 A hardening release: reliability, performance, and supply-chain work from an
 internal audit. No new user-facing features; behavior is unchanged except where
@@ -431,7 +431,7 @@ noted.
 
 - **Graceful shutdown.** On `SIGINT`/`SIGTERM`, brokerd now cancels every
   in-flight task (each tears down its own VM and answers the client), drains
-  the HTTP server, stops squid + the anchor, and removes the socket — instead
+  the HTTP server, stops squid + the anchor, and removes the socket, instead
   of `os.Exit`-ing and orphaning running VMs until the next boot.
 - **HTTP server timeouts** (`ReadHeaderTimeout` + `IdleTimeout`) on the broker
   and gateway listeners blunt slow-loris / idle-keepalive abuse without cutting
@@ -461,7 +461,7 @@ noted.
   single in-flight request can overshoot by its own cost before the next is
   refused. See `THREAT_MODEL.md` N4.
 
-## v0.1.7 — 2026-06-19
+## v0.1.7 (2026-06-19)
 
 ### Security / credibility
 
@@ -478,11 +478,11 @@ noted.
 
 ### Changed
 
-- Removed the dead `Broker.Approve` hook (it was set but never called — the
+- Removed the dead `Broker.Approve` hook (it was set but never called; the
   real gates are `gatePush` / `gateEgressWiden`). Internal cleanup, no
   behavior change.
 
-## v0.1.6 — 2026-06-19
+## v0.1.6 (2026-06-19)
 
 ### Added
 
@@ -493,10 +493,10 @@ noted.
   prune everything by accident; `--keep-last` always retains the N
   most-recent tasks. Only touches files matching the task-artifact pattern.
 - `brokerd` warns at boot when `default_agent`'s vendor has no API key
-  configured — tasks that don't pass `--agent` would otherwise be rejected
+  configured; tasks that don't pass `--agent` would otherwise be rejected
   at submit time with no upfront signal.
 
-## v0.1.5 — 2026-06-18
+## v0.1.5 (2026-06-18)
 
 ### Added
 
@@ -521,7 +521,7 @@ noted.
 
 ### Fixed
 
-- `drydock start` now accepts either vendor key — it previously refused
+- `drydock start` now accepts either vendor key; it previously refused
   to start without `ANTHROPIC_API_KEY`, blocking Codex-only operation
   even though `brokerd` itself accepted either key.
 
@@ -530,10 +530,10 @@ noted.
 - Codex routes through the gateway via a generated `model_provider`
   config written by the entrypoint (Codex ignores `OPENAI_BASE_URL`); the
   real key still never enters the VM. The OpenAI entries in the budget
-  gate's pricing table are approximate — a safety cap, not a billing
+  gate's pricing table are approximate: a safety cap, not a billing
   source of truth.
 
-## v0.1.4 — 2026-06-17
+## v0.1.4 (2026-06-17)
 
 ### Changed
 
@@ -542,7 +542,7 @@ noted.
   evictable on `/tmp` (tooling, OS upgrades, disk pressure all treat it
   as scratch). Existing operators upgrading from < v0.1.4 still see
   pre-existing `/tmp/broker/audit` history in `drydock tasks` while it
-  exists — a legacy fallback path triggers when the new default is
+  exists; a legacy fallback path triggers when the new default is
   empty. The seeded config now uses `~/.drydock/...`; tilde-expansion
   is applied at load time.
 
@@ -555,7 +555,7 @@ noted.
 - **Friendlier "brokerd not running" messages.** `drydock submit`,
   `approve`, `deny`, `pending`, `kill`, and `status` all detect the
   missing-socket / connection-refused case and print
-  `brokerd not running — start it in another shell with drydock start`
+  `brokerd not running, start it in another shell with drydock start`
   instead of the raw Go HTTP transport error. `drydock kill`
   specifically used to say "no such task" without ever asking brokerd.
 
@@ -569,35 +569,35 @@ noted.
 - `SECURITY.md`: dedicated "TCP exposure" section spelling out that
   `broker.addr` / `BROKER_ADDR` has no built-in auth and naming the
   acceptable deployment patterns (loopback + SSH, mTLS reverse proxy).
-- `examples/hello-task.md` — a copy-paste-ready first task that fits the
+- `examples/hello-task.md`: a copy-paste-ready first task that fits the
   default $2 budget and exercises every layer of the boundary.
-- `CHANGELOG.md` — this file.
+- `CHANGELOG.md`: this file.
 - `THREAT_MODEL.md` opens with a five-bullet TL;DR so the security
   posture is scannable without reading the full doc.
 
-## v0.1.3 — 2026-06-17
+## v0.1.3 (2026-06-17)
 
 ### Added
 
-- **`drydock doctor`** — no-API-spend smoke command that checks sandbox
+- **`drydock doctor`**: no-API-spend smoke command that checks sandbox
   image freshness (`DRYDOCK_GW_IP` baked in), VM boot, and that the nft
   egress pin enforces (non-allowlisted host blocked). ~5s; gives
   operators a way to validate setup before paying for an API call.
-- **`drydock submit --model <id>`** — per-task model passthrough to
+- **`drydock submit --model <id>`**: per-task model passthrough to
   `claude --model`. Empty falls back to `default_model` in
   `~/.drydock/config.yaml`, then to claude's own default.
 - **`default_model` in `~/.drydock/config.yaml`** (also
-  `DRYDOCK_DEFAULT_MODEL` env override) — operator-level fallback model
+  `DRYDOCK_DEFAULT_MODEL` env override): operator-level fallback model
   for tasks that don't pass `--model`.
 - **Python 3.11 and Go 1.26 in the sandbox image** alongside Node 22.
   Go is installed from the upstream tarball; Debian's `golang-go` is
   too old to be useful. Image grows ~265MB.
 - **`proxy.golang.org` and `sum.golang.org` in the default egress
   allowlist** so `go mod download` works inside the sandbox.
-- **macOS + Apple-silicon preflight in `drydock init`** — fails loudly
+- **macOS + Apple-silicon preflight in `drydock init`**: fails loudly
   with a one-line reason on non-darwin, non-arm64, or macOS < 26
   instead of a cryptic downstream `container build` error.
-- **Embedded version** — `drydock version` reports `git describe`
+- **Embedded version**: `drydock version` reports `git describe`
   output on source builds (`v0.1.2-10-g26adad8`) instead of `"dev"`.
 - **Pricing table covers the 4.x families** (Opus, Sonnet, Haiku) with
   an Opus-priced default fallback so unknown new releases can't undercount
@@ -621,22 +621,22 @@ noted.
   release; missing entries get a one-shot copy-paste hint at the end
   of init.
 
-## v0.1.2 — 2026-06-16
+## v0.1.2 (2026-06-16)
 
 ### Changed
 
-- Operator config moved to `~/.drydock/{config,egress}.yaml` — seeded
+- Operator config moved to `~/.drydock/{config,egress}.yaml`, seeded
   by `drydock init`, never overwrites operator edits. Env vars
   (`DRYDOCK_*`, `BROKER_*`) still override file values, so existing
   scripts keep working. `ANTHROPIC_API_KEY` stays env-only by design.
 
-## v0.1.1 — 2026-06-16
+## v0.1.1 (2026-06-16)
 
-(early packaging pass — see git history)
+(early packaging pass; see git history)
 
-## v0.1.0 — 2026-06-16
+## v0.1.0 (2026-06-16)
 
-Initial public release of drydock — hardware-isolated sandbox for
+Initial public release of drydock, hardware-isolated sandbox for
 autonomous coding agents on macOS. Per-task Apple `container` VM,
 host-side credential gateway (real key never enters the VM), userspace
 squid for hostname-based egress allowlist, host-side `git push`. See

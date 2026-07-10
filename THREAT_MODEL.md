@@ -11,11 +11,11 @@ For people evaluating drydock who haven't read the full doc:
 
 - **What we contain**: the agent process inside the per-task VM. Treat
   every tool call, file write, and HTTP request it makes as adversarial.
-- **What we protect**: your real API key — Anthropic or OpenAI, whichever the task uses — (never enters the VM),
+- **What we protect**: your real API key (Anthropic or OpenAI, whichever the task uses) never enters the VM,
   your host filesystem and git credentials (never mounted into the VM),
   egress (deny-by-default hostname allowlist enforced on the host).
 - **What crosses back to the host**: a single `git diff`. Not commands,
-  not files outside the work tree, not push events — just inert data
+  not files outside the work tree, not push events, just inert data
   the operator reviews before it lands anywhere.
 - **What we don't claim**: defense against a host compromise, a kernel
   or `container` 0day (guest-to-host escape defeats drydock entirely),
@@ -86,12 +86,12 @@ fails. **Reproduce:** `make redteam` executes the host-side attacks (A3–A6) an
 watches them fail; the VM-backed claims (A1, A2, A7) run via
 `make redteam-vm` on macOS / Apple silicon. With an installed build,
 `drydock redteam` runs the VM-backed attacks (A1, A2, A7) live against your own
-sandbox — no source checkout, no API spend. See
+sandbox, no source checkout, no API spend. See
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full coverage map.
 
 ### A1. Agent reads a vendor API key from environment, config file, or memory
 
-The VM is started with no copy of the real key — for either vendor. The
+The VM is started with no copy of the real key, for either vendor. The
 credential gateway holds the key on the host (Anthropic or OpenAI, whichever
 the task uses) and issues a short-lived bearer token bound to a USD budget.
 The VM sees only the bearer. Even if the agent exfiltrates the bearer, it
@@ -100,11 +100,11 @@ expires with the task and is capped by `DRYDOCK_TASK_BUDGET_USD`.
 The real key can reach the gateway from two sources: the shell env
 (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) **or** the stored file
 `~/.drydock/api-keys.env` (mode `0600`), which the broker reads at startup.
-Neither source is ever passed into the VM — the A1 control is unchanged
+Neither source is ever passed into the VM, the A1 control is unchanged
 regardless of which source the broker loaded the key from.
 
 The gateway fronts several upstreams: `api.anthropic.com` (Claude Code),
-`api.openai.com` (Codex), `generativelanguage.googleapis.com` (Gemini, native —
+`api.openai.com` (Codex), `generativelanguage.googleapis.com` (Gemini, native,
 experimental), and any operator-configured OpenAI-compatible endpoint
 (`opencode`). The real key for whichever vendor stays host-only in every case.
 No new trust assumptions are introduced by additional vendors: the same
@@ -123,7 +123,7 @@ gateway grant with a sentinel key).
 
 In-VM `nft` policy (set by root before `gosu agent`) drops all output
 except loopback, established/related, and `${gateway-IP}:{8088,3128}`.
-DNS itself is dropped — the VM has no way to resolve a name except by
+DNS itself is dropped, the VM has no way to resolve a name except by
 asking squid, which only resolves hosts on the operator's allowlist.
 
 **Implementation:** `image/init-firewall.sh` plus `internal/netfw`'s
@@ -176,7 +176,7 @@ under gate `egress` with the host list, and `drydock approve <id>` /
 `drydock deny <id>` resolve it. Compilation of the per-task allowlist
 happens **after** approval; a denied or cancelled task never reaches
 squid with the extras. Setting `requires_approval: false` in the YAML
-opts you out of the gate explicitly — the operator-trust-everything
+opts you out of the gate explicitly: the operator-trust-everything
 mode for batch runs.
 
 **Implementation:** `internal/broker/broker.go::gateEgressWiden`. **Verified
@@ -186,7 +186,7 @@ by** `TestRedteam_A6_EgressWidenDenied`.
 
 Every task runs in a fresh VM (`--rm`). The host-side staging directory
 is wiped (`defer st.Cleanup()`) on every code path. The anchor container
-is unrelated to task state — it exists only to keep the vmnet gateway IP
+is unrelated to task state, it exists only to keep the vmnet gateway IP
 up.
 
 **Verified by** `TestRedteam_A7_NoStatePersistsBetweenTasks` (a marker
@@ -214,7 +214,7 @@ untrusted contributors with extra suspicion.
 ### N3. Side-channel data exfiltration via the diff
 
 A clever agent can encode information (e.g. an exfiltrated bearer
-token) into the diff itself — file names, whitespace patterns,
+token) into the diff itself: file names, whitespace patterns,
 comment text. drydock makes this visible to the operator at review
 time, but does not detect it programmatically.
 
@@ -229,7 +229,7 @@ as a flag.
 `task_budget_usd` is a **soft cap**: the gateway meters a request's cost only
 once its response completes, so a single in-flight request can overshoot by
 its own cost before the next one is refused (`402`). Within a task the agent
-calls the API sequentially, so the overshoot is bounded by one call — but a
+calls the API sequentially, so the overshoot is bounded by one call, but a
 single deliberately oversized call can exceed the budget in one shot. Set the
 budget with that headroom in mind.
 
@@ -237,13 +237,13 @@ budget with that headroom in mind.
 `anthropic_auth: subscription` is set, drydock routes through the operator's
 personal Claude Pro/Max subscription. The credential gateway holds the OAuth
 access and refresh tokens host-side and issues per-task bearers as usual (A1
-still holds), but **the USD budget cap does not apply** — there is no spend to
+still holds), but **the USD budget cap does not apply**, there is no spend to
 meter. The runaway controls are:
 
-- `task_max_requests` — hard ceiling on the number of API round-trips the
+- `task_max_requests`: hard ceiling on the number of API round-trips the
   gateway will allow for a single task before returning `429`. Set this
   explicitly; there is no equivalent to the API-key budget sentinel.
-- `task_timeout` — wall-clock ceiling (default `30m`), unchanged.
+- `task_timeout`: wall-clock ceiling (default `30m`), unchanged.
 
 Without `task_max_requests` a subscription task can burn through a large
 fraction of the subscription's rate limit before `task_timeout` fires.
@@ -254,13 +254,13 @@ Operators running batch jobs should set both.
 operator's personal ChatGPT subscription via the Codex backend
 (`chatgpt.com/backend-api/codex`). The credential gateway holds the OAuth
 access token, refresh token, and account id host-side and issues per-task
-bearers as usual (A1 still holds), but **the USD budget cap does not apply** —
+bearers as usual (A1 still holds), but **the USD budget cap does not apply**,
 there is no spend to meter. The runaway controls are identical:
 
-- `task_max_requests` — hard ceiling on the number of API round-trips the
+- `task_max_requests`: hard ceiling on the number of API round-trips the
   gateway will allow for a single task before returning `429`. Set this
   explicitly when using subscription mode.
-- `task_timeout` — wall-clock ceiling (default `30m`), unchanged.
+- `task_timeout`: wall-clock ceiling (default `30m`), unchanged.
 
 Without `task_max_requests` a Codex subscription task can burn through a large
 fraction of the subscription's rate limit before `task_timeout` fires.
@@ -290,7 +290,7 @@ The optional web UI (`drydock ui`) adds a loopback HTTP surface over the
 same admin actions (submit, approve/deny, kill, audit reads). It binds
 `127.0.0.1` only, requires a per-session bearer token (constant-time
 compare; carried in the URL fragment so it never hits server logs), and
-rejects non-loopback `Host`/`Origin` headers — the browser is the one
+rejects non-loopback `Host`/`Origin` headers, the browser is the one
 operator-level process that runs attacker-supplied code, and these checks
 stop a hostile web page from driving the API via DNS rebinding. Submissions
 through the UI refuse `auto_approve`, and audit reads reject symlinks.

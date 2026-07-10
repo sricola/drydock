@@ -25,7 +25,7 @@ internal/
   stage/          # work tree, host-side commit + push, curated adapter env
 image/            # drydock-sandbox (hosts claude-code + codex): Dockerfile + entrypoint.sh + init-firewall.sh
 image/anchor/     # drydock-anchor: FROM scratch + static Go sleep binary
-tests/integration # //go:build integration — boots brokerd against the real container CLI
+tests/integration # //go:build integration: boots brokerd against the real container CLI
 site/             # landing page + docs (site/docs/*.md, rendered by make docs)
 ```
 
@@ -36,7 +36,7 @@ code. They record *why* decisions were made; the code, `THREAT_MODEL.md`, and
 this file carry what a contributor needs day to day.
 
 Three good entry points for understanding the system: **`internal/broker/`**
-(the task lifecycle — gates, concurrency, the egress widening hook),
+(the task lifecycle: gates, concurrency, the egress widening hook),
 **`internal/gateway/`** (the credential gateway that keeps your key out of the
 VM), and **`image/`** (what actually runs inside the sandbox VM).
 
@@ -54,12 +54,12 @@ make test-integration   # boot brokerd as a subprocess; macOS only, needs the co
 
 GitHub Actions runs `go build`, `go test -race`, and `go vet` on every push/PR.
 Integration (`make test-integration`) requires the `container` runtime and is
-macOS-only — it runs locally, not in CI. No real Anthropic or OpenAI spend.
+macOS-only; it runs locally, not in CI. No real Anthropic or OpenAI spend.
 
 The sandbox image is CVE-scanned in CI (`image-scan.yml`: grype + `cmd/cve-gate`).
 If the gate fails, prefer bumping the pinned package/base; to accept a finding
 temporarily, add `{id, reason, expires}` to `image/cve-allowlist.yaml`.
-Local repro needs Docker (`docker build -t s image/ && grype docker:s`) —
+Local repro needs Docker (`docker build -t s image/ && grype docker:s`);
 Apple `container`'s OCI export is not grype-readable.
 
 Some tests are gated behind build tags and require a live host (squid, the
@@ -76,12 +76,12 @@ make test-squid-e2e    # full VM-level egress widening (squide2e tag); requires 
   (Opus, Sonnet, Haiku) and OpenAI GPT-5/o4 families, each with a high-end
   default fallback; the budget gate is a safety cap, not a billing source of
   truth. Bump when either vendor publishes new rates.
-- **Audit retention** — `~/.drydock/audit/` has no automatic retention. Run
+- **Audit retention**: `~/.drydock/audit/` has no automatic retention. Run
   `drydock prune --older-than DUR [--keep-last N]` (dry-run unless `--yes`);
   brokerd-side auto-retention isn't wired up yet.
-- **Concurrency** — up to `DRYDOCK_MAX_CONCURRENT_TASKS` tasks in flight per
+- **Concurrency**: up to `DRYDOCK_MAX_CONCURRENT_TASKS` tasks in flight per
   brokerd (default 2); raise on bigger hardware.
-- **Approval adapters** — only the local CLI + macOS notifications; no
+- **Approval adapters**: only the local CLI + macOS notifications; no
   Slack/web approval adapters yet.
 - **Bitbucket** PR/MR opening falls back to push-only (no widely-adopted CLI to
   wrap). Contribution slot.

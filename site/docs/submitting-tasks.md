@@ -25,7 +25,7 @@ task from any shell:
 
 ```bash
 drydock pending            # tasks awaiting you (egress + diff gates both shown)
-drydock review <id>        # diff in $PAGER, then prompt y/N — the one-shot path
+drydock review <id>        # diff in $PAGER, then prompt y/N (the one-shot path)
 # … or step by step:
 less ~/.drydock/audit/<id>.diff
 drydock approve <id>       # … or: drydock deny <id>
@@ -35,7 +35,7 @@ drydock approve <id>       # … or: drydock deny <id>
 A denied task keeps its diff in the audit dir but never pushes.
 
 If the branch pushes but the PR can't be opened (e.g. `gh` isn't authenticated),
-drydock reports it as **pushed** with a hint to open the PR manually — it never
+drydock reports it as **pushed** with a hint to open the PR manually; it never
 loses your work to a failed PR step.
 
 ## Operator surface
@@ -50,14 +50,14 @@ drydock redteam            # run live containment attacks on your own sandbox (n
 ```
 
 Prefer a browser? `drydock ui` puts the board, the diff/approve gate, and
-history in a local web app — see [Web UI](web-ui.html).
+history in a local web app; see [Web UI](web-ui.html).
 
 ## Variations
 
 ```bash
 # Pick the agent for this task: claude (default) | codex | gemini | opencode
 drydock submit --repo … --instruction "…" --agent codex
-# opencode runs any OpenAI-compatible model — see Bring your own model
+# opencode runs any OpenAI-compatible model (see Bring your own model)
 drydock submit --repo … --instruction "…" --agent opencode
 
 # Long prompt from a file
@@ -101,7 +101,7 @@ rejected. The PR/MR adapter is chosen by `--platform`:
 - `gitea` (alias `forgejo`) → `tea pr create --head <branch>` (needs `tea` authed)
 - `none` → push only; no PR/MR
 - *omitted* → hostname autodetect (`github.com`, `gitlab.com`,
-  `gitea.com` / `codeberg.org`; else push-only — covers Bitbucket and
+  `gitea.com` / `codeberg.org`; else push-only, covering Bitbucket and
   self-hosted)
 
 Self-hosted GitLab and Gitea need an explicit `--platform`.

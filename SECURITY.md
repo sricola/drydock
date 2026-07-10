@@ -1,7 +1,7 @@
 # Security policy
 
 drydock is a containment for autonomous coding agents on macOS. A security
-bug in drydock can let an untrusted agent reach things it shouldn't —
+bug in drydock can let an untrusted agent reach things it shouldn't:
 your real API key (Anthropic or OpenAI), your host filesystem, your git
 credentials. We take reports seriously and respond quickly.
 
@@ -51,15 +51,15 @@ Out of scope (don't report; documented in `THREAT_MODEL.md`):
 
 - Host compromise (malware on your Mac).
 - Guest-to-host escape in Apple `container` or the underlying
-  virtualization stack — report those to Apple.
+  virtualization stack; report those to Apple.
 - Supply-chain compromise of dependencies (claude-code, squid, Debian
   base, Go std lib).
 - Operator-key hygiene (a leaked `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
   defeats the gateway; drydock doesn't manage its lifecycle).
-- Operator approving a malicious diff — the gate makes review possible,
+- Operator approving a malicious diff; the gate makes review possible,
   not automatic.
 - Prompt injection in staged repo files influencing the agent for that
-  task — the diff gate is the backstop.
+  task; the diff gate is the backstop.
 
 See `THREAT_MODEL.md` for the precise threat model (A1–A7 defended,
 N1–N7 not).
@@ -76,14 +76,14 @@ Each tagged release is built by the `release` GitHub Actions workflow and
 carries supply-chain attestations you can check before trusting a binary
 (`X.Y.Z` = the release version):
 
-- **SLSA build provenance** — the tarball was built by drydock's release
+- **SLSA build provenance**: the tarball was built by drydock's release
   workflow from the tagged commit, not uploaded by hand:
 
   ```
   gh attestation verify drydock-vX.Y.Z-darwin-arm64.tar.gz --repo sricola/drydock
   ```
 
-- **cosign signature** (keyless / Sigstore — no key to trust):
+- **cosign signature** (keyless / Sigstore, no key to trust):
 
   ```
   cosign verify-blob \
@@ -94,13 +94,13 @@ carries supply-chain attestations you can check before trusting a binary
     drydock-vX.Y.Z-darwin-arm64.tar.gz
   ```
 
-- **SBOM** — `drydock.cdx.json` (CycloneDX) lists the module dependencies.
-- **sha256** — the `.sha256` asset matches the value the Homebrew formula pins.
+- **SBOM**: `drydock.cdx.json` (CycloneDX) lists the module dependencies.
+- **sha256**: the `.sha256` asset matches the value the Homebrew formula pins.
 - **Sandbox-image CVE scanning.** CI scans the built `drydock-sandbox` image
   daily with grype and fails on fixable High/Critical CVEs. Accepted findings
-  live in `image/cve-allowlist.yaml`, each with a reason and an expiry date —
+  live in `image/cve-allowlist.yaml`, each with a reason and an expiry date;
   expired exceptions fail CI again rather than rotting silently.
-- **Reproducible binaries** — rebuild the binaries and confirm they match
+- **Reproducible binaries**: rebuild the binaries and confirm they match
   byte-for-byte (needs Go 1.26.5 on darwin/arm64, a clean tag checkout):
 
   ```
@@ -110,7 +110,7 @@ carries supply-chain attestations you can check before trusting a binary
   ```
 
   The release tarball itself is not byte-reproducible (tar/gzip embed
-  metadata), but the binaries inside it are — which is what matters.
+  metadata), but the binaries inside it are, which is what matters.
 
 ## Documented residuals
 
@@ -133,9 +133,9 @@ opts into TCP and **drops that authentication entirely**:
   approval gate, with the host's git credentials.
 - `POST /admin/kill/{id}` tears down an in-flight VM.
 - `GET /healthz` and `GET /admin/pending` leak running task IDs to
-  anyone who can reach the port — recon for a race against approve.
+  anyone who can reach the port, recon for a race against approve.
 
-drydock prints `listening on TCP — any process that can reach this port
+drydock prints `listening on TCP, any process that can reach this port
 can submit and approve tasks` at boot when this mode is on. **You are
 responsible for the auth layer.** Acceptable patterns: bind to loopback
 only and SSH-tunnel; put brokerd behind an authenticating reverse proxy
@@ -158,7 +158,7 @@ to `0.0.0.0` on a shared network is a vulnerability, not a feature.
   the macOS surface; treat the body as untrusted input if you ever
   route it through a webhook adapter.
 
-### Subscription auth — host-held full-account OAuth credential
+### Subscription auth: host-held full-account OAuth credential
 
 When `anthropic_auth: subscription` is set, drydock stores a copy of the
 Claude Pro/Max OAuth credential at `~/.drydock/claude-oauth.json` (mode
@@ -171,7 +171,7 @@ The blast radius is broader than a scoped API key in two ways:
 - **Not per-task revocable.** A minted bearer expires with the task. The
   OAuth credential at `~/.drydock/claude-oauth.json` does not. If the host
   is compromised, an attacker obtains a long-lived refresh token tied to the
-  full Anthropic account — not just a budget-limited bearer.
+  full Anthropic account, not just a budget-limited bearer.
 - **Not narrowly scoped.** A dedicated `ANTHROPIC_API_KEY` can be created
   with limited permissions or revoked independently. A personal OAuth token
   carries the same permissions as an interactive browser session.
@@ -184,19 +184,19 @@ would any credential file. Revocation means re-authenticating via
 
 **ToS and rate-limit caveat.** Automating a personal subscription headlessly
 may brush against Anthropic's terms of service for Claude Pro/Max accounts,
-and subscription rate limits are lower than API rate limits — a batch job
+and subscription rate limits are lower than API rate limits; a batch job
 will exhaust them faster than interactive use would. drydock makes no claim
 that this usage mode is sanctioned by Anthropic. The operator assumes that
 risk. See [`THREAT_MODEL.md` § N4](THREAT_MODEL.md#n4-cost-exhaustion-and-runaway-tasks)
 for how to control subscription task runaway with `task_max_requests`.
 
-### Subscription auth — Codex (ChatGPT OAuth credential)
+### Subscription auth: Codex (ChatGPT OAuth credential)
 
 When `openai_auth: subscription` is set, drydock stores a copy of the
 ChatGPT OAuth credential at `~/.drydock/codex-oauth.json` (mode `0600`).
 This file holds a full-account OAuth access token, refresh token, **and**
 account id; the gateway uses them to issue per-task bearers, and the
-credential itself never enters the VM (A1 holds — the red-team
+credential itself never enters the VM (A1 holds; the red-team
 `TestRedteam_A1_CodexOAuthNeverInVM` test covers this path).
 
 The blast radius is broader than a scoped API key in two ways:
@@ -204,7 +204,7 @@ The blast radius is broader than a scoped API key in two ways:
 - **Not per-task revocable.** A minted bearer expires with the task. The
   OAuth credential at `~/.drydock/codex-oauth.json` does not. If the host
   is compromised, an attacker obtains a long-lived refresh token tied to the
-  full ChatGPT account — not just a budget-limited bearer.
+  full ChatGPT account, not just a budget-limited bearer.
 - **Not narrowly scoped.** A dedicated `OPENAI_API_KEY` can be created with
   limited permissions or revoked independently. A personal ChatGPT OAuth token
   carries the same permissions as an interactive browser session.
@@ -217,18 +217,18 @@ again to update the stored copy.
 
 **ToS and rate-limit caveat.** Automating a personal ChatGPT subscription
 headlessly may brush against OpenAI's terms of service, and subscription rate
-limits are lower than API rate limits — a batch job will exhaust them faster
+limits are lower than API rate limits; a batch job will exhaust them faster
 than interactive use would. drydock makes no claim that this usage mode is
 sanctioned by OpenAI. The operator assumes that risk. See
 [`THREAT_MODEL.md` § N4](THREAT_MODEL.md#n4-cost-exhaustion-and-runaway-tasks)
 for how to control subscription task runaway with `task_max_requests`.
 
-### Stored API key — `~/.drydock/api-keys.env`
+### Stored API key: `~/.drydock/api-keys.env`
 
 When `drydock init` (or the setup wizard) offers to persist an API key for you,
 it writes the key to `~/.drydock/api-keys.env` (mode `0600`). The broker reads
 this file at startup and treats it identically to the same key arriving via
-shell env — the key stays host-side and never enters the VM (A1 holds).
+shell env; the key stays host-side and never enters the VM (A1 holds).
 
 The exposure is **comparable** to the OAuth tokens already stored in
 `~/.drydock/claude-oauth.json` / `~/.drydock/codex-oauth.json`:
@@ -245,12 +245,12 @@ The exposure is **comparable** to the OAuth tokens already stored in
   models). A dedicated, narrowly-scoped key is preferable to an org-admin key.
 
 If you prefer not to write a key to disk, skip the wizard offer and export the
-key in your shell env instead — the broker accepts either source.
+key in your shell env instead; the broker accepts either source.
 
 - **Apple notarization still pending.** Each tagged release now ships a
   CycloneDX SBOM, a keyless **cosign** signature, and **SLSA build
   provenance** (the tarball was built by the release workflow from the
-  tagged commit) — see "Verifying a release" above. The macOS binaries are
+  tagged commit); see "Verifying a release" above. The macOS binaries are
   not yet Apple-notarized, so a non-brew download may be quarantined by
   Gatekeeper; notarization lands once the Developer ID certificate is in
   place. You can also always build from source and `go mod verify`.
