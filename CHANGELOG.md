@@ -5,6 +5,25 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Added
+
+- **Aggregate budget cap (`aggregate_budget_usd` / `aggregate_window`).**
+  Two new config fields bound cross-task USD spend per `api_key` provider:
+  `aggregate_budget_usd` (env `DRYDOCK_AGGREGATE_BUDGET_USD`, default `0`
+  = disabled) sets a USD ceiling per vendor; `aggregate_window` (env
+  `DRYDOCK_AGGREGATE_WINDOW`, default `24h`) sets the rolling window length,
+  where `0` means total since brokerd boot (no time decay, resets on restart).
+  Enforcement is two-layer: the gateway's `admit()` rejects requests with HTTP
+  402 once a vendor's windowed spend reaches the cap (halting an already-running
+  task on its next request), and the broker pre-checks at `POST /tasks` so an
+  over-cap submission fails cleanly at submit time rather than starting a doomed
+  task. In rolling mode, the ledger is seeded at boot from audit files within the
+  window, so the cap survives a brokerd restart. The cap applies to `api_key`-mode
+  vendors only; subscription mode is out of scope (bounded per-task by
+  `task_max_requests`). Closes ROADMAP 4.3.
+
 ## v0.6.0 (2026-07-09)
 
 A security-hardening release from a full production-readiness review of the
