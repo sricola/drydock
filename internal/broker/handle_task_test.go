@@ -672,3 +672,24 @@ func TestHandleTask_PROpenFailure_StillPushed(t *testing.T) {
 		t.Error("the branch must still have been pushed")
 	}
 }
+
+// TestHandleTask_AggregateBudgetExhausted verifies that when AggregateExceeded
+// returns true for the task's vendor, HandleTask rejects the submission with
+// HTTP 402 before the stream starts and before any lease is minted.
+func TestHandleTask_AggregateBudgetExhausted(t *testing.T) {
+	b := &Broker{
+		AuditRoot:         t.TempDir(),
+		Providers:         map[string]creds.Provider{"anthropic": fakeProvider{}},
+		AggregateExceeded: func(vendor string) bool { return true },
+	}
+	body := `{"repo_ref":"https://github.com/o/r","instruction":"x","agent":"claude"}`
+	req := httptest.NewRequest("POST", "/tasks", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	b.HandleTask(rr, req)
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402; body=%q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "aggregate budget exhausted") {
+		t.Errorf("body = %q, want the aggregate-exhausted message", rr.Body.String())
+	}
+}

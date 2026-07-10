@@ -399,6 +399,9 @@ func main() {
 	if squidCtl != nil {
 		b.Squid = squidCtl
 	}
+	if cfg.AggregateBudgetUSD > 0 {
+		b.AggregateExceeded = gw.AggregateExceeded
+	}
 	brk = b // expose to the shutdown handler
 	slog.Info("config",
 		"network", cfg.Network,

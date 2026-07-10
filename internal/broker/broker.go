@@ -96,6 +96,12 @@ type Broker struct {
 	AnthropicAuth     string // "api_key" | "subscription"; recorded per task for `drydock tasks`
 	OpenAIAuth        string // "api_key" | "subscription"; recorded per task for `drydock tasks`
 
+	// AggregateExceeded, when set, is consulted at task submission: if it
+	// returns true for the task's vendor, the submission is rejected (402)
+	// before the stream starts and before any lease is minted. nil disables
+	// the pre-check. Wired to the gateway's AggregateExceeded by brokerd.
+	AggregateExceeded func(vendor string) bool
+
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
 	// drive HandleTask without a git clone or a container run.
@@ -251,6 +257,20 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		if err := egress.ValidateDomains(t.EgressExtra); err != nil {
 			http.Error(w, "egress_extra invalid: "+safeErr(err), http.StatusBadRequest)
 			return
+		}
+	}
+
+	// Aggregate budget pre-check: reject at submit time (before the stream
+	// starts and before any lease is minted) when this task's vendor is
+	// already at or over its cross-task cap. The task never starts. Skipped
+	// when the cap is disabled (hook nil) or the vendor can't be resolved yet
+	// (the real resolveAgent below emits the proper error).
+	if b.AggregateExceeded != nil {
+		if an, _, err := b.resolveAgent(t.Agent); err == nil {
+			if v, _ := provider.VendorForAgent(an); v != "" && b.AggregateExceeded(v) {
+				http.Error(w, "aggregate budget exhausted for "+v, http.StatusPaymentRequired)
+				return
+			}
 		}
 	}
 
