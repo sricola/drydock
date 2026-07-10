@@ -85,6 +85,14 @@ type Config struct {
 	// (defaultUncappedRequestCap) so a runaway task can't drain a subscription.
 	TaskMaxRequests int `yaml:"task_max_requests"`
 
+	// AggregateBudgetUSD caps cross-task USD spend per api_key-mode provider over
+	// AggregateWindow. 0 (default) disables the aggregate cap. Subscription
+	// vendors are out of scope (bounded per-task by TaskMaxRequests).
+	AggregateBudgetUSD float64 `yaml:"aggregate_budget_usd"`
+	// AggregateWindow is the rolling window for AggregateBudgetUSD. 0 means a
+	// total since brokerd boot (session cap, no time decay, resets on restart).
+	AggregateWindow time.Duration `yaml:"aggregate_window"`
+
 	// OpenAICompat configures a bring-your-own OpenAI-compatible upstream
 	// (Gemini's /v1beta/openai, OpenRouter, local). Empty BaseURL = disabled.
 	// The real key is read from the host env var named by APIKeyEnv — never
@@ -124,6 +132,8 @@ func Defaults() *Config {
 		AnthropicAuth:          "api_key",
 		OpenAIAuth:             "api_key",
 		TaskMaxRequests:        0,
+		AggregateBudgetUSD:     0,
+		AggregateWindow:        24 * time.Hour,
 		StageRoot:              defaultStateDir("stage"),
 		AuditRoot:              defaultStateDir("audit"),
 		SquidRunDir:            defaultStateDir("squid"),
@@ -275,6 +285,16 @@ func (c *Config) applyEnvOverrides() {
 			c.TaskMaxRequests = n
 		}
 	}
+	if v := os.Getenv("DRYDOCK_AGGREGATE_BUDGET_USD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.AggregateBudgetUSD = f
+		}
+	}
+	if v := os.Getenv("DRYDOCK_AGGREGATE_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			c.AggregateWindow = d
+		}
+	}
 	if v := os.Getenv("STAGE_ROOT"); v != "" {
 		c.StageRoot = v
 	}
@@ -351,6 +371,12 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	if c.AggregateBudgetUSD < 0 {
+		return fmt.Errorf("config: aggregate_budget_usd must be >= 0, got %v", c.AggregateBudgetUSD)
+	}
+	if c.AggregateWindow < 0 {
+		return fmt.Errorf("config: aggregate_window must be >= 0, got %v", c.AggregateWindow)
+	}
 	return nil
 }
 
@@ -379,6 +405,8 @@ default_agent:          claude         # sandbox CLI: claude | codex | gemini | 
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
 task_max_requests:      0              # per-task request cap. 0 = unlimited when a USD budget bounds spend; with an uncapped budget (subscription / priceless model) 0 falls closed to a built-in default cap
+aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
+aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)
 
 # --- Bring-your-own OpenAI-compatible model (optional; e.g. Gemini, OpenRouter, local) ---
 openai_compat:
