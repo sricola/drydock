@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# Least-privilege GITHUB_TOKEN: every job here only checks out the repo and
+# runs tests/linters, so read-only contents is all they need. (Closes CodeQL
+# actions/missing-workflow-permissions.)
+permissions:
+  contents: read
+
 jobs:
   go-test:
     runs-on: ubuntu-latest
