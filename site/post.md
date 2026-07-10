@@ -20,7 +20,7 @@ The reflex is to add prompts and review gates inside the agent loop:
 that says don't do bad things. These are useful and inadequate. They live
 inside the trust boundary they're supposed to defend.
 
-The better reflex is to assume the agent is compromised — every call —
+The better reflex is to assume the agent is compromised (every call)
 and design a containment that makes the assumption cheap. This post
 describes that design. The reference implementation, **drydock**, runs on
 Apple silicon using Apple's new `container` runtime and is open source.
@@ -71,8 +71,8 @@ into the container's environment. That works until the agent decides to
 print the environment (it will, eventually), or pipes it into a fetch
 call, or writes it into a log file that ends up in the diff.
 
-Instead, run a tiny HTTP service on the host — the **credential
-gateway** — and point the sandbox's `ANTHROPIC_BASE_URL` at it. The
+Instead, run a tiny HTTP service on the host (the **credential
+gateway**) and point the sandbox's `ANTHROPIC_BASE_URL` at it. The
 gateway holds the real key. The sandbox authenticates with a bearer
 token the gateway mints per task, scoped to a USD budget and a TTL. Even
 if the agent exfiltrates the bearer, it expires when the task ends and
@@ -107,7 +107,7 @@ allowed `(gateway-IP, port)` pairs. The agent user has no
 
 DNS being dropped is a deliberate design choice. Squid resolves names on
 the host on the sandbox's behalf, for hosts the operator allowlisted.
-The sandbox has no other way to name anything — `curl example.com`
+The sandbox has no other way to name anything: `curl example.com`
 fails at resolution, not at the firewall, which is actually a tighter
 failure mode.
 
@@ -188,8 +188,8 @@ Linux has firejail, podman, kata, gVisor, and a dozen other
 sandboxing primitives. The reason drydock targets macOS specifically is
 that the audience for "I want to leave an agent running unattended on my
 work laptop" is overwhelmingly Apple silicon. They're the people who
-need this, and they're the people Apple's `container` runtime — released
-this year — finally makes well-served. drydock isn't trying to be Docker.
+need this, and they're the people Apple's `container` runtime, released
+this year, finally makes well-served. drydock isn't trying to be Docker.
 It's trying to be the layer that turns `container` + `claude-code` into
 something you'd trust overnight.
 
@@ -227,7 +227,7 @@ walks the full operator surface; the
 is the precise contract.
 
 drydock is open source under [Apache 2.0](https://github.com/sricola/drydock/blob/main/LICENSE).
-The credential-gateway pattern in particular is portable — if you're
+The credential-gateway pattern in particular is portable: if you're
 building any kind of autonomous-agent system and want one well-defined
 boundary between the agent and your real keys, take that piece and use
 it. The rest of drydock is a particular implementation; the gateway is

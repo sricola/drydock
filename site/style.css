@@ -1,4 +1,4 @@
-/* Self-hosted fonts (latin subset, woff2). Was Google Fonts — removed to
+/* Self-hosted fonts (latin subset, woff2). Was Google Fonts, removed to
    drop the third-party render-blocking request and the visitor-IP leak to
    Google. Same bytes gstatic served, now same-origin + private. */
 @font-face {
@@ -87,7 +87,7 @@
   --red:#c92c2c;
   --red-dim:rgba(201,44,44,.07);
   --red-line:rgba(201,44,44,.28);
-  --grn:#0b7e53;        /* deep emerald — clears AA (4.5:1) as small text on paper/panel */
+  --grn:#0b7e53;        /* deep emerald: clears AA (4.5:1) as small text on paper/panel */
   --grn-dim:rgba(11,126,83,.07);
   --grn-line:rgba(11,126,83,.30);
   --amber:#a86600;
@@ -99,7 +99,7 @@
 html{scroll-behavior:smooth}
 [id]{scroll-margin-top:72px}              /* sticky topbar must not cover anchored sections */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-/* skip link — hidden until focused */
+/* skip link: hidden until focused */
 .skip{position:absolute;left:12px;top:-48px;z-index:20;background:var(--ink);color:#fff;
   font-family:var(--mono);font-size:13px;padding:9px 14px;border-radius:6px;text-decoration:none;transition:top .18s}
 .skip:focus{top:12px}
@@ -147,7 +147,7 @@ h1 .t{color:var(--grn)}
 .herostatus a{color:var(--grn);text-decoration:none;border-bottom:1px solid var(--grn-line)}
 .herostatus a:hover{border-bottom-color:var(--grn)}
 
-/* badges — platform + security properties */
+/* badges: platform + security properties */
 .badges{list-style:none;display:flex;flex-wrap:wrap;gap:8px;margin:26px 0 0;padding:0}
 .badges li{font-family:var(--mono);font-size:11.5px;letter-spacing:.03em;color:var(--mut);
   border:1px solid var(--line2);border-radius:100px;padding:5px 13px;background:var(--panel)}
@@ -308,10 +308,10 @@ h2{font-family:var(--mono);font-weight:600;font-size:clamp(22px,3.2vw,31px);lett
 .tag.vm{color:var(--red);background:var(--red-dim);border:1px solid var(--red-line)}
 .tag.oos{color:var(--faint);border:1px solid var(--line2)}
 
-/* reveal — the hidden initial state is gated behind `scripting: enabled` so a
+/* reveal: the hidden initial state is gated behind `scripting: enabled` so a
    no-JS (or JS-failed) load shows all content instead of a blank page. Browsers
    lacking the `scripting` feature that have JS on skip the animation and show
-   everything — a safe degradation. */
+   everything (a safe degradation). */
 .reveal{transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
 @media (scripting: enabled){
   .reveal{opacity:0;transform:translateY(18px)}
@@ -336,7 +336,7 @@ footer .foot-brand .mk path{stroke:var(--faint)}
    ============================================================ */
 
 /* The site is intentionally a single light theme (warm paper). We opt out of
-   the OS dark-mode auto-swap so the palette is consistent everywhere — a
+   the OS dark-mode auto-swap so the palette is consistent everywhere; a
    forced-dark render must not contradict the light design. */
 :root{color-scheme:light}
 

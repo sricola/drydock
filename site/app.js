@@ -2,7 +2,7 @@
 // an inline <script> so the page can ship a strict Content-Security-Policy
 // (script-src 'self', no 'unsafe-inline'). The reveal *hidden* state lives
 // behind `@media (scripting: enabled)` in the CSS, so if this file fails to
-// load the content still shows — this only adds the animation and copy UX.
+// load the content still shows; this only adds the animation and copy UX.
 (function () {
   var io = new IntersectionObserver(function (es) {
     es.forEach(function (e) {
@@ -14,7 +14,7 @@
     io.observe(el);
   });
 
-  // Hero is always above the fold — reveal it as soon as the DOM is ready (and
+  // Hero is always above the fold, so reveal it as soon as the DOM is ready (and
   // again on load) so a slow paint can't leave it blank.
   var showHero = function () {
     document.querySelectorAll('.hero .reveal').forEach(function (el) { el.classList.add('in'); });
