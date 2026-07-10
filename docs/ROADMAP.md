@@ -204,21 +204,27 @@ so it can ship independently.
   sequence with no defined rollback if it fails partway (e.g. push rejected
   after a local commit). Define the failure contract and surface it in the
   audit row instead of leaving an ambiguous state.
-- **4.3 Aggregate budget cap.** `task_budget_usd` caps a *single* task; nothing
-  bounds the daily/total spend across tasks. Add an aggregate ceiling the
-  gateway enforces, so a runaway loop of cheap tasks can't drain a key.
-- **4.4 `drydock retry`.** Re-run a prior task from its audit record (same repo
-  ref, prompt, allowlist) without reconstructing the invocation by hand,
-  closes the loop with the per-task audit trail Phase 1 already produces.
+- **4.3 Aggregate budget cap.** *Partial (v0.6.0).* `task_budget_usd` caps a
+  *single* task. A first step landed: uncapped lanes (subscription, or a
+  priceless `openai_compat` model) now fail closed to a default per-task request
+  cap instead of being unbounded. Still open: an aggregate ceiling the gateway
+  enforces across tasks, so a runaway loop of cheap tasks can't drain a key in
+  total. Top remaining Phase 4 item.
+- **4.4 `drydock retry`.** *Landed (v0.6.0).* Re-run a prior task from the
+  invocation the broker now records in its trace (repo, prompt, agent, model,
+  platform, egress), without reconstructing the `submit` by hand. Re-enters the
+  approval gate (`auto_approve` is not carried over). `drydock cancel` shipped
+  alongside as a `kill` alias.
 - **4.5 Sandbox-image CVE scanning.** *Landed.* grype scans the built image
   daily in CI and on every image-touching PR; the gate fails on fixable
   High/Critical CVEs not covered by an active allowlist entry. Exceptions live
   in `image/cve-allowlist.yaml` with a mandatory reason and expiry date;
   expired entries fail CI again rather than rotting silently. Re-baselined to
   35 entries after the first CI run: 33 gosu stdlib advisories + 2 npm
-  transitives (the local baseline's toolchain-GOROOT and jq clusters were dead
-  in CI: image-mode scanning skips GOROOT src, and a fresh apt pulled the jq
-  fix).
+  transitives. The 33-entry gosu cluster was retired in v0.6.0 when 4.12 removed
+  gosu, leaving 2 npm transitives (the local baseline's toolchain-GOROOT and jq
+  clusters were already dead in CI: image-mode scanning skips GOROOT src, and a
+  fresh apt pulled the jq fix).
 - **4.6 Agent-CLI bump automation.** The pinned agent CLIs
   (`@anthropic-ai/claude-code`, `@openai/codex`) drift; a scheduled job that
   proposes a pinned-version bump PR (with the red-team suite as the gate) keeps
@@ -238,10 +244,14 @@ so it can ship independently.
   audit reads, and UI submissions refuse `auto_approve`. Documented under
   THREAT_MODEL N6 with its enforcing tests. `--no-token` exists for trusted
   single-user machines and warns loudly.
-- **4.10 Egress depth (IPv6 / plain-HTTP).** The allowlist proxy is HTTPS/CONNECT
-  and IPv4-centric; audit and document behavior for IPv6 literals and plain-HTTP
-  CONNECT, and either enforce or explicitly state the limit (no silent gaps;
-  the honesty constraint applies to egress edges too).
+- **4.10 Egress depth (IPv6 / plain-HTTP).** *Partial (v0.6.0).* The firewall
+  rewrite made the in-VM nft ruleset a single `inet` table with
+  input/forward/output `policy drop`, so IPv6 egress is fail-closed (verified by
+  the A2 red-team), and the code review added a squid SSRF guard that denies
+  private/loopback/link-local/metadata destinations before the allowlist. Still
+  open: audit and document the plain-HTTP-CONNECT edge and state any remaining
+  limit explicitly (no silent gaps; the honesty constraint applies to egress
+  edges too).
 - **4.11 Unattended operation (launchd daemon).** *Landed.*
   `drydock daemon install|uninstall|status` manages a launchd LaunchAgent
   (RunAtLoad; KeepAlive restarts on crash and composes with 4.1's boot
@@ -254,18 +264,37 @@ so it can ship independently.
   (`approval_timeout: 0s`); pickup stays manual (`drydock ui`). The daemon
   docs state the no-aggregate-cap limit loudly: spend is bounded per task
   until 4.3 lands.
-- **4.12 gosu privilege-drop hardening.** The first image CVE baseline
-  found `/usr/sbin/gosu` (Debian, built with go1.19.8) carrying 33 stale
-  stdlib advisories, and it is the entrypoint's root→agent drop, run every
-  task. Replace with util-linux `setpriv` (already-in-base candidate) or a
-  rebuilt/current gosu; clears the largest allowlist cluster before its
-  2026-09-06 expiry.
+- **4.12 Agent capability clamp (was: gosu hardening).** *Landed (v0.6.0).*
+  Reframed from CVE hygiene to containment during the code review: two
+  independent reviewers found that the agent's inability to regain
+  `CAP_NET_ADMIN` after the drop is the property the whole egress boundary rests
+  on, and it was neither explicitly enforced nor tested (the A2 red-team even
+  ran the probe as root+CAP_NET_ADMIN). The drop now uses util-linux `setpriv`
+  with `--no-new-privs` and an emptied capability bounding/inheritable set, all
+  SUID/SGID bits are stripped from the image, and the in-VM firewall is applied
+  as one atomic `nft -f` with input/forward `policy drop`. A new red-team test
+  runs *as the dropped agent* and asserts `nft flush` returns EPERM and egress
+  stays blocked. `gosu` is removed, retiring its go1.19 CVE cluster.
 - **4.13 Image package currency.** Debian point-release fixes land only when
   the image is rebuilt; the jq/libjq1 gap found in the first baseline
   cleared itself on the next fresh build. Make that systematic: `apt-get
   upgrade` (or targeted pins) in the Dockerfile flow plus a scheduled image
   rebuild, so security updates don't wait for a base-digest bump or a lucky
   rebuild.
+- **4.14 Resume awaiting-approval tasks across restart.**
+  ([#140](https://github.com/sricola/drydock/issues/140)) A task blocked at the
+  diff-approval gate loses its work tree on brokerd restart (the stage dir is
+  reaped) while its `.diff` survives unpushable, and the trace reads a false
+  `ok`. Persist a gate marker, skip reaping those stage dirs (or commit the
+  branch before the gate), and re-offer the gate after restart. Surfaced by the
+  code review; deferred from the audit-durability work.
+- **4.15 Precise gateway metering.**
+  ([#139](https://github.com/sricola/drydock/issues/139)) The USD budget is
+  enforced post-hoc (metered at stream EOF), so concurrent requests can admit at
+  spend=0 and a truncated stream meters low. The v0.6.0 request cap bounds the
+  worst case; the precise fix (per-request cost ceiling, in-flight reservation,
+  input-at-admission metering) is a billing-correctness change. Surfaced by the
+  code review; deferred from the budget work.
 
 **Done when:** a `brokerd` crash leaves no orphaned VM or wedged slot, spend is
 bounded in aggregate, brokerd runs unattended across login/reboot, the sandbox
@@ -282,27 +311,36 @@ deliberate: correctness and operator items alternate with credibility items;
 Phases 1–2 bought a lot of external credibility while the operator side got
 little, so the top of the list leans operator.
 
-1. **4.3 Aggregate budget cap**: nothing bounds cross-task spend on an API
-   key; now that unattended operation (4.11) has landed, this is the gap that
-   matters most, worst-case burn is bounded only per task.
-2. **4.12 gosu privilege-drop hardening**: security-posture work with a
-   deadline set by the allowlist expiry (2026-09-06); clears the largest CVE
-   cluster.
-3. **4.2 Push partial-failure contract**: ambiguous git states are
+**v0.6.0 (2026-07-09) was a security-hardening release** from a full code +
+product review. It landed the capability clamp (4.12), a first step on the
+budget cap (4.3, a per-task request cap for uncapped lanes), IPv6 fail-close and
+a squid SSRF guard (4.10), plus 4.4 (`retry`), alongside audit durability, a
+loopback-only admin bind, and supply-chain nits. What the review surfaced but
+deferred is now tracked as 4.14 and 4.15.
+
+1. **4.3 Aggregate budget cap** (partial): the per-task request cap landed; the
+   cross-task aggregate ceiling is the top remaining gap now that unattended
+   operation (4.11) is live, worst-case burn is bounded only per task.
+2. **4.2 Push partial-failure contract**: ambiguous git states are
    gate-adjacent; define the failure contract and surface it in the audit row.
+3. **4.14 Resume awaiting-approval across restart** ([#140]): a daemon restart
+   loses an awaiting-approval task's work tree; pairs with unattended operation.
 4. **4.13 Image package currency**: Debian fixes land only on rebuild; make
    that systematic with `apt-get upgrade` / targeted pins plus a scheduled
    rebuild so updates don't wait for a base-digest bump.
-5. **4.4 `drydock retry`**: pairs with the daemon: re-run a prior task from
-   its audit record.
-6. **4.10 Egress depth (IPv6 / plain-HTTP)**: enforce or loudly document;
-   the honesty constraint applied to egress edges.
+5. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
+   and the SSRF guard landed; document the plain-HTTP-CONNECT edge.
+6. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
+   (per-request ceiling, in-flight reservation) beyond the v0.6.0 request cap.
 7. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
 8. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
    already gates bumps.
 9. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
+
+[#139]: https://github.com/sricola/drydock/issues/139
+[#140]: https://github.com/sricola/drydock/issues/140
 
 **Event-driven (no backlog slot):**
 - **2.2 Notarization**: fires when the Apple Developer ID certificate is in
