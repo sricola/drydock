@@ -5,6 +5,68 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.6.0 — 2026-07-09
+
+A security-hardening release from a full production-readiness review of the
+code and product. Every containment claim that was previously "enforced by
+default kernel behavior" is now explicitly enforced *and* tested.
+
+### Security
+
+- **The agent can no longer regain `CAP_NET_ADMIN` after the privilege drop —
+  now enforced and tested.** The sandbox dropped to the `agent` user with
+  `gosu`, which changes UID only, leaving the capability bounding set intact; a
+  stray SUID binary or config regression could have let the agent flush the nft
+  egress pin. The drop now uses `setpriv` with `--no-new-privs` and an emptied
+  `--bounding-set`/`--inh-caps`, all SUID/SGID bits are stripped from the image,
+  and the in-VM firewall is applied as one atomic `nft -f` transaction with
+  input/forward default-drop (was output-only). A new red-team test runs *as the
+  dropped agent* and asserts `nft flush` returns EPERM and egress stays blocked —
+  the load-bearing half of the A2 claim, previously untested. `gosu` is gone,
+  which also retires its 35-entry go1.19 CVE-allowlist cluster.
+- **Subscription/priceless lanes are no longer unbounded.** With no USD budget
+  (subscription auth, or an `openai_compat` lane with no prices) the only
+  runaway control was `task_max_requests`, which defaults to unlimited — so a
+  looping task could drain a real Claude/ChatGPT subscription. A 0 there now
+  fails closed to a built-in per-task request cap. Negative `openai_compat`
+  prices (which disabled the USD budget entirely) are rejected at config load.
+- **SSRF guard on the egress proxy.** squid resolves allowlist hostnames on the
+  host, outside the VM's nft pin; an allowlisted or widened name pointing at a
+  private/loopback/link-local/metadata IP (or via DNS rebinding) could reach
+  host-local services or the LAN. squid now denies those destination ranges
+  before the allowlist.
+- **Loopback-only admin bind.** The broker's admin routes (approve/deny/kill)
+  refused nothing on a TCP bind; a non-loopback `broker.addr` is reachable from
+  the sandbox VM, which could self-approve its own push. A non-loopback bind is
+  now refused fail-closed (loopback TCP and the unix socket are unaffected).
+- **Audit-trail durability + symlink-safety.** The trace is the source of truth
+  for outcome/cost but was neither `fsync`'d nor `O_NOFOLLOW`-opened on the
+  paths that mattered; a crash could lose the terminal result line and a planted
+  symlink could redirect a read/write. Both are fixed.
+- **Supply-chain + image hardening.** The anchor image base is digest-pinned
+  (matching the sandbox image); per-task credential config files are written
+  `0600`; the squid proxy-auth secret is compared in constant time; and
+  `cve-gate` now surfaces High/Critical CVEs that ship without an upstream fix
+  instead of passing them silently.
+
+### Added
+
+- **`drydock retry <id>`** — re-run a prior task from the invocation the broker
+  now records in its trace (repo, prompt, agent, model, platform, egress,
+  draft), without reconstructing the `submit` by hand. It re-enters the approval
+  gate (`auto_approve` is not carried over).
+- **`drydock cancel <id>`** — an alias for `kill`.
+
+### Fixed
+
+- **`drydock deny` prints "denied", not "denyd".**
+- **`drydock logs <id> -f` no longer dies when the trace doesn't exist yet** —
+  it polls for the file, fixing the reattach hint `submit` prints on `^C`.
+  `logs` also parses `-f` with a proper flag set (order-independent).
+- **`drydock ui -h`** shows curated help like every other subcommand.
+- The orphan-VM reaper matches the exact `task-<32hex>` name (was a loose
+  `task-` substring) and no longer fuzzy-`pkill`s squid.
+
 ## v0.5.2 — 2026-07-09
 
 ### Fixed
