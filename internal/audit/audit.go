@@ -197,6 +197,35 @@ func HasResultLine(path string) (bool, error) {
 	return ok, err
 }
 
+// taskLine is the {"type":"drydock_task",...} invocation record.
+type taskLine struct {
+	Type  string `json:"type"`
+	Agent string `json:"agent"`
+}
+
+// TaskAgent returns the agent recorded in path's drydock_task line, or "" if
+// absent (a pre-v0.6.0 trace) or unreadable. Opened O_NOFOLLOW like the other
+// audit reads.
+func TaskAgent(path string) string {
+	f, err := openRead(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		if !bytes.Contains(sc.Bytes(), []byte(`"drydock_task"`)) {
+			continue
+		}
+		var tl taskLine
+		if json.Unmarshal(sc.Bytes(), &tl) == nil && tl.Type == "drydock_task" {
+			return tl.Agent
+		}
+	}
+	return ""
+}
+
 var progressLine = regexp.MustCompile(`^\[\d+/\d+\]`)
 
 // looksLikeError reports whether a line reads as a failure message, so

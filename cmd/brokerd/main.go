@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"drydock/internal/audit"
 	"drydock/internal/broker"
 	"drydock/internal/config"
 	"drydock/internal/creds"
@@ -344,6 +345,20 @@ func main() {
 	}
 	sort.Strings(avail)
 	slog.Info("agents available", "vendors", avail)
+	if cfg.AggregateBudgetUSD > 0 {
+		var apiKeyVendors []string
+		for _, b := range backends {
+			if cfg.AuthMode(b.Vendor.Name) != "subscription" {
+				apiKeyVendors = append(apiKeyVendors, b.Vendor.Name)
+			}
+		}
+		gw.SetAggregateCap(cfg.AggregateBudgetUSD, cfg.AggregateWindow, apiKeyVendors)
+		if cfg.AggregateWindow > 0 {
+			seedAggregateFromAudit(gw, cfg.AuditRoot, cfg.AggregateWindow, cfg.DefaultAgent)
+		}
+		slog.Info("aggregate budget cap enabled",
+			"usd", cfg.AggregateBudgetUSD, "window", cfg.AggregateWindow, "vendors", apiKeyVendors)
+	}
 	// Fail-loud at boot if the operator default points at a vendor with no
 	// key: brokerd still starts (other agents may work), but every task that
 	// doesn't pass --agent would be rejected with a 400, which is confusing
@@ -622,6 +637,44 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 		slog.Warn("orphan prune: audit terminate error", "err", err)
 	} else if n > 0 {
 		slog.Info("orphan prune: terminated stuck audit rows", "count", n)
+	}
+}
+
+// seedAggregateFromAudit primes the gateway's rolling aggregate ledger from the
+// audit trail so the cap survives a brokerd restart. Only non-subscription
+// tasks with a determinable vendor and a positive cost, whose trace mtime is
+// within the window, are counted.
+func seedAggregateFromAudit(gw *gateway.Gateway, auditRoot string, window time.Duration, defaultAgent string) {
+	cutoff := time.Now().Add(-window)
+	entries, err := os.ReadDir(auditRoot)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().Before(cutoff) {
+			continue
+		}
+		path := filepath.Join(auditRoot, e.Name())
+		if audit.ReadMeta(path).Subscription {
+			continue // subscription is out of scope for the USD cap
+		}
+		res, ok := audit.LastResult(path, info.Size())
+		if !ok || res.TotalCostUSD <= 0 {
+			continue
+		}
+		agent := audit.TaskAgent(path)
+		if agent == "" {
+			agent = defaultAgent
+		}
+		vendor, ok := provider.VendorForAgent(agent)
+		if !ok {
+			continue
+		}
+		gw.SeedAggregate(vendor, res.TotalCostUSD, info.ModTime())
 	}
 }
 
