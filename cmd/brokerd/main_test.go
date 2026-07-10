@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"drydock/internal/config"
+	"drydock/internal/gateway"
 )
 
 func TestChooseLogHandler(t *testing.T) {
@@ -377,5 +379,34 @@ func TestTaskContainerRE(t *testing.T) {
 		if taskContainerRE.MatchString(bad) {
 			t.Errorf("%q should NOT match the anchored task-name grammar", bad)
 		}
+	}
+}
+
+func TestSeedAggregateFromAudit(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	write := func(name, meta, task string, cost float64) {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte(meta+"\n"+task+"\n"+
+			fmt.Sprintf(`{"type":"result","subtype":"success","total_cost_usd":%.4f}`, cost)+"\n"), 0o600)
+		os.Chtimes(p, now, now) // in window
+	}
+	write("a.jsonl",
+		`{"type":"drydock_meta","subscription":false,"sensitive":false}`,
+		`{"type":"drydock_task","agent":"claude"}`, 2.0)
+	write("b.jsonl",
+		`{"type":"drydock_meta","subscription":true,"sensitive":false}`, // subscription: excluded
+		`{"type":"drydock_task","agent":"claude"}`, 9.0)
+
+	gw, _ := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey("k")})
+	gw.SetAggregateCap(100.0, 24*time.Hour, []string{"anthropic"})
+	seedAggregateFromAudit(gw, dir, 24*time.Hour, "claude")
+
+	if gw.AggregateExceeded("anthropic") { // 2.0 seeded, cap 100 -> not exceeded
+		t.Fatal("unexpectedly exceeded")
+	}
+	gw.SeedAggregate("anthropic", 98.0, now) // total now 100 -> at cap
+	if !gw.AggregateExceeded("anthropic") {
+		t.Error("want exceeded after seeding to 100 (only the non-subscription 2.0 should have counted from audit)")
 	}
 }

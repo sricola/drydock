@@ -390,3 +390,26 @@ func TestLockPath(t *testing.T) {
 		t.Errorf("LockPath() base = %q, want brokerd.lock", filepath.Base(got))
 	}
 }
+
+func TestValidate_RejectsNegativeAggregate(t *testing.T) {
+	for _, yaml := range []string{
+		"network: x\ngateway_ip: 1.2.3.4\naggregate_budget_usd: -1\n",
+		"network: x\ngateway_ip: 1.2.3.4\naggregate_window: -5m\n",
+	} {
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		os.WriteFile(path, []byte(yaml), 0o644)
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "aggregate") {
+			t.Errorf("yaml=%q want aggregate rejection, got %v", yaml, err)
+		}
+	}
+}
+
+func TestAggregateDefaults(t *testing.T) {
+	d := Defaults()
+	if d.AggregateBudgetUSD != 0 {
+		t.Errorf("aggregate_budget_usd default = %v, want 0 (disabled)", d.AggregateBudgetUSD)
+	}
+	if d.AggregateWindow != 24*time.Hour {
+		t.Errorf("aggregate_window default = %v, want 24h", d.AggregateWindow)
+	}
+}

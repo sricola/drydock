@@ -27,6 +27,8 @@ to declare them.
 | `default_model` | `DRYDOCK_DEFAULT_MODEL` | *(empty)* | `--model` fallback for **Claude Code and Codex only**; empty = the agent picks. Not applied to `gemini` (uses its own `gemini-2.5-pro` default) or `opencode` (uses `openai_compat.model`). |
 | `task_budget_usd` | `DRYDOCK_TASK_BUDGET_USD` | `2.0` | Per-task USD ceiling (`api_key` mode only; unused in subscription mode) |
 | `task_max_requests` | `DRYDOCK_TASK_MAX_REQUESTS` | `0` (unlimited) | Hard cap on API round-trips per task; the primary runaway control in subscription mode |
+| `aggregate_budget_usd` | `DRYDOCK_AGGREGATE_BUDGET_USD` | `0` (disabled) | Cross-task USD ceiling per `api_key` provider over `aggregate_window`; `0` disables the cap; subscription mode is out of scope (bounded per-task by `task_max_requests`) |
+| `aggregate_window` | `DRYDOCK_AGGREGATE_WINDOW` | `24h` | Rolling window for the aggregate cap; `0` = total since brokerd boot, resets on restart |
 | `task_timeout` | n/a | `30m` | Wall-clock per task |
 | `approval_timeout` | n/a | `0s` | Auto-deny a task left at an approval gate after this long; `0` = wait forever (right for interactive use; set for unattended runs) |
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | Excess POSTs to `/tasks` get HTTP 503 |

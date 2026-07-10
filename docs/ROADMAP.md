@@ -204,12 +204,17 @@ so it can ship independently.
   sequence with no defined rollback if it fails partway (e.g. push rejected
   after a local commit). Define the failure contract and surface it in the
   audit row instead of leaving an ambiguous state.
-- **4.3 Aggregate budget cap.** *Partial (v0.6.0).* `task_budget_usd` caps a
-  *single* task. A first step landed: uncapped lanes (subscription, or a
-  priceless `openai_compat` model) now fail closed to a default per-task request
-  cap instead of being unbounded. Still open: an aggregate ceiling the gateway
-  enforces across tasks, so a runaway loop of cheap tasks can't drain a key in
-  total. Top remaining Phase 4 item.
+- **4.3 Aggregate budget cap.** *Landed.* `task_budget_usd` caps a single task;
+  `aggregate_budget_usd` (env `DRYDOCK_AGGREGATE_BUDGET_USD`) now adds a
+  cross-task USD ceiling per `api_key` provider over a configurable rolling
+  window (`aggregate_window`, env `DRYDOCK_AGGREGATE_WINDOW`, default `24h`;
+  `0` = total since brokerd boot). The gateway enforces the cap in `admit()`,
+  rejecting requests with HTTP 402 once a vendor's windowed spend reaches the
+  ceiling; the broker pre-checks at submit time so an over-cap task fails cleanly
+  rather than starting doomed. In rolling mode, the ledger is seeded from audit
+  files at boot so the cap survives a restart. Subscription mode is out of scope
+  (bounded per-task by `task_max_requests`). A runaway loop of cheap tasks can no
+  longer drain an API key in aggregate.
 - **4.4 `drydock retry`.** *Landed (v0.6.0).* Re-run a prior task from the
   invocation the broker now records in its trace (repo, prompt, agent, model,
   platform, egress), without reconstructing the `submit` by hand. Re-enters the
@@ -262,8 +267,8 @@ so it can ship independently.
   lock is diagnosed, not masked. brokerd boot now ensures the `container`
   system service, so a reboot needs no manual step. Gates queue by default
   (`approval_timeout: 0s`); pickup stays manual (`drydock ui`). The daemon
-  docs state the no-aggregate-cap limit loudly: spend is bounded per task
-  until 4.3 lands.
+  docs document the aggregate cap (4.3, now landed) and the subscription
+  exclusion: set `aggregate_budget_usd` to bound cross-task spend per provider.
 - **4.12 Agent capability clamp (was: gosu hardening).** *Landed (v0.6.0).*
   Reframed from CVE hygiene to containment during the code review: two
   independent reviewers found that the agent's inability to regain
@@ -297,9 +302,10 @@ so it can ship independently.
   code review; deferred from the budget work.
 
 **Done when:** a `brokerd` crash leaves no orphaned VM or wedged slot, spend is
-bounded in aggregate, brokerd runs unattended across login/reboot, the sandbox
-image is CVE-scanned in CI, and each remaining edge is either enforced or
-documented as a stated limit.
+bounded in aggregate (landed: per-task via `task_budget_usd`/`task_max_requests`
+and cross-task via `aggregate_budget_usd`), brokerd runs unattended across
+login/reboot, the sandbox image is CVE-scanned in CI, and each remaining edge
+is either enforced or documented as a stated limit.
 
 ---
 
@@ -313,30 +319,28 @@ little, so the top of the list leans operator.
 
 **v0.6.0 (2026-07-09) was a security-hardening release** from a full code +
 product review. It landed the capability clamp (4.12), a first step on the
-budget cap (4.3, a per-task request cap for uncapped lanes), IPv6 fail-close and
+budget cap (4.3: a per-task request cap for uncapped lanes), IPv6 fail-close and
 a squid SSRF guard (4.10), plus 4.4 (`retry`), alongside audit durability, a
 loopback-only admin bind, and supply-chain nits. What the review surfaced but
-deferred is now tracked as 4.14 and 4.15.
+deferred is now tracked as 4.14 and 4.15. The aggregate budget cap (4.3) is now
+fully landed: see the Unreleased CHANGELOG entry for details.
 
-1. **4.3 Aggregate budget cap** (partial): the per-task request cap landed; the
-   cross-task aggregate ceiling is the top remaining gap now that unattended
-   operation (4.11) is live, worst-case burn is bounded only per task.
-2. **4.2 Push partial-failure contract**: ambiguous git states are
+1. **4.2 Push partial-failure contract**: ambiguous git states are
    gate-adjacent; define the failure contract and surface it in the audit row.
-3. **4.14 Resume awaiting-approval across restart** ([#140]): a daemon restart
+2. **4.14 Resume awaiting-approval across restart** ([#140]): a daemon restart
    loses an awaiting-approval task's work tree; pairs with unattended operation.
-4. **4.13 Image package currency**: Debian fixes land only on rebuild; make
+3. **4.13 Image package currency**: Debian fixes land only on rebuild; make
    that systematic with `apt-get upgrade` / targeted pins plus a scheduled
    rebuild so updates don't wait for a base-digest bump.
-5. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
+4. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
    and the SSRF guard landed; document the plain-HTTP-CONNECT edge.
-6. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
+5. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
    (per-request ceiling, in-flight reservation) beyond the v0.6.0 request cap.
-7. **4.7 Observability**: wants real multi-run usage first, which unattended
+6. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
-8. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
+7. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
    already gates bumps.
-9. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
+8. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
 
 [#139]: https://github.com/sricola/drydock/issues/139

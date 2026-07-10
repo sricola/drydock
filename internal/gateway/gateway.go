@@ -51,12 +51,19 @@ type Gateway struct {
 	leases  map[string]*Lease
 	vendors map[string]vendorRT
 	proxy   *httputil.ReverseProxy
+
+	// Aggregate budget cap (0 aggBudget = disabled). Set once at boot via
+	// SetAggregateCap, before any request is served.
+	ledger     *spendLedger
+	aggBudget  float64
+	aggVendors map[string]bool
 }
 
 type ctxKey struct{}
 
 func New(backends ...Backend) (*Gateway, error) {
-	g := &Gateway{leases: map[string]*Lease{}, vendors: map[string]vendorRT{}}
+	g := &Gateway{leases: map[string]*Lease{}, vendors: map[string]vendorRT{},
+		ledger: newSpendLedger(0), aggVendors: map[string]bool{}}
 	for _, b := range backends {
 		if b.Cred == nil {
 			return nil, fmt.Errorf("gateway: backend %q has nil Cred", b.Vendor.Name)
@@ -103,6 +110,34 @@ func (g *Gateway) spent(token string) float64 {
 	return -1
 }
 
+// SetAggregateCap enables the per-vendor aggregate USD cap. Call once at boot
+// before serving. vendors is the set the cap applies to (api_key-mode only).
+func (g *Gateway) SetAggregateCap(budgetUSD float64, window time.Duration, vendors []string) {
+	g.aggBudget = budgetUSD
+	g.aggVendors = map[string]bool{}
+	for _, v := range vendors {
+		g.aggVendors[v] = true
+	}
+	g.ledger = newSpendLedger(window)
+}
+
+// SeedAggregate adds historical spend to the ledger (boot seed from the audit
+// trail). No-op when the cap is disabled.
+func (g *Gateway) SeedAggregate(vendor string, usd float64, ts time.Time) {
+	if g.aggBudget <= 0 {
+		return
+	}
+	g.ledger.add(vendor, usd, ts)
+}
+
+// AggregateExceeded reports whether vendor is at or over its aggregate cap. Used
+// by the broker for a submit-time pre-check. False when the cap is disabled or
+// vendor is out of scope (e.g. subscription).
+func (g *Gateway) AggregateExceeded(vendor string) bool {
+	return g.aggBudget > 0 && g.aggVendors[vendor] &&
+		g.ledger.windowed(vendor, time.Now()) >= g.aggBudget
+}
+
 // admit returns (lease, 0) when usable, or (nil, statusCode) to reject.
 // The bearer is compared against the stored token with subtle.ConstantTimeCompare
 // so future changes to the lookup path can't silently introduce a timing
@@ -126,6 +161,10 @@ func (g *Gateway) admit(token string) (*Lease, int) {
 	}
 	if l.MaxRequests > 0 && l.Requests >= l.MaxRequests {
 		return nil, http.StatusTooManyRequests
+	}
+	if g.aggBudget > 0 && g.aggVendors[l.Vendor] &&
+		g.ledger.windowed(l.Vendor, time.Now()) >= g.aggBudget {
+		return nil, http.StatusPaymentRequired
 	}
 	l.Requests++
 	return l, 0
@@ -263,9 +302,13 @@ func (g *Gateway) meter(resp *http.Response) error {
 	ct := resp.Header.Get("Content-Type")
 	resp.Body = &usageReader{rc: resp.Body, onDone: func(body []byte) {
 		if model, in, out, ok := vt.v.ParseUsage(body, ct); ok {
+			delta := cost(vt.v.Prices, model, in, out)
 			g.mu.Lock()
-			rc.lease.SpentUSD += cost(vt.v.Prices, model, in, out)
+			rc.lease.SpentUSD += delta
 			g.mu.Unlock()
+			if g.aggBudget > 0 {
+				g.ledger.add(rc.lease.Vendor, delta, time.Now())
+			}
 		}
 	}}
 	return nil

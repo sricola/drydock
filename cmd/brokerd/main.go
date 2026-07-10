@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"drydock/internal/audit"
 	"drydock/internal/broker"
 	"drydock/internal/config"
 	"drydock/internal/creds"
@@ -294,6 +295,24 @@ func main() {
 		cleanup()
 		fatal("gateway init failed", "err", err)
 	}
+	if cfg.AggregateBudgetUSD > 0 {
+		var apiKeyVendors []string
+		for _, b := range backends {
+			if cfg.AuthMode(b.Vendor.Name) != "subscription" {
+				apiKeyVendors = append(apiKeyVendors, b.Vendor.Name)
+			}
+		}
+		gw.SetAggregateCap(cfg.AggregateBudgetUSD, cfg.AggregateWindow, apiKeyVendors)
+		if cfg.AggregateWindow > 0 {
+			seedAggregateFromAudit(gw, cfg.AuditRoot, cfg.AggregateWindow, cfg.DefaultAgent)
+		}
+		// Log the count, not the names: apiKeyVendors is derived from backends
+		// (which also carry the API key), so CodeQL's taint model treats it as
+		// sensitive at a logging sink. The count conveys the same operational
+		// signal (how many providers the cap covers) without the tainted flow.
+		slog.Info("aggregate budget cap enabled",
+			"usd", cfg.AggregateBudgetUSD, "window", cfg.AggregateWindow, "vendor_count", len(apiKeyVendors))
+	}
 	go func() {
 		l := listenWhenReady(gwAddr)
 		slog.Info("gateway listening", "addr", gwAddr)
@@ -383,6 +402,9 @@ func main() {
 	}
 	if squidCtl != nil {
 		b.Squid = squidCtl
+	}
+	if cfg.AggregateBudgetUSD > 0 {
+		b.AggregateExceeded = gw.AggregateExceeded
 	}
 	brk = b // expose to the shutdown handler
 	slog.Info("config",
@@ -622,6 +644,44 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 		slog.Warn("orphan prune: audit terminate error", "err", err)
 	} else if n > 0 {
 		slog.Info("orphan prune: terminated stuck audit rows", "count", n)
+	}
+}
+
+// seedAggregateFromAudit primes the gateway's rolling aggregate ledger from the
+// audit trail so the cap survives a brokerd restart. Only non-subscription
+// tasks with a determinable vendor and a positive cost, whose trace mtime is
+// within the window, are counted.
+func seedAggregateFromAudit(gw *gateway.Gateway, auditRoot string, window time.Duration, defaultAgent string) {
+	cutoff := time.Now().Add(-window)
+	entries, err := os.ReadDir(auditRoot)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().Before(cutoff) {
+			continue
+		}
+		path := filepath.Join(auditRoot, e.Name())
+		if audit.ReadMeta(path).Subscription {
+			continue // subscription is out of scope for the USD cap
+		}
+		res, ok := audit.LastResult(path, info.Size())
+		if !ok || res.TotalCostUSD <= 0 {
+			continue
+		}
+		agent := audit.TaskAgent(path)
+		if agent == "" {
+			agent = defaultAgent
+		}
+		vendor, ok := provider.VendorForAgent(agent)
+		if !ok {
+			continue
+		}
+		gw.SeedAggregate(vendor, res.TotalCostUSD, info.ModTime())
 	}
 }
 

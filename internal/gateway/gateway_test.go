@@ -635,6 +635,47 @@ func TestServeHTTP_AdmitsGoogleKeyHeader(t *testing.T) {
 	}
 }
 
+func TestGateway_AggregateCap(t *testing.T) {
+	g, err := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")}, Backend{Vendor: OpenAIVendor(), Cred: StaticKey("k")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.SetAggregateCap(5.0, time.Hour, []string{"anthropic", "openai"})
+	now := time.Now()
+
+	// anthropic at the cap: a fresh lease's request must be refused with 402.
+	g.SeedAggregate("anthropic", 5.0, now)
+	tok, _ := g.Mint("anthropic", 100.0, 0, time.Hour) // generous per-task budget
+	if _, code := g.admit(tok); code != http.StatusPaymentRequired {
+		t.Errorf("anthropic over aggregate cap: admit code = %d, want 402", code)
+	}
+
+	// openai is under its own cap: must still admit (per-vendor isolation).
+	tok2, _ := g.Mint("openai", 100.0, 0, time.Hour)
+	if _, code := g.admit(tok2); code != 0 {
+		t.Errorf("openai under aggregate cap: admit code = %d, want 0 (admitted)", code)
+	}
+
+	if !g.AggregateExceeded("anthropic") {
+		t.Error("AggregateExceeded(anthropic) = false, want true")
+	}
+	if g.AggregateExceeded("openai") {
+		t.Error("AggregateExceeded(openai) = true, want false")
+	}
+}
+
+func TestGateway_AggregateCap_DisabledByDefault(t *testing.T) {
+	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
+	// No SetAggregateCap call: cap disabled.
+	tok, _ := g.Mint("anthropic", 100.0, 0, time.Hour)
+	if _, code := g.admit(tok); code != 0 {
+		t.Errorf("cap disabled: admit code = %d, want 0", code)
+	}
+	if g.AggregateExceeded("anthropic") {
+		t.Error("AggregateExceeded with cap disabled = true, want false")
+	}
+}
+
 func TestStripJSONObjectFields(t *testing.T) {
 	// Top-level field removed; every other field preserved verbatim. (This is the
 	// real fix: the OAuth endpoint 400s on context_management Claude Code sends.)
