@@ -224,3 +224,12 @@ func TestOutcome_PushFailed(t *testing.T) {
 		t.Errorf("Outcome(push_failed) = %q, want \"push failed\"", got)
 	}
 }
+
+func TestOutcome_DeniedAndPushed(t *testing.T) {
+	if got := Outcome(Result{Type: "result", Subtype: "denied"}, true, Meta{}); got != "denied" {
+		t.Errorf("denied = %q, want denied", got)
+	}
+	if got := Outcome(Result{Type: "result", Subtype: "pushed"}, true, Meta{}); got != "pushed" {
+		t.Errorf("pushed = %q, want pushed", got)
+	}
+}
