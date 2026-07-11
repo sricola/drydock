@@ -93,6 +93,15 @@ type Config struct {
 	// total since brokerd boot (session cap, no time decay, resets on restart).
 	AggregateWindow time.Duration `yaml:"aggregate_window"`
 
+	// PushMaxRetries retries a transient (network) push failure this many times
+	// with exponential backoff. 0 disables transient retry.
+	PushMaxRetries int `yaml:"push_max_retries"`
+	// PushRetryBackoff is the base delay for push retry backoff (base << n).
+	PushRetryBackoff time.Duration `yaml:"push_retry_backoff"`
+	// PushFreshBranchTries retries a branch-name collision against this many
+	// alternate remote branch names (agent/<id>-2, -3, ...). 0 disables it.
+	PushFreshBranchTries int `yaml:"push_fresh_branch_tries"`
+
 	// OpenAICompat configures a bring-your-own OpenAI-compatible upstream
 	// (Gemini's /v1beta/openai, OpenRouter, local). Empty BaseURL = disabled.
 	// The real key is read from the host env var named by APIKeyEnv — never
@@ -134,6 +143,9 @@ func Defaults() *Config {
 		TaskMaxRequests:        0,
 		AggregateBudgetUSD:     0,
 		AggregateWindow:        24 * time.Hour,
+		PushMaxRetries:         3,
+		PushRetryBackoff:       time.Second,
+		PushFreshBranchTries:   2,
 		StageRoot:              defaultStateDir("stage"),
 		AuditRoot:              defaultStateDir("audit"),
 		SquidRunDir:            defaultStateDir("squid"),
@@ -295,6 +307,21 @@ func (c *Config) applyEnvOverrides() {
 			c.AggregateWindow = d
 		}
 	}
+	if v := os.Getenv("DRYDOCK_PUSH_MAX_RETRIES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.PushMaxRetries = n
+		}
+	}
+	if v := os.Getenv("DRYDOCK_PUSH_RETRY_BACKOFF"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			c.PushRetryBackoff = d
+		}
+	}
+	if v := os.Getenv("DRYDOCK_PUSH_FRESH_BRANCH_TRIES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.PushFreshBranchTries = n
+		}
+	}
 	if v := os.Getenv("STAGE_ROOT"); v != "" {
 		c.StageRoot = v
 	}
@@ -377,6 +404,15 @@ func (c *Config) validate() error {
 	if c.AggregateWindow < 0 {
 		return fmt.Errorf("config: aggregate_window must be >= 0, got %v", c.AggregateWindow)
 	}
+	if c.PushMaxRetries < 0 {
+		return fmt.Errorf("config: push_max_retries must be >= 0, got %d", c.PushMaxRetries)
+	}
+	if c.PushRetryBackoff < 0 {
+		return fmt.Errorf("config: push_retry_backoff must be >= 0, got %v", c.PushRetryBackoff)
+	}
+	if c.PushFreshBranchTries < 0 {
+		return fmt.Errorf("config: push_fresh_branch_tries must be >= 0, got %d", c.PushFreshBranchTries)
+	}
 	return nil
 }
 
@@ -407,6 +443,9 @@ openai_auth:            api_key        # authentication mode: api_key | subscrip
 task_max_requests:      0              # per-task request cap. 0 = unlimited when a USD budget bounds spend; with an uncapped budget (subscription / priceless model) 0 falls closed to a built-in default cap
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)
+push_max_retries:       3              # retry a transient (network) push failure N times with backoff; 0 = no retry
+push_retry_backoff:     1s             # base delay for push retry backoff (doubles each retry)
+push_fresh_branch_tries: 2             # on a branch-name collision, try agent/<id>-2, -3, ...; 0 = no fresh-branch retry
 
 # --- Bring-your-own OpenAI-compatible model (optional; e.g. Gemini, OpenRouter, local) ---
 openai_compat:

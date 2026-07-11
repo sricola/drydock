@@ -426,3 +426,21 @@ func TestAggregateDefaults(t *testing.T) {
 		t.Errorf("aggregate_window default = %v, want 24h", d.AggregateWindow)
 	}
 }
+
+func TestPushRetryDefaultsAndValidation(t *testing.T) {
+	d := Defaults()
+	if d.PushMaxRetries != 3 || d.PushRetryBackoff != time.Second || d.PushFreshBranchTries != 2 {
+		t.Errorf("push defaults = %d/%v/%d, want 3/1s/2", d.PushMaxRetries, d.PushRetryBackoff, d.PushFreshBranchTries)
+	}
+	for _, y := range []string{
+		"network: x\ngateway_ip: 1.2.3.4\npush_max_retries: -1\n",
+		"network: x\ngateway_ip: 1.2.3.4\npush_retry_backoff: -5s\n",
+		"network: x\ngateway_ip: 1.2.3.4\npush_fresh_branch_tries: -2\n",
+	} {
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		os.WriteFile(path, []byte(y), 0o644)
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "push_") {
+			t.Errorf("yaml=%q want push_ rejection, got %v", y, err)
+		}
+	}
+}

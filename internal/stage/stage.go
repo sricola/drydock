@@ -114,11 +114,9 @@ var adapterAllowedEnv = []string{
 	"SSH_AUTH_SOCK",
 }
 
-// Push commits the staged changes onto a new branch and pushes it via the
-// host-only git dir. Opening a PR/MR is a separate, best-effort step the broker
-// drives (stage no longer knows about PR adapters). Called only after the
-// approval gate.
-func (s *Stage) Push(branch, message string) error {
+// Commit creates the branch and records all agent changes as one commit on the
+// host-only git dir. Run once per task.
+func (s *Stage) Commit(branch, message string) error {
 	if _, err := s.git("checkout", "-b", branch); err != nil {
 		return err
 	}
@@ -128,10 +126,24 @@ func (s *Stage) Push(branch, message string) error {
 	if _, err := s.git("commit", "-m", message); err != nil {
 		return err
 	}
-	if _, err := s.git("push", "origin", branch); err != nil {
+	return nil
+}
+
+// PushBranch pushes the committed local branch to remoteBranch on origin. The
+// explicit refspec lets recovery push the same commit to a fresh remote name
+// after a branch-name collision, without re-committing.
+func (s *Stage) PushBranch(localBranch, remoteBranch string) error {
+	_, err := s.git("push", "origin", localBranch+":"+remoteBranch)
+	return err
+}
+
+// Push commits then pushes to the same-named remote branch. Kept for callers
+// that do not need recovery.
+func (s *Stage) Push(branch, message string) error {
+	if err := s.Commit(branch, message); err != nil {
 		return err
 	}
-	return nil
+	return s.PushBranch(branch, branch)
 }
 
 // PushEnv is the curated host env a PR/MR adapter must run with: the allowlisted

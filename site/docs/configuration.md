@@ -33,6 +33,9 @@ to declare them.
 | `approval_timeout` | n/a | `0s` | Auto-deny a task left at an approval gate after this long; `0` = wait forever (right for interactive use; set for unattended runs) |
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | Excess POSTs to `/tasks` get HTTP 503 |
 | `notifications` | `DRYDOCK_NO_NOTIFY=1` (off) | `true` | macOS notifications on pending approval |
+| `push_max_retries` | `DRYDOCK_PUSH_MAX_RETRIES` | `3` | Transient push failures (network errors) to retry with exponential backoff before giving up; `0` disables transient retry |
+| `push_retry_backoff` | `DRYDOCK_PUSH_RETRY_BACKOFF` | `1s` | Base delay for push retry backoff (`backoff * 2^n`); `0` disables the delay between retries |
+| `push_fresh_branch_tries` | `DRYDOCK_PUSH_FRESH_BRANCH_TRIES` | `2` | Alternate remote branch names (`agent/<id>-2`, `-3`, ...) to try when a branch-name collision is detected; `0` disables fresh-branch recovery |
 
 ## Bring your own model
 

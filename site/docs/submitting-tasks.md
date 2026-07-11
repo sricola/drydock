@@ -38,6 +38,34 @@ If the branch pushes but the PR can't be opened (e.g. `gh` isn't authenticated),
 drydock reports it as **pushed** with a hint to open the PR manually; it never
 loses your work to a failed PR step.
 
+## Push outcomes
+
+After you approve a diff, drydock pushes the single commit to a new remote
+branch (`agent/<id>`) and optionally opens a PR. A single-ref `git push` is
+atomic: the remote branch either receives the whole commit or is left unchanged.
+`push_failed` therefore guarantees nothing landed on the remote for that task,
+and the captured diff is always preserved in the audit `.diff` file for every
+outcome.
+
+drydock classifies push failures and recovers from the recoverable ones:
+
+- **Transient** (network errors: timeouts, connection resets, TLS errors): retried
+  with exponential backoff, up to `push_max_retries` attempts (default `3`; `0`
+  disables). Exhausted transient retries result in `push_failed`.
+- **Branch-name collision** (`non_fast_forward` on the initial push): retried to a
+  fresh remote name (`agent/<id>-2`, `-3`, ...), up to `push_fresh_branch_tries`
+  alternates (default `2`; `0` disables). On success, the `pushed` event reports
+  the actual branch used.
+- **Auth / protected / unknown**: stopped immediately; no retry.
+
+When every recovery path is exhausted, drydock reports `outcome=push_failed` with
+the classified reason (`transient`, `auth`, `protected`, `non_fast_forward`, or
+`unknown`). The `drydock tasks` row shows **push failed** for that task.
+
+`push_failed` is retry-safe: `drydock retry <id>` re-runs the task under a new
+id (a new `agent/<newid>` branch), so a retry never collides with the failed
+attempt.
+
 ## Operator surface
 
 ```bash

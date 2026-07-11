@@ -9,6 +9,23 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Push partial-failure recovery (ROADMAP 4.2).** The approved-diff push now
+  reports one clean terminal outcome and recovers from recoverable failures.
+  Push errors are classified into five reasons: `transient` (network), `auth`,
+  `protected`, `non_fast_forward`, and `unknown`. Transient failures are retried
+  with exponential backoff (up to `push_max_retries` attempts, default `3`;
+  base delay `push_retry_backoff`, default `1s`); branch-name collisions are
+  retried to a fresh remote name (up to `push_fresh_branch_tries` alternates,
+  default `2`); auth/protected/unknown stop immediately. All three config fields
+  have env overrides (`DRYDOCK_PUSH_MAX_RETRIES`, `DRYDOCK_PUSH_RETRY_BACKOFF`,
+  `DRYDOCK_PUSH_FRESH_BRANCH_TRIES`) and setting any to `0` disables that
+  recovery path. A single-ref push is atomic, so `push_failed` guarantees
+  nothing landed on the remote; the captured diff is preserved in the audit for
+  every outcome. `drydock tasks` now shows "push failed" for a failed push
+  (previously it showed the agent outcome, e.g. "ok", leaving the state
+  ambiguous). `push_failed` is retry-safe: `drydock retry <id>` re-runs under a
+  new id and never collides with the failed attempt.
+
 - **Aggregate budget cap (`aggregate_budget_usd` / `aggregate_window`).**
   Two new config fields bound cross-task USD spend per `api_key` provider:
   `aggregate_budget_usd` (env `DRYDOCK_AGGREGATE_BUDGET_USD`, default `0`

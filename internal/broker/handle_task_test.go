@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -50,6 +51,20 @@ func (f *fakeStage) Push(branch, msg string) error {
 	}
 	f.pushed = true
 	f.pushBranch = branch
+	return nil
+}
+func (f *fakeStage) Commit(branch, msg string) error {
+	if f.pushErr != nil {
+		return nil // let PushBranch surface the failure; Commit succeeds
+	}
+	return nil
+}
+func (f *fakeStage) PushBranch(local, remote string) error {
+	if f.pushErr != nil {
+		return f.pushErr
+	}
+	f.pushed = true
+	f.pushBranch = remote
 	return nil
 }
 func (f *fakeStage) PushEnv() []string { return []string{"GIT_DIR=/fake"} }
@@ -670,6 +685,28 @@ func TestHandleTask_PROpenFailure_StillPushed(t *testing.T) {
 	}
 	if !st.pushed {
 		t.Error("the branch must still have been pushed")
+	}
+}
+
+func TestHandleTask_PushFailed_TerminalOutcome(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x", pushErr: errors.New("fatal: Could not resolve host")}
+	grant := &fakeGrant{}
+	resultLine := `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0.02,"num_turns":1}`
+	b := testBroker(t, "anthropic", st, grant, writesResult(resultLine))
+	b.PushMaxRetries = 1
+	b.PushRetryBackoff = 0 // no real sleeps in the test
+	b.PushFreshBranchTries = 0
+
+	_, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"claude","auto_approve":true}`)
+
+	if term["outcome"] != "push_failed" {
+		t.Fatalf("outcome = %v, want push_failed", term["outcome"])
+	}
+	if term["reason"] != "transient" {
+		t.Errorf("reason = %v, want transient", term["reason"])
+	}
+	if audit := readOnlyAudit(t, b.AuditRoot); !strings.Contains(audit, `"subtype":"push_failed"`) {
+		t.Errorf("audit log missing synthetic push_failed result line:\n%s", audit)
 	}
 }
 
