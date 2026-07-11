@@ -217,3 +217,10 @@ func TestHasResultLine_RefusesSymlink(t *testing.T) {
 		t.Error("HasResultLine should refuse a symlinked audit path (O_NOFOLLOW)")
 	}
 }
+
+func TestOutcome_PushFailed(t *testing.T) {
+	r := Result{Type: "result", Subtype: "push_failed", IsError: false, NumTurns: 0}
+	if got := Outcome(r, true, Meta{}); got != "push failed" {
+		t.Errorf("Outcome(push_failed) = %q, want \"push failed\"", got)
+	}
+}

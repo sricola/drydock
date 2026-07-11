@@ -137,6 +137,8 @@ func Outcome(r Result, ok bool, m Meta) string {
 	switch {
 	case r.Subtype == "interrupted":
 		s = "interrupted"
+	case r.Subtype == "push_failed":
+		s = "push failed"
 	case r.IsError:
 		s = "error"
 	case r.Subtype == "success":
