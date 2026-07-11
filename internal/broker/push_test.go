@@ -91,3 +91,17 @@ func TestPushWithRecovery_CtxCancelDuringBackoff(t *testing.T) {
 		t.Fatal("want error when ctx is cancelled during backoff")
 	}
 }
+
+func TestBackoffFor_CapsShiftNoOverflow(t *testing.T) {
+	base := time.Second
+	if got := backoffFor(base, 0); got != base {
+		t.Errorf("backoffFor try0 = %v, want %v", got, base)
+	}
+	if got := backoffFor(base, 2); got != 4*base {
+		t.Errorf("backoffFor try2 = %v, want %v", got, 4*base)
+	}
+	// A large try must not overflow to a non-positive duration.
+	if got := backoffFor(base, 100); got <= 0 {
+		t.Errorf("backoffFor try100 = %v, want a large positive duration (no overflow)", got)
+	}
+}

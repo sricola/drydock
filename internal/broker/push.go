@@ -44,7 +44,7 @@ func pushWithRecovery(ctx context.Context, st pushStage, taskID, message string,
 			if transientTry >= cfg.MaxRetries {
 				return "", attempts, reason, err
 			}
-			if !sleepCtx(ctx, cfg.Backoff<<transientTry) {
+			if !sleepCtx(ctx, backoffFor(cfg.Backoff, transientTry)) {
 				return "", attempts, reason, ctx.Err()
 			}
 			transientTry++
@@ -58,6 +58,17 @@ func pushWithRecovery(ctx context.Context, st pushStage, taskID, message string,
 			return "", attempts, reason, err
 		}
 	}
+}
+
+// backoffFor returns base doubled per retry (base<<try), with the shift capped
+// so a large try count cannot overflow time.Duration (int64) into a
+// non-positive value that would defeat the backoff.
+func backoffFor(base time.Duration, try int) time.Duration {
+	const maxShift = 30 // base<<30 is ~12 days for a 1s base; plenty
+	if try > maxShift {
+		try = maxShift
+	}
+	return base << try
 }
 
 // sleepCtx waits d, or returns false promptly if ctx is cancelled first. A
