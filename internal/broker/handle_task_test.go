@@ -32,7 +32,7 @@ type fakeStage struct {
 	diff       string
 	captureErr error
 	pushErr    error
-	pushed     bool
+	pushed     atomic.Bool // atomic so the approve-resume test can poll without a race
 	pushBranch string
 	cleaned    bool
 	gotPrompt  string
@@ -49,7 +49,7 @@ func (f *fakeStage) Push(branch, msg string) error {
 	if f.pushErr != nil {
 		return f.pushErr
 	}
-	f.pushed = true
+	f.pushed.Store(true)
 	f.pushBranch = branch
 	return nil
 }
@@ -63,7 +63,7 @@ func (f *fakeStage) PushBranch(local, remote string) error {
 	if f.pushErr != nil {
 		return f.pushErr
 	}
-	f.pushed = true
+	f.pushed.Store(true)
 	f.pushBranch = remote
 	return nil
 }
@@ -224,8 +224,8 @@ func TestHandleTask_ClaudeAutoApprove_Pushes(t *testing.T) {
 	if term["platform"] != "github" {
 		t.Errorf("platform=%v, want github", term["platform"])
 	}
-	if !st.pushed || st.pushBranch != "agent/"+id {
-		t.Errorf("stage.Push wrong: pushed=%v branch=%q", st.pushed, st.pushBranch)
+	if !st.pushed.Load() || st.pushBranch != "agent/"+id {
+		t.Errorf("stage.Push wrong: pushed=%v branch=%q", st.pushed.Load(), st.pushBranch)
 	}
 	if !grant.revoked {
 		t.Error("grant.Revoke not called (defer)")
@@ -273,7 +273,7 @@ func TestHandleTask_EmptyDiff_NoPush(t *testing.T) {
 	if term["event"] != "result" || term["outcome"] != "no_diff" {
 		t.Errorf("terminal=%v, want result/no_diff", term)
 	}
-	if st.pushed {
+	if st.pushed.Load() {
 		t.Error("stage.Push must not be called when the diff is empty")
 	}
 }
@@ -294,7 +294,7 @@ func TestHandleTask_AgentRunFails_ErrorEvent(t *testing.T) {
 	if term["event"] != "error" {
 		t.Fatalf("terminal=%v, want error event", term)
 	}
-	if st.pushed {
+	if st.pushed.Load() {
 		t.Error("stage.Push must not be called when the agent run fails")
 	}
 	// The broker appends a synthetic error result so `drydock tasks` doesn't
@@ -329,7 +329,7 @@ func TestHandleTask_GatedApprove_Pushes(t *testing.T) {
 	if term["event"] != "result" || term["outcome"] != "pushed" {
 		t.Errorf("terminal=%v, want result/pushed; body=%s", term, rec.Body)
 	}
-	if !st.pushed {
+	if !st.pushed.Load() {
 		t.Error("stage.Push not called after approve")
 	}
 }
@@ -358,7 +358,7 @@ func TestHandleTask_GatedDeny_NoPush(t *testing.T) {
 	if term["event"] != "result" || term["outcome"] != "denied" {
 		t.Errorf("terminal=%v, want result/denied; body=%s", term, rec.Body)
 	}
-	if st.pushed {
+	if st.pushed.Load() {
 		t.Error("stage.Push must not be called after deny")
 	}
 }
@@ -683,7 +683,7 @@ func TestHandleTask_PROpenFailure_StillPushed(t *testing.T) {
 	if term["pr_error"] == nil {
 		t.Error("pr_error should carry the adapter failure reason")
 	}
-	if !st.pushed {
+	if !st.pushed.Load() {
 		t.Error("the branch must still have been pushed")
 	}
 }

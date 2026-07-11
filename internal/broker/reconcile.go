@@ -1,10 +1,15 @@
 package broker
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"drydock/internal/audit"
 )
@@ -71,4 +76,75 @@ func appendLine(path, s string) error {
 		return err
 	}
 	return f.Sync()
+}
+
+// ResumeAwaiting reconciles awaiting-approval push gates left by a prior
+// brokerd life. For each gate marker: if the stage survived, re-register the
+// task as pending and resume the gate+push headlessly; otherwise append an
+// honest interrupted line and drop the marker (never leave a false ok).
+// Each marker is handled in its own goroutine so one slow reopen cannot
+// block the others, and the function itself returns immediately.
+func (b *Broker) ResumeAwaiting(stageRoot string) {
+	reopen := b.reopenStage
+	if reopen == nil {
+		reopen = defaultReopenStage
+	}
+	for id, m := range ListGateMarkers(b.AuditRoot) {
+		id, m := id, m // capture loop vars for goroutine
+		auditPath := filepath.Join(b.AuditRoot, id+".jsonl")
+		st, err := reopen(filepath.Join(stageRoot, id))
+		if err != nil {
+			slog.Warn("resume: stage gone, marking interrupted", "task_id", id, "err", err)
+			_ = appendLine(auditPath, interruptedResultLine)
+			_ = removeGateMarker(b.AuditRoot, id)
+			continue
+		}
+		diff, _ := os.ReadFile(filepath.Join(b.AuditRoot, id+".diff"))
+		logf, err := os.OpenFile(auditPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			slog.Warn("resume: cannot open audit for append", "task_id", id, "err", err)
+			continue
+		}
+		slog.Info("resuming awaiting-approval task", "task_id", id)
+		go b.resumePush(id, m, st, string(diff), logf)
+	}
+}
+
+// resumePush re-registers a resumed task as pending and drives the gate+push
+// tail headlessly (no live client). Approve pushes the surviving branch;
+// deny/timeout write the honest terminal outcome. On shutdown the marker is
+// left for the next boot (idempotent).
+func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, logf io.Writer) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	b.registerTask(id, m.RepoRef, m.Instruction, cancel)
+	defer b.unregisterTask(id)
+
+	tr := &taskRun{
+		b: b, ctx: ctx, sw: newDiscardStream(), id: id,
+		repoRef: m.RepoRef, instruction: m.Instruction, platform: m.Platform,
+		draft: m.Draft, agentName: m.Agent, st: st, logf: logf,
+		auditPath: filepath.Join(b.AuditRoot, id+".jsonl"),
+		taskStart: time.UnixMilli(m.TaskStartMs),
+	}
+	if c, ok := st.(interface{ Cleanup() error }); ok {
+		defer c.Cleanup()
+	}
+
+	ok, cause := b.gatePushMarked(ctx, tr, diff)
+	if cause == gateShutdown {
+		return // leave the marker; next boot resumes
+	}
+	files, insertions, deletions := diffStat(diff)
+	if !ok {
+		subtype := "denied"
+		if cause == gateTimeout {
+			subtype = "interrupted"
+		}
+		fmt.Fprintf(logf,
+			`{"type":"result","subtype":%q,"is_error":false,"duration_ms":0,"total_cost_usd":%.6f,"num_turns":0}`+"\n",
+			subtype, audit.TotalCost(tr.auditPath))
+		return
+	}
+	tr.finishPush(diff, files, insertions, deletions)
 }

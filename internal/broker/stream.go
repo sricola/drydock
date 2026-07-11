@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -12,6 +13,13 @@ import (
 type stream struct {
 	enc *json.Encoder
 	f   http.Flusher
+}
+
+// newDiscardStream returns a stream with no live client (used when resuming a
+// task after a brokerd restart: the original submit connection is gone). All
+// events are discarded; the audit file is the durable record.
+func newDiscardStream() *stream {
+	return &stream{enc: json.NewEncoder(io.Discard), f: nil}
 }
 
 // newStream commits the response to a 200 NDJSON stream. Call it only after all

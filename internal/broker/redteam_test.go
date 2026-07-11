@@ -45,7 +45,7 @@ func TestRedteam_A5_GateBlocksUnapprovedPush(t *testing.T) {
 	if term["event"] != "result" || term["outcome"] != "denied" {
 		t.Errorf("A5 BREACH: terminal=%v after deny — the diff gate did not contain the change", term)
 	}
-	if st.pushed {
+	if st.pushed.Load() {
 		t.Error("A5 BREACH: stage.Push was called despite the operator denying the diff")
 	}
 }
@@ -181,8 +181,8 @@ func TestRedteam_A6_AutoApproveCannotBypassWideningGate(t *testing.T) {
 	if len(fs.added) != 0 {
 		t.Errorf("A6 BREACH: squid AddTask called %v — extras widened despite denial", fs.added)
 	}
-	if staged.Load() || ran.Load() || st.pushed {
+	if staged.Load() || ran.Load() || st.pushed.Load() {
 		t.Errorf("A6 BREACH: post-deny staged=%v ran=%v pushed=%v — task proceeded past a denied widening",
-			staged.Load(), ran.Load(), st.pushed)
+			staged.Load(), ran.Load(), st.pushed.Load())
 	}
 }

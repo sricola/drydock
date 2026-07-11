@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"drydock/internal/remote"
 )
 
 func assertLastLineInterrupted(t *testing.T, path string) {
@@ -153,5 +156,61 @@ func TestAppendLine_RefusesSymlink(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(target); len(b) != 0 {
 		t.Errorf("write leaked through the symlink to the target: %q", b)
+	}
+}
+
+func TestResumeAwaiting_StageGone_WritesInterrupted(t *testing.T) {
+	dir := t.TempDir()
+	// A task that finished the agent (ok) then hit the gate, whose stage did NOT survive.
+	auditFile := filepath.Join(dir, "gone.jsonl")
+	os.WriteFile(auditFile, []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1}`+"\n"), 0o600)
+	writeGateMarker(dir, "gone", gateMarker{RepoRef: "r", Agent: "claude"})
+
+	b := &Broker{AuditRoot: dir}
+	b.ResumeAwaiting(t.TempDir()) // stageRoot has no "gone" dir
+
+	data, _ := os.ReadFile(auditFile)
+	if !strings.Contains(string(data), `"subtype":"interrupted"`) {
+		t.Errorf("stage-gone task should get an interrupted line, got:\n%s", data)
+	}
+	if _, err := os.Stat(gateMarkerPath(dir, "gone")); !os.IsNotExist(err) {
+		t.Error("marker should be removed after the interrupted fallback")
+	}
+}
+
+func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
+	dir := t.TempDir()
+	stageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stageRoot, "live", "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(stageRoot, "live", "git"), 0o700)
+	os.WriteFile(filepath.Join(dir, "live.diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, "live", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, "live", "work")}
+	b := &Broker{AuditRoot: dir,
+		reopenStage: func(root string) (taskStage, error) { return fs, nil }, // test seam
+		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
+	b.ResumeAwaiting(stageRoot)
+
+	// The task is now pending; approve it and assert the surviving branch pushed.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		b.pendingMu.Lock()
+		ch := b.pending["live"]
+		b.pendingMu.Unlock()
+		if ch != nil {
+			ch <- true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Give the resume goroutine time to push.
+	for i := 0; i < 200 && !fs.pushed.Load(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !fs.pushed.Load() {
+		t.Error("approve after resume should have pushed the surviving branch")
 	}
 }

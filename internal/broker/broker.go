@@ -115,6 +115,10 @@ type Broker struct {
 	// remote.AdapterFor. White-box tests inject a fake to drive the
 	// best-effort PR-open path without shelling out to gh/glab/tea.
 	newAdapter func(repoRef, platform string) remote.Adapter
+	// reopenStage reopens an existing stage by its root path. nil in production
+	// falls back to defaultReopenStage (wraps stage.Reopen). Tests inject a fake
+	// to drive ResumeAwaiting without a real git directory on disk.
+	reopenStage func(root string) (taskStage, error)
 
 	// MaxConcurrent caps how many tasks may be in any non-terminal state at
 	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
@@ -167,6 +171,16 @@ func defaultPrepareStage(root, repoRef string) (taskStage, error) {
 		return nil, err
 	}
 	return realStage{s}, nil
+}
+
+// defaultReopenStage is the production reopenStage: reopens an existing stage
+// directory left on disk by a prior brokerd life (used by ResumeAwaiting).
+func defaultReopenStage(root string) (taskStage, error) {
+	s, err := stage.Reopen(root)
+	if err != nil {
+		return nil, err
+	}
+	return realStage{s: s}, nil
 }
 
 // runContainer is the production runAgent: it runs the Apple `container` CLI
