@@ -169,6 +169,10 @@ func (g *Gateway) admit(token string) (*Lease, int) {
 	if l.SpentUSD >= l.BudgetUSD {
 		return nil, http.StatusPaymentRequired
 	}
+	if l.MaxRequestCostUSD > 0 &&
+		l.SpentUSD+l.Reserved+l.MaxRequestCostUSD > l.BudgetUSD {
+		return nil, http.StatusPaymentRequired
+	}
 	if l.MaxRequests > 0 && l.Requests >= l.MaxRequests {
 		return nil, http.StatusTooManyRequests
 	}
@@ -177,6 +181,9 @@ func (g *Gateway) admit(token string) (*Lease, int) {
 		return nil, http.StatusPaymentRequired
 	}
 	l.Requests++
+	if l.MaxRequestCostUSD > 0 {
+		l.Reserved += l.MaxRequestCostUSD
+	}
 	return l, 0
 }
 

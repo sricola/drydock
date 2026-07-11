@@ -664,6 +664,30 @@ func TestGateway_AggregateCap(t *testing.T) {
 	}
 }
 
+func TestAdmit_InFlightReservationBounds(t *testing.T) {
+	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
+	// Budget 1.0, per-request reservation 0.6: the first admit reserves 0.6,
+	// a second concurrent admit (before any meter) would need 0.6+0.6=1.2 > 1.0
+	// and must be rejected.
+	tok, _ := g.Mint("anthropic", 1.0, 0, 0.6, time.Hour)
+	if _, code := g.admit(tok); code != 0 {
+		t.Fatalf("first admit code = %d, want 0", code)
+	}
+	if _, code := g.admit(tok); code != http.StatusPaymentRequired {
+		t.Errorf("second concurrent admit code = %d, want 402 (reservation bound)", code)
+	}
+}
+
+func TestAdmit_NoReservationWhenDisabled(t *testing.T) {
+	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
+	tok, _ := g.Mint("anthropic", 1.0, 0, 0, time.Hour) // R=0 disables reservation
+	for i := 0; i < 5; i++ {
+		if _, code := g.admit(tok); code != 0 {
+			t.Fatalf("admit %d code = %d, want 0 (R=0, no reservation)", i, code)
+		}
+	}
+}
+
 func TestGateway_AggregateCap_DisabledByDefault(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	// No SetAggregateCap call: cap disabled.
