@@ -7,7 +7,15 @@ FROM node:22-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28
 # Privilege drop uses setpriv (util-linux, already in the base) — not gosu — so
 # the agent drop gets no-new-privs + an emptied capability bounding set, and the
 # image sheds gosu's stale go1.19 CVE cluster. See image/drop-agent.sh.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `apt-get upgrade` layers current Debian point-release security fixes on top of
+# the digest-pinned base, so a rebuild (a user's `drydock setup`, or the daily
+# image-scan CI) picks them up without waiting for a base-digest bump or a lucky
+# rebuild. The base stays digest-pinned as a reproducible starting point (bumped
+# deliberately, see Phase 2.5); we trade exact bit-reproducibility of the package
+# set for security currency, which is the right call for a locally-built sandbox
+# runtime (not a user-verified released artifact). See docs/ROADMAP.md 4.13.
+RUN apt-get update && apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends \
       git ca-certificates curl jq nftables dnsutils ipset \
       python3 python3-pip python3-venv \
  && rm -rf /var/lib/apt/lists/*

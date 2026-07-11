@@ -9,6 +9,22 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Sandbox image picks up Debian security fixes on rebuild (ROADMAP 4.13).**
+  `apt-get upgrade -y` now runs inside the Dockerfile before the package
+  install block, so every image rebuild (whether triggered by `drydock setup`
+  or the daily `image-scan` CI job) pulls in current Debian point-release
+  security fixes without waiting for a base-image digest bump or a lucky
+  manual rebuild. The base image remains digest-pinned as a reproducible
+  starting point (bumped deliberately, per the Phase 2.5 convention); the
+  tradeoff accepted is that exact bit-reproducibility of the installed package
+  set is given up in favour of security currency, which is appropriate for a
+  locally-built sandbox runtime rather than a user-verified released artifact.
+  The daily `image-scan.yml` CI (grype + `cmd/cve-gate` against
+  `image/cve-allowlist.yaml`) already rebuilds and gates on CVEs; `apt-get
+  upgrade` makes each rebuild current. The anchor image (`image/anchor/`) is
+  unchanged: it ships `FROM scratch` with a single static Go binary and has
+  nothing to upgrade.
+
 - **Resume awaiting-approval tasks across restart (ROADMAP 4.14).** A task
   blocked at the diff-approval gate now survives a brokerd restart. A durable
   gate marker (`<id>.gate.json`) is written when a task enters the push gate;
