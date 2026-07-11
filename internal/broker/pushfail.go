@@ -25,7 +25,8 @@ func classifyPushError(errText string) pushReason {
 	case contains(s, "gh006", "protected branch", "pre-receive hook declined"):
 		return reasonProtected
 	case contains(s, "authentication failed", "could not read username",
-		"permission to", "permission denied", "access denied", "403",
+		"permission to", "permission denied", "access denied",
+		"error: 403", "http 403", "403 forbidden", "returned error: 403",
 		"invalid username or password"):
 		return reasonAuth
 	case contains(s, "non-fast-forward", "! [rejected]", "fetch first",
@@ -33,7 +34,10 @@ func classifyPushError(errText string) pushReason {
 		return reasonNonFastForward
 	case contains(s, "could not resolve host", "connection timed out",
 		"connection reset", "could not read from remote", "rpc failed",
-		"early eof", "timed out", "failed to connect", "503", "502", "500",
+		"early eof", "timed out", "failed to connect",
+		"error: 500", "error: 502", "error: 503", "error: 504",
+		"http 500", "http 502", "http 503",
+		"returned error: 500", "returned error: 502", "returned error: 503",
 		"tls", "the remote end hung up"):
 		return reasonTransient
 	default:
