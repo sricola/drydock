@@ -688,6 +688,79 @@ func TestAdmit_NoReservationWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestMeter_ReleasesReservation verifies that meter's onDone closure releases
+// the per-request reservation (Reserved returns to 0) whether or not the
+// response body carries parseable usage, and that SpentUSD reflects the actual
+// metered cost.
+func TestMeter_ReleasesReservation(t *testing.T) {
+	const R = 0.5 // per-request reservation
+
+	// Case 1: upstream returns a valid usage body; Reserved must drop to 0 and
+	// SpentUSD must equal the metered cost.
+	t.Run("with_usage", func(t *testing.T) {
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "event: message_start\n")
+			io.WriteString(w, `data: {"type":"message_start","message":{"model":"claude-x","usage":{"input_tokens":1000000,"output_tokens":0}}}`+"\n\n")
+			io.WriteString(w, `data: {"type":"message_delta","usage":{"output_tokens":1000000}}`+"\n\n")
+		}))
+		defer up.Close()
+
+		g := newGW(t, up.URL)
+		// generous budget, R=0.5 per request
+		tok, _ := g.Mint("anthropic", 100, 0, R, time.Minute)
+
+		if rec := do(g, tok); rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+
+		g.mu.Lock()
+		lease := g.leases[tok]
+		reserved := lease.Reserved
+		spent := lease.SpentUSD
+		g.mu.Unlock()
+
+		if reserved != 0 {
+			t.Errorf("Reserved = %v after completion, want 0 (reservation must be released)", reserved)
+		}
+		// 1M in @3 + 1M out @15 = 18.0
+		if spent < 17.9 || spent > 18.1 {
+			t.Errorf("SpentUSD = %v, want ~18 (metered cost committed)", spent)
+		}
+	})
+
+	// Case 2: upstream returns NO usage lines; Reserved must still drop to 0 and
+	// SpentUSD must remain 0 (no delta committed).
+	t.Run("no_usage", func(t *testing.T) {
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			// A truncated/empty stream: no usage-bearing events at all.
+			io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}\n\n")
+		}))
+		defer up.Close()
+
+		g := newGW(t, up.URL)
+		tok, _ := g.Mint("anthropic", 100, 0, R, time.Minute)
+
+		if rec := do(g, tok); rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+
+		g.mu.Lock()
+		lease := g.leases[tok]
+		reserved := lease.Reserved
+		spent := lease.SpentUSD
+		g.mu.Unlock()
+
+		if reserved != 0 {
+			t.Errorf("Reserved = %v after usageless stream, want 0 (reservation must be released regardless)", reserved)
+		}
+		if spent != 0 {
+			t.Errorf("SpentUSD = %v after usageless stream, want 0 (no delta to commit)", spent)
+		}
+	})
+}
+
 func TestGateway_AggregateCap_DisabledByDefault(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	// No SetAggregateCap call: cap disabled.

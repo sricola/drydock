@@ -318,14 +318,21 @@ func (g *Gateway) meter(resp *http.Response) error {
 	}
 	ct := resp.Header.Get("Content-Type")
 	resp.Body = &usageReader{rc: resp.Body, onDone: func(body []byte) {
+		delta := 0.0
 		if model, in, out, ok := vt.v.ParseUsage(body, ct); ok {
-			delta := cost(vt.v.Prices, model, in, out)
-			g.mu.Lock()
-			rc.lease.SpentUSD += delta
-			g.mu.Unlock()
-			if g.aggBudget > 0 {
-				g.ledger.add(rc.lease.Vendor, delta, time.Now())
+			delta = cost(vt.v.Prices, model, in, out)
+		}
+		g.mu.Lock()
+		if rc.lease.MaxRequestCostUSD > 0 {
+			rc.lease.Reserved -= rc.lease.MaxRequestCostUSD
+			if rc.lease.Reserved < 0 {
+				rc.lease.Reserved = 0 // floor: defense in depth
 			}
+		}
+		rc.lease.SpentUSD += delta
+		g.mu.Unlock()
+		if g.aggBudget > 0 && delta > 0 {
+			g.ledger.add(rc.lease.Vendor, delta, time.Now())
 		}
 	}}
 	return nil
