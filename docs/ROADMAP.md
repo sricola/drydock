@@ -255,14 +255,14 @@ so it can ship independently.
   audit reads, and UI submissions refuse `auto_approve`. Documented under
   THREAT_MODEL N6 with its enforcing tests. `--no-token` exists for trusted
   single-user machines and warns loudly.
-- **4.10 Egress depth (IPv6 / plain-HTTP).** *Partial (v0.6.0).* The firewall
+- **4.10 Egress depth (IPv6 / plain-HTTP).** *Landed.* The firewall
   rewrite made the in-VM nft ruleset a single `inet` table with
   input/forward/output `policy drop`, so IPv6 egress is fail-closed (verified by
   the A2 red-team), and the code review added a squid SSRF guard that denies
-  private/loopback/link-local/metadata destinations before the allowlist. Still
-  open: audit and document the plain-HTTP-CONNECT edge and state any remaining
-  limit explicitly (no silent gaps; the honesty constraint applies to egress
-  edges too).
+  private/loopback/link-local/metadata destinations before the allowlist. The
+  plain-HTTP vs HTTPS-CONNECT edge (CONNECT locked to port 443; plain HTTP
+  denied by default; host-level tunnel trust; host+port granularity) is
+  documented in the egress doc under "Plain HTTP vs HTTPS (the CONNECT edge)".
 - **4.11 Unattended operation (launchd daemon).** *Landed.*
   `drydock daemon install|uninstall|status` manages a launchd LaunchAgent
   (RunAtLoad; KeepAlive restarts on crash and composes with 4.1's boot
@@ -335,17 +335,17 @@ a squid SSRF guard (4.10), plus 4.4 (`retry`), alongside audit durability, a
 loopback-only admin bind, and supply-chain nits. What the review surfaced but
 deferred is now tracked as 4.15; 4.14 has since landed (resume
 awaiting-approval across restart). The aggregate budget cap (4.3) is now
-fully landed: see the Unreleased CHANGELOG entry for details.
+fully landed: see the Unreleased CHANGELOG entry for details. 4.10 is now
+fully landed: the plain-HTTP vs HTTPS-CONNECT edge is documented in the egress
+doc.
 
-1. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
-   and the SSRF guard landed; document the plain-HTTP-CONNECT edge.
-2. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
+1. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
    (per-request ceiling, in-flight reservation) beyond the v0.6.0 request cap.
-3. **4.7 Observability**: wants real multi-run usage first, which unattended
+2. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
-4. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
+3. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
    already gates bumps.
-5. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
+4. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
 
 [#139]: https://github.com/sricola/drydock/issues/139

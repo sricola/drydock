@@ -69,6 +69,43 @@ Approved hosts are reachable **only by that task**, for that task's lifetime:
 each task gets its own scoped proxy credential, isolated from other concurrent
 tasks. The default (non-widened) egress path is unchanged.
 
+## Plain HTTP vs HTTPS (the CONNECT edge)
+
+squid enforces the allowlist via two different request paths, and the rules
+differ:
+
+**HTTPS (CONNECT tunnel):** the agent opens a CONNECT tunnel to the target
+host. squid permits CONNECT **only to port 443**; a CONNECT to any other port
+is denied immediately, before the allowlist is consulted. Once the tunnel is
+open, squid cannot inspect the TLS payload, so an allowlisted HTTPS host is
+trusted at the **host level**: any URL path on that host is reachable over the
+tunnel. The allowlist matches by hostname (`dstdomain`), not by path.
+
+**Plain HTTP (forward-proxy GET):** a `GET http://host/...` request does not
+use CONNECT. Rule 1 (CONNECT-only-443) does not apply, so it reaches the
+SSRF guard and the allowlist normally. The default allowlist lists all hosts
+on **port 443 only**, so plain HTTP (which targets port 80) is **denied by
+default** (fail-closed). This is intentional: if no operator has explicitly
+added a `:80` entry, HTTP traffic never flows.
+
+**Asymmetry and remaining limits, stated plainly:**
+
+- If an operator adds a host on port 80 (in `egress.yaml` or via
+  `--egress-extra host:80`), plain HTTP to that host becomes allowed. The
+  full URL and request body flow through squid in cleartext; squid logs the
+  URL. Prefer port 443 (HTTPS) hosts wherever possible.
+- A widened non-443 port (e.g. `host:8443`) permits plain-HTTP traffic to
+  that port but **not** a CONNECT tunnel. CONNECT is locked to port 443
+  regardless of what the allowlist says.
+- Enforcement granularity is **host and port**, not path or content. An
+  allowlisted host is fully reachable at any path on its allowed port(s).
+- The in-VM nft firewall is default-deny and IPv6 fail-closed: there is no
+  egress path that bypasses the gateway (`:8088`) and squid (`:3128`). This
+  edge describes what squid itself permits, not a bypass.
+- The SSRF guard (`http_access deny to_local`) blocks private, loopback,
+  link-local, cloud-metadata (`169.254.169.254`), and CGNAT destinations for
+  both CONNECT and plain-HTTP requests, before the allowlist is consulted.
+
 ## Troubleshooting egress
 
 A CONNECT 403 to a host you expected to reach means it isn't on the allowlist:
