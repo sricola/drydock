@@ -96,6 +96,10 @@ type Broker struct {
 	AnthropicAuth     string // "api_key" | "subscription"; recorded per task for `drydock tasks`
 	OpenAIAuth        string // "api_key" | "subscription"; recorded per task for `drydock tasks`
 
+	PushMaxRetries       int
+	PushRetryBackoff     time.Duration
+	PushFreshBranchTries int
+
 	// AggregateExceeded, when set, is consulted at task submission: if it
 	// returns true for the task's vendor, the submission is rejected (402)
 	// before the stream starts and before any lease is minted. nil disables
@@ -136,6 +140,8 @@ type taskStage interface {
 	WriteTaskFiles(prompt string) error
 	CaptureDiff() (string, error)
 	Push(branch, msg string) error
+	Commit(branch, message string) error
+	PushBranch(localBranch, remoteBranch string) error
 	PushEnv() []string
 	Cleanup() error
 }
@@ -146,10 +152,12 @@ func (r realStage) WorkDir() string { return r.s.WorkDir }
 func (r realStage) WriteTaskFiles(prompt string) error {
 	return r.s.WriteTaskFiles(prompt)
 }
-func (r realStage) CaptureDiff() (string, error)  { return r.s.CaptureDiff() }
-func (r realStage) Push(branch, msg string) error { return r.s.Push(branch, msg) }
-func (r realStage) PushEnv() []string             { return r.s.PushEnv() }
-func (r realStage) Cleanup() error                { return r.s.Cleanup() }
+func (r realStage) CaptureDiff() (string, error)          { return r.s.CaptureDiff() }
+func (r realStage) Push(branch, msg string) error         { return r.s.Push(branch, msg) }
+func (r realStage) Commit(branch, msg string) error       { return r.s.Commit(branch, msg) }
+func (r realStage) PushBranch(local, remote string) error { return r.s.PushBranch(local, remote) }
+func (r realStage) PushEnv() []string                     { return r.s.PushEnv() }
+func (r realStage) Cleanup() error                        { return r.s.Cleanup() }
 
 // defaultPrepareStage is the production prepareStage: a real host clone with
 // the .git dir moved out of the mounted work tree.
@@ -557,9 +565,9 @@ func (tr *taskRun) runSandbox(args []string) error {
 }
 
 // pushAndOpenPR handles the diff-approval gate, branch push, and PR creation.
-// It always emits a terminal event (result/outcome=denied|cancelled|pushed, or
-// an error event on push failure). HandleTask should return immediately after
-// calling this — it is the last step in the task lifecycle.
+// It always emits a terminal event (result/outcome=denied|cancelled|pushed|push_failed).
+// HandleTask should return immediately after calling this — it is the last step
+// in the task lifecycle.
 func (tr *taskRun) pushAndOpenPR(diff string) {
 	b := tr.b
 	files, insertions, deletions := diffStat(diff)
@@ -585,15 +593,31 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	}
 
 	b.setStage(tr.id, StagePushing)
-	branch := "agent/" + tr.id
+	base := "agent/" + tr.id
 	adapterFor := b.newAdapter
 	if adapterFor == nil {
 		adapterFor = remote.AdapterFor
 	}
 	adapter := adapterFor(tr.repoRef, tr.platform)
-	tr.sw.emit(map[string]any{"event": "stage", "stage": "pushing", "task_id": tr.id, "branch": branch})
-	if err := tr.st.Push(branch, "agent: "+firstLine(tr.instruction)); err != nil {
-		tr.sw.emit(errorEvent(tr.id, "push failed: "+safeErr(err), "check the remote and push credentials"))
+	tr.sw.emit(map[string]any{"event": "stage", "stage": "pushing", "task_id": tr.id, "branch": base})
+
+	branch, attempts, reason, err := pushWithRecovery(tr.ctx, tr.st, tr.id,
+		"agent: "+firstLine(tr.instruction),
+		pushRetry{MaxRetries: b.PushMaxRetries, Backoff: b.PushRetryBackoff, FreshBranchTries: b.PushFreshBranchTries})
+	if err != nil {
+		// Nothing landed on the remote (single-ref push is atomic). Record a
+		// terminal push_failed result in the audit (carrying the metered cost so
+		// cost + the aggregate-cap seed stay correct) and stream the reason.
+		cost := audit.TotalCost(tr.auditPath)
+		fmt.Fprintf(tr.logf,
+			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0}`+"\n",
+			time.Since(tr.taskStart).Milliseconds(), cost)
+		tr.sw.emit(map[string]any{"event": "result", "outcome": "push_failed",
+			"task_id": tr.id, "reason": string(reason), "push_attempts": attempts,
+			"branch": base, "error": safeErr(err),
+			"files": files, "insertions": insertions, "deletions": deletions,
+			"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": cost,
+			"hint": "nothing was pushed to the remote; the diff is preserved; retry with `drydock retry " + tr.id + "`"})
 		return
 	}
 	// Branch is saved. Opening the PR/MR is best-effort — never downgrade a
@@ -605,8 +629,8 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	})
 	ev := map[string]any{"event": "result", "outcome": "pushed",
 		"task_id": tr.id, "branch": branch, "platform": adapter.Name(),
-		"pr_opened": prErr == nil,
-		"files":     files, "insertions": insertions, "deletions": deletions,
+		"pr_opened": prErr == nil, "push_attempts": attempts,
+		"files": files, "insertions": insertions, "deletions": deletions,
 		"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": audit.TotalCost(tr.auditPath)}
 	if prErr != nil {
 		ev["pr_error"] = safeErr(prErr)
