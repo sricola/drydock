@@ -86,6 +86,37 @@ func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg st
 	}
 }
 
+// gatePushMarked is gatePush with a durable resume marker. It persists the diff
+// and a gate marker, blocks for approval, then removes the marker UNLESS the
+// gate was interrupted by shutdown (left for boot resume).
+func (b *Broker) gatePushMarked(ctx context.Context, tr *taskRun, diff string) (bool, gateCause) {
+	ok, cause := b.awaitGate(ctx, tr.id,
+		"task auto-denied at approval gate (approval_timeout reached)",
+		"task killed or broker shutting down before approval; aborting",
+		func() {
+			diffPath := filepath.Join(b.AuditRoot, tr.id+".diff")
+			if werr := os.WriteFile(diffPath, []byte(diff), 0o600); werr != nil {
+				slog.Warn("could not persist diff for review", "task_id", tr.id, "err", werr)
+			}
+			if werr := writeGateMarker(b.AuditRoot, tr.id, gateMarker{
+				RepoRef: tr.repoRef, Instruction: tr.instruction, Platform: tr.platform,
+				Agent: tr.agentName, Draft: tr.draft,
+				TaskStartMs: tr.taskStart.UnixMilli(),
+			}); werr != nil {
+				slog.Warn("could not persist gate marker", "task_id", tr.id, "err", werr)
+			}
+			slog.Info("task awaiting approval",
+				"task_id", tr.id, "diff_bytes", len(diff), "diff_path", diffPath,
+				"hint", "drydock approve "+tr.id+" | drydock deny "+tr.id)
+			b.notifyMac("drydock: task awaiting approval",
+				fmt.Sprintf("task %s (%d byte diff): drydock approve %s", tr.id, len(diff), tr.id))
+		})
+	if cause != gateShutdown {
+		_ = removeGateMarker(b.AuditRoot, tr.id)
+	}
+	return ok, cause
+}
+
 // gateEgressWiden blocks until POST /admin/approve/{id} or /admin/deny/{id}
 // (or the HTTP client disconnects / the task is killed). Returning false
 // aborts the task before any allowlist compilation — the requested hosts

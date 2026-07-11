@@ -582,9 +582,14 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"deny":    "drydock deny " + tr.id,
 			"review":  "drydock review " + tr.id})
 	}
-	if !b.gatePush(tr.ctx, tr.id, diff, tr.autoApprove) {
+	approved := tr.autoApprove
+	cause := gateApproved
+	if !tr.autoApprove {
+		approved, cause = b.gatePushMarked(tr.ctx, tr, diff)
+	}
+	if !approved {
 		outcome := "denied"
-		if tr.ctx.Err() != nil {
+		if cause == gateKilled || cause == gateShutdown {
 			outcome = "cancelled"
 		}
 		tr.sw.emit(map[string]any{"event": "result", "outcome": outcome,
