@@ -200,10 +200,16 @@ so it can ship independently.
   `running?`. (The in-memory concurrency slot was never the gap; a restart
   rebuilds the semaphore at full capacity; the slot-pinning bug was the
   approval-gate timeout, fixed separately.)
-- **4.2 Push partial-failure.** The approved-diff push is a multi-step git
-  sequence with no defined rollback if it fails partway (e.g. push rejected
-  after a local commit). Define the failure contract and surface it in the
-  audit row instead of leaving an ambiguous state.
+- **4.2 Push partial-failure.** *Landed.* Push failures are classified into
+  five reasons (`transient`, `auth`, `protected`, `non_fast_forward`, `unknown`);
+  transient failures are retried with exponential backoff (`push_max_retries`,
+  default `3`; base delay `push_retry_backoff`, default `1s`) and branch-name
+  collisions are retried to fresh remote names (`push_fresh_branch_tries`,
+  default `2`). Auth/protected/unknown stop immediately. Every outcome produces
+  one clean terminal audit row: success reports the actual branch pushed;
+  `push_failed` guarantees nothing landed on the remote (single-ref atomicity)
+  and the diff is preserved. `drydock tasks` shows "push failed" for a failed
+  push, and `drydock retry <id>` is safe (new id, no collision).
 - **4.3 Aggregate budget cap.** *Landed.* `task_budget_usd` caps a single task;
   `aggregate_budget_usd` (env `DRYDOCK_AGGREGATE_BUDGET_USD`) now adds a
   cross-task USD ceiling per `api_key` provider over a configurable rolling
@@ -325,22 +331,20 @@ loopback-only admin bind, and supply-chain nits. What the review surfaced but
 deferred is now tracked as 4.14 and 4.15. The aggregate budget cap (4.3) is now
 fully landed: see the Unreleased CHANGELOG entry for details.
 
-1. **4.2 Push partial-failure contract**: ambiguous git states are
-   gate-adjacent; define the failure contract and surface it in the audit row.
-2. **4.14 Resume awaiting-approval across restart** ([#140]): a daemon restart
+1. **4.14 Resume awaiting-approval across restart** ([#140]): a daemon restart
    loses an awaiting-approval task's work tree; pairs with unattended operation.
-3. **4.13 Image package currency**: Debian fixes land only on rebuild; make
+2. **4.13 Image package currency**: Debian fixes land only on rebuild; make
    that systematic with `apt-get upgrade` / targeted pins plus a scheduled
    rebuild so updates don't wait for a base-digest bump.
-4. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
+3. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
    and the SSRF guard landed; document the plain-HTTP-CONNECT edge.
-5. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
+4. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
    (per-request ceiling, in-flight reservation) beyond the v0.6.0 request cap.
-6. **4.7 Observability**: wants real multi-run usage first, which unattended
+5. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
-7. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
+6. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
    already gates bumps.
-8. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
+7. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
 
 [#139]: https://github.com/sricola/drydock/issues/139
