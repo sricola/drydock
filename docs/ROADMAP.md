@@ -286,12 +286,15 @@ so it can ship independently.
   as one atomic `nft -f` with input/forward `policy drop`. A new red-team test
   runs *as the dropped agent* and asserts `nft flush` returns EPERM and egress
   stays blocked. `gosu` is removed, retiring its go1.19 CVE cluster.
-- **4.13 Image package currency.** Debian point-release fixes land only when
-  the image is rebuilt; the jq/libjq1 gap found in the first baseline
-  cleared itself on the next fresh build. Make that systematic: `apt-get
-  upgrade` (or targeted pins) in the Dockerfile flow plus a scheduled image
-  rebuild, so security updates don't wait for a base-digest bump or a lucky
-  rebuild.
+- **4.13 Image package currency.** *Landed.* `apt-get upgrade -y` now runs in
+  the Dockerfile before the package install block, so every rebuild (via
+  `drydock setup` or the daily `image-scan` CI) picks up current Debian
+  point-release security fixes without waiting for a base-digest bump. The
+  base image remains digest-pinned (bumped deliberately per the Phase 2.5
+  convention); bit-reproducibility of the package set is traded for security
+  currency, appropriate for a locally-built sandbox runtime. The daily CVE
+  scan (grype + `cmd/cve-gate`) gates each rebuilt image. The anchor image is
+  unchanged (`FROM scratch`, single static binary, nothing to upgrade).
 - **4.14 Resume awaiting-approval tasks across restart.** *Landed.* A durable
   gate marker (`<id>.gate.json`) is written when a task enters the push gate;
   the stage dir is preserved across a graceful shutdown (cleanup skipped, boot
@@ -334,18 +337,15 @@ deferred is now tracked as 4.15; 4.14 has since landed (resume
 awaiting-approval across restart). The aggregate budget cap (4.3) is now
 fully landed: see the Unreleased CHANGELOG entry for details.
 
-1. **4.13 Image package currency**: Debian fixes land only on rebuild; make
-   that systematic with `apt-get upgrade` / targeted pins plus a scheduled
-   rebuild so updates don't wait for a base-digest bump.
-2. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
+1. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
    and the SSRF guard landed; document the plain-HTTP-CONNECT edge.
-3. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
+2. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
    (per-request ceiling, in-flight reservation) beyond the v0.6.0 request cap.
-4. **4.7 Observability**: wants real multi-run usage first, which unattended
+3. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
-5. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
+4. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
    already gates bumps.
-6. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
+5. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
 
 [#139]: https://github.com/sricola/drydock/issues/139

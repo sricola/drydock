@@ -28,6 +28,13 @@ VM boot, the egress pin) with no API spend. Then consult the table below.
 
 ## Housekeeping
 
+The sandbox image picks up Debian security fixes on each rebuild: `apt-get
+upgrade` runs in the Dockerfile before the package install block, so any
+build triggered by `drydock setup` brings the image current. The daily CVE
+scan in CI (`image-scan`) rebuilds the image and gates on any unfixed CVEs.
+To stay current locally, re-run `drydock setup` periodically; the daily scan
+flags anything outstanding.
+
 The audit directory has no automatic retention. Delete old artifacts with:
 
 ```bash
