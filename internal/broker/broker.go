@@ -230,6 +230,11 @@ type taskRun struct {
 	logf       io.Writer   // audit log writer
 	auditPath  string      // path to the audit .jsonl
 	taskStart  time.Time   // set by runSandbox when the agent starts
+
+	// keepStage, when true, suppresses the deferred stage Cleanup so the stage
+	// directory survives a brokerd shutdown and can be resumed at next boot.
+	// Set by pushAndOpenPR and resumePush when gatePushMarked returns gateShutdown.
+	keepStage bool
 }
 
 // errTaskTerminated signals that a lifecycle method has already emitted the
@@ -347,7 +352,11 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		sw.emit(errorEvent(taskID, "clone failed", "check the repo URL and that brokerd can reach it"))
 		return
 	}
-	defer st.Cleanup() // wipe the host scratch (work tree + host-only git dir)
+	defer func() {
+		if !tr.keepStage {
+			_ = st.Cleanup()
+		}
+	}()
 	tr.st = st
 
 	if err := st.WriteTaskFiles(t.Instruction); err != nil {
@@ -605,6 +614,9 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 		outcome := "denied"
 		if cause == gateKilled || cause == gateShutdown {
 			outcome = "cancelled"
+		}
+		if cause == gateShutdown {
+			tr.keepStage = true
 		}
 		tr.sw.emit(map[string]any{"event": "result", "outcome": outcome,
 			"task_id": tr.id, "diff_bytes": len(diff)})

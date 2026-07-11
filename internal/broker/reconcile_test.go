@@ -214,3 +214,60 @@ func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
 		t.Error("approve after resume should have pushed the surviving branch")
 	}
 }
+
+// TestResumePush_ShutdownKeepsStage verifies that when a resumed task's gate is
+// interrupted by brokerd shutdown (errShutdown cancels the context), the stage
+// is NOT cleaned and keepStage is true, so the next boot can resume again.
+func TestResumePush_ShutdownKeepsStage(t *testing.T) {
+	dir := t.TempDir()
+	stageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stageRoot, "shutid", "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "shutid.diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, "shutid", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, "shutid", "work")}
+	b := &Broker{AuditRoot: dir,
+		reopenStage: func(root string) (taskStage, error) { return fs, nil },
+		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
+
+	// Start resume: the gate will block waiting for approval.
+	b.ResumeAwaiting(stageRoot)
+
+	// Wait for the task to register as pending.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		b.pendingMu.Lock()
+		_, ok := b.pending["shutid"]
+		b.pendingMu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Simulate brokerd shutdown: cancel all tasks with errShutdown.
+	b.CancelAll()
+
+	// Wait for the resume goroutine to finish.
+	for i := 0; i < 200; i++ {
+		b.pendingMu.Lock()
+		_, still := b.pending["shutid"]
+		b.pendingMu.Unlock()
+		if !still {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Give the goroutine a moment to run its deferred cleanup.
+	time.Sleep(50 * time.Millisecond)
+
+	if fs.cleaned.Load() {
+		t.Error("shutdown must NOT clean the stage: it must survive for the next boot to resume")
+	}
+	// The gate marker must still be present (left for next boot).
+	if _, err := os.Stat(gateMarkerPath(dir, "shutid")); err != nil {
+		t.Errorf("gate marker must survive shutdown, got err: %v", err)
+	}
+}

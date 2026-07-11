@@ -415,6 +415,12 @@ func main() {
 		"task_budget_usd", cfg.TaskBudgetUSD,
 		"default_model", cfg.DefaultModel)
 
+	// Resume any tasks that were awaiting approval when the previous brokerd
+	// shut down. Called after the broker is fully wired but before Serve, so
+	// the tasks are registered and visible via /admin/pending from the first
+	// request onward.
+	b.ResumeAwaiting(cfg.StageRoot)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)
 	mux.HandleFunc("POST /admin/approve/{id}", b.HandleApprove)
@@ -644,7 +650,14 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 	// reaping first could RemoveAll a path a still-terminating VM holds. The
 	// boot lock (see main) guarantees no other brokerd is concurrently running
 	// a task here, so every leftover provably belongs to a dead prior life.
-	if n, err := stage.ReapOrphans(stageRoot, nil); err != nil {
+	// Stages with a live gate marker must NOT be reaped: they belong to
+	// awaiting-approval tasks that survived the prior shutdown and will be
+	// resumed by ResumeAwaiting below.
+	keep := map[string]bool{}
+	for id := range broker.ListGateMarkers(auditRoot) {
+		keep[id] = true
+	}
+	if n, err := stage.ReapOrphans(stageRoot, keep); err != nil {
 		slog.Warn("orphan prune: stage reap refused", "err", err)
 	} else if n > 0 {
 		slog.Info("orphan prune: reaped stage dirs", "count", n)

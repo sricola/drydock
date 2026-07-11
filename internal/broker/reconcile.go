@@ -128,11 +128,16 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		taskStart: time.UnixMilli(m.TaskStartMs),
 	}
 	if c, ok := st.(interface{ Cleanup() error }); ok {
-		defer c.Cleanup()
+		defer func() {
+			if !tr.keepStage {
+				_ = c.Cleanup()
+			}
+		}()
 	}
 
 	ok, cause := b.gatePushMarked(ctx, tr, diff)
 	if cause == gateShutdown {
+		tr.keepStage = true
 		return // leave the marker; next boot resumes
 	}
 	files, insertions, deletions := diffStat(diff)

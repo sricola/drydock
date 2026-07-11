@@ -34,7 +34,7 @@ type fakeStage struct {
 	pushErr    error
 	pushed     atomic.Bool // atomic so the approve-resume test can poll without a race
 	pushBranch string
-	cleaned    bool
+	cleaned    atomic.Bool // atomic so the shutdown-survival test can poll without a race
 	gotPrompt  string
 }
 
@@ -44,7 +44,7 @@ func (f *fakeStage) WriteTaskFiles(prompt string) error {
 	return nil
 }
 func (f *fakeStage) CaptureDiff() (string, error) { return f.diff, f.captureErr }
-func (f *fakeStage) Cleanup() error               { f.cleaned = true; return nil }
+func (f *fakeStage) Cleanup() error               { f.cleaned.Store(true); return nil }
 func (f *fakeStage) Push(branch, msg string) error {
 	if f.pushErr != nil {
 		return f.pushErr
@@ -230,7 +230,7 @@ func TestHandleTask_ClaudeAutoApprove_Pushes(t *testing.T) {
 	if !grant.revoked {
 		t.Error("grant.Revoke not called (defer)")
 	}
-	if !st.cleaned {
+	if !st.cleaned.Load() {
 		t.Error("stage.Cleanup not called (defer)")
 	}
 	audit := readAudit(t, b.AuditRoot, id)
