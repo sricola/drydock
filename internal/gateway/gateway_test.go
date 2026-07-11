@@ -56,7 +56,7 @@ func TestGateway_ValidTokenProxiesAndMeters(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
 
 	rec := do(g, tok)
 	if rec.Code != http.StatusOK {
@@ -85,7 +85,7 @@ func TestGateway_MetersStreamingWithoutBufferingBody(t *testing.T) {
 	defer up.Close()
 
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
 	if rec := do(g, tok); rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -104,7 +104,7 @@ func TestGateway_UnknownToken401(t *testing.T) {
 
 func TestGateway_ExpiredToken401(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok, _ := g.Mint("anthropic", 100, 0, -time.Second) // already expired
+	tok, _ := g.Mint("anthropic", 100, 0, 0, -time.Second) // already expired
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rec.Code)
 	}
@@ -114,7 +114,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 1.0, 0, time.Minute) // budget 1.0; one call spends ~18 → next call 402
+	tok, _ := g.Mint("anthropic", 1.0, 0, 0, time.Minute) // budget 1.0; one call spends ~18 -> next call 402
 	do(g, tok)
 	if rec := do(g, tok); rec.Code != http.StatusPaymentRequired {
 		t.Errorf("status = %d, want 402", rec.Code)
@@ -123,7 +123,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 
 func TestGateway_RevokeInvalidates(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
 	g.Revoke(tok)
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d after revoke, want 401", rec.Code)
@@ -166,8 +166,8 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	atok, _ := g.Mint("anthropic", 100, 0, time.Minute)
-	otok, _ := g.Mint("openai", 100, 0, time.Minute)
+	atok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
+	otok, _ := g.Mint("openai", 100, 0, 0, time.Minute)
 
 	if rec := do(g, atok); rec.Code != http.StatusOK {
 		t.Fatalf("anthropic token: status=%d body=%s", rec.Code, rec.Body.String())
@@ -185,7 +185,7 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 
 func TestRequestCap_RejectsOverLimit(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
-	tok, _ := g.Mint("anthropic", 100, 2, time.Hour) // maxRequests = 2
+	tok, _ := g.Mint("anthropic", 100, 2, 0, time.Hour) // maxRequests = 2
 	if _, s := g.admit(tok); s != 0 {
 		t.Fatalf("req1 rejected: %d", s)
 	}
@@ -199,7 +199,7 @@ func TestRequestCap_RejectsOverLimit(t *testing.T) {
 
 func TestRequestCap_ZeroMeansUnlimited(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
-	tok, _ := g.Mint("anthropic", 100, 0, time.Hour) // 0 = unlimited
+	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Hour) // 0 = unlimited
 	for i := 0; i < 50; i++ {
 		if _, s := g.admit(tok); s != 0 {
 			t.Fatalf("req %d rejected: %d", i, s)
@@ -215,7 +215,7 @@ func TestNew_RejectsNilCred(t *testing.T) {
 
 func TestGateway_MintUnknownVendorErrors(t *testing.T) {
 	g := newGW(t, "http://unused")
-	if _, err := g.Mint("nope", 100, 0, time.Minute); err == nil {
+	if _, err := g.Mint("nope", 100, 0, 0, time.Minute); err == nil {
 		t.Error("Mint for a vendor with no backend should error")
 	}
 }
@@ -416,7 +416,7 @@ func TestGateway_OpenAICompatMetersAndCaps(t *testing.T) {
 
 	// Budget of 1.0 USD; first request costs 0.5 USD; second also 0.5 → budget
 	// exactly exhausted, third should 402.
-	tok, _ := g.Mint("openai-compat", 1.0, 0, time.Minute)
+	tok, _ := g.Mint("openai-compat", 1.0, 0, 0, time.Minute)
 
 	req1 := httptest.NewRequest("POST", "http://gw/v1/chat/completions", strings.NewReader("{}"))
 	req1.Header.Set("Authorization", "Bearer "+tok)
@@ -513,7 +513,7 @@ func TestServeHTTP_OAuthVendor_StripRequestFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := g.Mint("anthropic", 100, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
 
 	// Body contains context_management, which AnthropicOAuthVendor must strip.
 	const body = `{"model":"claude-opus-4","messages":[{"role":"user","content":"hi"}],"context_management":{"edits":[1]}}`
@@ -573,7 +573,7 @@ func TestServeHTTP_BearerWinsOverGoogleKeyHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := g.Mint("google", 1.0, 0, time.Minute)
+	tok, _ := g.Mint("google", 1.0, 0, 0, time.Minute)
 
 	r := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
 	r.Header.Set("Authorization", "Bearer "+tok)
@@ -592,7 +592,7 @@ func TestServeHTTP_MalformedAuthDoesNotFallBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := g.Mint("google", 1.0, 0, time.Minute)
+	tok, _ := g.Mint("google", 1.0, 0, 0, time.Minute)
 	r := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
 	r.Header.Set("Authorization", "Basic Zm9vOmJhcg==") // malformed (not Bearer)
 	r.Header.Set("X-Goog-Api-Key", tok)                 // valid token, but must be ignored
@@ -619,7 +619,7 @@ func TestServeHTTP_AdmitsGoogleKeyHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := g.Mint("google", 1.0, 0, time.Minute)
+	tok, _ := g.Mint("google", 1.0, 0, 0, time.Minute)
 
 	// Present the bearer ONLY in x-goog-api-key (how the Gemini CLI sends it).
 	r := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
@@ -645,13 +645,13 @@ func TestGateway_AggregateCap(t *testing.T) {
 
 	// anthropic at the cap: a fresh lease's request must be refused with 402.
 	g.SeedAggregate("anthropic", 5.0, now)
-	tok, _ := g.Mint("anthropic", 100.0, 0, time.Hour) // generous per-task budget
+	tok, _ := g.Mint("anthropic", 100.0, 0, 0, time.Hour) // generous per-task budget
 	if _, code := g.admit(tok); code != http.StatusPaymentRequired {
 		t.Errorf("anthropic over aggregate cap: admit code = %d, want 402", code)
 	}
 
 	// openai is under its own cap: must still admit (per-vendor isolation).
-	tok2, _ := g.Mint("openai", 100.0, 0, time.Hour)
+	tok2, _ := g.Mint("openai", 100.0, 0, 0, time.Hour)
 	if _, code := g.admit(tok2); code != 0 {
 		t.Errorf("openai under aggregate cap: admit code = %d, want 0 (admitted)", code)
 	}
@@ -667,7 +667,7 @@ func TestGateway_AggregateCap(t *testing.T) {
 func TestGateway_AggregateCap_DisabledByDefault(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	// No SetAggregateCap call: cap disabled.
-	tok, _ := g.Mint("anthropic", 100.0, 0, time.Hour)
+	tok, _ := g.Mint("anthropic", 100.0, 0, 0, time.Hour)
 	if _, code := g.admit(tok); code != 0 {
 		t.Errorf("cap disabled: admit code = %d, want 0", code)
 	}

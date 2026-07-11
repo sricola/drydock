@@ -26,13 +26,15 @@ type Lease struct {
 	// constant-time equality against the bearer the caller presented;
 	// even if Go's map lookup ever changes to a timing-sensitive shape,
 	// the defense-in-depth comparison stops timing-side-channel leakage.
-	Token       string
-	Vendor      string
-	BudgetUSD   float64
-	SpentUSD    float64
-	Expiry      time.Time
-	MaxRequests int // 0 = unlimited
-	Requests    int // number of requests served so far
+	Token             string
+	Vendor            string
+	BudgetUSD         float64
+	SpentUSD          float64
+	Expiry            time.Time
+	MaxRequests       int     // 0 = unlimited
+	Requests          int     // number of requests served so far
+	MaxRequestCostUSD float64 // per-request reservation R (0 = disabled)
+	Reserved          float64 // sum of R for admitted-but-unmetered requests; guarded by g.mu
 }
 
 type vendorRT struct {
@@ -78,7 +80,7 @@ func New(backends ...Backend) (*Gateway, error) {
 	return g, nil
 }
 
-func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, ttl time.Duration) (string, error) {
+func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, maxRequestCostUSD float64, ttl time.Duration) (string, error) {
 	if _, ok := g.vendors[vendor]; !ok {
 		return "", fmt.Errorf("gateway: no backend for vendor %q", vendor)
 	}
@@ -86,11 +88,13 @@ func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, ttl ti
 	if _, err := rand.Read(b); err != nil {
 		// A predictable bearer token would let a co-tenant forge gateway calls.
 		// No entropy is unrecoverable; fail closed rather than mint zeros.
-		panic("drydock: crypto/rand failed — cannot mint gateway tokens: " + err.Error())
+		panic("drydock: crypto/rand failed - cannot mint gateway tokens: " + err.Error())
 	}
 	tok := "tok_" + hex.EncodeToString(b)
 	g.mu.Lock()
-	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD, MaxRequests: maxRequests, Expiry: time.Now().Add(ttl)}
+	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD,
+		MaxRequests: maxRequests, MaxRequestCostUSD: maxRequestCostUSD,
+		Expiry: time.Now().Add(ttl)}
 	g.mu.Unlock()
 	return tok, nil
 }
