@@ -292,7 +292,7 @@ func TestHandleKill_404Unknown(t *testing.T) {
 
 func TestHandleKill_FiresStoredCancel(t *testing.T) {
 	b := &Broker{}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	b.registerTask("t-kill", "git@github.com:o/r", "go", cancel)
 
 	req := httptest.NewRequest("POST", "/admin/kill/t-kill", nil)
@@ -316,7 +316,7 @@ func TestHandleKill_FiresStoredCancel(t *testing.T) {
 // is what makes "drydock kill" useful when a task is sitting at approval.
 func TestHandleKill_AlsoUnblocksApprovalGate(t *testing.T) {
 	b := &Broker{AuditRoot: t.TempDir()}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	b.registerTask("t-gate", "git@github.com:o/r", "go", cancel)
 
 	done := make(chan bool, 1)
@@ -833,7 +833,7 @@ func TestRegisterTask_RuneSafeSnippet(t *testing.T) {
 	}
 
 	b := &Broker{StageRoot: t.TempDir(), AuditRoot: t.TempDir()}
-	b.registerTask("task-rune", "repo", instruction, func() {})
+	b.registerTask("task-rune", "repo", instruction, func(error) {})
 
 	b.pendingMu.Lock()
 	ts := b.tasks["task-rune"]

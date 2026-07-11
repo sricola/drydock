@@ -410,7 +410,7 @@ func TestCancelAll_CancelsEveryRegisteredTask(t *testing.T) {
 	b := &Broker{}
 	var calls int32
 	for i := 0; i < 3; i++ {
-		b.registerTask(fmt.Sprintf("task%d", i), "repo", "instr", func() { atomic.AddInt32(&calls, 1) })
+		b.registerTask(fmt.Sprintf("task%d", i), "repo", "instr", func(error) { atomic.AddInt32(&calls, 1) })
 	}
 	b.CancelAll()
 	if calls != 3 {

@@ -127,9 +127,9 @@ type Broker struct {
 	slots     chan struct{}
 
 	pendingMu  sync.Mutex
-	pending    map[string]chan bool          // task_id -> approval channel
-	tasks      map[string]*TaskState         // task_id -> live state (running + awaiting_approval)
-	cancellers map[string]context.CancelFunc // task_id -> cancel hook for in-flight kill
+	pending    map[string]chan bool               // task_id -> approval channel
+	tasks      map[string]*TaskState              // task_id -> live state (running + awaiting_approval)
+	cancellers map[string]context.CancelCauseFunc // task_id -> cancel hook for in-flight kill
 }
 
 // taskStage is the subset of *stage.Stage that HandleTask uses. It exists so
@@ -252,8 +252,8 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// Cancellation is driven only by /admin/kill (the stored cancel) and
 	// brokerd shutdown (CancelAll iterates the stored cancels). Event writes to
 	// the response become best-effort (emit already ignores write errors).
-	taskCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	taskCtx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	b.registerTask(taskID, t.RepoRef, t.Instruction, cancel)
 	defer b.unregisterTask(taskID)
 

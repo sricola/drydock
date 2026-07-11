@@ -122,14 +122,14 @@ func (b *Broker) releaseSlot() {
 
 // registerTask records a task in the live-tasks map under StageRunning,
 // and stashes its cancel hook so POST /admin/kill/{id} can abort it.
-func (b *Broker) registerTask(id, repo, instruction string, cancel context.CancelFunc) {
+func (b *Broker) registerTask(id, repo, instruction string, cancel context.CancelCauseFunc) {
 	b.pendingMu.Lock()
 	defer b.pendingMu.Unlock()
 	if b.tasks == nil {
 		b.tasks = make(map[string]*TaskState)
 	}
 	if b.cancellers == nil {
-		b.cancellers = make(map[string]context.CancelFunc)
+		b.cancellers = make(map[string]context.CancelCauseFunc)
 	}
 	if r := []rune(instruction); len(r) > instructionSnippetMax {
 		instruction = string(r[:instructionSnippetMax]) + "…"
@@ -179,12 +179,12 @@ func (b *Broker) unregisterTask(id string) {
 // reacquire pendingMu via the gates/unregister).
 func (b *Broker) CancelAll() {
 	b.pendingMu.Lock()
-	cancels := make([]context.CancelFunc, 0, len(b.cancellers))
+	cancels := make([]context.CancelCauseFunc, 0, len(b.cancellers))
 	for _, c := range b.cancellers {
 		cancels = append(cancels, c)
 	}
 	b.pendingMu.Unlock()
 	for _, c := range cancels {
-		c()
+		c(errShutdown)
 	}
 }
