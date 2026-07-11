@@ -597,6 +597,14 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 		return
 	}
 
+	tr.finishPush(diff, files, insertions, deletions)
+}
+
+// finishPush performs the branch push (with recovery) and PR-open after the
+// approval gate has passed, emitting the terminal pushed/push_failed event and,
+// on failure, the synthetic audit line. Shared by the live path and resume.
+func (tr *taskRun) finishPush(diff string, files, insertions, deletions int) {
+	b := tr.b
 	b.setStage(tr.id, StagePushing)
 	base := "agent/" + tr.id
 	adapterFor := b.newAdapter
@@ -625,7 +633,7 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"hint": "nothing was pushed to the remote; the diff is preserved; retry with `drydock retry " + tr.id + "`"})
 		return
 	}
-	// Branch is saved. Opening the PR/MR is best-effort — never downgrade a
+	// Branch is saved. Opening the PR/MR is best-effort; never downgrade a
 	// successful push to a failure.
 	title, body := prContent(tr.instruction, tr.id)
 	prErr := adapter.OpenRequest(remote.Request{
