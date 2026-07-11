@@ -112,6 +112,12 @@ func (g *Gateway) spent(token string) float64 {
 
 // SetAggregateCap enables the per-vendor aggregate USD cap. Call once at boot
 // before serving. vendors is the set the cap applies to (api_key-mode only).
+//
+// These fields (aggBudget, aggVendors, ledger) are read on the request path
+// without g.mu (meter, AggregateExceeded) and under g.mu (admit). The writes
+// here are unsynchronized, so the caller MUST finish this call before starting
+// the goroutine that serves requests: publish the gateway to that goroutine
+// only afterward. brokerd does this (SetAggregateCap precedes the serve loop).
 func (g *Gateway) SetAggregateCap(budgetUSD float64, window time.Duration, vendors []string) {
 	g.aggBudget = budgetUSD
 	g.aggVendors = map[string]bool{}
