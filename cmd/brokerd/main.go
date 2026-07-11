@@ -274,11 +274,10 @@ func main() {
 			_ = srv.Shutdown(ctx) // drain the cancelled handlers' responses
 			c()
 		}
-		cleanup()
-		if sockToRm != "" {
-			_ = os.Remove(sockToRm)
-		}
-		os.Exit(0)
+		// Teardown (squid + anchor) and exit happen in main once Serve unblocks,
+		// NOT here: if this goroutine ran cleanup() while main returned from
+		// Serve in parallel, main could exit the process first and skip cleanup,
+		// orphaning squid (it kept holding :3128 and broke the next start).
 	}()
 
 	// Credential gateway: real key host-only; the VM gets a bearer token.
@@ -429,6 +428,13 @@ func main() {
 	// listener errors.
 	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
 		fatal("serve failed", "err", err)
+	}
+	// ErrServerClosed means the signal handler asked for a graceful shutdown.
+	// Tear squid + the anchor down HERE, sequentially after Serve returns, so
+	// process exit cannot race ahead of cleanup (the bug that orphaned squid).
+	cleanup()
+	if sockToRm != "" {
+		_ = os.Remove(sockToRm)
 	}
 }
 
