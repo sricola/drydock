@@ -427,6 +427,17 @@ func TestAggregateDefaults(t *testing.T) {
 	}
 }
 
+func TestMaxRequestCost_DefaultAndValidation(t *testing.T) {
+	if d := Defaults(); d.MaxRequestCostUSD != 0 {
+		t.Errorf("max_request_cost_usd default = %v, want 0 (disabled)", d.MaxRequestCostUSD)
+	}
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\nmax_request_cost_usd: -1\n"), 0o644)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "max_request_cost_usd") {
+		t.Errorf("negative max_request_cost_usd should be rejected, got %v", err)
+	}
+}
+
 func TestPushRetryDefaultsAndValidation(t *testing.T) {
 	d := Defaults()
 	if d.PushMaxRetries != 3 || d.PushRetryBackoff != time.Second || d.PushFreshBranchTries != 2 {
