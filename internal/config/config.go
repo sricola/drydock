@@ -281,7 +281,7 @@ func (c *Config) applyEnvOverrides() {
 		c.OpenAIAuth = v
 	}
 	if v := os.Getenv("DRYDOCK_TASK_MAX_REQUESTS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			c.TaskMaxRequests = n
 		}
 	}

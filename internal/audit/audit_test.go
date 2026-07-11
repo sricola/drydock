@@ -181,8 +181,8 @@ func TestReason_PrefersErrorOverTrailingNoise(t *testing.T) {
 	}
 }
 
-// TestHasResultLine_RefusesSymlink verifies audit reads use O_NOFOLLOW: a
-// planted symlink in the audit dir can't redirect the outcome read.
+// TestTaskAgent reads the agent from the drydock_task line, and returns "" when
+// no such line is present.
 func TestTaskAgent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "t.jsonl")
@@ -201,6 +201,8 @@ func TestTaskAgent(t *testing.T) {
 	}
 }
 
+// TestHasResultLine_RefusesSymlink verifies audit reads use O_NOFOLLOW: a
+// planted symlink in the audit dir can't redirect the outcome read.
 func TestHasResultLine_RefusesSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "t.jsonl")

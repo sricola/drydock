@@ -107,6 +107,19 @@ func TestEnvOverridesWinOverFile(t *testing.T) {
 	}
 }
 
+func TestEnvOverride_TaskMaxRequests_IgnoresNegative(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("task_max_requests: 7\n"), 0o644)
+	t.Setenv("DRYDOCK_TASK_MAX_REQUESTS", "-5")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TaskMaxRequests != 7 {
+		t.Errorf("negative DRYDOCK_TASK_MAX_REQUESTS should be ignored; got %d, want the file value 7", cfg.TaskMaxRequests)
+	}
+}
+
 func TestValidate_Rejects(t *testing.T) {
 	cases := map[string]string{
 		"network: \"\"\ngateway_ip: 1.2.3.4\n":                       "network",
