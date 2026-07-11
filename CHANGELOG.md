@@ -7,6 +7,19 @@ entry below corresponds to a Git tag of the same name.
 
 ## Unreleased
 
+### Documentation
+
+- **Egress doc now covers the plain-HTTP vs HTTPS-CONNECT edge (ROADMAP
+  4.10 landed).** The "Plain HTTP vs HTTPS (the CONNECT edge)" subsection
+  documents what squid actually enforces: CONNECT tunnels are locked to port
+  443 and trust the allowlisted host at the host level (any path, no TLS
+  inspection); plain HTTP is denied by default because the default allowlist
+  is 443-only (fail-closed); widening a host to port 80 allows cleartext HTTP
+  through squid; a widened non-443 port permits plain-HTTP traffic but not a
+  CONNECT tunnel; enforcement granularity is host and port, not path. The
+  section also restates the SSRF guard scope and the nft firewall guarantee
+  (no bypass path). No silent gaps.
+
 ### Added
 
 - **Sandbox image picks up Debian security fixes on rebuild (ROADMAP 4.13).**
