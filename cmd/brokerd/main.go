@@ -644,7 +644,7 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 	// reaping first could RemoveAll a path a still-terminating VM holds. The
 	// boot lock (see main) guarantees no other brokerd is concurrently running
 	// a task here, so every leftover provably belongs to a dead prior life.
-	if n, err := stage.ReapOrphans(stageRoot); err != nil {
+	if n, err := stage.ReapOrphans(stageRoot, nil); err != nil {
 		slog.Warn("orphan prune: stage reap refused", "err", err)
 	} else if n > 0 {
 		slog.Info("orphan prune: reaped stage dirs", "count", n)
