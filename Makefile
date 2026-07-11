@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test test-squid-live test-squid-e2e test-integration redteam redteam-vm demo sbom docs verify-build vet lint image network init clean help
+.PHONY: all build install uninstall test test-squid-live test-squid-e2e test-integration redteam redteam-report redteam-vm demo sbom docs verify-build vet lint image network init clean help
 
 all: build
 
@@ -24,6 +24,7 @@ help:
 	@echo "  test-squid-live  proxy-auth path (squidlive tag); requires squid on PATH"
 	@echo "  test-squid-e2e   VM-level egress widening (squide2e tag); requires container runtime + images + squid"
 	@echo "  redteam     run the host-side adversarial containment suite (A3-A6)"
+	@echo "  redteam-report  same as redteam but prints a per-claim GREEN/RED table"
 	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7); macOS + container runtime"
 	@echo "  demo        run the narrated breach demo (real attacks; add VM=1 for A1/A2/A7)"
 	@echo "  sbom        write a CycloneDX SBOM to dist/drydock.cdx.json"
@@ -92,6 +93,11 @@ redteam:
 	@echo "== drydock red-team — attacks that must fail (host-side: A3-A6) =="
 	go test -count=1 -run '$(REDTEAM)' ./...
 	@echo "== host-side containment verified. VM-backed A1/A2/A7: make redteam-vm =="
+
+# redteam-report runs the same red-team tests with -json output and pipes
+# through cmd/redteam-report to print a per-claim GREEN/RED table.
+redteam-report:
+	@go test -json -count=1 -run '$(REDTEAM)' ./... | go run ./cmd/redteam-report
 
 # redteam-vm runs the VM-backed attacks (A1 key-exfil, A2 egress, A7
 # ephemerality) inside the sandbox. macOS / Apple silicon only; needs the
