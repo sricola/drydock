@@ -566,7 +566,7 @@ func (tr *taskRun) runSandbox(args []string) error {
 
 // pushAndOpenPR handles the diff-approval gate, branch push, and PR creation.
 // It always emits a terminal event (result/outcome=denied|cancelled|pushed|push_failed).
-// HandleTask should return immediately after calling this — it is the last step
+// HandleTask should return immediately after calling this; it is the last step
 // in the task lifecycle.
 func (tr *taskRun) pushAndOpenPR(diff string) {
 	b := tr.b
