@@ -20,6 +20,7 @@ default_agent:          claude         # sandbox CLI: claude | codex | gemini | 
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
 task_max_requests:      0              # per-task request cap. 0 = unlimited when a USD budget bounds spend; with an uncapped budget (subscription / priceless model) 0 falls closed to a built-in default cap
+max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)
 push_max_retries:       3              # retry a transient (network) push failure N times with backoff; 0 = no retry

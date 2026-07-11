@@ -346,14 +346,15 @@ func main() {
 		}
 		p, _ := provider.ByVendor(b.Vendor.Name)
 		providers[b.Vendor.Name] = &gateway.Provider{
-			GW:          gw,
-			Vendor:      b.Vendor.Name,
-			BaseURL:     "http://" + gwAddr,
-			BaseURLEnv:  p.BaseURLEnv,
-			TokenEnv:    p.TokenEnv,
-			Budget:      budget,
-			TTL:         cfg.TaskTimeout + 5*time.Minute,
-			MaxRequests: maxReq,
+			GW:             gw,
+			Vendor:         b.Vendor.Name,
+			BaseURL:        "http://" + gwAddr,
+			BaseURLEnv:     p.BaseURLEnv,
+			TokenEnv:       p.TokenEnv,
+			Budget:         budget,
+			TTL:            cfg.TaskTimeout + 5*time.Minute,
+			MaxRequests:    maxReq,
+			MaxRequestCost: cfg.MaxRequestCostUSD,
 		}
 	}
 	avail := make([]string, 0, len(providers))

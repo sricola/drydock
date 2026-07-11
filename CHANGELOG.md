@@ -22,6 +22,16 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **In-flight reservation: per-request cost ceiling (ROADMAP 4.15).** Closes
+  the concurrent-bypass hole from #139: previously N pipelined requests could
+  all admit at spend=0, letting concurrent tasks overshoot the budget before
+  any stream completed. A new config field `max_request_cost_usd` (env
+  `DRYDOCK_MAX_REQUEST_COST_USD`, default `0`) sets a worst-case USD amount
+  reserved against the lease budget while each request is in flight; the
+  reservation is released and reconciled with actual metered cost when the
+  stream ends. `0` (default) disables the reservation and keeps the existing
+  post-hoc metering behavior, so the change is fully backward compatible.
+
 - **Sandbox image picks up Debian security fixes on rebuild (ROADMAP 4.13).**
   `apt-get upgrade -y` now runs inside the Dockerfile before the package
   install block, so every image rebuild (whether triggered by `drydock setup`

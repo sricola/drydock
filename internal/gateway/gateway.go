@@ -26,13 +26,15 @@ type Lease struct {
 	// constant-time equality against the bearer the caller presented;
 	// even if Go's map lookup ever changes to a timing-sensitive shape,
 	// the defense-in-depth comparison stops timing-side-channel leakage.
-	Token       string
-	Vendor      string
-	BudgetUSD   float64
-	SpentUSD    float64
-	Expiry      time.Time
-	MaxRequests int // 0 = unlimited
-	Requests    int // number of requests served so far
+	Token             string
+	Vendor            string
+	BudgetUSD         float64
+	SpentUSD          float64
+	Expiry            time.Time
+	MaxRequests       int     // 0 = unlimited
+	Requests          int     // number of requests served so far
+	MaxRequestCostUSD float64 // per-request reservation R (0 = disabled)
+	Reserved          float64 // sum of R for admitted-but-unmetered requests; guarded by g.mu
 }
 
 type vendorRT struct {
@@ -78,7 +80,7 @@ func New(backends ...Backend) (*Gateway, error) {
 	return g, nil
 }
 
-func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, ttl time.Duration) (string, error) {
+func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, maxRequestCostUSD float64, ttl time.Duration) (string, error) {
 	if _, ok := g.vendors[vendor]; !ok {
 		return "", fmt.Errorf("gateway: no backend for vendor %q", vendor)
 	}
@@ -86,11 +88,13 @@ func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, ttl ti
 	if _, err := rand.Read(b); err != nil {
 		// A predictable bearer token would let a co-tenant forge gateway calls.
 		// No entropy is unrecoverable; fail closed rather than mint zeros.
-		panic("drydock: crypto/rand failed — cannot mint gateway tokens: " + err.Error())
+		panic("drydock: crypto/rand failed - cannot mint gateway tokens: " + err.Error())
 	}
 	tok := "tok_" + hex.EncodeToString(b)
 	g.mu.Lock()
-	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD, MaxRequests: maxRequests, Expiry: time.Now().Add(ttl)}
+	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD,
+		MaxRequests: maxRequests, MaxRequestCostUSD: maxRequestCostUSD,
+		Expiry: time.Now().Add(ttl)}
 	g.mu.Unlock()
 	return tok, nil
 }
@@ -165,6 +169,10 @@ func (g *Gateway) admit(token string) (*Lease, int) {
 	if l.SpentUSD >= l.BudgetUSD {
 		return nil, http.StatusPaymentRequired
 	}
+	if l.MaxRequestCostUSD > 0 &&
+		l.SpentUSD+l.Reserved+l.MaxRequestCostUSD > l.BudgetUSD {
+		return nil, http.StatusPaymentRequired
+	}
 	if l.MaxRequests > 0 && l.Requests >= l.MaxRequests {
 		return nil, http.StatusTooManyRequests
 	}
@@ -173,6 +181,9 @@ func (g *Gateway) admit(token string) (*Lease, int) {
 		return nil, http.StatusPaymentRequired
 	}
 	l.Requests++
+	if l.MaxRequestCostUSD > 0 {
+		l.Reserved += l.MaxRequestCostUSD
+	}
 	return l, 0
 }
 
@@ -307,14 +318,21 @@ func (g *Gateway) meter(resp *http.Response) error {
 	}
 	ct := resp.Header.Get("Content-Type")
 	resp.Body = &usageReader{rc: resp.Body, onDone: func(body []byte) {
+		delta := 0.0
 		if model, in, out, ok := vt.v.ParseUsage(body, ct); ok {
-			delta := cost(vt.v.Prices, model, in, out)
-			g.mu.Lock()
-			rc.lease.SpentUSD += delta
-			g.mu.Unlock()
-			if g.aggBudget > 0 {
-				g.ledger.add(rc.lease.Vendor, delta, time.Now())
+			delta = cost(vt.v.Prices, model, in, out)
+		}
+		g.mu.Lock()
+		if rc.lease.MaxRequestCostUSD > 0 {
+			rc.lease.Reserved -= rc.lease.MaxRequestCostUSD
+			if rc.lease.Reserved < 0 {
+				rc.lease.Reserved = 0 // floor: defense in depth
 			}
+		}
+		rc.lease.SpentUSD += delta
+		g.mu.Unlock()
+		if g.aggBudget > 0 && delta > 0 {
+			g.ledger.add(rc.lease.Vendor, delta, time.Now())
 		}
 	}}
 	return nil

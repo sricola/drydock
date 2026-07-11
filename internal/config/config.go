@@ -85,6 +85,12 @@ type Config struct {
 	// (defaultUncappedRequestCap) so a runaway task can't drain a subscription.
 	TaskMaxRequests int `yaml:"task_max_requests"`
 
+	// MaxRequestCostUSD is the worst-case USD a single request may cost,
+	// reserved against the lease budget while the request is in flight so
+	// concurrent requests cannot all admit at spend=0. 0 (default) disables the
+	// reservation (post-hoc metering only).
+	MaxRequestCostUSD float64 `yaml:"max_request_cost_usd"`
+
 	// AggregateBudgetUSD caps cross-task USD spend per api_key-mode provider over
 	// AggregateWindow. 0 (default) disables the aggregate cap. Subscription
 	// vendors are out of scope (bounded per-task by TaskMaxRequests).
@@ -141,6 +147,7 @@ func Defaults() *Config {
 		AnthropicAuth:          "api_key",
 		OpenAIAuth:             "api_key",
 		TaskMaxRequests:        0,
+		MaxRequestCostUSD:      0,
 		AggregateBudgetUSD:     0,
 		AggregateWindow:        24 * time.Hour,
 		PushMaxRetries:         3,
@@ -302,6 +309,11 @@ func (c *Config) applyEnvOverrides() {
 			c.AggregateBudgetUSD = f
 		}
 	}
+	if v := os.Getenv("DRYDOCK_MAX_REQUEST_COST_USD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.MaxRequestCostUSD = f
+		}
+	}
 	if v := os.Getenv("DRYDOCK_AGGREGATE_WINDOW"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
 			c.AggregateWindow = d
@@ -401,6 +413,9 @@ func (c *Config) validate() error {
 	if c.AggregateBudgetUSD < 0 {
 		return fmt.Errorf("config: aggregate_budget_usd must be >= 0, got %v", c.AggregateBudgetUSD)
 	}
+	if c.MaxRequestCostUSD < 0 {
+		return fmt.Errorf("config: max_request_cost_usd must be >= 0, got %v", c.MaxRequestCostUSD)
+	}
 	if c.AggregateWindow < 0 {
 		return fmt.Errorf("config: aggregate_window must be >= 0, got %v", c.AggregateWindow)
 	}
@@ -441,6 +456,7 @@ default_agent:          claude         # sandbox CLI: claude | codex | gemini | 
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
 task_max_requests:      0              # per-task request cap. 0 = unlimited when a USD budget bounds spend; with an uncapped budget (subscription / priceless model) 0 falls closed to a built-in default cap
+max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)
 push_max_retries:       3              # retry a transient (network) push failure N times with backoff; 0 = no retry
