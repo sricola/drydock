@@ -304,13 +304,13 @@ so it can ship independently.
   survive, an `interrupted` terminal line is written to the audit (never a false
   `ok`) and the `.diff` is preserved for `drydock retry <id>`. Idempotent across
   successive restarts.
-- **4.15 Precise gateway metering.**
-  ([#139](https://github.com/sricola/drydock/issues/139)) The USD budget is
-  enforced post-hoc (metered at stream EOF), so concurrent requests can admit at
-  spend=0 and a truncated stream meters low. The v0.6.0 request cap bounds the
-  worst case; the precise fix (per-request cost ceiling, in-flight reservation,
-  input-at-admission metering) is a billing-correctness change. Surfaced by the
-  code review; deferred from the budget work.
+- **4.15 Precise gateway metering.** *Landed.* Closes the concurrent-bypass
+  hole from #139: N pipelined requests could all admit at spend=0 before any
+  stream completed. A new `max_request_cost_usd` config field (env
+  `DRYDOCK_MAX_REQUEST_COST_USD`, default `0`) reserves a worst-case USD amount
+  against the lease budget while each request is in flight; the reservation is
+  released and reconciled with actual metered cost at stream end. Default `0`
+  keeps the existing post-hoc metering behavior (backward compatible).
 
 **Done when:** a `brokerd` crash leaves no orphaned VM or wedged slot, spend is
 bounded in aggregate (landed: per-task via `task_budget_usd`/`task_max_requests`
@@ -332,20 +332,17 @@ little, so the top of the list leans operator.
 product review. It landed the capability clamp (4.12), a first step on the
 budget cap (4.3: a per-task request cap for uncapped lanes), IPv6 fail-close and
 a squid SSRF guard (4.10), plus 4.4 (`retry`), alongside audit durability, a
-loopback-only admin bind, and supply-chain nits. What the review surfaced but
-deferred is now tracked as 4.15; 4.14 has since landed (resume
-awaiting-approval across restart). The aggregate budget cap (4.3) is now
-fully landed: see the Unreleased CHANGELOG entry for details. 4.10 is now
-fully landed: the plain-HTTP vs HTTPS-CONNECT edge is documented in the egress
-doc.
+loopback-only admin bind, and supply-chain nits. Since then: 4.14 (resume
+awaiting-approval across restart), the aggregate budget cap (4.3, now fully
+landed), 4.10 (plain-HTTP vs HTTPS-CONNECT edge documented in the egress doc),
+and 4.15 (precise gateway metering: per-request in-flight reservation) have all
+landed. See the Unreleased CHANGELOG entry for details.
 
-1. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
-   (per-request ceiling, in-flight reservation) beyond the v0.6.0 request cap.
-2. **4.7 Observability**: wants real multi-run usage first, which unattended
+1. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
-3. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
+2. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
    already gates bumps.
-4. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
+3. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
 
 [#139]: https://github.com/sricola/drydock/issues/139
