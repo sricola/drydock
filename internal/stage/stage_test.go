@@ -139,12 +139,20 @@ func TestCleanup_RemovesAbsoluteTempDir(t *testing.T) {
 	}
 }
 
-func TestPush_CommitsAndPushes(t *testing.T) {
+// setupPushable creates a bare origin repo and a Stage with a pending change,
+// ready for Commit or Push. Returns the bare origin git dir and the Stage.
+func setupPushable(t *testing.T) (string, *Stage) {
+	t.Helper()
 	bare := makeOriginRepo(t)
 	s := prepare(t, bare)
 	if err := os.WriteFile(filepath.Join(s.WorkDir, "README.md"), []byte("hello\nfeature\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return bare, s
+}
+
+func TestPush_CommitsAndPushes(t *testing.T) {
+	bare, s := setupPushable(t)
 
 	if err := s.Push("agent/abc123", "agent: add feature"); err != nil {
 		t.Fatalf("Push: %v", err)
@@ -157,6 +165,25 @@ func TestPush_CommitsAndPushes(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "README.md") {
 		t.Errorf("pushed commit missing README.md change:\n%s", out)
+	}
+}
+
+func TestPushBranch_PushesToDifferentRemoteName(t *testing.T) {
+	origin, s := setupPushable(t) // builds a bare origin + a Stage with a change
+
+	if err := s.Commit("agent/x", "agent: change"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	// Push the committed local branch to a DIFFERENTLY named remote branch.
+	if err := s.PushBranch("agent/x", "agent/x-2"); err != nil {
+		t.Fatalf("PushBranch: %v", err)
+	}
+	out, err := exec.Command("git", "--git-dir="+origin, "branch", "--list", "agent/x-2").Output()
+	if err != nil {
+		t.Fatalf("list remote branches: %v", err)
+	}
+	if !strings.Contains(string(out), "agent/x-2") {
+		t.Errorf("remote missing agent/x-2 branch; got %q", out)
 	}
 }
 
