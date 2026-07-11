@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +14,22 @@ import (
 	"drydock/internal/egress"
 )
 
+var (
+	errTaskKilled = errors.New("task killed")
+	errShutdown   = errors.New("brokerd shutting down")
+)
+
+// gateCause records why awaitGate returned false (or true).
+type gateCause int
+
+const (
+	gateApproved gateCause = iota
+	gateDenied
+	gateKilled
+	gateTimeout
+	gateShutdown
+)
+
 // awaitGate is the shared skeleton for gatePush and gateEgressWiden. It:
 //   - optionally wraps ctx with the operator ApprovalTimeout;
 //   - registers a buffered channel in b.pending under taskID (deregisters on return);
@@ -20,10 +37,10 @@ import (
 //     macOS notification specific to this gate;
 //   - blocks until the channel receives a signal or ctx is cancelled.
 //
-// Returns true when the gate is approved, false on deny, kill, or timeout.
+// Returns (true, gateApproved) on approval, (false, cause) on deny/kill/timeout/shutdown.
 // timeoutMsg is logged at Warn on DeadlineExceeded; cancelMsg is logged at Info
-// on any other ctx cancellation.
-func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg string, onReady func()) bool {
+// on any context cancellation that is not a shutdown.
+func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg string, onReady func()) (bool, gateCause) {
 	if b.ApprovalTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, b.ApprovalTimeout)
@@ -46,15 +63,61 @@ func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg st
 
 	select {
 	case ok := <-ch:
-		return ok
+		if ok {
+			return true, gateApproved
+		}
+		return false, gateDenied
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
 			slog.Warn(timeoutMsg, "task_id", taskID, "timeout", b.ApprovalTimeout)
-		} else {
-			slog.Info(cancelMsg, "task_id", taskID)
+			return false, gateTimeout
 		}
-		return false
+		switch context.Cause(ctx) {
+		case errShutdown:
+			slog.Info("task gate interrupted by shutdown", "task_id", taskID)
+			return false, gateShutdown
+		case errTaskKilled:
+			slog.Info(cancelMsg, "task_id", taskID)
+			return false, gateKilled
+		default:
+			slog.Info(cancelMsg, "task_id", taskID)
+			return false, gateKilled
+		}
 	}
+}
+
+// gatePushMarked is gatePush with a durable resume marker. It persists the diff
+// and a gate marker, blocks for approval, then removes the marker UNLESS the
+// gate was interrupted by shutdown (left for boot resume).
+func (b *Broker) gatePushMarked(ctx context.Context, tr *taskRun, diff string) (bool, gateCause) {
+	ok, cause := b.awaitGate(ctx, tr.id,
+		"task auto-denied at approval gate (approval_timeout reached)",
+		"task killed or broker shutting down before approval; aborting",
+		func() {
+			diffPath := filepath.Join(b.AuditRoot, tr.id+".diff")
+			if werr := os.WriteFile(diffPath, []byte(diff), 0o600); werr != nil {
+				slog.Warn("could not persist diff for review", "task_id", tr.id, "err", werr)
+			}
+			if werr := writeGateMarker(b.AuditRoot, tr.id, gateMarker{
+				RepoRef: tr.repoRef, Instruction: tr.instruction, Platform: tr.platform,
+				Agent: tr.agentName, Draft: tr.draft,
+				TaskStartMs: tr.taskStart.UnixMilli(),
+			}); werr != nil {
+				slog.Warn("could not persist gate marker", "task_id", tr.id, "err", werr)
+			}
+			slog.Info("task awaiting approval",
+				"task_id", tr.id, "diff_bytes", len(diff), "diff_path", diffPath,
+				"hint", "drydock approve "+tr.id+" | drydock deny "+tr.id)
+			b.notifyMac("drydock: task awaiting approval",
+				fmt.Sprintf("task %s (%d byte diff): drydock approve %s", tr.id, len(diff), tr.id))
+		})
+	if cause != gateShutdown {
+		if err := removeGateMarker(b.AuditRoot, tr.id); err != nil {
+			slog.Warn("gate marker not removed; may cause a spurious interrupted on the next boot",
+				"task_id", tr.id, "err", err)
+		}
+	}
+	return ok, cause
 }
 
 // gateEgressWiden blocks until POST /admin/approve/{id} or /admin/deny/{id}
@@ -63,7 +126,7 @@ func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg st
 // never reach squid. Mirrors gatePush so the operator only has to learn one
 // approval flow.
 func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []egress.Domain) bool {
-	return b.awaitGate(ctx, taskID,
+	ok, _ := b.awaitGate(ctx, taskID,
 		"task auto-denied at egress gate (approval_timeout reached)",
 		"task cancelled at egress gate",
 		func() {
@@ -84,6 +147,7 @@ func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []eg
 			b.notifyMac("drydock — task wants more egress",
 				fmt.Sprintf("task %s · %s · drydock approve %s", taskID, summary, taskID))
 		})
+	return ok
 }
 
 func summariseExtras(extras []egress.Domain) string {
@@ -113,7 +177,7 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 		slog.Info("task auto-approve push", "task_id", taskID, "reason", "caller opted in")
 		return true
 	}
-	return b.awaitGate(ctx, taskID,
+	ok, _ := b.awaitGate(ctx, taskID,
 		"task auto-denied at approval gate (approval_timeout reached)",
 		"task killed or broker shutting down before approval; aborting",
 		func() {
@@ -128,6 +192,7 @@ func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) b
 			b.notifyMac("drydock — task awaiting approval",
 				fmt.Sprintf("task %s · %d byte diff · drydock approve %s", taskID, len(diff), taskID))
 		})
+	return ok
 }
 
 // notifyMac fires a macOS notification via osascript. Silent no-op when the

@@ -260,7 +260,7 @@ func TestReapOrphans_RemovesChildDirsKeepsFiles(t *testing.T) {
 	if err := os.WriteFile(stray, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n, err := ReapOrphans(root)
+	n, err := ReapOrphans(root, nil)
 	if err != nil {
 		t.Fatalf("ReapOrphans: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestReapOrphans_RemovesChildDirsKeepsFiles(t *testing.T) {
 
 func TestReapOrphans_RefusesUnsafeRoot(t *testing.T) {
 	for _, bad := range []string{"", "/", ".", "relative/path"} {
-		if _, err := ReapOrphans(bad); err == nil {
+		if _, err := ReapOrphans(bad, nil); err == nil {
 			t.Errorf("ReapOrphans(%q) = nil error, want refusal", bad)
 		}
 	}
@@ -288,7 +288,57 @@ func TestReapOrphans_RefusesUnsafeRoot(t *testing.T) {
 
 func TestReapOrphans_MissingRootIsNoop(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	if n, err := ReapOrphans(missing); err != nil || n != 0 {
+	if n, err := ReapOrphans(missing, nil); err != nil || n != 0 {
 		t.Errorf("missing root = (%d,%v), want (0,nil)", n, err)
+	}
+}
+
+func TestReopen_RecoversAPreparedStage(t *testing.T) {
+	origin, s := setupPushable(t) // bare origin + a Stage with an uncommitted change
+	root := s.Root
+
+	re, err := Reopen(root)
+	if err != nil {
+		t.Fatalf("Reopen: %v", err)
+	}
+	// The reopened stage can commit the surviving work-tree change and push it.
+	if err := re.Commit("agent/resumed", "agent: resumed"); err != nil {
+		t.Fatalf("Commit on reopened stage: %v", err)
+	}
+	if err := re.PushBranch("agent/resumed", "agent/resumed"); err != nil {
+		t.Fatalf("PushBranch on reopened stage: %v", err)
+	}
+	out, _ := exec.Command("git", "--git-dir="+origin, "branch", "--list", "agent/resumed").CombinedOutput()
+	if !strings.Contains(string(out), "agent/resumed") {
+		t.Errorf("reopened stage did not push; origin branches: %s", out)
+	}
+}
+
+func TestReopen_ErrorsWhenGitDirMissing(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Reopen(dir); err == nil {
+		t.Error("Reopen of a dir with no git dir should error")
+	}
+}
+
+func TestReapOrphans_SkipsKeepSet(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"keepme", "reapme"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := ReapOrphans(root, map[string]bool{"keepme": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("reaped %d, want 1 (reapme only)", n)
+	}
+	if _, err := os.Stat(filepath.Join(root, "keepme")); err != nil {
+		t.Error("keepme should have survived the reap")
+	}
+	if _, err := os.Stat(filepath.Join(root, "reapme")); !os.IsNotExist(err) {
+		t.Error("reapme should have been removed")
 	}
 }

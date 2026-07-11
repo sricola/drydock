@@ -184,14 +184,29 @@ func (s *Stage) Cleanup() error {
 	return os.RemoveAll(s.Root)
 }
 
+// Reopen reconstructs a Stage from an existing root left by a prior Prepare
+// (e.g. an awaiting-approval task that survived a brokerd restart), without
+// cloning. It errors if the work tree or the host-only git dir is missing.
+func Reopen(root string) (*Stage, error) {
+	workDir := filepath.Join(root, "work")
+	gitDir := filepath.Join(root, "git")
+	for _, d := range []string{workDir, gitDir} {
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("stage: cannot reopen %q: missing %q", root, d)
+		}
+	}
+	return &Stage{Root: root, WorkDir: workDir, gitDir: gitDir}, nil
+}
+
 // ReapOrphans removes every child directory under root. Used at brokerd boot to
 // clear stage dirs orphaned by a crash (the per-task Cleanup defer never ran).
 // SAFE ONLY AT BOOT, when no task is live. Applies the same guard as Cleanup so
 // a misconfigured (empty/relative/root-shaped) StageRoot can't widen the blast
 // radius. A missing root is a no-op. Non-directory entries are left untouched.
+// Dirs named in keep are skipped (awaiting-approval stages preserved for resume).
 // Returns the count of dirs reaped and the first error (per-entry errors are
 // non-fatal and don't abort the sweep).
-func ReapOrphans(root string) (int, error) {
+func ReapOrphans(root string, keep map[string]bool) (int, error) {
 	clean := filepath.Clean(root)
 	if clean == "" || clean == "/" || clean == "." || !filepath.IsAbs(clean) {
 		return 0, fmt.Errorf("stage: refusing to reap unsafe root %q", root)
@@ -208,6 +223,9 @@ func ReapOrphans(root string) (int, error) {
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
+		}
+		if keep[e.Name()] {
+			continue // awaiting-approval stage: preserved for resume
 		}
 		if rerr := os.RemoveAll(filepath.Join(root, e.Name())); rerr != nil {
 			if firstErr == nil {

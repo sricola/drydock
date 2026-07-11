@@ -115,6 +115,10 @@ type Broker struct {
 	// remote.AdapterFor. White-box tests inject a fake to drive the
 	// best-effort PR-open path without shelling out to gh/glab/tea.
 	newAdapter func(repoRef, platform string) remote.Adapter
+	// reopenStage reopens an existing stage by its root path. nil in production
+	// falls back to defaultReopenStage (wraps stage.Reopen). Tests inject a fake
+	// to drive ResumeAwaiting without a real git directory on disk.
+	reopenStage func(root string) (taskStage, error)
 
 	// MaxConcurrent caps how many tasks may be in any non-terminal state at
 	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
@@ -127,9 +131,9 @@ type Broker struct {
 	slots     chan struct{}
 
 	pendingMu  sync.Mutex
-	pending    map[string]chan bool          // task_id -> approval channel
-	tasks      map[string]*TaskState         // task_id -> live state (running + awaiting_approval)
-	cancellers map[string]context.CancelFunc // task_id -> cancel hook for in-flight kill
+	pending    map[string]chan bool               // task_id -> approval channel
+	tasks      map[string]*TaskState              // task_id -> live state (running + awaiting_approval)
+	cancellers map[string]context.CancelCauseFunc // task_id -> cancel hook for in-flight kill
 }
 
 // taskStage is the subset of *stage.Stage that HandleTask uses. It exists so
@@ -167,6 +171,16 @@ func defaultPrepareStage(root, repoRef string) (taskStage, error) {
 		return nil, err
 	}
 	return realStage{s}, nil
+}
+
+// defaultReopenStage is the production reopenStage: reopens an existing stage
+// directory left on disk by a prior brokerd life (used by ResumeAwaiting).
+func defaultReopenStage(root string) (taskStage, error) {
+	s, err := stage.Reopen(root)
+	if err != nil {
+		return nil, err
+	}
+	return realStage{s: s}, nil
 }
 
 // runContainer is the production runAgent: it runs the Apple `container` CLI
@@ -216,6 +230,11 @@ type taskRun struct {
 	logf       io.Writer   // audit log writer
 	auditPath  string      // path to the audit .jsonl
 	taskStart  time.Time   // set by runSandbox when the agent starts
+
+	// keepStage, when true, suppresses the deferred stage Cleanup so the stage
+	// directory survives a brokerd shutdown and can be resumed at next boot.
+	// Set by pushAndOpenPR and resumePush when gatePushMarked returns gateShutdown.
+	keepStage bool
 }
 
 // errTaskTerminated signals that a lifecycle method has already emitted the
@@ -252,8 +271,8 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// Cancellation is driven only by /admin/kill (the stored cancel) and
 	// brokerd shutdown (CancelAll iterates the stored cancels). Event writes to
 	// the response become best-effort (emit already ignores write errors).
-	taskCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	taskCtx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	b.registerTask(taskID, t.RepoRef, t.Instruction, cancel)
 	defer b.unregisterTask(taskID)
 
@@ -333,7 +352,11 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		sw.emit(errorEvent(taskID, "clone failed", "check the repo URL and that brokerd can reach it"))
 		return
 	}
-	defer st.Cleanup() // wipe the host scratch (work tree + host-only git dir)
+	defer func() {
+		if !tr.keepStage {
+			_ = st.Cleanup()
+		}
+	}()
 	tr.st = st
 
 	if err := st.WriteTaskFiles(t.Instruction); err != nil {
@@ -582,16 +605,32 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"deny":    "drydock deny " + tr.id,
 			"review":  "drydock review " + tr.id})
 	}
-	if !b.gatePush(tr.ctx, tr.id, diff, tr.autoApprove) {
+	approved := tr.autoApprove
+	cause := gateApproved
+	if !tr.autoApprove {
+		approved, cause = b.gatePushMarked(tr.ctx, tr, diff)
+	}
+	if !approved {
 		outcome := "denied"
-		if tr.ctx.Err() != nil {
+		if cause == gateKilled || cause == gateShutdown {
 			outcome = "cancelled"
+		}
+		if cause == gateShutdown {
+			tr.keepStage = true
 		}
 		tr.sw.emit(map[string]any{"event": "result", "outcome": outcome,
 			"task_id": tr.id, "diff_bytes": len(diff)})
 		return
 	}
 
+	tr.finishPush(diff, files, insertions, deletions)
+}
+
+// finishPush performs the branch push (with recovery) and PR-open after the
+// approval gate has passed, emitting the terminal pushed/push_failed event and,
+// on failure, the synthetic audit line. Shared by the live path and resume.
+func (tr *taskRun) finishPush(diff string, files, insertions, deletions int) {
+	b := tr.b
 	b.setStage(tr.id, StagePushing)
 	base := "agent/" + tr.id
 	adapterFor := b.newAdapter
@@ -620,7 +659,7 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"hint": "nothing was pushed to the remote; the diff is preserved; retry with `drydock retry " + tr.id + "`"})
 		return
 	}
-	// Branch is saved. Opening the PR/MR is best-effort — never downgrade a
+	// Branch is saved. Opening the PR/MR is best-effort; never downgrade a
 	// successful push to a failure.
 	title, body := prContent(tr.instruction, tr.id)
 	prErr := adapter.OpenRequest(remote.Request{

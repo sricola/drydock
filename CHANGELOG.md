@@ -9,6 +9,22 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Resume awaiting-approval tasks across restart (ROADMAP 4.14).** A task
+  blocked at the diff-approval gate now survives a brokerd restart. A durable
+  gate marker (`<id>.gate.json`) is written when a task enters the push gate;
+  the stage dir's cleanup is skipped on graceful shutdown and the marker is left
+  on disk; boot reconciliation skips reaping any stage dir whose id has a marker.
+  At boot, brokerd re-registers each marked task as pending and resumes it:
+  `drydock approve <id>` after a restart pushes the surviving branch with no
+  agent re-run and no additional spend (push auth via `PushEnv`, no model
+  credential needed). If the stage did not survive (a task from before this
+  feature, or a manually removed stage), brokerd appends an `interrupted`
+  terminal line to the audit and preserves the `.diff` for `drydock retry <id>`.
+  A false `ok` is never written for a task that did not push. The gate marker is
+  idempotent: if brokerd shuts down again while a resumed task is re-awaiting,
+  the marker persists for the next boot. Scope: the push (diff-approval) gate;
+  the egress-widen gate is unaffected (no completed work to preserve there).
+
 - **Push partial-failure recovery (ROADMAP 4.2).** The approved-diff push now
   reports one clean terminal outcome and recovers from recoverable failures.
   Push errors are classified into five reasons: `transient` (network), `auth`,

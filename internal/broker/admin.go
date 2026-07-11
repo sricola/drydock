@@ -91,7 +91,7 @@ func (b *Broker) HandleKill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such task", http.StatusNotFound)
 		return
 	}
-	cancel()
+	cancel(errTaskKilled)
 	w.WriteHeader(http.StatusNoContent)
 }
 

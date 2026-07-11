@@ -292,13 +292,15 @@ so it can ship independently.
   upgrade` (or targeted pins) in the Dockerfile flow plus a scheduled image
   rebuild, so security updates don't wait for a base-digest bump or a lucky
   rebuild.
-- **4.14 Resume awaiting-approval tasks across restart.**
-  ([#140](https://github.com/sricola/drydock/issues/140)) A task blocked at the
-  diff-approval gate loses its work tree on brokerd restart (the stage dir is
-  reaped) while its `.diff` survives unpushable, and the trace reads a false
-  `ok`. Persist a gate marker, skip reaping those stage dirs (or commit the
-  branch before the gate), and re-offer the gate after restart. Surfaced by the
-  code review; deferred from the audit-durability work.
+- **4.14 Resume awaiting-approval tasks across restart.** *Landed.* A durable
+  gate marker (`<id>.gate.json`) is written when a task enters the push gate;
+  the stage dir is preserved across a graceful shutdown (cleanup skipped, boot
+  reap skips marked dirs). At boot, brokerd re-registers each marked task as
+  pending and resumes it: `drydock approve <id>` after a restart pushes the
+  surviving branch with no agent re-run and no re-spend. If the stage did not
+  survive, an `interrupted` terminal line is written to the audit (never a false
+  `ok`) and the `.diff` is preserved for `drydock retry <id>`. Idempotent across
+  successive restarts.
 - **4.15 Precise gateway metering.**
   ([#139](https://github.com/sricola/drydock/issues/139)) The USD budget is
   enforced post-hoc (metered at stream EOF), so concurrent requests can admit at
@@ -328,27 +330,25 @@ product review. It landed the capability clamp (4.12), a first step on the
 budget cap (4.3: a per-task request cap for uncapped lanes), IPv6 fail-close and
 a squid SSRF guard (4.10), plus 4.4 (`retry`), alongside audit durability, a
 loopback-only admin bind, and supply-chain nits. What the review surfaced but
-deferred is now tracked as 4.14 and 4.15. The aggregate budget cap (4.3) is now
+deferred is now tracked as 4.15; 4.14 has since landed (resume
+awaiting-approval across restart). The aggregate budget cap (4.3) is now
 fully landed: see the Unreleased CHANGELOG entry for details.
 
-1. **4.14 Resume awaiting-approval across restart** ([#140]): a daemon restart
-   loses an awaiting-approval task's work tree; pairs with unattended operation.
-2. **4.13 Image package currency**: Debian fixes land only on rebuild; make
+1. **4.13 Image package currency**: Debian fixes land only on rebuild; make
    that systematic with `apt-get upgrade` / targeted pins plus a scheduled
    rebuild so updates don't wait for a base-digest bump.
-3. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
+2. **4.10 Egress depth (IPv6 / plain-HTTP)** (partial): IPv6 is now fail-closed
    and the SSRF guard landed; document the plain-HTTP-CONNECT edge.
-4. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
+3. **4.15 Precise gateway metering** ([#139]): tighten the post-hoc metering
    (per-request ceiling, in-flight reservation) beyond the v0.6.0 request cap.
-5. **4.7 Observability**: wants real multi-run usage first, which unattended
+4. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
-6. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
+5. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
    already gates bumps.
-7. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
+6. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
    cosmetic, bundle opportunistically.
 
 [#139]: https://github.com/sricola/drydock/issues/139
-[#140]: https://github.com/sricola/drydock/issues/140
 
 **Event-driven (no backlog slot):**
 - **2.2 Notarization**: fires when the Apple Developer ID certificate is in
