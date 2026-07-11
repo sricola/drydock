@@ -58,6 +58,29 @@ Details that matter:
 - Re-running `install` is the upgrade path: it rewrites the plist and
   restarts the job (e.g. after `make install` of a new build).
 
+## Restart and awaiting-approval tasks
+
+A task blocked at the diff-approval gate survives a brokerd restart:
+
+- When a task enters the gate, brokerd writes a durable gate marker
+  (`<id>.gate.json`) in the audit dir.
+- On a graceful shutdown, the stage dir is preserved (its cleanup is
+  skipped) and the marker is left on disk. Boot reconciliation skips
+  reaping any stage dir whose id has a gate marker, so the work tree is
+  intact when brokerd comes back up.
+- At boot, brokerd re-registers each marked task as pending and resumes it.
+  Running `drydock approve <id>` after a restart pushes the surviving
+  branch exactly as it would have before the restart: no agent re-run, no
+  additional API spend. Push auth goes through git remote credentials
+  (`PushEnv`), not the model credential.
+- If the stage did not survive (for example, a task that was awaiting
+  approval before this feature was deployed, or one whose stage dir was
+  removed manually), brokerd appends an `interrupted` terminal line to the
+  audit instead. The `.diff` is preserved, so `drydock retry <id>` still
+  works. A false `ok` is never written for a task that did not push.
+- If brokerd shuts down again while a resumed task is still waiting at the
+  gate, the marker is preserved for the next boot (idempotent).
+
 ## Status / uninstall
 
 ```bash
