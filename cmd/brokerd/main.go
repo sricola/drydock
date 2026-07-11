@@ -416,9 +416,10 @@ func main() {
 		"default_model", cfg.DefaultModel)
 
 	// Resume any tasks that were awaiting approval when the previous brokerd
-	// shut down. Called after the broker is fully wired but before Serve, so
-	// the tasks are registered and visible via /admin/pending from the first
-	// request onward.
+	// shut down. Called after the broker is fully wired but before Serve.
+	// Resumed tasks re-register as pending shortly after boot (asynchronously,
+	// per task); an approve that races ahead of registration gets a retryable
+	// 404, and the task is never lost because its marker persists.
 	b.ResumeAwaiting(cfg.StageRoot)
 
 	mux := http.NewServeMux()

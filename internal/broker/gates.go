@@ -112,7 +112,10 @@ func (b *Broker) gatePushMarked(ctx context.Context, tr *taskRun, diff string) (
 				fmt.Sprintf("task %s (%d byte diff): drydock approve %s", tr.id, len(diff), tr.id))
 		})
 	if cause != gateShutdown {
-		_ = removeGateMarker(b.AuditRoot, tr.id)
+		if err := removeGateMarker(b.AuditRoot, tr.id); err != nil {
+			slog.Warn("gate marker not removed; may cause a spurious interrupted on the next boot",
+				"task_id", tr.id, "err", err)
+		}
 	}
 	return ok, cause
 }
