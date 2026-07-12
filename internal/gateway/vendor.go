@@ -49,11 +49,23 @@ func (v Vendor) routeAllowed(method, path string) bool {
 		return true
 	}
 	for _, rt := range v.AllowedRoutes {
-		if (rt.Method == "" || rt.Method == method) && strings.HasPrefix(path, rt.Prefix) {
+		if (rt.Method == "" || rt.Method == method) && routeMatch(path, rt.Prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+// routeMatch matches path against a route prefix on path-segment boundaries, so
+// a prefix cannot admit a same-stem sibling (e.g. /v1/models must not admit
+// /v1/models_secret). A prefix with a trailing slash is a directory prefix
+// (matches any sub-path); one without matches the exact path or a sub-resource
+// beneath it.
+func routeMatch(path, prefix string) bool {
+	if strings.HasSuffix(prefix, "/") {
+		return strings.HasPrefix(path, prefix)
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
 // Credential is the host-held secret the gateway injects upstream. Never seen by the VM.
