@@ -4,7 +4,15 @@ package gateway
 import (
 	"net/http"
 	"net/url"
+	"strings"
 )
+
+// Route is one permitted (method, path-prefix) pair in a vendor's proxy
+// allowlist. An empty Method matches any method; matching is by path prefix.
+type Route struct {
+	Method string
+	Prefix string
+}
 
 // Vendor describes one upstream API: where it lives, how to authenticate to it
 // with the real key, and how to read token usage out of its responses.
@@ -23,6 +31,29 @@ type Vendor struct {
 	// joins it onto the inbound path. Empty (the default) means the path is
 	// forwarded byte-identical, preserving existing Anthropic and OpenAI behaviour.
 	BasePath string
+	// AllowedRoutes scopes the injected host credential to a vendor's inference
+	// routes. The gateway forwards a request only if its (method, path) matches
+	// one of these; everything else gets a gateway-local 403 without contacting
+	// upstream. This stops a task from using the credential for control-plane
+	// operations (file upload/download/delete, fine-tuning, model management,
+	// org/admin) that response-usage metering does not see. Empty means
+	// unrestricted, used for operator-configured OpenAI-compat endpoints where the
+	// path grammar is the operator's own server, not a shared vendor origin.
+	AllowedRoutes []Route
+}
+
+// routeAllowed reports whether (method, path) is permitted by this vendor's
+// AllowedRoutes. An empty allowlist is unrestricted (backward compatible).
+func (v Vendor) routeAllowed(method, path string) bool {
+	if len(v.AllowedRoutes) == 0 {
+		return true
+	}
+	for _, rt := range v.AllowedRoutes {
+		if (rt.Method == "" || rt.Method == method) && strings.HasPrefix(path, rt.Prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Credential is the host-held secret the gateway injects upstream. Never seen by the VM.
@@ -54,6 +85,8 @@ func AnthropicVendor() Vendor {
 		},
 		ParseUsage: parseAnthropicUsage,
 		Prices:     AnthropicPrices(),
+		// Claude Code posts inference to /v1/messages and may list /v1/models.
+		AllowedRoutes: []Route{{"POST", "/v1/messages"}, {"GET", "/v1/models"}},
 	}
 }
 
@@ -90,6 +123,13 @@ func OpenAIVendor() Vendor {
 		},
 		ParseUsage: parseOpenAIUsage,
 		Prices:     OpenAIPrices(),
+		// Codex/Chat clients post to /v1/responses or /v1/chat/completions and
+		// may list /v1/models. File/upload/fine-tuning/etc. are not forwarded.
+		AllowedRoutes: []Route{
+			{"POST", "/v1/chat/completions"},
+			{"POST", "/v1/responses"},
+			{"GET", "/v1/models"},
+		},
 	}
 }
 
@@ -111,6 +151,13 @@ func GoogleVendor() Vendor {
 		},
 		ParseUsage: parseGoogleUsage,
 		Prices:     GooglePrices(),
+		// The Gemini CLI posts to /v1beta/models/{model}:generateContent (and
+		// :streamGenerateContent), and may list /v1beta/models.
+		AllowedRoutes: []Route{
+			{"POST", "/v1beta/models/"},
+			{"GET", "/v1beta/models"},
+			{"GET", "/v1/models"},
+		},
 	}
 }
 
@@ -137,6 +184,11 @@ func OpenAICompatVendor(name, baseURL, basePath string, prices map[string]Price)
 	v.BaseURL = baseURL
 	v.BasePath = basePath
 	v.Prices = prices
+	// Unrestricted: the operator points this at their own OpenAI-compatible
+	// endpoint (Gemini's /v1beta/openai, OpenRouter's /api/v1, a local server),
+	// whose path grammar varies and is not a shared vendor origin with
+	// control-plane routes. The route allowlist targets the shared origins.
+	v.AllowedRoutes = nil
 	return v
 }
 
@@ -154,5 +206,9 @@ func OpenAIOAuthVendor(accountID string) Vendor {
 		r.Header.Set("Authorization", "Bearer "+secret)
 		r.Header.Set("chatgpt-account-id", accountID)
 	}
+	// The VM's Codex posts to {gateway}/responses (the director joins BasePath
+	// onto it). Scope to that inbound path; the inherited OpenAI routes do not
+	// cover bare /responses.
+	v.AllowedRoutes = []Route{{"POST", "/responses"}, {"POST", "/v1/responses"}}
 	return v
 }
