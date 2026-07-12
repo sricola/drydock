@@ -22,6 +22,11 @@ import (
 // gate would otherwise pop up on every test run on a developer's Mac.
 func TestMain(m *testing.M) {
 	os.Setenv("DRYDOCK_NO_NOTIFY", "1")
+	// Disable the low-disk preflight floor for unit tests: many HandleTask tests
+	// run against a real t.TempDir(), and a nearly-full CI runner or small tmpfs
+	// TMPDIR would otherwise refuse every one with "host low on disk". The
+	// preflight test overrides this explicitly to exercise the reject.
+	minFreeStageBytes = 0
 	os.Exit(m.Run())
 }
 

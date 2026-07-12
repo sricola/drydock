@@ -64,6 +64,48 @@ func TestFreeBytes_Positive(t *testing.T) {
 	}
 }
 
+func TestBelowFreeFloor(t *testing.T) {
+	dir := t.TempDir()
+	orig := minFreeStageBytes
+	t.Cleanup(func() { minFreeStageBytes = orig })
+
+	minFreeStageBytes = 0
+	if belowFreeFloor(dir) {
+		t.Error("belowFreeFloor with a 0 floor reported true")
+	}
+	minFreeStageBytes = 1 << 62
+	if !belowFreeFloor(dir) {
+		t.Error("belowFreeFloor should be true against an impossibly-high floor")
+	}
+	// An unmeasurable path fails OPEN (not below), so a Statfs error never
+	// spuriously refuses/cancels a task.
+	if belowFreeFloor("/nonexistent/drydock/path/xyz") {
+		t.Error("unmeasurable path reported below the floor; want fail-open")
+	}
+}
+
+// The monitor must also fire on the free-space floor alone (stage under the
+// byte/file caps), so the || belowFreeFloor(root) branch is revert-resistant.
+func TestWatchStageSize_FiresOnLowFreeSpace(t *testing.T) {
+	dir := t.TempDir() // empty stage: under the byte and file caps
+	orig := minFreeStageBytes
+	minFreeStageBytes = 1 << 62 // any real FS has less free -> below the floor
+	t.Cleanup(func() { minFreeStageBytes = orig })
+
+	fired := make(chan struct{}, 1)
+	g := watchStageSize(dir, 10*time.Millisecond, func() { fired <- struct{}{} })
+	defer g.stop()
+
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchStageSize did not fire on low free space (floor branch)")
+	}
+	if !g.exceeded() {
+		t.Error("exceeded() = false after firing on the free floor")
+	}
+}
+
 func writeN(t *testing.T, path string, n int) {
 	t.Helper()
 	if err := os.WriteFile(path, make([]byte, n), 0o644); err != nil {
