@@ -46,14 +46,21 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # anchored to a known claude-code version so the threat-model claims
 # track behavior we've actually tested. Override at build time with
 # --build-arg CLAUDE_CODE_VERSION=x.y.z.
+# npm supply chain (F-09): each `npm install -g` runs as root, so a package's
+# (or a transitive dep's) install script executes as root at build time. Where a
+# CLI's pinned version has NO own install script (codex, gemini-cli), pass
+# --ignore-scripts so no install script (including a transitive dep's) runs;
+# claude-code (install.cjs) and opencode (postinstall.mjs) genuinely need theirs,
+# so they keep scripts and are pinned by exact version instead. Every install
+# ends with a `<cli> --version` smoke check so a broken install fails the build.
 ARG CLAUDE_CODE_VERSION=2.1.207
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && claude --version
 
 # Pin the Codex CLI alongside claude-code. Bump deliberately; every drydock
 # release anchors to a known codex version. Override with
-# --build-arg CODEX_VERSION=x.y.z.
+# --build-arg CODEX_VERSION=x.y.z. No own install script -> --ignore-scripts.
 ARG CODEX_VERSION=0.144.1
-RUN npm install -g @openai/codex@${CODEX_VERSION}
+RUN npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION} && codex --version
 
 # Pin the opencode CLI for the OpenAI-compatible (bring-your-own-model) lane.
 # Bump deliberately. Override with --build-arg OPENCODE_VERSION=x.y.z. The
@@ -65,7 +72,7 @@ RUN npm install -g --foreground-scripts opencode-ai@${OPENCODE_VERSION} && openc
 # Pin the Gemini CLI for the native google vendor. Bump deliberately; every
 # drydock release anchors to a known version (0.49.0 validated by the 3B spike).
 ARG GEMINI_CLI_VERSION=0.50.0
-RUN npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
+RUN npm install -g --ignore-scripts @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
 
 RUN useradd -m -u 10001 -s /bin/bash agent
 
