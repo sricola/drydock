@@ -104,14 +104,21 @@ func TestSquidProxyAuth_Live(t *testing.T) {
 	// "not reachable" could be satisfied by squid allowing the CONNECT and the
 	// upstream then failing (curl exits non-zero, code 0) — which would mask an
 	// isolation/revocation breach. Requiring 403 means "the proxy cleanly denied."
-	reachable := func(r curlResult) bool { return r.reachable }
 	wantCode := func(c int) func(curlResult) bool { return func(r curlResult) bool { return r.code == c } }
+	// A non-2xx from the upstream still proves squid FORWARDED the request (the
+	// point of this positive case). Squid's own denials are 403 (deny) and 407
+	// (challenge); anything else means the request reached the upstream. In
+	// particular a 429 is api.github.com rate-limiting the shared CI runner IP,
+	// which is orthogonal to squid's egress enforcement, so treating it as
+	// unreachable made this gate flaky. Count "reached upstream" as any code
+	// that is not a squid denial.
+	reachedUpstream := func(r curlResult) bool { return r.reachable || (r.code != 0 && r.code != 403 && r.code != 407) }
 
-	// 1) task-1, correct creds, its own extra host → REACHABLE.
-	if got := expect(t, reachable, bind, "task-1", "secret1", widened); !got.reachable {
-		t.Errorf("[1] task-1 → %s should be reachable, got %s", widened, got)
+	// 1) task-1, correct creds, its own extra host → squid forwards it upstream.
+	if got := expect(t, reachedUpstream, bind, "task-1", "secret1", widened); !reachedUpstream(got) {
+		t.Errorf("[1] task-1 → %s should reach the upstream (squid forwarded, not a 403/407 denial), got %s", widened, got)
 	} else {
-		t.Logf("[1] task-1 creds → %s: reachable ✓", widened)
+		t.Logf("[1] task-1 creds → %s: reached upstream ✓ (code %d)", widened, got.code)
 	}
 
 	// 2) NO creds, the extra host → 407 challenge (not reachable).
