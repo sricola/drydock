@@ -244,6 +244,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
+	// Bound the request body: stripRequestFields (subscription) buffers it with
+	// io.ReadAll, and the proxy streams it otherwise. A legit LLM request is well
+	// under this; the cap stops a task from OOMing the gateway with a giant body.
+	r.Body = http.MaxBytesReader(w, r.Body, maxProxyRequestBytes)
 	vt := g.vendors[lease.Vendor]
 	secret, err := vt.cred.Current()
 	if err != nil {
@@ -256,6 +260,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), ctxKey{}, &reqCtx{lease: lease, secret: secret})
 	g.proxy.ServeHTTP(w, r.WithContext(ctx))
 }
+
+// maxProxyRequestBytes caps a forwarded request body. A var only so tests can
+// lower it; nothing in production writes it.
+var maxProxyRequestBytes int64 = 16 << 20 // 16 MiB
 
 // stripRequestFields rewrites a JSON request body to remove top-level fields
 // the upstream rejects (see Vendor.StripFields). It buffers the request body
@@ -382,6 +390,13 @@ func (g *Gateway) meter(resp *http.Response) error {
 // usage; only `message_start`/`message_delta` (and the final OpenAI event) do.
 var usageMarker = []byte("usage")
 
+// maxUsageBufBytes caps each metering buffer (the current line and the retained
+// usage lines) so a pathological response, one giant newline-free body, or an
+// endless stream of "usage"-containing lines, cannot grow gateway memory
+// unbounded. Metering is a safety gate: under-metering a pathological response
+// (truncated JSON parses to no usage) is acceptable. A var only for tests.
+var maxUsageBufBytes = 1 << 20 // 1 MiB per buffer
+
 // usageReader tees the response body to the client unchanged while metering it,
 // without buffering the whole (multi-MB) stream. It scans line by line and
 // retains ONLY lines containing "usage" — a handful of small events — then
@@ -410,18 +425,32 @@ func (u *usageReader) consume(b []byte) {
 	for {
 		i := bytes.IndexByte(b, '\n')
 		if i < 0 {
-			u.line.Write(b)
+			u.appendLine(b)
 			return
 		}
-		u.line.Write(b[:i])
+		u.appendLine(b[:i])
 		u.flushLine()
 		b = b[i+1:]
 	}
 }
 
+// appendLine writes b into the current line, bounded by maxUsageBufBytes so a
+// giant newline-free body cannot grow u.line without limit. Excess is dropped
+// (a line that long is not a parseable usage event).
+func (u *usageReader) appendLine(b []byte) {
+	if room := maxUsageBufBytes - u.line.Len(); room > 0 {
+		if len(b) > room {
+			b = b[:room]
+		}
+		u.line.Write(b)
+	}
+}
+
 // flushLine keeps the just-completed line iff it carries usage, then resets it.
+// Retained usage lines are bounded by maxUsageBufBytes so an endless stream of
+// "usage"-containing lines cannot grow u.kept without limit.
 func (u *usageReader) flushLine() {
-	if bytes.Contains(u.line.Bytes(), usageMarker) {
+	if u.kept.Len() < maxUsageBufBytes && bytes.Contains(u.line.Bytes(), usageMarker) {
 		u.kept.Write(u.line.Bytes())
 		u.kept.WriteByte('\n')
 	}
