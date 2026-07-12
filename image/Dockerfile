@@ -34,25 +34,25 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # anchored to a known claude-code version so the threat-model claims
 # track behavior we've actually tested. Override at build time with
 # --build-arg CLAUDE_CODE_VERSION=x.y.z.
-ARG CLAUDE_CODE_VERSION=2.1.177
+ARG CLAUDE_CODE_VERSION=2.1.207
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # Pin the Codex CLI alongside claude-code. Bump deliberately; every drydock
 # release anchors to a known codex version. Override with
 # --build-arg CODEX_VERSION=x.y.z.
-ARG CODEX_VERSION=0.140.0
+ARG CODEX_VERSION=0.144.1
 RUN npm install -g @openai/codex@${CODEX_VERSION}
 
 # Pin the opencode CLI for the OpenAI-compatible (bring-your-own-model) lane.
 # Bump deliberately. Override with --build-arg OPENCODE_VERSION=x.y.z. The
 # build-time `opencode --version` is a smoke check that the (script-running)
 # install produced a working binary.
-ARG OPENCODE_VERSION=1.17.11
+ARG OPENCODE_VERSION=1.17.18
 RUN npm install -g --foreground-scripts opencode-ai@${OPENCODE_VERSION} && opencode --version
 
 # Pin the Gemini CLI for the native google vendor. Bump deliberately; every
 # drydock release anchors to a known version (0.49.0 validated by the 3B spike).
-ARG GEMINI_CLI_VERSION=0.49.0
+ARG GEMINI_CLI_VERSION=0.50.0
 RUN npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
 
 RUN useradd -m -u 10001 -s /bin/bash agent
