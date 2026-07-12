@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 )
 
 // Stage is a prepared task workspace.
@@ -67,10 +68,32 @@ func (s *Stage) git(args ...string) (string, error) {
 // would falsely imply in-VM enforcement.
 func (s *Stage) WriteTaskFiles(prompt string) error {
 	dir := filepath.Join(s.WorkDir, ".task")
+	// The work tree is an untrusted clone: a hostile repo can commit `.task`
+	// (or `.task/prompt.txt`) as a symlink to an operator-writable host path,
+	// e.g. ~/.zshrc or ~/.ssh/authorized_keys. This write runs on the trusted
+	// host BEFORE any VM boundary, so a followed symlink would truncate an
+	// arbitrary host file. Refuse a symlinked .task (no legitimate repo commits
+	// one), and open prompt.txt with O_NOFOLLOW so a symlinked final component
+	// fails (ELOOP) instead of redirecting the write out of the stage.
+	if fi, err := os.Lstat(dir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("stage: refusing hostile staged repo: .task is a symlink")
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(prompt), 0o644)
+	f, err := os.OpenFile(
+		filepath.Join(dir, "prompt.txt"),
+		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW,
+		0o644,
+	)
+	if err != nil {
+		return fmt.Errorf("stage: write prompt: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(prompt); err != nil {
+		return err
+	}
+	return nil
 }
 
 // stageAll stages every change except the control dir and a top-level .git. (A
