@@ -1,0 +1,83 @@
+name: agent-cli-bump
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Monday 06:00 UTC weekly
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: fetch latest npm versions
+        id: fetch
+        run: |
+          set -euo pipefail
+          {
+            echo "versions<<EOF"
+            for pkg in "@anthropic-ai/claude-code" "@openai/codex" "opencode-ai" "@google/gemini-cli"; do
+              ver=$(npm view "$pkg" version 2>/dev/null || true)
+              if [ -z "$ver" ]; then
+                echo "::warning::npm view $pkg returned empty; skipping"
+                continue
+              fi
+              printf '%s=%s\n' "$pkg" "$ver"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: rewrite Dockerfile pins
+        id: rewrite
+        run: |
+          set -euo pipefail
+          SUMMARY=$(printf '%s\n' "$VERSIONS" | go run ./cmd/cli-bump)
+          {
+            echo "summary<<EOF"
+            printf '%s\n' "$SUMMARY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          VERSIONS: ${{ steps.fetch.outputs.versions }}
+
+      - name: open bump PR
+        run: |
+          set -euo pipefail
+          if git diff --quiet image/Dockerfile; then
+            echo "Dockerfile unchanged, nothing to bump."
+            exit 0
+          fi
+          BRANCH="agent-cli-bump"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add image/Dockerfile
+          git commit -m "chore: bump pinned agent CLIs $(date +%Y%m%d)"
+          git push --force-with-lease -u origin "$BRANCH"
+          {
+            printf '## Agent CLI version bumps\n\n'
+            printf '%s\n' "$SUMMARY"
+            printf '\n---\n\n'
+            printf 'Note: A GITHUB_TOKEN-authored PR does not auto-trigger CI. The reviewer must run the red-team gate (make redteam and make redteam-vm) before merging.\n'
+          } > /tmp/pr-body.md
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: bump pinned agent CLIs" \
+              --body-file /tmp/pr-body.md
+          else
+            echo "bump PR already open; updated the branch"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUMMARY: ${{ steps.rewrite.outputs.summary }}

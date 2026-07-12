@@ -22,6 +22,17 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Scheduled agent-CLI bump automation (ROADMAP 4.6).** A weekly GitHub
+  Actions workflow (`agent-cli-bump.yml`) fetches the latest npm version for
+  each pinned CLI (`@anthropic-ai/claude-code`, `@openai/codex`,
+  `opencode-ai`, `@google/gemini-cli`) and proposes a bump PR when any is
+  strictly newer than the current Dockerfile pin. The PR body notes that a
+  GITHUB_TOKEN-authored PR does not auto-trigger CI, and that the reviewer
+  must run the red-team gate (`make redteam` and `make redteam-vm`) before
+  merging. A new `cmd/cli-bump` tool implements the version-check and
+  Dockerfile-rewrite logic, which is unit-tested independently of the
+  workflow.
+
 - **In-flight reservation: per-request cost ceiling (ROADMAP 4.15).** Closes
   the concurrent-bypass hole from #139: previously N pipelined requests could
   all admit at spend=0, letting concurrent tasks overshoot the budget before

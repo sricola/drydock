@@ -236,10 +236,12 @@ so it can ship independently.
   gosu, leaving 2 npm transitives (the local baseline's toolchain-GOROOT and jq
   clusters were already dead in CI: image-mode scanning skips GOROOT src, and a
   fresh apt pulled the jq fix).
-- **4.6 Agent-CLI bump automation.** The pinned agent CLIs
-  (`@anthropic-ai/claude-code`, `@openai/codex`) drift; a scheduled job that
-  proposes a pinned-version bump PR (with the red-team suite as the gate) keeps
-  them current without unpinning.
+- **4.6 Agent-CLI bump automation.** *Landed.* A weekly scheduled workflow
+  (`agent-cli-bump.yml`) checks the four pinned CLIs
+  (`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`,
+  `@google/gemini-cli`) against npm and proposes a bump PR when any version
+  is strictly newer; the red-team suite (`make redteam` and
+  `make redteam-vm`) is the gate before merging.
 - **4.7 Observability.** Structured run metrics (durations, gate latencies,
   egress-widen frequency, budget burn) beyond the per-task JSONL, enough to
   answer "what is drydock doing across many runs" without grepping audit files.
@@ -340,10 +342,6 @@ landed. See the Unreleased CHANGELOG entry for details.
 
 1. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
-2. **4.6 Agent-CLI bump automation**: low urgency; the red-team suite
-   already gates bumps.
-3. **Phase 1 report wrapper**: per-claim green/red output for `make redteam`;
-   cosmetic, bundle opportunistically.
 
 [#139]: https://github.com/sricola/drydock/issues/139
 
