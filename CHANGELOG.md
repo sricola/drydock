@@ -9,6 +9,13 @@ entry below corresponds to a Git tag of the same name.
 
 ### Documentation
 
+- **Validated against Apple `container` 1.1.0.** The runtime was upgraded from
+  1.0.0 to 1.1.0 and the sandbox image rebuilt; `make redteam-vm` (VM-backed
+  A1/A2/A7 containment) passes, so drydock's `container run` path is confirmed
+  unchanged. No code change was needed: the version gate keys on the major
+  (`supportedContainerMajor = "1"`), which already accepts all 1.x. README and
+  the gate comment updated to record the validation.
+
 - **Egress doc now covers the plain-HTTP vs HTTPS-CONNECT edge (ROADMAP
   4.10 landed).** The "Plain HTTP vs HTTPS (the CONNECT edge)" subsection
   documents what squid actually enforces: CONNECT tunnels are locked to port

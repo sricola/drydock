@@ -53,8 +53,8 @@ internet, regardless of what it tries.
 > security audit**: the security model is written down in detail in the
 > [threat model](THREAT_MODEL.md), so read that and decide for yourself
 > before trusting it. **Hard requirement: macOS 26+ on Apple silicon**, it
-> runs on Apple's `container` runtime (itself 1.0), so it won't run anywhere
-> else.
+> runs on Apple's `container` runtime (1.x, validated through 1.1.0), so it
+> won't run anywhere else.
 
 **[Docs](https://sricola.github.io/drydock/docs/)** ·
 [Threat model](THREAT_MODEL.md) ·

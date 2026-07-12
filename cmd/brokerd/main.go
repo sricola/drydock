@@ -70,9 +70,10 @@ func fatal(msg string, attrs ...any) {
 }
 
 // supportedContainerMajor is the major version of Apple's `container` CLI
-// drydock has been integration-tested against. Bumping this should be paired
-// with re-running the smoke test in the README — `container`'s surface has
-// already changed flag semantics inside 1.0.x (--user, readonly=).
+// drydock has been integration-tested against (smoke-tested through 1.1.0 via
+// `make redteam-vm`). Bumping this should be paired with re-running that smoke
+// test: `container`'s surface has already changed flag semantics inside 1.0.x
+// (--user, readonly=).
 const supportedContainerMajor = "1"
 
 // defaultUncappedRequestCap bounds a task when no USD budget applies
