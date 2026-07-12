@@ -316,7 +316,7 @@ func daemonInstall() {
 		os.Exit(1)
 	}
 	fmt.Printf("brokerd installed and running (label %s)\n  socket: %s\n  logs:   %s\n", daemonLabel, brokerclient.ResolveSocketPath(), logPath)
-	fmt.Println("NOTE: no aggregate spend cap yet — per-task budgets only. See the daemon docs.")
+	fmt.Println("NOTE: per-task budgets always apply; set aggregate_budget_usd in config.yaml to also cap cross-task spend. See the daemon docs.")
 }
 
 func daemonUninstall() {

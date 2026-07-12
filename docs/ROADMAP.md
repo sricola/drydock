@@ -219,8 +219,11 @@ so it can ship independently.
   ceiling; the broker pre-checks at submit time so an over-cap task fails cleanly
   rather than starting doomed. In rolling mode, the ledger is seeded from audit
   files at boot so the cap survives a restart. Subscription mode is out of scope
-  (bounded per-task by `task_max_requests`). A runaway loop of cheap tasks can no
-  longer drain an API key in aggregate.
+  (bounded per-task by `task_max_requests`). With `aggregate_budget_usd` set
+  (opt-in; default disabled), a runaway loop of cheap tasks can no longer drain
+  an API key in aggregate; note enforcement is post-hoc unless
+  `max_request_cost_usd` is also set, so concurrent in-flight requests can
+  overshoot the ceiling by their aggregate cost before the next admission check.
 - **4.4 `drydock retry`.** *Landed (v0.6.0).* Re-run a prior task from the
   invocation the broker now records in its trace (repo, prompt, agent, model,
   platform, egress), without reconstructing the `submit` by hand. Re-enters the
