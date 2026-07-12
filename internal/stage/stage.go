@@ -139,8 +139,10 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	// Bound git's stderr too, for symmetry with the stdout cap: diagnostics are
+	// normally tiny, but nothing should be able to grow unbounded here.
+	stderr := &cappedBuffer{max: 64 << 10}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
@@ -169,6 +171,27 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 	}
 	return out, nil
 }
+
+// cappedBuffer collects up to max bytes and silently drops the rest, while
+// reporting every write as fully consumed so the writer (git's stderr) is never
+// blocked. Keeps a diagnostic stream bounded.
+type cappedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); room > 0 {
+		if len(p) > room {
+			c.buf.Write(p[:room])
+		} else {
+			c.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string { return c.buf.String() }
 
 // adapterAllowedEnv is the curated allowlist of host env vars forwarded to
 // gh/glab. The rest of os.Environ() (AWS_*, SLACK_*, cloud creds, every

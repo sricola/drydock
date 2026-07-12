@@ -9,7 +9,8 @@ import (
 // across stdout+stderr. A real coding task's output is well under this; the cap
 // stops a `yes`/flood from filling the audit log and the daemon's stdout. 256
 // MiB is generous headroom while bounding the disk a single task can consume.
-const maxTaskOutputBytes = 256 << 20
+// A var (not const) only so tests can lower it; nothing in production writes it.
+var maxTaskOutputBytes int64 = 256 << 20
 
 // outputCap bounds combined task output. Once the running total exceeds max it
 // stops forwarding (so the flood cannot reach the audit file or daemon stdout)
