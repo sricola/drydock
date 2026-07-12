@@ -70,6 +70,34 @@ make test-squid-live   # proxy-auth path (squidlive tag); requires squid on PATH
 make test-squid-e2e    # full VM-level egress widening (squide2e tag); requires container runtime + images + squid
 ```
 
+## Cutting a release
+
+Hosted CI cannot run the VM-backed A1/A2/A7 containment tests (they need Apple
+`container`: macOS 26 + Apple silicon), so a GitHub-green PR does not, on its
+own, prove the isolation claims behind a release. The release path enforces them
+locally instead. From a macOS 26 Apple-silicon machine with the runtime:
+
+1. Stamp the version: add a `## vX.Y.Z (date)` section to `CHANGELOG.md`, bump
+   the README status line and the `site/index.html` landing badge to `vX.Y.Z`
+   (the docs-build currency guards check these), open a PR, and merge it to
+   `main`.
+2. From a clean `main`, run the enforced gate + tag in one step:
+
+   ```bash
+   make tag-release VERSION=vX.Y.Z
+   ```
+
+   `tag-release` runs `release-preflight` first, rebuild the images, then the
+   unit suite, the host red-team (A3–A6), and the VM-backed red-team (A1/A2/A7),
+   and only creates and pushes the tag if all pass. Pushing the tag triggers
+   `release.yml`, which builds the signed darwin-arm64 tarball, SBOM, cosign
+   signature, and SLSA provenance and publishes the GitHub release. (Run
+   `make release-preflight` alone anytime to check release-readiness without
+   tagging.)
+3. Bump the Homebrew formula by hand: the `bump-tap` job self-skips unless
+   `HOMEBREW_TAP_TOKEN` is set, so update `url`/`sha256`/`version` in
+   `sricola/homebrew-drydock` against the published tarball's `.sha256`.
+
 ## Known gaps
 
 - **Pricing** (`internal/gateway/pricing.go`) covers Anthropic 4.x families
