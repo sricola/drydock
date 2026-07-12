@@ -453,7 +453,7 @@ sandbox_image:  drydock-sandbox:latest # per-task agent VM image
 anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
 
 # --- Per-task limits ---
-task_budget_usd:        2.0            # hard USD ceiling; gateway rejects after exhaustion (api_key mode only; ignored in subscription mode)
+task_budget_usd:        2.0            # soft USD cap: metered post-hoc, so one in-flight request can overshoot (api_key mode only; ignored in subscription mode)
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
 approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs)

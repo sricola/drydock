@@ -58,7 +58,7 @@ outside drydock:
   `TestHostCommit_IgnoresPlantedHook` regression test enforces this. But
   a 0day in `git` or `gh` parsing a staged file is out of scope.
 - **Supply-chain compromise of dependencies** (Apple `container`, Go std
-  lib, `gosu`, `claude-code`, squid, the Debian base image). Trust the
+  lib, `setpriv`/util-linux, `claude-code`, squid, the Debian base image). Trust the
   vendors or pin and audit.
 - **Operator key hygiene.** A leaked `ANTHROPIC_API_KEY` defeats the
   gateway; drydock never sees the key after first read, but doesn't
@@ -121,7 +121,7 @@ gateway grant with a sentinel key).
 
 ### A2. Agent makes outbound calls to hostile or unintended hosts
 
-In-VM `nft` policy (set by root before `gosu agent`) drops all output
+In-VM `nft` policy (set by root before `drop-agent.sh` drops to the agent user via `setpriv`) drops all output
 except loopback, established/related, and `${gateway-IP}:{8088,3128}`.
 DNS itself is dropped, the VM has no way to resolve a name except by
 asking squid, which only resolves hosts on the operator's allowlist.
@@ -245,9 +245,9 @@ meter. The runaway controls are:
   explicitly; there is no equivalent to the API-key budget sentinel.
 - `task_timeout`: wall-clock ceiling (default `30m`), unchanged.
 
-Without `task_max_requests` a subscription task can burn through a large
-fraction of the subscription's rate limit before `task_timeout` fires.
-Operators running batch jobs should set both.
+Without `task_max_requests`, brokerd applies a built-in default cap of 1,000
+requests, so a subscription task is bounded by that; set `task_max_requests`
+explicitly to raise or lower it. Operators running batch jobs should set both.
 
 **`subscription` mode (`openai_auth: subscription`).** When
 `openai_auth: subscription` is set, drydock routes Codex tasks through the
@@ -262,9 +262,10 @@ there is no spend to meter. The runaway controls are identical:
   explicitly when using subscription mode.
 - `task_timeout`: wall-clock ceiling (default `30m`), unchanged.
 
-Without `task_max_requests` a Codex subscription task can burn through a large
-fraction of the subscription's rate limit before `task_timeout` fires.
-Operators running batch jobs should set both.
+Without `task_max_requests`, brokerd applies a built-in default cap of 1,000
+requests, so a Codex subscription task is bounded by that; set
+`task_max_requests` explicitly to raise or lower it. Operators running batch
+jobs should set both.
 
 **`openai_compat` lane (`api_key` mode).** USD metering depends on the upstream
 reporting token usage in its response. Streaming `chat/completions` responses

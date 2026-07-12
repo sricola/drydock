@@ -796,5 +796,5 @@ git commit -m "docs: aggregate budget cap (ROADMAP 4.3 landed)"
 
 - The gateway lock order is always Gateway-mutex then ledger-mutex (in `admit`/`meter`); `AggregateExceeded` and the boot seed take only the ledger mutex. Never call a ledger method that would then try to take the Gateway mutex.
 - `config.AuthMode` only special-cases anthropic/openai; every other vendor (google, the openai_compat lane) returns "" and is therefore treated as api_key (correct: those are api-key only), so it is included in `apiKeyVendors`.
-- `total_cost_usd` is present for api_key tasks (claude writes its own result line; the broker synthesizes one for other agents from `grant.Spent()`), so the audit seed has real costs to sum.
+- `total_cost_usd` is present for api_key tasks (the broker authors a `src:"broker"` result for every agent from `grant.Spent()`), so the audit seed has real, unforgeable costs to sum.
 - Run the full `go test -race ./...` plus `gofmt -l` and `staticcheck ./...` before opening the PR; staticcheck is a CI gate.
