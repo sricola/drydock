@@ -31,6 +31,10 @@ type Result struct {
 	DurationMs   int64   `json:"duration_ms"`
 	TotalCostUSD float64 `json:"total_cost_usd"`
 	NumTurns     int     `json:"num_turns"`
+	// Src is "broker" on a broker-authored terminal result. The agent's stdout
+	// is untrusted, so financial controls (the aggregate-cap seed) trust only
+	// Src=="broker" cost, never a CLI-emitted total_cost_usd.
+	Src string `json:"src"`
 }
 
 type Meta struct {

@@ -620,15 +620,16 @@ func (tr *taskRun) runSandbox(args []string) error {
 		return errTaskTerminated
 	}
 
-	// codex exec doesn't emit Claude's stream-json `result` trailer, so a
-	// completed codex task would read as `running?` in `drydock tasks`.
-	// Synthesize the terminal event from the elapsed time and the metered
-	// gateway spend. (Claude writes its own result line; don't double it.)
-	if tr.agentName != "claude" {
-		_, _ = fmt.Fprintf(tr.logf,
-			`{"type":"result","subtype":"success","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0}`+"\n",
-			time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent())
-	}
+	// Append a broker-authored terminal result for EVERY agent, tagged
+	// src:"broker", carrying the gateway-metered spend. The agent's stdout is an
+	// untrusted source (a compromised CLI can forge a cheap total_cost_usd), so
+	// this record is written AFTER the agent's output ends, making it the last
+	// result line; last-wins parsing and a seed that trusts only src:"broker"
+	// cost keep the displayed cost/outcome and the aggregate ledger honest.
+	// (Claude also emits its own result line for its turn count; ours wins.)
+	_, _ = fmt.Fprintf(tr.logf,
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
+		time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent())
 	return nil
 }
 
@@ -694,7 +695,7 @@ func (tr *taskRun) finishPush(diff string, files, insertions, deletions int) {
 		// cost + the aggregate-cap seed stay correct) and stream the reason.
 		cost := audit.TotalCost(tr.auditPath)
 		fmt.Fprintf(tr.logf,
-			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0}`+"\n",
+			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 			time.Since(tr.taskStart).Milliseconds(), cost)
 		tr.sw.emit(map[string]any{"event": "result", "outcome": "push_failed",
 			"task_id": tr.id, "reason": string(reason), "push_attempts": attempts,

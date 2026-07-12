@@ -146,8 +146,10 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		if cause == gateTimeout {
 			subtype = "interrupted"
 		}
+		// Broker-authored (src:broker) and carrying the metered cost, so a resumed
+		// task's real spend still seeds the aggregate ledger.
 		fmt.Fprintf(logf,
-			`{"type":"result","subtype":%q,"is_error":false,"duration_ms":0,"total_cost_usd":%.6f,"num_turns":0}`+"\n",
+			`{"type":"result","subtype":%q,"is_error":false,"duration_ms":0,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 			subtype, audit.TotalCost(tr.auditPath))
 		return
 	}
