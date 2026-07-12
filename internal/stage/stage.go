@@ -6,7 +6,9 @@
 package stage
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,12 +106,68 @@ func (s *Stage) stageAll() error {
 	return err
 }
 
-// CaptureDiff returns the unified diff of the agent's changes (no commit).
+// maxDiffBytes bounds the review diff held in broker memory and written to the
+// audit .diff file. A hostile task that stages a giant or binary diff would
+// otherwise allocate the whole thing (and a second copy on persist), risking
+// broker OOM. The commit/push is taken from the work tree, not this string, so
+// truncating the review diff never changes what actually gets pushed.
+const maxDiffBytes = 32 << 20 // 32 MiB
+
+// CaptureDiff returns the unified diff of the agent's changes (no commit),
+// bounded to maxDiffBytes so a hostile diff cannot exhaust broker memory.
 func (s *Stage) CaptureDiff() (string, error) {
 	if err := s.stageAll(); err != nil {
 		return "", err
 	}
-	return s.git("diff", "--cached")
+	return s.gitDiffCapped(maxDiffBytes)
+}
+
+// gitDiffCapped streams `git diff --cached` into a bounded buffer, appending a
+// truncation marker if the diff exceeds max. It reads (and discards) any excess
+// so git is not left blocked on a full pipe, keeping broker memory bounded to
+// max regardless of how large the staged diff is.
+func (s *Stage) gitDiffCapped(max int64) (string, error) {
+	cmd := exec.Command("git",
+		"--git-dir="+s.gitDir,
+		"--work-tree="+s.WorkDir,
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "core.fsmonitor=false",
+		"diff", "--cached",
+	)
+	cmd.Dir = s.WorkDir
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	_, cerr := io.CopyN(&buf, stdout, max)
+	truncated := false
+	switch cerr {
+	case nil:
+		// Read exactly max bytes; there may be more. Drain the rest (discarded,
+		// so memory stays bounded) and mark the diff truncated.
+		if extra, _ := io.Copy(io.Discard, stdout); extra > 0 {
+			truncated = true
+		}
+	case io.EOF:
+		// The whole diff fit under the cap.
+	default:
+		_ = cmd.Wait()
+		return "", cerr
+	}
+	if werr := cmd.Wait(); werr != nil {
+		return "", fmt.Errorf("git diff --cached: %w\n%s", werr, stderr.String())
+	}
+	out := buf.String()
+	if truncated {
+		out += fmt.Sprintf("\n... [diff truncated at %d MiB; the full change is still committed] ...\n", max>>20)
+	}
+	return out, nil
 }
 
 // adapterAllowedEnv is the curated allowlist of host env vars forwarded to
