@@ -187,6 +187,31 @@ func (g *Gateway) admit(token string) (*Lease, int) {
 	return l, 0
 }
 
+// leaseVendor returns the vendor bound to token without mutating the lease, so
+// the route allowlist can be selected before admit runs its budget/counter
+// admission. ok is false for an unknown token (admit then returns 401).
+func (g *Gateway) leaseVendor(token string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if l := g.leases[token]; l != nil {
+		return l.Vendor, true
+	}
+	return "", false
+}
+
+// pathHasTraversal reports whether p contains a ".." path segment. A legitimate
+// inference route never does; rejecting it stops a prefix-allowlisted path like
+// /v1/messages/../files (or /responses/../admin under a BasePath join) from
+// resolving to a control-plane route upstream.
+func pathHasTraversal(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tok := ""
 	auth := r.Header.Get("Authorization")
@@ -199,6 +224,20 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// there. A present-but-malformed Authorization is not a fallback path, so
 		// a stray Google key header can't bypass a bad bearer.
 		tok = r.Header.Get("X-Goog-Api-Key")
+	}
+	// Enforce the per-vendor route allowlist and reject path traversal BEFORE
+	// budget admission, so a disallowed or traversing route never reaches the
+	// upstream with the real credential (and never consumes a request slot). The
+	// vendor lookup is read-only; a bad token falls through to admit's 401.
+	if vendor, ok := g.leaseVendor(tok); ok {
+		if pathHasTraversal(r.URL.Path) {
+			http.Error(w, "forbidden path", http.StatusForbidden)
+			return
+		}
+		if vt, ok := g.vendors[vendor]; ok && !vt.v.routeAllowed(r.Method, r.URL.Path) {
+			http.Error(w, "forbidden route", http.StatusForbidden)
+			return
+		}
 	}
 	lease, status := g.admit(tok)
 	if status != 0 {

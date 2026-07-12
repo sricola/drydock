@@ -88,7 +88,7 @@ test-integration: build
 # from THREAT_MODEL.md and asserts it is blocked. Host-side claims (A3-A6) run
 # here and in CI. VM-backed claims (A1, A2, A7) need the sandbox — run
 # `make test-integration` on macOS / Apple silicon (added as they land).
-REDTEAM := TestRedteam_A[0-9]|TestHostCommit_IgnoresPlantedHook|TestCaptureDiff_ExcludesTaskDir
+REDTEAM := TestRedteam_A[0-9]|TestHostCommit_IgnoresPlantedHook|TestCaptureDiff_ExcludesTaskDir|TestGateway_RouteAllowlist
 redteam:
 	@echo "== drydock red-team — attacks that must fail (host-side: A3-A6) =="
 	go test -count=1 -run '$(REDTEAM)' ./...
