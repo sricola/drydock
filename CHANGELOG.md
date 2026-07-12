@@ -5,6 +5,77 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.6.2 (2026-07-12)
+
+A security-hardening release closing the findings from a red-team review of
+v0.6.1. Every code fix ships with an exploit-first regression test; the
+containment fixes were independently reviewed. No new features.
+
+### Security
+
+- **Hostile repositories can no longer overwrite host files (F-01, Critical).**
+  A staged repo that committed `.task` or `.task/prompt.txt` as a symlink could
+  make the trusted broker truncate an arbitrary operator-writable file (e.g.
+  `~/.zshrc`, `~/.ssh/authorized_keys`) before the VM even booted. WriteTaskFiles
+  now refuses a symlinked `.task` and opens the prompt with `O_NOFOLLOW`; two A3
+  red-team cases reproduce and gate it.
+
+- **The gateway credential is scoped to inference routes (F-03, High).** After
+  bearer admission the gateway forwarded any path/method to the vendor origin
+  with the real key injected, so a task could drive file upload/download/delete,
+  fine-tuning, and other control-plane routes that response metering never sees.
+  A per-vendor route allowlist (segment-boundary matched) now returns a
+  gateway-local 403 for anything outside the pinned CLI's inference routes,
+  without contacting upstream; path traversal (literal and encoded `..`) is
+  rejected.
+
+- **The optional TCP broker resists DNS rebinding (F-06, High).** When
+  `broker.addr` is set, the listener now rejects any request whose Host is not
+  literal loopback or whose Origin (when present) is not loopback, closing the
+  browser-driven submit/approve/kill path. This is not authentication (a
+  non-browser local process still has access; SECURITY.md documents the scope).
+
+- **A task can no longer exhaust host resources (F-04, High).** Bounded task
+  stdout+stderr (cancels the task past a 256 MiB budget), a streaming-capped diff
+  capture (bounds broker memory), and a per-task `/work` guard (cancels on a
+  4 GiB / 200k-file stage or when host free space drops below a floor), plus a
+  submit-time host-free-space preflight.
+
+- **Broker-authored, unforgeable cost accounting (F-07, Medium).** The broker
+  now writes a `src:"broker"` terminal result for every agent from the
+  gateway-metered spend; the displayed cost/outcome and the aggregate-cap seed
+  trust only that record, so a compromised agent CLI can no longer forge a cheap
+  `total_cost_usd` to understate the rolling cap after a restart.
+
+- **Config typos fail closed (F-08, Medium).** Both `config.yaml` and
+  `egress.yaml` now decode with `KnownFields(true)`, so a misspelled security
+  control (`aggregate_budget_usd`, `max_request_cost_usd`, ...) is a hard startup
+  error naming the field instead of a silent no-op to a weaker default. **Upgrade
+  note:** a config carrying a since-removed key now errors with a clear message;
+  drop the named key.
+
+- **Bounded gateway buffers (F-05, Low-Med).** The proxy request body is capped
+  (16 MiB) and the usage-metering buffers are bounded (1 MiB each), so an in-VM
+  agent cannot pressure gateway memory with a giant or newline-free body.
+
+- **Sandbox supply-chain hardening (F-09, Medium).** The Go toolchain tarball is
+  verified against its pinned per-arch SHA-256 before the root extraction, and
+  every GitHub Action is pinned to a full commit SHA.
+
+- **Concurrent per-task budget overshoot documented (F-02, Medium).** With
+  `max_request_cost_usd` unset (default), the gateway meters post-hoc, so a
+  hostile agent firing concurrent requests can overshoot `task_budget_usd` by
+  roughly in-flight-count times per-request cost (bounded by the per-task cap and
+  the built-in 1,000-request backstop). Set `max_request_cost_usd` to bound the
+  concurrent case precisely; the threat model and config now describe this.
+
+### Documentation
+
+- **Operator claims reconciled with the code (F-10).** Corrected the
+  `task_budget_usd` "hard ceiling" wording, the stale `no-aggregate-cap` daemon
+  notes, the `gosu` -> `setpriv` privilege-drop description, and the subscription
+  request-cap default in the threat model.
+
 ## v0.6.1 (2026-07-12)
 
 ### Documentation
