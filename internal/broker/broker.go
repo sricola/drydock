@@ -542,7 +542,12 @@ func (tr *taskRun) runSandbox(args []string) error {
 	tr.sw.emit(runningEv)
 
 	tr.taskStart = time.Now()
-	if err := run(runCtx, args, io.MultiWriter(tr.logf, os.Stdout), tr.logf); err != nil {
+	// Bound the bytes an untrusted task can emit to the host: a flood (yes, a
+	// runaway build) would otherwise fill the audit log and the daemon's stdout
+	// unbounded. When the shared stdout+stderr budget is crossed, the task is
+	// cancelled and further output is dropped.
+	outCap := newOutputCap(maxTaskOutputBytes, runCancel)
+	if err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf)); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
 		if derr := exec.Command("container", "delete", "--force", "task-"+tr.id).Run(); derr != nil {
@@ -552,6 +557,17 @@ func (tr *taskRun) runSandbox(args []string) error {
 		if tr.ctx.Err() != nil {
 			// Operator killed it, or the client went away. Be explicit.
 			tr.sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": tr.id})
+			return errTaskTerminated
+		}
+		if outCap.exceeded() {
+			// We cancelled the task ourselves: its output crossed the host cap.
+			_, _ = fmt.Fprintf(tr.logf,
+				`{"type":"result","subtype":"error","is_error":true,"duration_ms":%d,"total_cost_usd":0,"num_turns":0}`+"\n",
+				time.Since(tr.taskStart).Milliseconds())
+			tr.sw.emit(map[string]any{"event": "error", "task_id": tr.id,
+				"audit":       tr.auditPath,
+				"duration_ms": time.Since(tr.taskStart).Milliseconds(),
+				"reason":      fmt.Sprintf("task terminated: output exceeded the %d MiB host cap", maxTaskOutputBytes>>20)})
 			return errTaskTerminated
 		}
 		// If claude never wrote a `result` event (e.g. the entrypoint died
