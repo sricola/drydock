@@ -142,6 +142,18 @@ only and SSH-tunnel; put brokerd behind an authenticating reverse proxy
 (mTLS, OAuth); restrict by firewall to a specific operator host. Binding
 to `0.0.0.0` on a shared network is a vulnerability, not a feature.
 
+**Browser-origin defense (DNS rebinding).** On the TCP listener drydock
+rejects any request whose `Host` header is not literal loopback, or whose
+`Origin` (when present) is not loopback. This blocks the specific
+browser-driven attack where a malicious page rebinds its own hostname to
+`127.0.0.1` and scripts submit/approve/kill against a loopback-bound broker
+(the browser still sends its own hostname as `Host`, and its own `Origin` on
+a cross-origin request). It is **not** authentication: any non-browser
+process that can reach the port still has full access, so the "you are
+responsible for the auth layer" guidance above stands. Binding to loopback
+plus an SSH tunnel is not, on its own, a browser-origin defense, which is
+why this check exists.
+
 - **`/healthz` and `/admin/pending` disclose task counts and IDs.**
   Fine on the per-user Unix socket; on TCP it's recon information for
   someone preparing a race against `/admin/approve`. Don't expose

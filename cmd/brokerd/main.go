@@ -433,7 +433,7 @@ func main() {
 	mux.HandleFunc("GET /admin/tasks", b.HandleTasks)
 	mux.HandleFunc("GET /healthz", b.HandleHealth)
 
-	srv = hardenedServer(mux)
+	srv = hardenedServer(brokerHandler(cfg, mux))
 	l, sock := listen(cfg, gwAddr, proxyAddr)
 	sockToRm = sock
 	// Blocks until the signal handler calls srv.Shutdown (clean) or the
@@ -462,6 +462,60 @@ func hardenedServer(h http.Handler) *http.Server {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+}
+
+// brokerLoopbackHost reports whether an HTTP Host header (with or without a
+// port) names a literal loopback address. Mirrors the web UI's loopback check
+// (internal/webui); kept local so the broker's TCP guard carries no extra
+// dependency, the loopback set is stable.
+func brokerLoopbackHost(hostport string) bool {
+	h := hostport
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		h = host
+	}
+	return h == "127.0.0.1" || h == "localhost" || h == "[::1]" || h == "::1"
+}
+
+// brokerLoopbackOrigin reports whether an Origin header (scheme://host[:port])
+// has a loopback host. A missing scheme separator is not loopback (fail closed).
+func brokerLoopbackOrigin(origin string) bool {
+	i := strings.Index(origin, "://")
+	if i < 0 {
+		return false
+	}
+	return brokerLoopbackHost(origin[i+3:])
+}
+
+// brokerAuthed rejects any request whose Host is not literal loopback, or whose
+// Origin (when present) is not loopback. This is the browser-origin / DNS-
+// rebinding defense the web UI already applies: a page served from an attacker
+// hostname that rebinds DNS to 127.0.0.1 still sends its own hostname as Host
+// (and its own Origin on a cross-origin request), both rejected here. A browser
+// cannot forge a loopback Host for a cross-origin request, so this closes the
+// browser-driven submit/approve/kill path against the loopback TCP listener.
+func brokerAuthed(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !brokerLoopbackHost(r.Host) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		if o := r.Header.Get("Origin"); o != "" && !brokerLoopbackOrigin(o) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// brokerHandler returns the broker HTTP handler, adding the loopback Host/Origin
+// DNS-rebinding defenses only when the optional TCP listener is enabled. The
+// default unix-socket transport is left unwrapped: a browser cannot reach a
+// unix socket, and the CLI addresses it with a non-loopback Host ("brokerd").
+func brokerHandler(cfg *config.Config, mux http.Handler) http.Handler {
+	if cfg.Broker.Addr != "" {
+		return brokerAuthed(mux)
+	}
+	return mux
 }
 
 // listen creates the broker's listener: a per-uid Unix socket by default
