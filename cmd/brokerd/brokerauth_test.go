@@ -24,9 +24,19 @@ func TestBrokerHandler_TCPModeRejectsRebinding(t *testing.T) {
 	}{
 		{"loopback host, no origin (legit CLI)", "127.0.0.1:8799", "", http.StatusOK},
 		{"localhost host", "localhost:8799", "", http.StatusOK},
+		{"ipv6 loopback host", "[::1]:8799", "", http.StatusOK},
 		{"loopback host, loopback origin", "127.0.0.1:8799", "http://127.0.0.1:8799", http.StatusOK},
 		{"DNS-rebinding host", "attacker.example:8799", "", http.StatusForbidden},
 		{"loopback host, hostile origin", "127.0.0.1:8799", "http://evil.example", http.StatusForbidden},
+		// Fail-closed accept-set: alternate loopback spellings and confusable
+		// Origins must be REJECTED, so a future lenient classifier change can't
+		// silently open a rebinding target. (A deny guard's safe direction is to
+		// reject the exotic form, not admit it.)
+		{"short-form loopback rejected", "127.1:8799", "", http.StatusForbidden},
+		{"trailing-dot loopback rejected", "127.0.0.1.:8799", "", http.StatusForbidden},
+		{"integer ip rejected", "2130706433:8799", "", http.StatusForbidden},
+		{"empty host rejected", "", "", http.StatusForbidden},
+		{"origin userinfo trick rejected", "127.0.0.1:8799", "http://127.0.0.1@evil.example", http.StatusForbidden},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequest("POST", "http://x/admin/approve/abc", nil)
@@ -55,5 +65,23 @@ func TestBrokerHandler_UnixModeUnwrapped(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("unix-mode handler rejected the CLI Host %q -> %d, want 200", req.Host, rec.Code)
+	}
+}
+
+// Documents why the TCP wrap is load-bearing: the bare mux (unix mode) admits an
+// attacker-controlled Host. If brokerHandler stopped wrapping in TCP mode, the
+// rebinding attack would be admitted here too, so this is the RED counterpart to
+// the TCP test and guards against the guard silently becoming dead code.
+func TestBrokerHandler_UnixModeAdmitsAttackerHost(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := brokerHandler(&config.Config{}, ok) // no TCP addr: unwrapped
+
+	req := httptest.NewRequest("POST", "http://x/admin/approve/abc", nil)
+	req.Host = "attacker.example"
+	req.Header.Set("Origin", "http://evil.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("bare mux unexpectedly blocked Host=%q (the TCP wrap is what must block it) -> %d", req.Host, rec.Code)
 	}
 }
