@@ -2,6 +2,7 @@
 package egress
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -113,7 +114,12 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read egress config: %w", err)
 	}
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
+	// KnownFields(true): a misspelled egress key is a hard error, not a silent
+	// no-op. The one control that must fail closed on absence (requires_approval)
+	// is a *bool that already does; strictness covers the rest of the schema.
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse egress config: %w", err)
 	}
 	if err := ValidateDomains(cfg.Default.Domains); err != nil {
