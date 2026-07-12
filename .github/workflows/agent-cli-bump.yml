@@ -62,7 +62,11 @@ jobs:
           git checkout -B "$BRANCH"
           git add image/Dockerfile
           git commit -m "chore: bump pinned agent CLIs $(date +%Y%m%d)"
-          git push --force-with-lease -u origin "$BRANCH"
+          # Plain force: agent-cli-bump is a disposable bot-owned branch, always
+          # regenerated from main + the current bumps. force-with-lease needs a
+          # remote-tracking ref this fresh checkout does not have, so it rejects
+          # with "stale info" once the branch exists from a prior run.
+          git push --force -u origin "$BRANCH"
           {
             printf '## Agent CLI version bumps\n\n'
             printf '%s\n' "$SUMMARY"
