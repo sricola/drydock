@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test test-squid-live test-squid-e2e test-integration redteam redteam-report redteam-vm demo sbom docs verify-build vet lint image network init clean help
+.PHONY: all build install uninstall test test-squid-live test-squid-e2e test-integration redteam redteam-report redteam-vm release-preflight tag-release check-release-args demo sbom docs verify-build vet lint image network init clean help
 
 all: build
 
@@ -26,6 +26,8 @@ help:
 	@echo "  redteam     run the host-side adversarial containment suite (A3-A6)"
 	@echo "  redteam-report  same as redteam but prints a per-claim GREEN/RED table"
 	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7); macOS + container runtime"
+	@echo "  release-preflight  full pre-release gate: unit + host (A3-A6) + VM (A1/A2/A7)"
+	@echo "  tag-release VERSION=vX.Y.Z  run the preflight, then tag + push the release"
 	@echo "  demo        run the narrated breach demo (real attacks; add VM=1 for A1/A2/A7)"
 	@echo "  sbom        write a CycloneDX SBOM to dist/drydock.cdx.json"
 	@echo "  verify-build  rebuild the binaries and check them against SUMS=<release bin.sha256>"
@@ -105,6 +107,46 @@ redteam-report:
 redteam-vm: build
 	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7) =="
 	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
+
+# --- Release gate ---
+# The A1/A2/A7 containment tests need Apple `container` (macOS 26 + Apple
+# silicon), which hosted CI cannot provide, so a GitHub-green PR does NOT prove
+# the isolation claims behind a release. release-preflight is the enforced local
+# gate before cutting a release: rebuild the images the release ships, then run
+# the full unit suite, the host red-team (A3-A6), and the VM-backed red-team (A1
+# key-exfil, A2 egress, A7 ephemerality) against the freshly built image.
+release-preflight: build image network
+	@echo "== release preflight [1/3]: unit suite (race) =="
+	go test -race -count=1 ./...
+	@echo "== release preflight [2/3]: host red-team (A3-A6) =="
+	go test -count=1 -run '$(REDTEAM)' ./...
+	@echo "== release preflight [3/3]: VM-backed red-team (A1, A2, A7) =="
+	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
+	@echo ""
+	@echo "== release preflight GREEN: unit + host (A3-A6) + VM (A1/A2/A7) all pass =="
+
+# tag-release is the blessed release path: it enforces release-preflight (so a
+# release can never ship without the VM containment tests behind its headline
+# claims), then creates and pushes the vX.Y.Z tag, which triggers the signed
+# release build in release.yml. Requires main, a clean tree, a stamped CHANGELOG,
+# and VERSION, e.g.  make tag-release VERSION=v0.6.3
+tag-release: check-release-args release-preflight
+	git tag -a "$(VERSION)" -m "drydock $(VERSION)"
+	git push origin "$(VERSION)"
+	@echo "== tagged + pushed $(VERSION); release.yml now builds the signed artifacts =="
+
+check-release-args:
+	@# VERSION defaults to `git describe` (for build ldflags); a release needs an
+	@# explicit clean vX.Y.Z, so reject the describe/dev form.
+	@echo "$(VERSION)" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$$' \
+		|| { echo "pass an explicit release version: make tag-release VERSION=vX.Y.Z (got '$(VERSION)')"; exit 1; }
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = "main" \
+		|| { echo "cut releases from main (currently on $$(git rev-parse --abbrev-ref HEAD))"; exit 1; }
+	@git diff --quiet && git diff --cached --quiet \
+		|| { echo "working tree is dirty; commit or stash before tagging"; exit 1; }
+	@grep -q "^## $(VERSION) " CHANGELOG.md \
+		|| { echo "CHANGELOG.md has no '## $(VERSION)' section; stamp the release first"; exit 1; }
+	@git rev-parse "$(VERSION)" >/dev/null 2>&1 && { echo "tag $(VERSION) already exists"; exit 1; } || true
 
 # demo runs the narrated breach demo: the same red-team attacks, presented as a
 # recordable 60-second story. Host-side by default (no VM, no API spend); set

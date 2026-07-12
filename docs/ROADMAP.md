@@ -359,6 +359,10 @@ landed. See the Unreleased CHANGELOG entry for details.
 - **3D config-declared providers, 4.8 runtime abstraction**: stretch, by
   this doc's own YAGNI rule.
 
-**Standing note:** the A1/A2/A7 red-team tests need the VM, so full
-`make redteam` is a macOS / Apple-silicon gate; CI runs the host-side subset
-(A3–A6).
+**Standing note:** the A1/A2/A7 red-team tests need the VM (Apple `container`,
+macOS 26 + Apple silicon), which hosted CI cannot provide, so CI runs only the
+host-side subset (A3–A6). To keep a release from shipping without the isolation
+tests behind its headline claims, `make release-preflight` (run automatically by
+`make tag-release VERSION=vX.Y.Z`) is the enforced local gate: it rebuilds the
+images and runs the unit suite, the host red-team (A3–A6), and the VM-backed
+red-team (A1/A2/A7) before the tag is created.
