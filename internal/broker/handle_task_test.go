@@ -233,9 +233,12 @@ func TestHandleTask_ClaudeAutoApprove_Pushes(t *testing.T) {
 	if !st.cleaned.Load() {
 		t.Error("stage.Cleanup not called (defer)")
 	}
+	// The broker authors the terminal result (src:broker) for every agent,
+	// including claude, so the displayed cost/outcome and the aggregate-cap seed
+	// never trust the agent's own (forgeable) result line.
 	audit := readAudit(t, b.AuditRoot, id)
-	if strings.Count(audit, `"type":"result"`) != 1 {
-		t.Errorf("expected exactly one result line for claude, got:\n%s", audit)
+	if !strings.Contains(audit, `"src":"broker"`) {
+		t.Errorf("claude task missing the broker-authored result line:\n%s", audit)
 	}
 }
 

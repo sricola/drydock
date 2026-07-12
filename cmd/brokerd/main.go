@@ -749,7 +749,10 @@ func seedAggregateFromAudit(gw *gateway.Gateway, auditRoot string, window time.D
 			continue // subscription is out of scope for the USD cap
 		}
 		res, ok := audit.LastResult(path, info.Size())
-		if !ok || res.TotalCostUSD <= 0 {
+		// Trust only a broker-authored cost: a compromised agent CLI can forge a
+		// `result` line, so seeding the aggregate ledger from a CLI-reported
+		// total_cost_usd would let it understate the rolling cap after a restart.
+		if !ok || res.TotalCostUSD <= 0 || res.Src != "broker" {
 			continue
 		}
 		agent := audit.TaskAgent(path)

@@ -416,7 +416,7 @@ func TestSeedAggregateFromAudit(t *testing.T) {
 	write := func(name, meta, task string, cost float64) {
 		p := filepath.Join(dir, name)
 		os.WriteFile(p, []byte(meta+"\n"+task+"\n"+
-			fmt.Sprintf(`{"type":"result","subtype":"success","total_cost_usd":%.4f}`, cost)+"\n"), 0o600)
+			fmt.Sprintf(`{"type":"result","subtype":"success","total_cost_usd":%.4f,"src":"broker"}`, cost)+"\n"), 0o600)
 		os.Chtimes(p, now, now) // in window
 	}
 	write("a.jsonl",
@@ -436,5 +436,28 @@ func TestSeedAggregateFromAudit(t *testing.T) {
 	gw.SeedAggregate("anthropic", 98.0, now) // total now 100 -> at cap
 	if !gw.AggregateExceeded("anthropic") {
 		t.Error("want exceeded after seeding to 100 (only the non-subscription 2.0 should have counted from audit)")
+	}
+}
+
+// F-07: a compromised agent CLI can forge a `result` line. The aggregate seed
+// must ignore a CLI-authored cost (no src:"broker"), so a forged low/zero cost
+// cannot understate the rolling cap after a restart.
+func TestSeedAggregateFromAudit_IgnoresForgedAgentCost(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	p := filepath.Join(dir, "forged.jsonl")
+	os.WriteFile(p, []byte(
+		`{"type":"drydock_meta","subscription":false,"sensitive":false}`+"\n"+
+			`{"type":"drydock_task","agent":"claude"}`+"\n"+
+			// Forged agent result: huge cost, but NOT broker-authored (no src).
+			`{"type":"result","subtype":"success","total_cost_usd":9999.0}`+"\n"), 0o600)
+	os.Chtimes(p, now, now)
+
+	gw, _ := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey("k")})
+	gw.SetAggregateCap(100.0, 24*time.Hour, []string{"anthropic"})
+	seedAggregateFromAudit(gw, dir, 24*time.Hour, "claude")
+
+	if gw.AggregateExceeded("anthropic") {
+		t.Error("a forged (non-broker) agent cost of 9999 seeded the ledger; the seed must trust only src:broker")
 	}
 }
