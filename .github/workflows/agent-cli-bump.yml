@@ -69,14 +69,23 @@ jobs:
             printf '\n---\n\n'
             printf 'Note: A GITHUB_TOKEN-authored PR does not auto-trigger CI. The reviewer must run the red-team gate (make redteam and make redteam-vm) before merging.\n'
           } > /tmp/pr-body.md
-          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
-            gh pr create \
-              --base main \
-              --head "$BRANCH" \
-              --title "chore: bump pinned agent CLIs" \
-              --body-file /tmp/pr-body.md
+          compare="https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH}?expand=1"
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            echo "bump PR already open for $BRANCH; branch updated."
+          elif gh pr create --base main --head "$BRANCH" --title "chore: bump pinned agent CLIs" --body-file /tmp/pr-body.md; then
+            echo "opened bump PR."
           else
-            echo "bump PR already open; updated the branch"
+            # Auto-PR is blocked when the repo setting "Allow GitHub Actions to
+            # create and approve pull requests" is off (the GitHub default). The
+            # branch is pushed regardless, so emit a one-click compare link and
+            # keep the job green rather than failing every scheduled run.
+            echo "::warning::could not auto-create the bump PR (enable 'Allow GitHub Actions to create and approve pull requests' in repo Settings to restore it). Branch pushed; open a PR: ${compare}"
+            {
+              printf '### Agent CLI bump ready (auto-PR blocked)\n\n'
+              printf 'The branch `%s` is pushed with the bumps. Open a PR: %s\n\n' "$BRANCH" "$compare"
+              printf 'To restore auto-creation, enable "Allow GitHub Actions to create and approve pull requests" in Settings, Actions, General.\n\n---\n\n'
+              cat /tmp/pr-body.md
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
