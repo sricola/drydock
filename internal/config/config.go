@@ -13,6 +13,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/url"
@@ -246,7 +247,12 @@ func Load(path string) (*Config, error) {
 		b, err := os.ReadFile(path)
 		switch {
 		case err == nil:
-			if err := yaml.Unmarshal(b, cfg); err != nil {
+			// KnownFields(true): a misspelled key is a hard error, not a silent
+			// no-op to a weaker default. In unattended use a typo'd
+			// aggregate_budget_usd would otherwise disable the cap with no signal.
+			dec := yaml.NewDecoder(bytes.NewReader(b))
+			dec.KnownFields(true)
+			if err := dec.Decode(cfg); err != nil {
 				return nil, fmt.Errorf("parse %s: %w", path, err)
 			}
 		case os.IsNotExist(err):
