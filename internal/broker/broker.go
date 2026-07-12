@@ -345,6 +345,14 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	if prepare == nil {
 		prepare = defaultPrepareStage
 	}
+	// Preflight: refuse to start a task onto an almost-full host disk (fail
+	// closed rather than pile a fresh clone + run onto a disk about to fill).
+	if free, ferr := freeBytes(b.StageRoot); ferr == nil && free < minFreeStageBytes {
+		slog.Warn("refusing task: host low on disk", "task_id", taskID, "free_mib", free>>20)
+		sw.emit(errorEvent(taskID, "host low on disk",
+			fmt.Sprintf("only %d MiB free at the stage root; free space before submitting", free>>20)))
+		return
+	}
 	sw.emit(map[string]any{"event": "stage", "stage": "preparing", "task_id": taskID})
 	st, err := prepare(stageDir, t.RepoRef)
 	if err != nil {
@@ -547,6 +555,15 @@ func (tr *taskRun) runSandbox(args []string) error {
 	// unbounded. When the shared stdout+stderr budget is crossed, the task is
 	// cancelled and further output is dropped.
 	outCap := newOutputCap(maxTaskOutputBytes, runCancel)
+	// Bound the host disk a task can consume through its writable /work bind
+	// mount: cancel it if the stage grows past the byte/file caps or host free
+	// space drops below the floor (fill or inode-exhaust the host FS).
+	stageRoot := ""
+	if tr.st != nil {
+		stageRoot = tr.st.WorkDir()
+	}
+	sizeGuard := watchStageSize(stageRoot, stageSizeInterval, runCancel)
+	defer sizeGuard.stop()
 	if err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf)); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
@@ -568,6 +585,18 @@ func (tr *taskRun) runSandbox(args []string) error {
 				"audit":       tr.auditPath,
 				"duration_ms": time.Since(tr.taskStart).Milliseconds(),
 				"reason":      fmt.Sprintf("task terminated: output exceeded the %d MiB host cap", maxTaskOutputBytes>>20)})
+			return errTaskTerminated
+		}
+		if sizeGuard.exceeded() {
+			// We cancelled the task ourselves: its /work grew past the host disk
+			// cap, or host free space dropped below the floor.
+			_, _ = fmt.Fprintf(tr.logf,
+				`{"type":"result","subtype":"error","is_error":true,"duration_ms":%d,"total_cost_usd":0,"num_turns":0}`+"\n",
+				time.Since(tr.taskStart).Milliseconds())
+			tr.sw.emit(map[string]any{"event": "error", "task_id": tr.id,
+				"audit":       tr.auditPath,
+				"duration_ms": time.Since(tr.taskStart).Milliseconds(),
+				"reason":      fmt.Sprintf("task terminated: /work exceeded the host disk cap (%d GiB / %d files, or host low on free space)", maxStageBytes>>30, maxStageFiles)})
 			return errTaskTerminated
 		}
 		// If claude never wrote a `result` event (e.g. the entrypoint died
