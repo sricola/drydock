@@ -27,11 +27,11 @@ jobs:
     # Apple's `container` runtime; cross-building elsewhere is not supported.
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0 # full history so `git describe` resolves the tag
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
           cache: true
@@ -47,14 +47,14 @@ jobs:
         run: echo "tarball=$(ls dist/drydock-*-darwin-arm64.tar.gz)" >> "$GITHUB_OUTPUT"
 
       - name: SLSA build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
         with:
           subject-path: ${{ steps.art.outputs.tarball }}
 
       - name: Install cosign
         # cosign-installer publishes v4.x releases but no moving `v4` major tag;
         # `v3` is the latest resolvable major tag.
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       - name: Sign the tarball (keyless)
         run: |
@@ -64,7 +64,7 @@ jobs:
             "${{ steps.art.outputs.tarball }}"
 
       - name: Publish release with artifacts
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           generate_release_notes: true
           fail_on_unmatched_files: true
@@ -99,7 +99,7 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         if: steps.gate.outputs.skip != 'true'
         with:
           repository: sricola/homebrew-drydock

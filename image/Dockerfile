@@ -21,12 +21,24 @@ RUN apt-get update && apt-get upgrade -y \
  && rm -rf /var/lib/apt/lists/*
 
 # Go: Debian bookworm ships 1.19 which is too old to be useful; install the
-# upstream tarball matching the build arch. Adds ~400MB to the image but the
-# alternative is no Go at all.
+# upstream tarball matching the build arch. The tarball is extracted as root
+# into /usr/local, so verify its published SHA-256 (per arch, pinned below)
+# BEFORE extraction: a compromised go.dev/CDN or a corrupted transfer can no
+# longer substitute a malicious archive. Bump the sums with GO_VERSION, from
+# https://go.dev/dl/?mode=json.
 ARG GO_VERSION=1.26.5
+ARG GO_SHA256_amd64=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
+ARG GO_SHA256_arm64=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49
 RUN ARCH=$(dpkg --print-architecture) && \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
-        | tar -C /usr/local -xz && \
+    case "$ARCH" in \
+      amd64) GO_SHA256="$GO_SHA256_amd64" ;; \
+      arm64) GO_SHA256="$GO_SHA256_arm64" ;; \
+      *) echo "unsupported build arch: $ARCH" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz && \
+    echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz && \
     ln -s /usr/local/go/bin/go    /usr/local/bin/go && \
     ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 
