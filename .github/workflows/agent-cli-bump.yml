@@ -22,20 +22,24 @@ jobs:
       - name: fetch latest npm versions
         id: fetch
         run: |
-          CLAUDE=$(npm view @anthropic-ai/claude-code version)
-          CODEX=$(npm view @openai/codex version)
-          OPENCODE=$(npm view opencode-ai version)
-          GEMINI=$(npm view @google/gemini-cli version)
+          set -euo pipefail
           {
             echo "versions<<EOF"
-            printf '@anthropic-ai/claude-code=%s\n@openai/codex=%s\nopencode-ai=%s\n@google/gemini-cli=%s\n' \
-              "$CLAUDE" "$CODEX" "$OPENCODE" "$GEMINI"
+            for pkg in "@anthropic-ai/claude-code" "@openai/codex" "opencode-ai" "@google/gemini-cli"; do
+              ver=$(npm view "$pkg" version 2>/dev/null || true)
+              if [ -z "$ver" ]; then
+                echo "::warning::npm view $pkg returned empty; skipping"
+                continue
+              fi
+              printf '%s=%s\n' "$pkg" "$ver"
+            done
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: rewrite Dockerfile pins
         id: rewrite
         run: |
+          set -euo pipefail
           SUMMARY=$(printf '%s\n' "$VERSIONS" | go run ./cmd/cli-bump)
           {
             echo "summary<<EOF"
@@ -47,27 +51,33 @@ jobs:
 
       - name: open bump PR
         run: |
+          set -euo pipefail
           if git diff --quiet image/Dockerfile; then
             echo "Dockerfile unchanged, nothing to bump."
             exit 0
           fi
-          DATE=$(date +%Y%m%d)
-          BRANCH="agent-cli-bump-${DATE}"
+          BRANCH="agent-cli-bump"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
+          git checkout -B "$BRANCH"
           git add image/Dockerfile
-          git commit -m "chore: bump pinned agent CLIs ${DATE}"
-          git push -u origin "$BRANCH"
-          gh pr create \
-            --title "chore: bump pinned agent CLIs" \
-            --body "## Agent CLI version bumps
-
-          ${SUMMARY}
-
-          ---
-
-          Note: A GITHUB_TOKEN-authored PR does not auto-trigger CI. The reviewer must run the red-team gate (make redteam and make redteam-vm) before merging."
+          git commit -m "chore: bump pinned agent CLIs $(date +%Y%m%d)"
+          git push --force-with-lease -u origin "$BRANCH"
+          {
+            printf '## Agent CLI version bumps\n\n'
+            printf '%s\n' "$SUMMARY"
+            printf '\n---\n\n'
+            printf 'Note: A GITHUB_TOKEN-authored PR does not auto-trigger CI. The reviewer must run the red-team gate (make redteam and make redteam-vm) before merging.\n'
+          } > /tmp/pr-body.md
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: bump pinned agent CLIs" \
+              --body-file /tmp/pr-body.md
+          else
+            echo "bump PR already open; updated the branch"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SUMMARY: ${{ steps.rewrite.outputs.summary }}

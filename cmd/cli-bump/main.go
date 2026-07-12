@@ -22,6 +22,11 @@ import (
 	"strings"
 )
 
+// versionRE is a strict anchored pattern for acceptable version tokens.
+// It accepts bare numerics (1.2.3), pre-release suffixes (1.0.0-rc1, 1.0.0-beta.2),
+// and nothing else. This guards the Dockerfile ARG pin against injection.
+var versionRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.]+)?$`)
+
 type pkg struct {
 	npm string // npm package name
 	arg string // Dockerfile ARG name
@@ -98,12 +103,20 @@ func fieldAt(fields []int, i int) int {
 // planBumps rewrites the Dockerfile's ARG pins to latest[npmName] when the
 // latest version is strictly newer (semver), and returns the rewritten content
 // plus the list of bumps. latest maps npm package name to version string.
+//
+// A candidate version that does not fully match versionRE is rejected: no bump
+// is written for that package and a warning is printed to stderr. This prevents
+// malformed or injection-carrying strings from entering the Dockerfile.
 func planBumps(dockerfile string, latest map[string]string) (string, []bump) {
 	var bumps []bump
 	out := dockerfile
 	for _, p := range pkgs {
 		latestVer, ok := latest[p.npm]
 		if !ok {
+			continue
+		}
+		if !versionRE.MatchString(latestVer) {
+			fmt.Fprintf(os.Stderr, "cli-bump: warning: %s: rejected malformed version %q (skipping)\n", p.npm, latestVer)
 			continue
 		}
 		re := regexp.MustCompile(`(?m)^(ARG ` + regexp.QuoteMeta(p.arg) + `=)([^\s]+)`)
