@@ -56,10 +56,10 @@ type DiffFacts struct {
 // bytes it likes into tracked files. Everything the parser retains is capped
 // so a crafted diff cannot balloon the Brief or the broker's memory.
 const (
-	maxTrackedFiles  = 4096 // FileChange entries retained; the rest are counted
-	maxPathBytes     = 512  // stored path length
-	maxFlagPaths     = 32   // example paths retained per flag kind
-	maxHeaderLine    = 4096 // git header lines are short; longer prefixes are content
+	maxTrackedFiles = 4096 // FileChange entries retained; the rest are counted
+	maxPathBytes    = 512  // stored path length
+	maxFlagPaths    = 32   // example paths retained per flag kind
+	maxHeaderLine   = 4096 // git header lines are short; longer prefixes are content
 )
 
 // Analyze computes DiffFacts from a unified diff produced by the host-side
@@ -68,29 +68,29 @@ const (
 // only ever counted, never interpreted.
 func Analyze(diff string) DiffFacts {
 	sum := sha256.Sum256([]byte(diff))
-	facts := DiffFacts{SHA256: hex.EncodeToString(sum[:]), Bytes: len(diff), Flags: []Flag{}}
+	facts := DiffFacts{SHA256: hex.EncodeToString(sum[:]), Bytes: len(diff), Files: []FileChange{}, Flags: []Flag{}}
 
-	flagged := map[string][]string{} // kind -> capped example paths
-	seen := map[string]map[string]bool{}
+	flagged := map[string][]string{} // kind -> capped example paths, deduped by linear scan
 	addFlag := func(kind, p string) {
 		if p == "" {
 			p = "(unknown path)"
 		}
-		if seen[kind] == nil {
-			seen[kind] = map[string]bool{}
-		}
-		if seen[kind][p] {
+		got := flagged[kind]
+		if len(got) >= maxFlagPaths {
 			return
 		}
-		seen[kind][p] = true
-		if len(flagged[kind]) < maxFlagPaths {
-			flagged[kind] = append(flagged[kind], p)
+		for _, q := range got {
+			if q == p {
+				return
+			}
 		}
+		flagged[kind] = append(flagged[kind], p)
 	}
 
 	r := bufio.NewReaderSize(strings.NewReader(diff), 64<<10)
 	var cur *FileChange
 	curPath := ""
+	inHunk := false
 	for {
 		line, err := boundedLine(r)
 		if line == "" && err != nil {
@@ -99,6 +99,7 @@ func Analyze(diff string) DiffFacts {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			curPath = capPath(parseGitHeaderPath(line))
+			inHunk = false
 			if len(facts.Files) < maxTrackedFiles {
 				facts.Files = append(facts.Files, FileChange{Path: curPath})
 				cur = &facts.Files[len(facts.Files)-1]
@@ -107,6 +108,8 @@ func Analyze(diff string) DiffFacts {
 				cur = nil
 			}
 			classifyPath(curPath, addFlag)
+		case strings.HasPrefix(line, "@@"):
+			inHunk = true
 		case strings.HasPrefix(line, "new file mode "), strings.HasPrefix(line, "new mode "):
 			mode := line[strings.LastIndexByte(line, ' ')+1:]
 			if strings.HasPrefix(mode, "120000") {
@@ -118,13 +121,13 @@ func Analyze(diff string) DiffFacts {
 		case strings.HasPrefix(line, "Binary files ") && strings.HasSuffix(line, " differ"),
 			line == "GIT binary patch":
 			addFlag(FlagBinary, curPath)
-		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		case !inHunk && (strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---")):
 			// hunk file headers, not content
-		case strings.HasPrefix(line, "+"):
+		case inHunk && strings.HasPrefix(line, "+"):
 			if cur != nil {
 				cur.Adds++
 			}
-		case strings.HasPrefix(line, "-"):
+		case inHunk && strings.HasPrefix(line, "-"):
 			if cur != nil {
 				cur.Dels++
 			}

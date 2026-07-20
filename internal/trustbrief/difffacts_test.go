@@ -96,6 +96,33 @@ func TestAnalyze_FlagKinds(t *testing.T) {
 	}
 }
 
+// TestAnalyze_HunkContentLinesLookLikeHeaders guards against an adversary
+// shrinking apparent change size by crafting hunk content that happens to
+// start with "++" or "--" (e.g. a line literally reading "+++counter" or
+// "---sql comment"). Those lines are still content once inside a hunk (after
+// a "@@" marker) and must be counted; only the genuine file-header "+++"/"---"
+// lines that precede the first "@@" are excluded.
+func TestAnalyze_HunkContentLinesLookLikeHeaders(t *testing.T) {
+	diff := "diff --git a/x b/x\n" +
+		"--- a/x\n" +
+		"+++ b/x\n" +
+		"@@ -1,2 +1,3 @@\n" +
+		"+normal\n" +
+		"+++counter\n" +
+		"-normal\n" +
+		"---sql comment\n"
+	f := Analyze(diff)
+	if len(f.Files) != 1 {
+		t.Fatalf("Files = %+v, want exactly one file", f.Files)
+	}
+	if f.Files[0].Adds != 2 {
+		t.Errorf("Adds = %d, want 2 (+normal, +++counter)", f.Files[0].Adds)
+	}
+	if f.Files[0].Dels != 2 {
+		t.Errorf("Dels = %d, want 2 (-normal, ---sql comment)", f.Files[0].Dels)
+	}
+}
+
 func TestAnalyze_TruncationMarker(t *testing.T) {
 	// The exact marker stage.gitDiffCapped appends (internal/stage/stage.go).
 	diff := "diff --git a/x b/x\n+y\n\n... [diff truncated at 32 MiB; the full change is still committed] ...\n"
