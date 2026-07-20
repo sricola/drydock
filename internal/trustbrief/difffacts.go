@@ -137,7 +137,13 @@ func Analyze(diff string) DiffFacts {
 			// significant location (e.g. `git mv .github/workflows/ci.yml
 			// ci.yml.disabled` silently disables CI) since the origin path is
 			// never otherwise classified. Classify the origin path too.
-			classifyPath(capPath(strings.TrimPrefix(line, "rename from ")), addFlag)
+			//
+			// Git quotes this path (core.quotepath default) whenever it contains
+			// non-ASCII bytes or a space, exactly like the "diff --git" b-path
+			// above — `rename from ".github/workflows/ci\302\251.yml"`. Without
+			// unquoting, every prefix/base check in classifyPath fails against
+			// the literal quoted+escaped string and the rename-out goes unflagged.
+			classifyPath(capPath(unquotePath(strings.TrimPrefix(line, "rename from "))), addFlag)
 		case strings.HasPrefix(line, "Binary files ") && strings.HasSuffix(line, " differ"),
 			line == "GIT binary patch":
 			addFlag(FlagBinary, curPath)
@@ -211,6 +217,20 @@ func parseGitHeaderPath(line string) string {
 		return rest[i+3:]
 	}
 	return ""
+}
+
+// unquotePath undoes git's core.quotepath escaping: a path containing
+// non-ASCII bytes or a space is emitted as a C-style quoted string with
+// octal escapes (e.g. `".github/workflows/ci\302\251.yml"`). If s isn't a
+// quoted string, or fails to unquote, it is returned unchanged — callers
+// that receive plain ASCII paths (the common case) are unaffected.
+func unquotePath(s string) string {
+	if strings.HasPrefix(s, `"`) {
+		if unq, err := strconv.Unquote(s); err == nil {
+			return unq
+		}
+	}
+	return s
 }
 
 func capPath(p string) string {

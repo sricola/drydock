@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
 
 	"drydock/internal/trustbrief"
 )
@@ -115,11 +116,25 @@ func orDash(s string) string {
 
 // safeCell strips control characters (terminal-escape defense: paths come
 // from the untrusted work tree) and caps length for column sanity.
+//
+// C0 controls (< 0x20) and DEL are the classic terminal-escape vector, but
+// C1 controls (0x80-0x9F, e.g. CSI at U+009B) are just as live a threat over
+// UTF-8-aware terminals, and Unicode formatting characters — bidi overrides
+// like U+202E RIGHT-TO-LEFT OVERRIDE, embeddings, and zero-width chars —
+// let a hostile filename visually spoof its extension in the evidence line
+// a reviewer reads (e.g. "cod‮fdp.exe" renders as "cod<reversed>"). Both
+// are stripped here; ordinary non-ASCII letters (é, ©, …) are untouched.
 func safeCell(s string) string {
 	var sb strings.Builder
 	n := 0
 	for _, r := range s {
 		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		if r >= 0x80 && r <= 0x9f {
+			continue
+		}
+		if unicode.Is(unicode.Cf, r) {
 			continue
 		}
 		sb.WriteRune(r)

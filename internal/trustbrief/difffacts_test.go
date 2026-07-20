@@ -269,6 +269,30 @@ func TestAnalyze_RenameInto_FlaggedPath(t *testing.T) {
 	}
 }
 
+// Git quotes the "rename from " path when it contains non-ASCII bytes
+// (core.quotepath default), emitting C-style octal escapes inside double
+// quotes: `rename from ".github/workflows/ci\302\251.yml"`. Without
+// unquoting, every prefix/base check in classifyPath fails against the
+// literal quoted+escaped string and a rename-out via a non-ASCII path goes
+// unflagged.
+func TestAnalyze_RenameOut_OfFlaggedPath_QuotedNonASCII(t *testing.T) {
+	diff := "diff --git a/.github/workflows/ci\\302\\251.yml b/ci.yml.disabled\n" +
+		"similarity index 100%\n" +
+		"rename from \".github/workflows/ci\\302\\251.yml\"\n" +
+		"rename to ci.yml.disabled\n"
+	paths := flagPaths(Analyze(diff), FlagCIWorkflow)
+	found := false
+	for _, p := range paths {
+		if p == ".github/workflows/ci©.yml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Analyze flags[%s] = %v, want to contain the unquoted rename-from path %q",
+			FlagCIWorkflow, paths, ".github/workflows/ci©.yml")
+	}
+}
+
 func FuzzAnalyze(f *testing.F) {
 	f.Add("diff --git a/x b/x\nnew file mode 120000\n+++ b/x\n+target\n")
 	f.Add("Binary files a and b differ\n")

@@ -126,6 +126,26 @@ func TestSafeCell_StripsControlAndCaps(t *testing.T) {
 	}
 }
 
+// C1 controls (e.g. CSI, U+009B) and Unicode formatting characters (e.g.
+// U+202E RIGHT-TO-LEFT OVERRIDE) must be stripped: a hostile filename can
+// use either to spoof its displayed extension in the evidence line a
+// reviewer reads. Ordinary non-ASCII letters must survive unharmed.
+func TestSafeCell_StripsControlAndCaps_C1AndBidi(t *testing.T) {
+	in := "evil‮fdp.exe"
+	got := safeCell(in)
+	if strings.ContainsRune(got, '') {
+		t.Errorf("C1 control (U+009B) survived: %q", got)
+	}
+	if strings.ContainsRune(got, '‮') {
+		t.Errorf("bidi override (U+202E) survived: %q", got)
+	}
+	for _, r := range []rune{'é', '©'} {
+		if got := safeCell(string(r)); !strings.ContainsRune(got, r) {
+			t.Errorf("safeCell(%q) = %q, want the legitimate non-ASCII rune preserved", string(r), got)
+		}
+	}
+}
+
 func TestBriefFlagKinds_ForPendingColumn(t *testing.T) {
 	dir := t.TempDir()
 	id := "0123456789abcdef0123456789abcdef"
