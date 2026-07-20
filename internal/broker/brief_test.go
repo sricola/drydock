@@ -107,6 +107,43 @@ func TestWriteBrief_SoftBudgetReported(t *testing.T) {
 	}
 }
 
+// F1: an unmetered lane (subscription auth, or a priceless openai-compat
+// lane) must not have the Brief claim a USD budget/hard-cap that cmd/brokerd
+// never actually enforced — it minted the lease at math.MaxFloat64. The Brief
+// must instead say so honestly and report the request-count backstop that IS
+// the real enforced bound.
+func TestWriteBrief_UnmeteredLaneReportsUnbounded(t *testing.T) {
+	auditRoot := t.TempDir()
+	b := &Broker{
+		AuditRoot: auditRoot, TaskBudget: 2, MaxRequestCostUSD: 0.5,
+		TaskMaxRequests: 0, Timeout: time.Minute,
+		UnmeteredVendors: map[string]bool{"anthropic": true},
+	}
+	tr := &taskRun{
+		b: b, id: "0123456789abcdef0123456789abcdef",
+		repoRef: "https://github.com/o/r.git", agentName: "claude", taskVendor: "anthropic",
+		grant: &fakeGrant{}, taskStart: time.Now(), st: &fakeStage{workDir: t.TempDir()},
+	}
+	b.writeBrief(tr, "diff --git a/x b/x\n+y\n")
+	got, err := trustbrief.Read(auditRoot, tr.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Policy.BudgetUnbounded {
+		t.Error("BudgetUnbounded = false, want true for an unmetered vendor lane")
+	}
+	if got.Policy.BudgetUSD != 0 {
+		t.Errorf("BudgetUSD = %v, want 0 (never actually enforced on an unmetered lane)", got.Policy.BudgetUSD)
+	}
+	if got.Policy.BudgetHard {
+		t.Error("BudgetHard = true, want false — no USD metering means no hard cap either")
+	}
+	if got.Policy.MaxRequests != DefaultUncappedRequestCap {
+		t.Errorf("MaxRequests = %d, want the uncapped-lane backstop %d",
+			got.Policy.MaxRequests, DefaultUncappedRequestCap)
+	}
+}
+
 func TestHandleTask_WritesBriefAtGate(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
 	grant := &fakeGrant{spent: 0.02}

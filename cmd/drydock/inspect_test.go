@@ -75,6 +75,46 @@ func TestRunInspect_JSON(t *testing.T) {
 	}
 }
 
+// M1: --json must work regardless of position relative to the task id. A
+// stdlib flag.FlagSet stops parsing at the first positional arg, so
+// `inspect <id> --json` used to silently ignore --json (fs.NArg() == 2,
+// "usage" error). Guard the fix by pinning the flag-after-id ordering; the
+// flag-before-id ordering is already covered by TestRunInspect_JSON.
+func TestRunInspect_JSON_FlagAfterID(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	writeTestBrief(t, dir, id)
+	out := captureStdout(t, func() { runInspect([]string{id, "--json"}) })
+	if !strings.Contains(out, `"schema_version": 1`) || !strings.Contains(out, `"snapshot_sha256"`) {
+		t.Errorf("--json (after id) output not raw brief:\n%s", out)
+	}
+}
+
+// F1: an unmetered lane's brief must render the honest "uncapped" line, not
+// a dollar figure/soft-or-hard label that was never actually enforced.
+func TestRunInspect_RendersBudgetUnbounded(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	b := writeTestBrief(t, dir, id)
+	b.Policy.BudgetUnbounded = true
+	b.Policy.BudgetUSD = 0
+	b.Policy.BudgetHard = false
+	b.Policy.MaxRequests = 1000
+	b.Policy.SnapshotSHA256 = b.Policy.Fingerprint()
+	if err := trustbrief.Write(dir, id, b); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if !strings.Contains(out, "budget uncapped (no USD metering on this lane)") {
+		t.Errorf("inspect output missing the uncapped-budget line:\n%s", out)
+	}
+	if strings.Contains(out, "(soft)") || strings.Contains(out, "(hard)") {
+		t.Errorf("inspect output should not label an unbounded budget soft/hard:\n%s", out)
+	}
+}
+
 func TestSafeCell_StripsControlAndCaps(t *testing.T) {
 	in := "evil\x1b[31mred\x1b[0m\npath" + strings.Repeat("A", 500)
 	got := safeCell(in)

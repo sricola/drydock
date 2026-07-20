@@ -58,13 +58,18 @@ type RuntimeFacts struct {
 // the USD cap a hard ceiling — without it the cap is post-hoc/soft, and the
 // reviewer should know which guarantee they got.
 type PolicyFacts struct {
-	SnapshotSHA256 string   `json:"snapshot_sha256"`
-	BudgetUSD      float64  `json:"budget_usd"`
-	BudgetHard     bool     `json:"budget_hard"`
-	MaxRequests    int      `json:"max_requests"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
-	EgressDefault  []string `json:"egress_default"`
-	EgressWidened  []string `json:"egress_widened"`
+	SnapshotSHA256 string  `json:"snapshot_sha256"`
+	BudgetUSD      float64 `json:"budget_usd"`
+	BudgetHard     bool    `json:"budget_hard"`
+	// BudgetUnbounded is true when this task's vendor lane carries no USD
+	// metering at all (subscription auth; a priceless openai-compat lane).
+	// When set, BudgetUSD is 0 and BudgetHard is false — the real backstop is
+	// MaxRequests, not a dollar figure that was never actually enforced.
+	BudgetUnbounded bool     `json:"budget_unbounded"`
+	MaxRequests     int      `json:"max_requests"`
+	TimeoutSeconds  int      `json:"timeout_seconds"`
+	EgressDefault   []string `json:"egress_default"`
+	EgressWidened   []string `json:"egress_widened"`
 }
 
 type SpendFacts struct {

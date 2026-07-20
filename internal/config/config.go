@@ -83,7 +83,7 @@ type Config struct {
 	// TaskMaxRequests is a per-task request cap. 0 = unlimited when a USD budget
 	// is bounding spend; but when no USD budget applies (subscription auth, or a
 	// priceless openai_compat lane) a 0 here fails closed to a default cap
-	// (defaultUncappedRequestCap) so a runaway task can't drain a subscription.
+	// (broker.DefaultUncappedRequestCap) so a runaway task can't drain a subscription.
 	TaskMaxRequests int `yaml:"task_max_requests"`
 
 	// MaxRequestCostUSD is the worst-case USD a single request may cost,

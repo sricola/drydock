@@ -76,22 +76,34 @@ func fatal(msg string, attrs ...any) {
 // (--user, readonly=).
 const supportedContainerMajor = "1"
 
-// defaultUncappedRequestCap bounds a task when no USD budget applies
-// (subscription auth or a priceless openai_compat lane) and the operator hasn't
-// set task_max_requests. High enough for a real agentic task's many tool-use
-// turns, low enough to stop a runaway loop from draining a subscription.
-const defaultUncappedRequestCap = 1000
-
 // effectiveRequestCap returns the per-task request cap to enforce. When no USD
 // budget bounds the backend (uncapped) and the operator left task_max_requests
-// at 0/unlimited, it fails closed to defaultUncappedRequestCap; otherwise it
-// honors the configured value (0 = unlimited when a USD budget is doing the
-// bounding).
+// at 0/unlimited, it fails closed to broker.DefaultUncappedRequestCap;
+// otherwise it honors the configured value (0 = unlimited when a USD budget is
+// doing the bounding). The constant lives in the broker package (not here) so
+// writeBrief's report of "what was actually enforced" and this mint-time
+// decision can never drift apart.
 func effectiveRequestCap(uncapped bool, configured int) int {
 	if uncapped && configured <= 0 {
-		return defaultUncappedRequestCap
+		return broker.DefaultUncappedRequestCap
 	}
 	return configured
+}
+
+// isUnmeteredVendor reports whether backend b's lane carries no USD metering
+// at all under cfg: subscription auth, or a priceless openai-compat lane (no
+// prices configured). This is the single decision point both the lease-budget
+// mint (math.MaxFloat64) and Broker.UnmeteredVendors are built from — kept as
+// one pure, unit-tested helper so the two never check different conditions
+// and silently disagree about which lanes are actually metered.
+func isUnmeteredVendor(cfg *config.Config, b gateway.Backend) bool {
+	if cfg.AuthMode(b.Vendor.Name) == "subscription" {
+		return true
+	}
+	if pp, ok := provider.ByVendor(b.Vendor.Name); ok && pp.ConfigBuilt && len(cfg.OpenAICompat.Prices) == 0 {
+		return true
+	}
+	return false
 }
 
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
@@ -322,16 +334,13 @@ func main() {
 	}()
 
 	providers := map[string]creds.Provider{}
+	unmeteredVendors := map[string]bool{}
 	for _, b := range backends {
 		budget := cfg.TaskBudgetUSD
-		uncapped := false
-		if cfg.AuthMode(b.Vendor.Name) == "subscription" {
+		uncapped := isUnmeteredVendor(cfg, b)
+		if uncapped {
 			budget = math.MaxFloat64
-			uncapped = true
-		}
-		if pp, ok := provider.ByVendor(b.Vendor.Name); ok && pp.ConfigBuilt && len(cfg.OpenAICompat.Prices) == 0 {
-			budget = math.MaxFloat64
-			uncapped = true
+			unmeteredVendors[b.Vendor.Name] = true
 		}
 		// When no USD budget bounds a backend (subscription auth, or a priceless
 		// openai_compat lane), an unlimited request count is the whole runaway
@@ -405,6 +414,7 @@ func main() {
 		PushMaxRetries:       cfg.PushMaxRetries,
 		PushRetryBackoff:     cfg.PushRetryBackoff,
 		PushFreshBranchTries: cfg.PushFreshBranchTries,
+		UnmeteredVendors:     unmeteredVendors,
 	}
 	if squidCtl != nil {
 		b.Squid = squidCtl

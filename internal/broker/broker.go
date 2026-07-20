@@ -39,6 +39,16 @@ var gitURLRef = regexp.MustCompile(
 	`^(?:https?://[A-Za-z0-9.-]+/|git@[A-Za-z0-9.-]+:|ssh://[A-Za-z0-9._-]+@[A-Za-z0-9.-]+/)[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?(?:\.git)?/?$`,
 )
 
+// DefaultUncappedRequestCap bounds a task when no USD budget applies to its
+// vendor's lane (subscription auth, or a priceless openai-compat lane) and
+// the operator hasn't set task_max_requests. High enough for a real agentic
+// task's many tool-use turns, low enough to stop a runaway loop from
+// draining a subscription. Exported so cmd/brokerd (which mints the lease
+// and decides the request cap) and writeBrief (which must report the cap
+// actually enforced) share one source of truth instead of two constants that
+// could drift apart.
+const DefaultUncappedRequestCap = 1000
+
 type Task struct {
 	RepoRef     string          `json:"repo_ref"`
 	Instruction string          `json:"instruction"`
@@ -104,6 +114,13 @@ type Broker struct {
 	Notify            bool   // fire macOS notifications on approval gates (config notifications)
 	AnthropicAuth     string // "api_key" | "subscription"; recorded per task for `drydock tasks`
 	OpenAIAuth        string // "api_key" | "subscription"; recorded per task for `drydock tasks`
+
+	// UnmeteredVendors names vendors whose lane carries NO USD metering at all
+	// (subscription auth lanes; a priceless openai-compat lane) — the same
+	// conditions cmd/brokerd used to mint a math.MaxFloat64 lease budget for
+	// that vendor. The Brief must say so honestly instead of reporting
+	// TaskBudget/MaxRequestCostUSD as if they bounded the run.
+	UnmeteredVendors map[string]bool
 
 	PushMaxRetries       int
 	PushRetryBackoff     time.Duration
@@ -658,6 +675,19 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) {
 		TimeoutSeconds: int(b.Timeout.Seconds()),
 		EgressDefault:  domainStrings(b.Cfg.Default.Domains),
 		EgressWidened:  domainStrings(tr.egressExtra),
+	}
+	if b.UnmeteredVendors[tr.taskVendor] {
+		// This lane mints leases at math.MaxFloat64 — TaskBudget/BudgetHard
+		// describe a cap that was never actually applied. Report the honest
+		// state: no USD metering, and the request-count backstop that is the
+		// real enforced bound (the lease's own default when the operator left
+		// task_max_requests at 0/unlimited).
+		policy.BudgetUnbounded = true
+		policy.BudgetUSD = 0
+		policy.BudgetHard = false
+		if policy.MaxRequests == 0 {
+			policy.MaxRequests = DefaultUncappedRequestCap
+		}
 	}
 	policy.SnapshotSHA256 = policy.Fingerprint()
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"drydock/internal/broker"
 	"drydock/internal/config"
 	"drydock/internal/gateway"
 )
@@ -341,10 +342,10 @@ func TestEffectiveRequestCap(t *testing.T) {
 		configured int
 		want       int
 	}{
-		{true, 0, defaultUncappedRequestCap},  // uncapped + unlimited → fail closed to the default cap
-		{true, -1, defaultUncappedRequestCap}, // negative treated as unset
-		{true, 50, 50},                        // uncapped but operator set a bound → honored
-		{false, 0, 0},                         // a USD budget bounds spend → 0 stays unlimited
+		{true, 0, broker.DefaultUncappedRequestCap},  // uncapped + unlimited → fail closed to the default cap
+		{true, -1, broker.DefaultUncappedRequestCap}, // negative treated as unset
+		{true, 50, 50}, // uncapped but operator set a bound → honored
+		{false, 0, 0},  // a USD budget bounds spend → 0 stays unlimited
 		{false, 200, 200},
 	}
 	for _, c := range cases {
@@ -352,6 +353,44 @@ func TestEffectiveRequestCap(t *testing.T) {
 			t.Errorf("effectiveRequestCap(%v, %d) = %d, want %d", c.uncapped, c.configured, got, c.want)
 		}
 	}
+}
+
+// TestIsUnmeteredVendor pins the single decision point shared by the
+// lease-budget mint (math.MaxFloat64) and Broker.UnmeteredVendors: a vendor's
+// lane is unmetered iff its auth mode is "subscription", or it's a
+// config-built (openai-compat) lane with no prices configured.
+func TestIsUnmeteredVendor(t *testing.T) {
+	t.Run("subscription anthropic is unmetered", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.AnthropicAuth = "subscription"
+		b := gateway.Backend{Vendor: gateway.AnthropicVendor()}
+		if !isUnmeteredVendor(cfg, b) {
+			t.Error("subscription anthropic lane should be unmetered")
+		}
+	})
+	t.Run("api_key anthropic is metered", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.AnthropicAuth = "api_key"
+		b := gateway.Backend{Vendor: gateway.AnthropicVendor()}
+		if isUnmeteredVendor(cfg, b) {
+			t.Error("api_key anthropic lane should be metered")
+		}
+	})
+	t.Run("openai-compat with no prices is unmetered", func(t *testing.T) {
+		cfg := config.Defaults()
+		b := gateway.Backend{Vendor: gateway.OpenAICompatVendor("openai-compat", "https://up.test", "", nil)}
+		if !isUnmeteredVendor(cfg, b) {
+			t.Error("priceless openai-compat lane should be unmetered")
+		}
+	})
+	t.Run("openai-compat with prices is metered", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.OpenAICompat.Prices = map[string]config.OpenAICompatPrice{"default": {Input: 1, Output: 2}}
+		b := gateway.Backend{Vendor: gateway.OpenAICompatVendor("openai-compat", "https://up.test", "", nil)}
+		if isUnmeteredVendor(cfg, b) {
+			t.Error("openai-compat lane with prices configured should be metered")
+		}
+	})
 }
 
 func TestLoopbackHostPort(t *testing.T) {

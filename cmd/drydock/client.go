@@ -126,9 +126,14 @@ func listPending() {
 			gate = "diff"
 			detail = singleLine(t.Instruction)
 		}
-		flags := briefFlagKinds(dir, t.ID)
-		if len(flags) > 20 {
-			flags = flags[:19] + "…"
+		// Flag kinds are broker-authored stable identifiers, but route them
+		// through safeCell like every other brief-sourced string on this
+		// column, and truncate by rune (not byte) so a control char or a
+		// multi-byte rune sitting at the cap can't corrupt the terminal or
+		// split mid-rune.
+		flags := safeCell(briefFlagKinds(dir, t.ID))
+		if r := []rune(flags); len(r) > 20 {
+			flags = string(r[:19]) + "…"
 		}
 		fmt.Printf("%-14s  %5s  %-7s  %-24s  %-20s  %s\n", t.ID, relAge(t.StartedAt), gate, repo, flags, detail)
 	}

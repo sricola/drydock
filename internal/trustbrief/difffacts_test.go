@@ -182,6 +182,93 @@ func TestAnalyze_HostileInputs(t *testing.T) {
 	})
 }
 
+// F2: git emits a plain `index aaa..bbb 120000` (no mode lines) when an
+// EXISTING symlink's target changes — new/old mode lines only show up when
+// the mode itself changes. Retargeting a tracked symlink (e.g. to
+// /etc/passwd) must still be flagged.
+func TestAnalyze_RetargetedSymlink_IndexLineOnly(t *testing.T) {
+	diff := "diff --git a/link b/link\n" +
+		"index 9627ab2..3594e94 120000\n" +
+		"--- a/link\n" +
+		"+++ b/link\n" +
+		"@@ -1 +1 @@\n" +
+		"-old-target\n" +
+		"+/etc/passwd\n"
+	paths := flagPaths(Analyze(diff), FlagSymlink)
+	found := false
+	for _, p := range paths {
+		if p == "link" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Analyze flags[%s] = %v, want to contain %q", FlagSymlink, paths, "link")
+	}
+}
+
+// An index line ending in a regular file mode (100644/100755) must produce no
+// NEW flags: editing an existing executable's content is normal, and the
+// exec-bit flag exists to mark the bit being ADDED (new mode / new file
+// mode), not merely present on an index line.
+func TestAnalyze_IndexLine_RegularModesDoNotFlag(t *testing.T) {
+	for _, mode := range []string{"100644", "100755"} {
+		diff := "diff --git a/f b/f\n" +
+			"index 1111111..2222222 " + mode + "\n" +
+			"--- a/f\n" +
+			"+++ b/f\n" +
+			"@@ -1 +1 @@\n" +
+			"-old\n" +
+			"+new\n"
+		if f := Analyze(diff); len(f.Flags) != 0 {
+			t.Errorf("index line mode %s produced flags %+v, want none", mode, f.Flags)
+		}
+	}
+}
+
+// F3: a rename-only move (`git mv .github/workflows/ci.yml ci.yml.disabled`)
+// produces a similarity-index/rename-from/rename-to block with no hunks.
+// Only the b-path (ci.yml.disabled) is a "diff --git" b-path, so without
+// classifying the rename-from path too, disabling CI via a rename goes
+// unflagged.
+func TestAnalyze_RenameOut_OfFlaggedPath(t *testing.T) {
+	diff := "diff --git a/.github/workflows/ci.yml b/ci.yml.disabled\n" +
+		"similarity index 100%\n" +
+		"rename from .github/workflows/ci.yml\n" +
+		"rename to ci.yml.disabled\n"
+	paths := flagPaths(Analyze(diff), FlagCIWorkflow)
+	found := false
+	for _, p := range paths {
+		if p == ".github/workflows/ci.yml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Analyze flags[%s] = %v, want to contain the rename-from path %q",
+			FlagCIWorkflow, paths, ".github/workflows/ci.yml")
+	}
+}
+
+// A rename INTO a flagged path (e.g. renaming some other workflow file to
+// live under .github/workflows/) must still flag via the existing b-path
+// classification in the "diff --git" header handler.
+func TestAnalyze_RenameInto_FlaggedPath(t *testing.T) {
+	diff := "diff --git a/ci.yml.disabled b/.github/workflows/ci.yml\n" +
+		"similarity index 100%\n" +
+		"rename from ci.yml.disabled\n" +
+		"rename to .github/workflows/ci.yml\n"
+	paths := flagPaths(Analyze(diff), FlagCIWorkflow)
+	found := false
+	for _, p := range paths {
+		if p == ".github/workflows/ci.yml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Analyze flags[%s] = %v, want to contain the rename-to path %q",
+			FlagCIWorkflow, paths, ".github/workflows/ci.yml")
+	}
+}
+
 func FuzzAnalyze(f *testing.F) {
 	f.Add("diff --git a/x b/x\nnew file mode 120000\n+++ b/x\n+target\n")
 	f.Add("Binary files a and b differ\n")

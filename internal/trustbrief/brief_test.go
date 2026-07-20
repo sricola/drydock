@@ -57,6 +57,25 @@ func TestWriteRead_RoundTrip(t *testing.T) {
 	}
 }
 
+// M3: a corrupt brief file must fail with an error that names the "parse"
+// step, so callers (cmd/drydock review.go) can distinguish "brief absent"
+// (os.IsNotExist) from "brief present but corrupt" (the callers' concern) and
+// warn instead of silently proceeding as if there were no evidence at all.
+func TestRead_CorruptJSON_ErrorMentionsParse(t *testing.T) {
+	dir := t.TempDir()
+	id := "0123456789abcdef0123456789abcdef"
+	if err := os.WriteFile(filepath.Join(dir, id+Suffix), []byte("not json at all {{{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Read(dir, id)
+	if err == nil {
+		t.Fatal("Read of corrupt JSON succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "parse") {
+		t.Errorf("Read error = %q, want it to mention %q", err.Error(), "parse")
+	}
+}
+
 func TestRead_RejectsHostileIDs(t *testing.T) {
 	dir := t.TempDir()
 	for _, id := range []string{"../../etc/passwd", "abc", "ABCDEF6789abcdef0123456789abcdef", ""} {

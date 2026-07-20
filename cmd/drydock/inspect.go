@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -12,23 +11,32 @@ import (
 
 // runInspect renders a task's trust brief: the broker-observed evidence a
 // reviewer triages before opening the diff. --json prints the raw artifact.
+//
+// Args are scanned by hand (no flag.FlagSet) so --json/-json is accepted in
+// either position relative to the task id — `inspect <id> --json` and
+// `inspect --json <id>` both work. A stdlib FlagSet stops parsing flags at
+// the first positional argument, which would silently ignore --json when it
+// follows the id.
 func runInspect(args []string) {
-	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
-	jsonOut := fs.Bool("json", false, "print the raw trust-brief JSON")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: drydock inspect <id> [--json]")
-		fs.PrintDefaults()
+	var jsonOut bool
+	var rest []string
+	for _, a := range args {
+		switch a {
+		case "--json", "-json":
+			jsonOut = true
+		default:
+			rest = append(rest, a)
+		}
 	}
-	_ = fs.Parse(args)
-	if fs.NArg() != 1 {
+	if len(rest) != 1 {
 		die("usage: drydock inspect <id> [--json]")
 	}
-	id := fs.Arg(0)
+	id := rest[0]
 	b, err := trustbrief.Read(auditDir(), id)
 	if err != nil {
 		die("no trust brief for task %s: %v", id, err)
 	}
-	if *jsonOut {
+	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(b)
@@ -48,7 +56,7 @@ func printBrief(b trustbrief.Brief) {
 	if b.Task.AutoApprove {
 		labels += " · auto-approve"
 	}
-	fmt.Printf("task     %s%s\n", b.TaskID, labels)
+	fmt.Printf("task     %s%s\n", safeCell(b.TaskID), labels)
 	base := b.Task.BaseCommit
 	if len(base) > 12 {
 		base = base[:12]
@@ -61,12 +69,15 @@ func printBrief(b trustbrief.Brief) {
 	fmt.Printf("runtime  agent=%s vendor=%s model=%s image=%s\n",
 		safeCell(b.Runtime.Agent), safeCell(b.Runtime.Vendor),
 		orDash(safeCell(b.Runtime.Model)), safeCell(b.Runtime.ImageRef))
-	budgetKind := "soft"
+	budget := fmt.Sprintf("$%.2f (soft)", b.Policy.BudgetUSD)
 	if b.Policy.BudgetHard {
-		budgetKind = "hard"
+		budget = fmt.Sprintf("$%.2f (hard)", b.Policy.BudgetUSD)
 	}
-	fmt.Printf("policy   budget $%.2f (%s) · timeout %ds · policy sha %.12s\n",
-		b.Policy.BudgetUSD, budgetKind, b.Policy.TimeoutSeconds, b.Policy.SnapshotSHA256)
+	if b.Policy.BudgetUnbounded {
+		budget = "uncapped (no USD metering on this lane)"
+	}
+	fmt.Printf("policy   budget %s · timeout %ds · policy sha %.12s\n",
+		budget, b.Policy.TimeoutSeconds, b.Policy.SnapshotSHA256)
 	fmt.Printf("egress   default: %s · widened: %s\n",
 		orDash(strings.Join(b.Policy.EgressDefault, " ")),
 		orDash(strings.Join(b.Policy.EgressWidened, " ")))
@@ -87,9 +98,9 @@ func printBrief(b trustbrief.Brief) {
 		for _, p := range fl.Paths {
 			paths = append(paths, safeCell(p))
 		}
-		fmt.Printf("FLAG     %s: %s\n", fl.Kind, strings.Join(paths, ", "))
+		fmt.Printf("FLAG     %s: %s\n", safeCell(fl.Kind), strings.Join(paths, ", "))
 	}
-	fmt.Printf("verify   %s\n", b.Verification.Status)
+	fmt.Printf("verify   %s\n", safeCell(b.Verification.Status))
 	for _, m := range b.MissingEvidence {
 		fmt.Printf("gap      %s\n", safeCell(m))
 	}

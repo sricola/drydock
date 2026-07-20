@@ -118,6 +118,26 @@ func Analyze(diff string) DiffFacts {
 			if strings.HasPrefix(mode, "100755") {
 				addFlag(FlagExecBit, curPath)
 			}
+		case !inHunk && strings.HasPrefix(line, "index "):
+			// `index aaa..bbb 120000` (no mode lines) is what git emits when an
+			// EXISTING symlink's target changes — new/old mode lines only appear
+			// when the mode itself changes. Without this, retargeting a tracked
+			// symlink (e.g. to /etc/passwd) goes unflagged. Deliberately only the
+			// symlink mode is checked here: 100644/100755 on an index line means
+			// an existing file's content changed (with its exec bit unchanged),
+			// which is normal and must NOT re-trigger FlagExecBit (that flag means
+			// the bit was ADDED, which "new mode "/"new file mode " already catch).
+			if strings.HasSuffix(line, " 120000") {
+				addFlag(FlagSymlink, curPath)
+			}
+		case !inHunk && strings.HasPrefix(line, "rename from "):
+			// A pure rename (`similarity index 100%` / rename from / rename to,
+			// no hunks) only classifies the b-path via the "diff --git" header
+			// above. That misses a rename that moves a flagged path OUT of its
+			// significant location (e.g. `git mv .github/workflows/ci.yml
+			// ci.yml.disabled` silently disables CI) since the origin path is
+			// never otherwise classified. Classify the origin path too.
+			classifyPath(capPath(strings.TrimPrefix(line, "rename from ")), addFlag)
 		case strings.HasPrefix(line, "Binary files ") && strings.HasSuffix(line, " differ"),
 			line == "GIT binary patch":
 			addFlag(FlagBinary, curPath)
