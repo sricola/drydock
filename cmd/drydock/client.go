@@ -113,9 +113,10 @@ func listPending() {
 		fmt.Println("(no pending tasks)")
 		return
 	}
-	fmt.Printf("%-14s  %5s  %-7s  %-28s  %s\n", "ID", "AGE", "GATE", "REPO", "DETAIL")
+	fmt.Printf("%-14s  %5s  %-7s  %-24s  %-20s  %s\n", "ID", "AGE", "GATE", "REPO", "FLAGS", "DETAIL")
+	dir := auditDir()
 	for _, t := range pending {
-		repo := shorten(t.Repo, 28)
+		repo := shorten(t.Repo, 24)
 		var gate, detail string
 		switch t.Stage {
 		case "awaiting_egress":
@@ -125,7 +126,16 @@ func listPending() {
 			gate = "diff"
 			detail = singleLine(t.Instruction)
 		}
-		fmt.Printf("%-14s  %5s  %-7s  %-28s  %s\n", t.ID, relAge(t.StartedAt), gate, repo, detail)
+		// Flag kinds are broker-authored stable identifiers, but route them
+		// through safeCell like every other brief-sourced string on this
+		// column, and truncate by rune (not byte) so a control char or a
+		// multi-byte rune sitting at the cap can't corrupt the terminal or
+		// split mid-rune.
+		flags := safeCell(briefFlagKinds(dir, t.ID))
+		if r := []rune(flags); len(r) > 20 {
+			flags = string(r[:19]) + "…"
+		}
+		fmt.Printf("%-14s  %5s  %-7s  %-24s  %-20s  %s\n", t.ID, relAge(t.StartedAt), gate, repo, flags, detail)
 	}
 	fmt.Println("\ntip: `drydock ui` reviews these diffs in a browser.")
 }

@@ -2,10 +2,14 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
+
+	"drydock/internal/trustbrief"
 )
 
 // runReview pipes the persisted diff through $PAGER and prompts y/N to
@@ -15,6 +19,23 @@ func runReview(id string) {
 	path := diffPath(id)
 	if _, err := os.Stat(path); err != nil {
 		die("no diff for task %s (looked for %s)", id, path)
+	}
+
+	// Evidence before content: show the broker-observed brief, then page the
+	// diff. Older tasks (pre-brief) simply skip the header — a missing brief
+	// is not a problem worth interrupting the review for. A brief that exists
+	// but fails to parse is different: it means something wrote (or
+	// corrupted) the artifact, and staying silent about that would let a
+	// reviewer approve a diff thinking "no brief" when the truth is "brief
+	// unreadable". Surface that case loudly, on stderr, before paging.
+	switch b, err := trustbrief.Read(auditDir(), id); {
+	case err == nil:
+		printBrief(b)
+		fmt.Println()
+	case errors.Is(err, fs.ErrNotExist):
+		// absent brief — silent, as before.
+	default:
+		fmt.Fprintf(os.Stderr, "drydock: trust brief for %s unreadable: %v\n", id, err)
 	}
 
 	pager := os.Getenv("PAGER")

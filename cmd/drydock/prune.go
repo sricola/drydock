@@ -22,7 +22,7 @@ type taskArtifacts struct {
 // knownSuffixes are the per-task audit artifacts brokerd writes. prune only
 // ever touches files matching <hex-id><suffix> in the audit dir — never
 // recurses, never other files.
-var knownSuffixes = []string{".jsonl", ".diff", ".widen.json"}
+var knownSuffixes = []string{".jsonl", ".diff", ".widen.json", ".brief.json"}
 
 func isHexID(s string) bool {
 	// Real task ids are 32 hex chars (128-bit, see broker.newID). Require a
@@ -138,7 +138,7 @@ func runPrune(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `Usage: drydock prune --older-than DUR [--keep-last N] [--yes]
 
-Delete old per-task audit artifacts (<id>.jsonl/.diff/.widen.json) from the
+Delete old per-task audit artifacts (<id>.jsonl/.diff/.widen.json/.brief.json) from the
 audit dir. Dry-run by default — pass --yes to actually delete. Running and
 awaiting-approval tasks have just-created files, so any sane --older-than
 won't touch them.

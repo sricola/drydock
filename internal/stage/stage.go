@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -61,6 +62,17 @@ func (s *Stage) git(args ...string) (string, error) {
 		"-c", "core.fsmonitor=false",
 	}, args...)
 	return runGit(s.WorkDir, full...)
+}
+
+// BaseCommit returns the commit the work tree was cloned at — the base the
+// captured diff applies to. Read from the host-only git dir, so the value
+// is host-observed evidence a VM cannot influence.
+func (s *Stage) BaseCommit() (string, error) {
+	out, err := s.git("rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // WriteTaskFiles writes the agent prompt into the work tree's .task dir, read by
