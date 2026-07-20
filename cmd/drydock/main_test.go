@@ -24,7 +24,8 @@ var dispatchedCommands = []string{
 
 // Every command the top-level usage advertises must have an entry in subHelp.
 // Keep this explicit list aligned with main's switch; the subprocess test below
-// separately proves that every listed command really dispatches its help path.
+// separately proves that one representative command per help-path family
+// really dispatches its help path.
 func TestSubHelp_CoversEveryAdvertisedCommand(t *testing.T) {
 	for _, c := range dispatchedCommands {
 		if _, ok := subHelp[c]; !ok {
