@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"drydock/internal/trustbrief"
 )
 
 // runReview pipes the persisted diff through $PAGER and prompts y/N to
@@ -15,6 +17,13 @@ func runReview(id string) {
 	path := diffPath(id)
 	if _, err := os.Stat(path); err != nil {
 		die("no diff for task %s (looked for %s)", id, path)
+	}
+
+	// Evidence before content: show the broker-observed brief, then page the
+	// diff. Older tasks (pre-brief) simply skip the header.
+	if b, err := trustbrief.Read(auditDir(), id); err == nil {
+		printBrief(b)
+		fmt.Println()
 	}
 
 	pager := os.Getenv("PAGER")

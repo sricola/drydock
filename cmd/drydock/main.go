@@ -27,6 +27,7 @@ Tasks:
   drydock tasks                  list recent runs (id, age, duration, cost, outcome)
   drydock logs    <id> [-f]      print (or follow) the task's stream-json audit log
   drydock review  <id>           open the diff in $PAGER, then prompt y/N
+  drydock inspect <id> [--json]  show the trust brief (diff facts, risk flags, policy, spend)
   drydock retry   <id>           re-run a prior task from its recorded invocation
   drydock kill    <id>           tear down the VM and deny if pending (alias: cancel)
   drydock prune   <flags>        delete old audit artifacts (--older-than DUR [--keep-last N] [--yes])
@@ -67,6 +68,7 @@ var subHelp = map[string]string{
 	"tasks":   "list recent runs: id, age, duration, cost, outcome.",
 	"logs":    "<id> [-f] — print the task's stream-json audit log; -f to follow.",
 	"review":  "<id> — open the diff in $PAGER, prompt y/N to approve or deny.",
+	"inspect": "<id> [--json] — show the task's trust brief: broker-observed diff facts, risk flags, policy, and spend.",
 	"kill":    "<id> — tear down the VM and deny if pending.",
 	"cancel":  "<id> — alias for kill: tear down the VM and deny if pending.",
 	"retry":   "<id> — re-run a prior task from its recorded invocation (repo + prompt + flags; re-enters the approval gate).",
@@ -141,6 +143,9 @@ func main() {
 		consumeHelpFlag(cmd, subArgs)
 		mustArgs(2)
 		runReview(os.Args[2])
+	case "inspect":
+		consumeHelpFlag(cmd, subArgs)
+		runInspect(subArgs)
 	case "kill", "cancel": // cancel is an alias — the verb users reach for first
 		consumeHelpFlag(cmd, subArgs)
 		mustArgs(2)
