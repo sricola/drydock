@@ -95,6 +95,7 @@ func TestScanAuditTasks_GroupsAndIgnoresNonTaskFiles(t *testing.T) {
 	const newID = "bbbb2222bbbb2222bbbb2222bbbb2222"
 	write(oldID+".jsonl", "trace", 40*24*time.Hour)
 	write(oldID+".diff", "diffbody", 40*24*time.Hour)
+	write(oldID+".brief.json", "briefbody", 40*24*time.Hour)
 	write(newID+".jsonl", "recent", time.Hour)
 	write("config.yaml", "secret", 100*24*time.Hour)                              // wrong suffix — must be ignored
 	write("a.jsonl", "shorthex", 100*24*time.Hour)                                // too-short id — must be ignored
@@ -110,11 +111,11 @@ func TestScanAuditTasks_GroupsAndIgnoresNonTaskFiles(t *testing.T) {
 	}
 	for _, ta := range tasks {
 		if ta.id == oldID {
-			if len(ta.files) != 2 {
-				t.Errorf("old task grouped %d files, want 2", len(ta.files))
+			if len(ta.files) != 3 {
+				t.Errorf("old task grouped %d files, want 3", len(ta.files))
 			}
-			if ta.bytes != int64(len("trace")+len("diffbody")) {
-				t.Errorf("old task bytes = %d, want %d", ta.bytes, len("trace")+len("diffbody"))
+			if ta.bytes != int64(len("trace")+len("diffbody")+len("briefbody")) {
+				t.Errorf("old task bytes = %d, want %d", ta.bytes, len("trace")+len("diffbody")+len("briefbody"))
 			}
 		}
 	}
@@ -127,6 +128,10 @@ func TestScanAuditTasks_GroupsAndIgnoresNonTaskFiles(t *testing.T) {
 	// The recent task and the non-task files must remain untouched.
 	if _, err := os.Stat(filepath.Join(dir, newID+".jsonl")); err != nil {
 		t.Error("recent task was removed")
+	}
+	// The brief fixture must be removed along with the rest of the task's files.
+	if _, err := os.Stat(filepath.Join(dir, oldID+".brief.json")); !os.IsNotExist(err) {
+		t.Error("old task's .brief.json was not removed by prune")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); err != nil {
 		t.Error("config.yaml must never be touched by prune")

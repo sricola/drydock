@@ -394,6 +394,8 @@ func main() {
 		GatewayIP:            cfg.GatewayIP,
 		ProxyPort:            proxyPort,
 		TaskBudget:           cfg.TaskBudgetUSD,
+		MaxRequestCostUSD:    cfg.MaxRequestCostUSD,
+		TaskMaxRequests:      cfg.TaskMaxRequests,
 		MaxConcurrent:        cfg.MaxConcurrent,
 		DefaultModel:         cfg.DefaultModel,
 		OpenAICompatModel:    cfg.OpenAICompat.Model,

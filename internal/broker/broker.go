@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,6 +27,7 @@ import (
 	"drydock/internal/remote"
 	"drydock/internal/runner"
 	"drydock/internal/stage"
+	"drydock/internal/trustbrief"
 )
 
 // gitURLRef accepts any https://, git@, or ssh:// git URL. Local paths
@@ -87,7 +89,14 @@ type Broker struct {
 	ProxyPort       int          // squid port (e.g. 3128)
 	Squid           SquidControl // per-task egress widening; nil = disabled
 	TaskBudget      float64      // USD budget per task
-	DefaultModel    string       // operator-level default; per-task Task.Model overrides
+	// MaxRequestCostUSD and TaskMaxRequests mirror the gateway's admission
+	// policy (config max_request_cost_usd / task_max_requests). The broker
+	// itself does not enforce them — the gateway does — but the Brief must
+	// report the effective policy, in particular whether the USD budget was
+	// a hard ceiling (reservation on) or the default post-hoc soft cap.
+	MaxRequestCostUSD float64
+	TaskMaxRequests   int
+	DefaultModel      string // operator-level default; per-task Task.Model overrides
 	// OpenAICompatModel is the model id for the openai-compat lane (from
 	// config openai_compat.model). It's the per-task default for an opencode
 	// task when --model isn't passed, since that vendor has no built-in model.
@@ -162,6 +171,7 @@ func (r realStage) Commit(branch, msg string) error       { return r.s.Commit(br
 func (r realStage) PushBranch(local, remote string) error { return r.s.PushBranch(local, remote) }
 func (r realStage) PushEnv() []string                     { return r.s.PushEnv() }
 func (r realStage) Cleanup() error                        { return r.s.Cleanup() }
+func (r realStage) BaseCommit() (string, error)           { return r.s.BaseCommit() }
 
 // defaultPrepareStage is the production prepareStage: a real host clone with
 // the .git dir moved out of the mounted work tree.
@@ -217,6 +227,7 @@ type taskRun struct {
 	instruction string
 	egressExtra []egress.Domain
 	autoApprove bool
+	sensitive   bool
 	draft       bool
 	platform    string
 	model       string
@@ -316,6 +327,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		instruction: t.Instruction,
 		egressExtra: t.EgressExtra,
 		autoApprove: t.AutoApprove,
+		sensitive:   t.Sensitive,
 		draft:       t.Draft,
 		platform:    t.Platform,
 		model:       t.Model,
@@ -633,6 +645,79 @@ func (tr *taskRun) runSandbox(args []string) error {
 	return nil
 }
 
+// writeBrief assembles and persists the broker-observed evidence report at
+// the diff-approval gate, for every task that produced a diff — including
+// auto-approved ones, where the Brief is the only pre-push record a human
+// can later audit. Best-effort: the Brief is advisory evidence in v1, so a
+// write failure warns and the gate proceeds rather than failing the task.
+func (b *Broker) writeBrief(tr *taskRun, diff string) {
+	policy := trustbrief.PolicyFacts{
+		BudgetUSD:      b.TaskBudget,
+		BudgetHard:     b.MaxRequestCostUSD > 0,
+		MaxRequests:    b.TaskMaxRequests,
+		TimeoutSeconds: int(b.Timeout.Seconds()),
+		EgressDefault:  domainStrings(b.Cfg.Default.Domains),
+		EgressWidened:  domainStrings(tr.egressExtra),
+	}
+	policy.SnapshotSHA256 = policy.Fingerprint()
+
+	brief := trustbrief.Brief{
+		SchemaVersion: 1,
+		TaskID:        tr.id,
+		GeneratedAt:   time.Now().UTC(),
+		Task: trustbrief.TaskFacts{
+			InstructionSHA256: trustbrief.HashInstruction(tr.instruction),
+			RepoRef:           trustbrief.RedactRepoRef(tr.repoRef),
+			Sensitive:         tr.sensitive,
+			AutoApprove:       tr.autoApprove,
+		},
+		Runtime: trustbrief.RuntimeFacts{
+			ImageRef: b.ImageRef, Agent: tr.agentName, Vendor: tr.taskVendor, Model: tr.model,
+		},
+		Policy: policy,
+		Spend: trustbrief.SpendFacts{
+			USDBrokerMetered: tr.grant.Spent(),
+			DurationMs:       time.Since(tr.taskStart).Milliseconds(),
+		},
+		Diff:         trustbrief.Analyze(diff),
+		Verification: trustbrief.Verification{Status: trustbrief.VerificationNotConfigured},
+		MissingEvidence: []string{
+			"verification not configured (no verifier stage in this version)",
+			"agent summary not captured (broker records no agent claims in v1)",
+		},
+	}
+	// Optional capability: the production stage knows its clone commit; test
+	// fakes may not. Absence is recorded, never silently dropped.
+	if bc, ok := tr.st.(interface{ BaseCommit() (string, error) }); ok {
+		if c, err := bc.BaseCommit(); err == nil {
+			brief.Task.BaseCommit = c
+		}
+	}
+	if brief.Task.BaseCommit == "" {
+		brief.MissingEvidence = append(brief.MissingEvidence, "base_commit unavailable")
+	}
+	if brief.Diff.Truncated {
+		brief.MissingEvidence = append(brief.MissingEvidence,
+			"review diff truncated at its cap; file counts cover the truncated portion only")
+	}
+	if err := trustbrief.Write(b.AuditRoot, tr.id, brief); err != nil {
+		slog.Warn("could not persist trust brief", "task_id", tr.id, "err", err)
+	}
+}
+
+// domainStrings renders egress domains as "host:p1,p2" strings for the Brief.
+func domainStrings(ds []egress.Domain) []string {
+	out := make([]string, 0, len(ds))
+	for _, d := range ds {
+		ports := make([]string, 0, len(d.Ports))
+		for _, p := range d.Ports {
+			ports = append(ports, strconv.Itoa(p))
+		}
+		out = append(out, d.Host+":"+strings.Join(ports, ","))
+	}
+	return out
+}
+
 // pushAndOpenPR handles the diff-approval gate, branch push, and PR creation.
 // It always emits a terminal event (result/outcome=denied|cancelled|pushed|push_failed).
 // HandleTask should return immediately after calling this; it is the last step
@@ -640,6 +725,7 @@ func (tr *taskRun) runSandbox(args []string) error {
 func (tr *taskRun) pushAndOpenPR(diff string) {
 	b := tr.b
 	files, insertions, deletions := diffStat(diff)
+	b.writeBrief(tr, diff)
 	b.setStage(tr.id, StagePending)
 	// Only announce the approval gate when there's actually a human gate to
 	// wait on. Auto-approve pushes immediately, so an "awaiting_approval"

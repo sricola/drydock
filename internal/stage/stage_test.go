@@ -321,6 +321,37 @@ func TestReopen_ErrorsWhenGitDirMissing(t *testing.T) {
 	}
 }
 
+func TestBaseCommit_ReturnsCloneHead(t *testing.T) {
+	// Build a source repo with one commit.
+	src := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"}, {"config", "user.email", "t@t"}, {"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-q", "-m", "base"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = src
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	want, err := exec.Command("git", "-C", src, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Prepare(t.TempDir(), src)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	got, err := st.BaseCommit()
+	if err != nil {
+		t.Fatalf("BaseCommit: %v", err)
+	}
+	if got != strings.TrimSpace(string(want)) {
+		t.Errorf("BaseCommit = %q, want %q", got, strings.TrimSpace(string(want)))
+	}
+}
+
 func TestReapOrphans_SkipsKeepSet(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"keepme", "reapme"} {
