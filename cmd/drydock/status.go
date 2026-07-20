@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,9 @@ func health() (healthBody, error) {
 		return healthBody{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return healthBody{}, fmt.Errorf("GET /healthz: brokerd returned %s", resp.Status)
+	}
 	var body healthBody
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return healthBody{}, fmt.Errorf("parse health: %w", err)

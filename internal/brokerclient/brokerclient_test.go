@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"drydock/internal/brokerclient"
+	"drydock/internal/sockpath"
 )
 
 // serveUnix starts a minimal HTTP server on a temp unix socket and returns
@@ -117,5 +118,78 @@ func TestResolveSocketPath(t *testing.T) {
 	t.Setenv("BROKER_SOCKET", want)
 	if got := brokerclient.ResolveSocketPath(); got != want {
 		t.Errorf("ResolveSocketPath = %q, want %q", got, want)
+	}
+}
+
+func TestResolversReadConfigWhenEnvironmentIsUnset(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BROKER_ADDR", "")
+	t.Setenv("BROKER_SOCKET", "")
+
+	configDir := filepath.Join(home, ".drydock")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configBody := "broker:\n  addr: 127.0.0.1:8765\n  socket: /tmp/from-config.sock\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := brokerclient.ResolveAddr(); got != "127.0.0.1:8765" {
+		t.Errorf("ResolveAddr() = %q, want config value", got)
+	}
+	if got := brokerclient.ResolveSocketPath(); got != "/tmp/from-config.sock" {
+		t.Errorf("ResolveSocketPath() = %q, want config value", got)
+	}
+}
+
+func TestResolveSocketPathFallsBackToPerUserDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BROKER_ADDR", "")
+	t.Setenv("BROKER_SOCKET", "")
+
+	if got, want := brokerclient.ResolveSocketPath(), sockpath.Default(); got != want {
+		t.Errorf("ResolveSocketPath() = %q, want default %q", got, want)
+	}
+}
+
+func TestNewUsesConfigAddr(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BROKER_ADDR", "")
+	t.Setenv("BROKER_SOCKET", "")
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "tcp-config-ok")
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	configDir := filepath.Join(home, ".drydock")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configBody := "broker:\n  addr: " + ln.Addr().String() + "\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, base := brokerclient.New(nil, 2*time.Second)
+	if base != "http://"+ln.Addr().String() {
+		t.Fatalf("base = %q, want config TCP address", base)
+	}
+	resp, err := c.Get(base + "/ping")
+	if err != nil {
+		t.Fatalf("GET through config address: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "tcp-config-ok" {
+		t.Errorf("body = %q, want tcp-config-ok", body)
 	}
 }

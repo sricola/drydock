@@ -394,6 +394,9 @@ func (c *Config) validate() error {
 	if c.OpenAIAuth != "api_key" && c.OpenAIAuth != "subscription" {
 		return fmt.Errorf("config: openai_auth must be api_key or subscription, got %q", c.OpenAIAuth)
 	}
+	if c.TaskMaxRequests < 0 {
+		return fmt.Errorf("config: task_max_requests must be >= 0, got %d", c.TaskMaxRequests)
+	}
 	if oc := c.OpenAICompat; oc.BaseURL != "" {
 		if oc.APIKeyEnv == "" || oc.Model == "" {
 			return fmt.Errorf("config: openai_compat.base_url set but api_key_env and model are required")
