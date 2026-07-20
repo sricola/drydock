@@ -131,12 +131,12 @@ func TestSafeCell_StripsControlAndCaps(t *testing.T) {
 // use either to spoof its displayed extension in the evidence line a
 // reviewer reads. Ordinary non-ASCII letters must survive unharmed.
 func TestSafeCell_StripsControlAndCaps_C1AndBidi(t *testing.T) {
-	in := "evil‮fdp.exe"
+	in := "evil\u009b\u202efdp.exe"
 	got := safeCell(in)
-	if strings.ContainsRune(got, '') {
+	if strings.ContainsRune(got, '\u009b') {
 		t.Errorf("C1 control (U+009B) survived: %q", got)
 	}
-	if strings.ContainsRune(got, '‮') {
+	if strings.ContainsRune(got, '\u202e') {
 		t.Errorf("bidi override (U+202E) survived: %q", got)
 	}
 	for _, r := range []rune{'é', '©'} {
