@@ -127,6 +127,7 @@ func TestValidate_Rejects(t *testing.T) {
 		"network: x\ngateway_ip: 1.2.3.4\nmax_concurrent_tasks: 0\n": "max_concurrent_tasks",
 		"network: x\ngateway_ip: 1.2.3.4\ntask_budget_usd: 0\n":      "task_budget_usd",
 		"network: x\ngateway_ip: 1.2.3.4\ntask_timeout: 0s\n":        "task_timeout",
+		"network: x\ngateway_ip: 1.2.3.4\ntask_max_requests: -1\n":   "task_max_requests",
 	}
 	for yaml, wantSubstr := range cases {
 		path := filepath.Join(t.TempDir(), "c.yaml")
@@ -135,6 +136,67 @@ func TestValidate_Rejects(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), wantSubstr) {
 			t.Errorf("yaml=%q\n  want err containing %q, got %v", yaml, wantSubstr, err)
 		}
+	}
+}
+
+func TestEnvOverrides_AllOperatorKnobs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	values := map[string]string{
+		"DRYDOCK_NETWORK":                  "env-network",
+		"DRYDOCK_GW_IP":                    "10.20.30.1",
+		"SANDBOX_IMAGE":                    "sandbox:test",
+		"DRYDOCK_ANCHOR_IMAGE":             "anchor:test",
+		"DRYDOCK_TASK_BUDGET_USD":          "3.25",
+		"DRYDOCK_MAX_CONCURRENT_TASKS":     "7",
+		"DRYDOCK_DEFAULT_MODEL":            "model-x",
+		"DRYDOCK_DEFAULT_AGENT":            "codex",
+		"DRYDOCK_ANTHROPIC_AUTH":           "subscription",
+		"DRYDOCK_OPENAI_AUTH":              "subscription",
+		"DRYDOCK_TASK_MAX_REQUESTS":        "42",
+		"DRYDOCK_AGGREGATE_BUDGET_USD":     "9.5",
+		"DRYDOCK_MAX_REQUEST_COST_USD":     "0.75",
+		"DRYDOCK_AGGREGATE_WINDOW":         "6h",
+		"DRYDOCK_PUSH_MAX_RETRIES":         "5",
+		"DRYDOCK_PUSH_RETRY_BACKOFF":       "250ms",
+		"DRYDOCK_PUSH_FRESH_BRANCH_TRIES":  "4",
+		"STAGE_ROOT":                       "/tmp/test-stage",
+		"AUDIT_ROOT":                       "/tmp/test-audit",
+		"SQUID_RUN_DIR":                    "/tmp/test-squid",
+		"BROKER_SOCKET":                    "/tmp/test-broker.sock",
+		"BROKER_ADDR":                      "127.0.0.1:8765",
+		"DRYDOCK_NO_NOTIFY":                "1",
+		"DRYDOCK_LOG_JSON":                 "1",
+		"DRYDOCK_STRICT_CONTAINER_VERSION": "1",
+	}
+	for key, value := range values {
+		t.Setenv(key, value)
+	}
+
+	c, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Network != "env-network" || c.GatewayIP != "10.20.30.1" ||
+		c.SandboxImage != "sandbox:test" || c.AnchorImage != "anchor:test" {
+		t.Errorf("runtime env overrides not applied: %+v", c)
+	}
+	if c.TaskBudgetUSD != 3.25 || c.MaxConcurrent != 7 || c.TaskMaxRequests != 42 ||
+		c.MaxRequestCostUSD != 0.75 || c.AggregateBudgetUSD != 9.5 || c.AggregateWindow != 6*time.Hour {
+		t.Errorf("budget/concurrency env overrides not applied: %+v", c)
+	}
+	if c.DefaultModel != "model-x" || c.DefaultAgent != "codex" ||
+		c.AnthropicAuth != "subscription" || c.OpenAIAuth != "subscription" {
+		t.Errorf("agent/auth env overrides not applied: %+v", c)
+	}
+	if c.PushMaxRetries != 5 || c.PushRetryBackoff != 250*time.Millisecond || c.PushFreshBranchTries != 4 {
+		t.Errorf("push recovery env overrides not applied: %+v", c)
+	}
+	if c.StageRoot != "/tmp/test-stage" || c.AuditRoot != "/tmp/test-audit" || c.SquidRunDir != "/tmp/test-squid" ||
+		c.Broker.Socket != "/tmp/test-broker.sock" || c.Broker.Addr != "127.0.0.1:8765" {
+		t.Errorf("state/listener env overrides not applied: %+v", c)
+	}
+	if c.Notifications || !c.LogJSON || !c.StrictContainerVersion {
+		t.Errorf("boolean env overrides not applied: %+v", c)
 	}
 }
 

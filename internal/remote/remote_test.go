@@ -155,21 +155,52 @@ func TestAvailable(t *testing.T) {
 	origLook, origProbe := lookPath, probeCLI
 	t.Cleanup(func() { lookPath, probeCLI = origLook, origProbe })
 
-	// CLI missing.
-	lookPath = func(string) (string, error) { return "", errors.New("not found") }
-	if err := (GitHubAdapter{}).Available(); err == nil {
-		t.Error("missing gh must be unavailable")
+	cases := []struct {
+		name      string
+		adapter   Adapter
+		binary    string
+		probeArgs []string
+	}{
+		{name: "github", adapter: GitHubAdapter{}, binary: "gh", probeArgs: []string{"auth", "status"}},
+		{name: "gitlab", adapter: GitLabAdapter{}, binary: "glab", probeArgs: []string{"auth", "status"}},
+		{name: "gitea", adapter: GiteaAdapter{}, binary: "tea", probeArgs: []string{"login", "list"}},
 	}
-	// Installed but not authed.
-	lookPath = func(string) (string, error) { return "/usr/bin/gh", nil }
-	probeCLI = func(string, ...string) error { return errors.New("exit 1") }
-	if err := (GitHubAdapter{}).Available(); err == nil {
-		t.Error("unauthenticated gh must be unavailable")
-	}
-	// Installed + authed.
-	probeCLI = func(string, ...string) error { return nil }
-	if err := (GitHubAdapter{}).Available(); err != nil {
-		t.Errorf("authed gh must be available: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Missing CLI must fail before attempting an auth probe.
+			probeCalled := false
+			lookPath = func(got string) (string, error) {
+				if got != tc.binary {
+					t.Errorf("lookPath(%q), want %q", got, tc.binary)
+				}
+				return "", errors.New("not found")
+			}
+			probeCLI = func(string, ...string) error { probeCalled = true; return nil }
+			if err := tc.adapter.Available(); err == nil {
+				t.Fatalf("missing %s must be unavailable", tc.binary)
+			}
+			if probeCalled {
+				t.Error("auth probe ran even though the CLI was missing")
+			}
+
+			// An installed but unauthenticated CLI must also be unavailable,
+			// and each adapter must use its vendor-specific auth probe.
+			lookPath = func(string) (string, error) { return "/usr/bin/" + tc.binary, nil }
+			probeCLI = func(gotBinary string, gotArgs ...string) error {
+				if gotBinary != tc.binary || !reflect.DeepEqual(gotArgs, tc.probeArgs) {
+					t.Errorf("probeCLI(%q, %q), want (%q, %q)", gotBinary, gotArgs, tc.binary, tc.probeArgs)
+				}
+				return errors.New("exit 1")
+			}
+			if err := tc.adapter.Available(); err == nil {
+				t.Fatalf("unauthenticated %s must be unavailable", tc.binary)
+			}
+
+			probeCLI = func(string, ...string) error { return nil }
+			if err := tc.adapter.Available(); err != nil {
+				t.Errorf("authenticated %s must be available: %v", tc.binary, err)
+			}
+		})
 	}
 	// PushOnly is always available.
 	if err := (PushOnlyAdapter{}).Available(); err != nil {

@@ -41,6 +41,9 @@ func fetchTasks() ([]taskState, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET /admin/tasks: brokerd returned %s", resp.Status)
+	}
 	var out []taskState
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("parse /admin/tasks: %w", err)
