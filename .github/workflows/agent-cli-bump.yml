@@ -23,21 +23,22 @@ jobs:
         id: fetch
         run: |
           set -euo pipefail
+          # The package list (and each package's npm view query, e.g. npm@^11)
+          # comes from cli-bump's pkgs table via -list, so the fetch loop and
+          # the Dockerfile rewriter cannot drift apart. A range query returns a
+          # JSON array; take its last (highest) entry.
+          VERSIONS=""
+          while read -r pkg spec; do
+            ver=$(npm view "$spec" version --json 2>/dev/null | jq -r 'if type=="array" then .[-1] else . end' 2>/dev/null || true)
+            if [ -z "$ver" ]; then
+              echo "::warning::npm view $spec returned empty; skipping"
+              continue
+            fi
+            VERSIONS+="$pkg=$ver"$'\n'
+          done < <(go run ./cmd/cli-bump -list)
           {
             echo "versions<<EOF"
-            for pkg in "@anthropic-ai/claude-code" "@openai/codex" "opencode-ai" "@google/gemini-cli" "npm"; do
-              # npm majors change the image's package manager and couple to the
-              # base image's node line, so track the current major only; a new
-              # major is a deliberate, human-reviewed range bump here.
-              spec="$pkg"
-              if [ "$pkg" = "npm" ]; then spec="npm@^11"; fi
-              ver=$(npm view "$spec" version --json 2>/dev/null | jq -r 'if type=="array" then .[-1] else . end' 2>/dev/null || true)
-              if [ -z "$ver" ]; then
-                echo "::warning::npm view $pkg returned empty; skipping"
-                continue
-              fi
-              printf '%s=%s\n' "$pkg" "$ver"
-            done
+            printf '%s' "$VERSIONS"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
