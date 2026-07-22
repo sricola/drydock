@@ -54,6 +54,29 @@ func TestMetaDescription_TruncatesAtWordBoundary(t *testing.T) {
 	}
 }
 
+func TestLlmsTxt(t *testing.T) {
+	got := llmsTxt([]llmsEntry{
+		{Title: "Quickstart", URL: "https://sricola.github.io/drydock/docs/quickstart.html", Desc: "Install and run your first task."},
+		{Title: "Threat model", URL: "https://sricola.github.io/drydock/docs/threat-model.html"},
+	})
+	for _, want := range []string{
+		"# drydock\n",
+		"> A sandbox for autonomous coding agents on macOS",
+		"## Docs\n",
+		"- [Quickstart](https://sricola.github.io/drydock/docs/quickstart.html): Install and run your first task.\n",
+		"- [Threat model](https://sricola.github.io/drydock/docs/threat-model.html)\n",
+		"## Source\n",
+		"- [GitHub repository](https://github.com/sricola/drydock)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("llms.txt missing %q\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "—") {
+		t.Errorf("llms.txt must not contain em dashes:\n%s", got)
+	}
+}
+
 func TestSitemapXML(t *testing.T) {
 	xml := sitemapXML([]string{"index", "quickstart"})
 	for _, want := range []string{

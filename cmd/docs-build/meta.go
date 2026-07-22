@@ -73,6 +73,39 @@ func truncateWords(s string, max int) string {
 	return strings.TrimRight(cut, " ,;:") + "…"
 }
 
+// llmsEntry is one docs-page line in llms.txt.
+type llmsEntry struct {
+	Title string
+	URL   string
+	Desc  string
+}
+
+// llmsTxt builds /llms.txt (llmstxt.org): a Markdown map of the site for
+// LLM-backed answer engines and coding agents, which increasingly drive
+// how developers discover tools. Generated from the actual page set (like
+// the sitemap) so it can't fall behind.
+func llmsTxt(entries []llmsEntry) string {
+	var b strings.Builder
+	b.WriteString("# drydock\n\n")
+	b.WriteString("> A sandbox for autonomous coding agents on macOS: per-task hardware-isolated\n")
+	b.WriteString("> VMs, a credential gateway (the agent never sees your real API key),\n")
+	b.WriteString("> deny-by-default egress, and a diff-only return path gated by human approval.\n")
+	b.WriteString("> Runs Claude Code, Codex, or any OpenAI-compatible model. Requires macOS 26+\n")
+	b.WriteString("> on Apple silicon. Apache-2.0.\n\n")
+	b.WriteString("- [Home](" + siteBase + "): what drydock is and how the isolation works\n\n")
+	b.WriteString("## Docs\n\n")
+	for _, e := range entries {
+		b.WriteString("- [" + e.Title + "](" + e.URL + ")")
+		if e.Desc != "" {
+			b.WriteString(": " + e.Desc)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n## Source\n\n")
+	b.WriteString("- [GitHub repository](https://github.com/sricola/drydock): source, releases, issue tracker\n")
+	return b.String()
+}
+
 // sitemapXML builds a sitemap covering the landing page and every docs slug.
 // Generated (not hand-maintained) so it can't fall behind the page set.
 func sitemapXML(slugs []string) string {
