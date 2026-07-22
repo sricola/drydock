@@ -107,8 +107,10 @@ but the binaries inside it (what actually runs) are verifiable.
 **Pin policy:** every external input is pinned and bumped deliberately:
 - the sandbox base image `node:22-bookworm-slim` is pinned **by digest** in
   `image/Dockerfile` (re-pull + `container image inspect` to bump);
-- the agent CLIs (`@anthropic-ai/claude-code`, `@openai/codex`) and the Go
-  tarball are version-pinned via `ARG`s in the Dockerfile;
+- the agent CLIs (`@anthropic-ai/claude-code`, `@openai/codex`), npm itself
+  (the base image's bundled npm vendors its own node_modules, a CVE surface
+  that only an npm bump refreshes), and the Go tarball are version-pinned via
+  `ARG`s in the Dockerfile;
 - the Go toolchain is pinned to `go 1.26.5` in `go.mod`;
 - `go.sum` pins module checksums.
 
@@ -238,12 +240,15 @@ so it can ship independently.
   transitives. The 33-entry gosu cluster was retired in v0.6.0 when 4.12 removed
   gosu, leaving 2 npm transitives (the local baseline's toolchain-GOROOT and jq
   clusters were already dead in CI: image-mode scanning skips GOROOT src, and a
-  fresh apt pulled the jq fix).
+  fresh apt pulled the jq fix). Those last 2 were retired 2026-07-22: they were
+  npm's own vendored node_modules (not CLI transitives), and the Dockerfile now
+  pins npm itself, emptying the allowlist.
 - **4.6 Agent-CLI bump automation.** *Landed.* A weekly scheduled workflow
   (`agent-cli-bump.yml`) checks the four pinned CLIs
   (`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`,
-  `@google/gemini-cli`) against npm and proposes a bump PR when any version
-  is strictly newer; the red-team suite (`make redteam` and
+  `@google/gemini-cli`) plus the pinned npm (whose vendored node_modules is
+  the image's main npm-ecosystem CVE surface) against the registry and
+  proposes a bump PR when any version is strictly newer; the red-team suite (`make redteam` and
   `make redteam-vm`) is the gate before merging.
 - **4.7 Observability.** Structured run metrics (durations, gate latencies,
   egress-widen frequency, budget burn) beyond the per-task JSONL, enough to

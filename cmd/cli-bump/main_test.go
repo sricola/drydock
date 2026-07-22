@@ -2,6 +2,8 @@
 package main
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -55,7 +57,8 @@ func TestNewer(t *testing.T) {
 }
 
 func TestPlanBumps(t *testing.T) {
-	dockerfile := `ARG CLAUDE_CODE_VERSION=2.1.177
+	dockerfile := `ARG NPM_VERSION=11.18.0
+ARG CLAUDE_CODE_VERSION=2.1.177
 ARG CODEX_VERSION=0.140.0
 ARG OPENCODE_VERSION=1.17.11
 ARG GEMINI_CLI_VERSION=0.49.0
@@ -65,22 +68,25 @@ ARG GEMINI_CLI_VERSION=0.49.0
 		"@openai/codex":             "0.141.0",
 		"opencode-ai":               "1.17.11", // same version, no bump
 		"@google/gemini-cli":        "0.49.0",  // same version, no bump
+		"npm":                       "11.19.0",
 	}
 
 	out, bumps := planBumps(dockerfile, latest)
 
-	if len(bumps) != 2 {
-		t.Fatalf("expected 2 bumps, got %d: %+v", len(bumps), bumps)
+	if len(bumps) != 3 {
+		t.Fatalf("expected 3 bumps, got %d: %+v", len(bumps), bumps)
 	}
 
 	// Verify CLAUDE_CODE_VERSION bump
-	var ccBump, codexBump bump
+	var ccBump, codexBump, npmBump bump
 	for _, b := range bumps {
 		switch b.Arg {
 		case "CLAUDE_CODE_VERSION":
 			ccBump = b
 		case "CODEX_VERSION":
 			codexBump = b
+		case "NPM_VERSION":
+			npmBump = b
 		}
 	}
 	if ccBump.From != "2.1.177" || ccBump.To != "2.1.178" {
@@ -88,6 +94,9 @@ ARG GEMINI_CLI_VERSION=0.49.0
 	}
 	if codexBump.From != "0.140.0" || codexBump.To != "0.141.0" {
 		t.Errorf("codex bump: got From=%q To=%q, want From=0.140.0 To=0.141.0", codexBump.From, codexBump.To)
+	}
+	if npmBump.From != "11.18.0" || npmBump.To != "11.19.0" {
+		t.Errorf("npm bump: got From=%q To=%q, want From=11.18.0 To=11.19.0", npmBump.From, npmBump.To)
 	}
 
 	// Rewritten content must have new versions
@@ -97,6 +106,9 @@ ARG GEMINI_CLI_VERSION=0.49.0
 	if !strings.Contains(out, "ARG CODEX_VERSION=0.141.0") {
 		t.Error("rewritten dockerfile missing ARG CODEX_VERSION=0.141.0")
 	}
+	if !strings.Contains(out, "ARG NPM_VERSION=11.19.0") {
+		t.Error("rewritten dockerfile missing ARG NPM_VERSION=11.19.0")
+	}
 
 	// Unchanged versions must remain
 	if !strings.Contains(out, "ARG OPENCODE_VERSION=1.17.11") {
@@ -104,6 +116,23 @@ ARG GEMINI_CLI_VERSION=0.49.0
 	}
 	if !strings.Contains(out, "ARG GEMINI_CLI_VERSION=0.49.0") {
 		t.Error("rewritten dockerfile should still have ARG GEMINI_CLI_VERSION=0.49.0")
+	}
+}
+
+// TestPkgsMatchDockerfile pins the pkgs table to the real image/Dockerfile:
+// every entry's ARG must exist there. planBumps silently skips a pkgs entry
+// whose ARG is missing, so a renamed or removed ARG would otherwise leave
+// that pin quietly unbumped forever with the lane still reporting success.
+func TestPkgsMatchDockerfile(t *testing.T) {
+	data, err := os.ReadFile("../../image/Dockerfile")
+	if err != nil {
+		t.Fatalf("read image/Dockerfile: %v", err)
+	}
+	for _, p := range pkgs {
+		re := regexp.MustCompile(`(?m)^ARG ` + regexp.QuoteMeta(p.arg) + `=`)
+		if !re.Match(data) {
+			t.Errorf("pkgs entry %s: no 'ARG %s=' in image/Dockerfile; planBumps would silently never bump it", p.npm, p.arg)
+		}
 	}
 }
 
