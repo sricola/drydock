@@ -2,6 +2,8 @@
 package main
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -114,6 +116,23 @@ ARG GEMINI_CLI_VERSION=0.49.0
 	}
 	if !strings.Contains(out, "ARG GEMINI_CLI_VERSION=0.49.0") {
 		t.Error("rewritten dockerfile should still have ARG GEMINI_CLI_VERSION=0.49.0")
+	}
+}
+
+// TestPkgsMatchDockerfile pins the pkgs table to the real image/Dockerfile:
+// every entry's ARG must exist there. planBumps silently skips a pkgs entry
+// whose ARG is missing, so a renamed or removed ARG would otherwise leave
+// that pin quietly unbumped forever with the lane still reporting success.
+func TestPkgsMatchDockerfile(t *testing.T) {
+	data, err := os.ReadFile("../../image/Dockerfile")
+	if err != nil {
+		t.Fatalf("read image/Dockerfile: %v", err)
+	}
+	for _, p := range pkgs {
+		re := regexp.MustCompile(`(?m)^ARG ` + regexp.QuoteMeta(p.arg) + `=`)
+		if !re.Match(data) {
+			t.Errorf("pkgs entry %s: no 'ARG %s=' in image/Dockerfile; planBumps would silently never bump it", p.npm, p.arg)
+		}
 	}
 }
 

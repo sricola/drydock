@@ -26,7 +26,12 @@ jobs:
           {
             echo "versions<<EOF"
             for pkg in "@anthropic-ai/claude-code" "@openai/codex" "opencode-ai" "@google/gemini-cli" "npm"; do
-              ver=$(npm view "$pkg" version 2>/dev/null || true)
+              # npm majors change the image's package manager and couple to the
+              # base image's node line, so track the current major only; a new
+              # major is a deliberate, human-reviewed range bump here.
+              spec="$pkg"
+              if [ "$pkg" = "npm" ]; then spec="npm@^11"; fi
+              ver=$(npm view "$spec" version --json 2>/dev/null | jq -r 'if type=="array" then .[-1] else . end' 2>/dev/null || true)
               if [ -z "$ver" ]; then
                 echo "::warning::npm view $pkg returned empty; skipping"
                 continue
@@ -61,14 +66,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
           git add image/Dockerfile
-          git commit -m "chore: bump pinned agent CLIs $(date +%Y%m%d)"
+          git commit -m "chore: bump pinned agent CLIs / npm $(date +%Y%m%d)"
           # Plain force: agent-cli-bump is a disposable bot-owned branch, always
           # regenerated from main + the current bumps. force-with-lease needs a
           # remote-tracking ref this fresh checkout does not have, so it rejects
           # with "stale info" once the branch exists from a prior run.
           git push --force -u origin "$BRANCH"
           {
-            printf '## Agent CLI version bumps\n\n'
+            printf '## Pinned package version bumps (agent CLIs / npm)\n\n'
             printf '%s\n' "$SUMMARY"
             printf '\n---\n\n'
             printf 'Note: A GITHUB_TOKEN-authored PR does not auto-trigger CI. The reviewer must run the red-team gate (make redteam and make redteam-vm) before merging.\n'
@@ -76,7 +81,7 @@ jobs:
           compare="https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH}?expand=1"
           if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
             echo "bump PR already open for $BRANCH; branch updated."
-          elif gh pr create --base main --head "$BRANCH" --title "chore: bump pinned agent CLIs" --body-file /tmp/pr-body.md; then
+          elif gh pr create --base main --head "$BRANCH" --title "chore: bump pinned agent CLIs / npm" --body-file /tmp/pr-body.md; then
             echo "opened bump PR."
           else
             # Auto-PR is blocked when the repo setting "Allow GitHub Actions to

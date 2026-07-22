@@ -164,7 +164,7 @@ func main() {
 
 	out, bumps := planBumps(string(data), latest)
 	if len(bumps) == 0 {
-		fmt.Println("all pinned CLIs are current")
+		fmt.Println("all pinned packages are current")
 		return
 	}
 

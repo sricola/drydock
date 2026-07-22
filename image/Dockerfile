@@ -49,8 +49,14 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # 7.5.11 and brace-expansion 2.0.2, both npm's bundled copies). Installing a
 # pinned current npm over the bundled one replaces that vendored tree
 # wholesale. Bumped by the weekly agent-cli-bump lane like the CLI pins.
+# npm has no own install script, so --ignore-scripts per F-09 (below). The
+# check asserts the exact pinned version, not just a working binary: here the
+# version IS the security invariant, and a half-applied self-install that
+# leaves the old npm answering must fail the build, not the next daily scan.
 ARG NPM_VERSION=11.18.0
-RUN npm install -g npm@${NPM_VERSION} && npm --version
+RUN npm install -g --ignore-scripts --no-audit --no-fund npm@${NPM_VERSION} \
+ && [ "$(npm --version)" = "${NPM_VERSION}" ] \
+ && rm -rf /root/.npm
 
 # Pin the agent CLI. Bump deliberately — every drydock release is
 # anchored to a known claude-code version so the threat-model claims
