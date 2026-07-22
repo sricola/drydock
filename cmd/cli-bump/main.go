@@ -1,5 +1,6 @@
-// Command cli-bump rewrites the pinned agent-CLI versions in image/Dockerfile
-// to the latest published npm versions, then reports what changed.
+// Command cli-bump rewrites the pinned agent-CLI (and npm) versions in
+// image/Dockerfile to the latest published npm versions, then reports what
+// changed.
 // It is intended for use by the scheduled bump automation (ROADMAP 4.6).
 //
 // Usage:
@@ -37,6 +38,11 @@ var pkgs = []pkg{
 	{"@openai/codex", "CODEX_VERSION"},
 	{"opencode-ai", "OPENCODE_VERSION"},
 	{"@google/gemini-cli", "GEMINI_CLI_VERSION"},
+	// npm is not an agent CLI, but it is pinned in the same Dockerfile for the
+	// same reason: its vendored node_modules is a CVE surface that only a
+	// version bump refreshes (the base image's bundled npm goes stale with the
+	// digest pin).
+	{"npm", "NPM_VERSION"},
 }
 
 type bump struct {

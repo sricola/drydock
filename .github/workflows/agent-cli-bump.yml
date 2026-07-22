@@ -25,7 +25,7 @@ jobs:
           set -euo pipefail
           {
             echo "versions<<EOF"
-            for pkg in "@anthropic-ai/claude-code" "@openai/codex" "opencode-ai" "@google/gemini-cli"; do
+            for pkg in "@anthropic-ai/claude-code" "@openai/codex" "opencode-ai" "@google/gemini-cli" "npm"; do
               ver=$(npm view "$pkg" version 2>/dev/null || true)
               if [ -z "$ver" ]; then
                 echo "::warning::npm view $pkg returned empty; skipping"

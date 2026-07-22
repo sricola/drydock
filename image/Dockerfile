@@ -42,6 +42,16 @@ RUN ARCH=$(dpkg --print-architecture) && \
     ln -s /usr/local/go/bin/go    /usr/local/bin/go && \
     ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 
+# Pin npm itself. The base image's node 22 line bundles npm 10.9.x, whose own
+# vendored node_modules (tar, brace-expansion, sigstore, picomatch) go stale
+# with the digest-pinned base and accumulate fixable High/Critical CVEs that
+# no CLI pin or apt upgrade can clear (the 2026-07-21 cve-gate failure: tar
+# 7.5.11 and brace-expansion 2.0.2, both npm's bundled copies). Installing a
+# pinned current npm over the bundled one replaces that vendored tree
+# wholesale. Bumped by the weekly agent-cli-bump lane like the CLI pins.
+ARG NPM_VERSION=11.18.0
+RUN npm install -g npm@${NPM_VERSION} && npm --version
+
 # Pin the agent CLI. Bump deliberately — every drydock release is
 # anchored to a known claude-code version so the threat-model claims
 # track behavior we've actually tested. Override at build time with
