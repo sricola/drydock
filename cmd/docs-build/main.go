@@ -77,6 +77,7 @@ func run() error {
 		titleFor[p.Slug] = p.Title
 	}
 	var slugs []string
+	var llmsEntries []llmsEntry
 	for _, s := range srcs {
 		body, _, err := renderMarkdown(raw[s.slug])
 		if err != nil {
@@ -86,9 +87,10 @@ func run() error {
 		if title == "" {
 			title = s.slug
 		}
+		desc := metaDescription(raw[s.slug])
 		page := renderPage(string(tmpl), pageData{
 			PageTitle:   pageTitle(s.slug, title),
-			Description: metaDescription(raw[s.slug]),
+			Description: desc,
 			Canonical:   canonicalURL(s.slug),
 			Content:     body,
 			Sidebar:     buildSidebar(pages, s.slug),
@@ -99,6 +101,7 @@ func run() error {
 			return err
 		}
 		slugs = append(slugs, s.slug)
+		llmsEntries = append(llmsEntries, llmsEntry{Title: title, URL: canonicalURL(s.slug), Desc: desc})
 		fmt.Println("==>", out)
 	}
 	// Regenerate the sitemap from the actual page set so it can't drift.
@@ -106,6 +109,11 @@ func run() error {
 		return err
 	}
 	fmt.Println("==> site/sitemap.xml")
+	// Same for llms.txt: a Markdown site map for LLM answer engines and agents.
+	if err := os.WriteFile(filepath.Join("site", "llms.txt"), []byte(llmsTxt(llmsEntries)), 0o644); err != nil {
+		return err
+	}
+	fmt.Println("==> site/llms.txt")
 	return nil
 }
 
