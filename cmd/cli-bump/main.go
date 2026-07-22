@@ -5,8 +5,11 @@
 //
 // Usage:
 //
-//	cli-bump [-dockerfile path] [-latest 'pkg=ver,...']
+//	cli-bump [-dockerfile path] [-latest 'pkg=ver,...'] [-list]
 //
+// -list prints one "npm-name query-spec" line per pinned package and exits;
+// the bump workflow feeds these specs to `npm view` so the pkgs table below
+// is the single source of truth for what gets checked.
 // When -latest is not given, the tool reads "pkg=version" lines from stdin.
 // Versions that are not strictly semver-greater than the current pin are
 // skipped (no-op). If nothing changed, the tool prints a short notice and
@@ -29,20 +32,32 @@ import (
 var versionRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.]+)?$`)
 
 type pkg struct {
-	npm string // npm package name
-	arg string // Dockerfile ARG name
+	npm  string // npm package name (key in the pkg=version input)
+	arg  string // Dockerfile ARG name
+	spec string // npm view query override; empty means query the npm name
+}
+
+// query returns the `npm view` query for this package: the spec override when
+// set, otherwise the package name (latest dist-tag).
+func (p pkg) query() string {
+	if p.spec != "" {
+		return p.spec
+	}
+	return p.npm
 }
 
 var pkgs = []pkg{
-	{"@anthropic-ai/claude-code", "CLAUDE_CODE_VERSION"},
-	{"@openai/codex", "CODEX_VERSION"},
-	{"opencode-ai", "OPENCODE_VERSION"},
-	{"@google/gemini-cli", "GEMINI_CLI_VERSION"},
+	{npm: "@anthropic-ai/claude-code", arg: "CLAUDE_CODE_VERSION"},
+	{npm: "@openai/codex", arg: "CODEX_VERSION"},
+	{npm: "opencode-ai", arg: "OPENCODE_VERSION"},
+	{npm: "@google/gemini-cli", arg: "GEMINI_CLI_VERSION"},
 	// npm is not an agent CLI, but it is pinned in the same Dockerfile for the
 	// same reason: its vendored node_modules is a CVE surface that only a
 	// version bump refreshes (the base image's bundled npm goes stale with the
-	// digest pin).
-	{"npm", "NPM_VERSION"},
+	// digest pin). npm majors change the image's package manager and couple to
+	// the base image's node line, so the spec tracks the current major only; a
+	// new major is a deliberate range bump made alongside the base.
+	{npm: "npm", arg: "NPM_VERSION", spec: "npm@^11"},
 }
 
 type bump struct {
@@ -148,7 +163,18 @@ func planBumps(dockerfile string, latest map[string]string) (string, []bump) {
 func main() {
 	dockerfilePath := flag.String("dockerfile", "image/Dockerfile", "path to Dockerfile to patch")
 	latestFlag := flag.String("latest", "", "comma-separated pkg=version pairs (default: read from stdin)")
+	listFlag := flag.Bool("list", false, "print 'npm-name query-spec' per pinned package and exit")
 	flag.Parse()
+
+	// -list makes this table the single source of truth for the bump lane:
+	// the workflow loops over these lines instead of hardcoding its own copy,
+	// so a package added here cannot be silently missing from the fetch.
+	if *listFlag {
+		for _, p := range pkgs {
+			fmt.Printf("%s %s\n", p.npm, p.query())
+		}
+		return
+	}
 
 	latest, err := parseLatest(*latestFlag)
 	if err != nil {

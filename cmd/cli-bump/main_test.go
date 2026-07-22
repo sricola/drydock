@@ -119,6 +119,29 @@ ARG GEMINI_CLI_VERSION=0.49.0
 	}
 }
 
+// TestQuerySpecs locks the -list contract: packages without a spec are
+// queried by name (latest dist-tag), and the npm entry keeps a range spec
+// that caps it to one major, since npm majors couple to the base image's
+// node line and must be bumped deliberately, not by the weekly lane.
+func TestQuerySpecs(t *testing.T) {
+	var npmEntry *pkg
+	for i := range pkgs {
+		p := &pkgs[i]
+		if p.spec == "" && p.query() != p.npm {
+			t.Errorf("%s: query() = %q, want the npm name when spec is empty", p.npm, p.query())
+		}
+		if p.npm == "npm" {
+			npmEntry = p
+		}
+	}
+	if npmEntry == nil {
+		t.Fatal("pkgs no longer contains npm; its vendored node_modules CVE surface needs the pin")
+	}
+	if !strings.HasPrefix(npmEntry.spec, "npm@^") {
+		t.Errorf("npm entry spec = %q, want a major-capping range like npm@^11", npmEntry.spec)
+	}
+}
+
 // TestPkgsMatchDockerfile pins the pkgs table to the real image/Dockerfile:
 // every entry's ARG must exist there. planBumps silently skips a pkgs entry
 // whose ARG is missing, so a renamed or removed ARG would otherwise leave

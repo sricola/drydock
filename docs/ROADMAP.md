@@ -247,9 +247,13 @@ so it can ship independently.
   (`agent-cli-bump.yml`) checks the four pinned CLIs
   (`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`,
   `@google/gemini-cli`) plus the pinned npm (whose vendored node_modules is
-  the image's main npm-ecosystem CVE surface) against the registry and
-  proposes a bump PR when any version is strictly newer; the red-team suite (`make redteam` and
-  `make redteam-vm`) is the gate before merging.
+  the image's main npm-ecosystem CVE surface; capped to its current major,
+  since npm majors couple to the base image's node line) against the registry
+  and proposes a bump PR when any version is strictly newer. The package list
+  lives in one place, cli-bump's pkgs table (`cli-bump -list`), so the
+  workflow's fetch loop and the Dockerfile rewriter cannot drift. The
+  red-team suite (`make redteam` and `make redteam-vm`) is the gate before
+  merging.
 - **4.7 Observability.** Structured run metrics (durations, gate latencies,
   egress-widen frequency, budget burn) beyond the per-task JSONL, enough to
   answer "what is drydock doing across many runs" without grepping audit files.
