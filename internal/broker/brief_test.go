@@ -144,6 +144,37 @@ func TestWriteBrief_UnmeteredLaneReportsUnbounded(t *testing.T) {
 	}
 }
 
+// F-02: a metered lane (the vendor is not in UnmeteredVendors) with no
+// explicit per-task request cap must still get the uncapped-lane backstop
+// applied to the Brief, not report 0/unlimited. The default now lives
+// outside the unmetered branch in writeBrief, so this must hold regardless
+// of metering state.
+func TestWriteBrief_MeteredLaneUnsetRequestCapReportsDefault(t *testing.T) {
+	auditRoot := t.TempDir()
+	b := &Broker{
+		AuditRoot: auditRoot, TaskBudget: 2, MaxRequestCostUSD: 0.5,
+		TaskMaxRequests: 0, Timeout: time.Minute,
+		UnmeteredVendors: map[string]bool{"anthropic": true},
+	}
+	tr := &taskRun{
+		b: b, id: "0123456789abcdef0123456789abcdef",
+		repoRef: "https://github.com/o/r.git", agentName: "claude", taskVendor: "openai",
+		grant: &fakeGrant{}, taskStart: time.Now(), st: &fakeStage{workDir: t.TempDir()},
+	}
+	b.writeBrief(tr, "diff --git a/x b/x\n+y\n")
+	got, err := trustbrief.Read(auditRoot, tr.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Policy.BudgetUnbounded {
+		t.Error("BudgetUnbounded = true, want false for a metered vendor lane")
+	}
+	if got.Policy.MaxRequests != DefaultUncappedRequestCap {
+		t.Errorf("MaxRequests = %d, want the default backstop %d even on a metered lane",
+			got.Policy.MaxRequests, DefaultUncappedRequestCap)
+	}
+}
+
 func TestHandleTask_WritesBriefAtGate(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
 	grant := &fakeGrant{spent: 0.02}
