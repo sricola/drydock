@@ -186,13 +186,13 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 func TestRequestCap_RejectsOverLimit(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	tok, _ := g.Mint("anthropic", 100, 2, 0, 0, time.Hour) // maxRequests = 2
-	if _, s := g.admit(tok); s != 0 {
+	if _, s, _ := g.admit(tok); s != 0 {
 		t.Fatalf("req1 rejected: %d", s)
 	}
-	if _, s := g.admit(tok); s != 0 {
+	if _, s, _ := g.admit(tok); s != 0 {
 		t.Fatalf("req2 rejected: %d", s)
 	}
-	if _, s := g.admit(tok); s != http.StatusTooManyRequests {
+	if _, s, _ := g.admit(tok); s != http.StatusTooManyRequests {
 		t.Fatalf("req3 status = %d, want 429", s)
 	}
 }
@@ -201,7 +201,7 @@ func TestRequestCap_ZeroMeansUnlimited(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Hour) // 0 = unlimited
 	for i := 0; i < 50; i++ {
-		if _, s := g.admit(tok); s != 0 {
+		if _, s, _ := g.admit(tok); s != 0 {
 			t.Fatalf("req %d rejected: %d", i, s)
 		}
 	}
@@ -220,14 +220,14 @@ func TestAdmit_InFlightLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, code := g.admit(tok); code != 0 {
+	if _, code, _ := g.admit(tok); code != 0 {
 		t.Fatalf("first admit: code %d", code)
 	}
-	if _, code := g.admit(tok); code != http.StatusTooManyRequests {
+	if _, code, _ := g.admit(tok); code != http.StatusTooManyRequests {
 		t.Fatalf("second concurrent admit: code %d, want 429", code)
 	}
 	g.release(tok)
-	if _, code := g.admit(tok); code != 0 {
+	if _, code, _ := g.admit(tok); code != 0 {
 		t.Fatalf("admit after release: want admitted")
 	}
 }
@@ -284,6 +284,34 @@ func TestServeHTTP_InFlightLimit(t *testing.T) {
 	}
 	if w := do(); w.Code != http.StatusOK {
 		t.Fatalf("request after completion: code %d, want 200", w.Code)
+	}
+}
+
+// A lease that has exhausted its per-task MaxRequests hits a terminal 429:
+// retrying can never succeed, so ServeHTTP must NOT send Retry-After. Only the
+// transient in-flight 429 (TestServeHTTP_InFlightLimit) invites a retry.
+func TestServeHTTP_RequestCapExhausted_NoRetryAfter(t *testing.T) {
+	g := newGW(t, "http://unused")
+	tok, err := g.Mint("anthropic", 100, 1, 0, 0, time.Hour) // maxRequests = 1
+	if err != nil {
+		t.Fatal(err)
+	}
+	do := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		return w
+	}
+	// First request fails at the (unreachable) upstream, but it consumes the
+	// one allowed request slot, which is all this test needs.
+	do()
+	w := do()
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request: code %d, want 429", w.Code)
+	}
+	if ra := w.Header().Get("Retry-After"); ra != "" {
+		t.Errorf("request-cap-exhausted 429 carries Retry-After %q, want none (retrying can never succeed)", ra)
 	}
 }
 
@@ -726,13 +754,13 @@ func TestGateway_AggregateCap(t *testing.T) {
 	// anthropic at the cap: a fresh lease's request must be refused with 402.
 	g.SeedAggregate("anthropic", 5.0, now)
 	tok, _ := g.Mint("anthropic", 100.0, 0, 0, 0, time.Hour) // generous per-task budget
-	if _, code := g.admit(tok); code != http.StatusPaymentRequired {
+	if _, code, _ := g.admit(tok); code != http.StatusPaymentRequired {
 		t.Errorf("anthropic over aggregate cap: admit code = %d, want 402", code)
 	}
 
 	// openai is under its own cap: must still admit (per-vendor isolation).
 	tok2, _ := g.Mint("openai", 100.0, 0, 0, 0, time.Hour)
-	if _, code := g.admit(tok2); code != 0 {
+	if _, code, _ := g.admit(tok2); code != 0 {
 		t.Errorf("openai under aggregate cap: admit code = %d, want 0 (admitted)", code)
 	}
 
@@ -750,10 +778,10 @@ func TestAdmit_InFlightReservationBounds(t *testing.T) {
 	// a second concurrent admit (before any meter) would need 0.6+0.6=1.2 > 1.0
 	// and must be rejected.
 	tok, _ := g.Mint("anthropic", 1.0, 0, 0.6, 0, time.Hour)
-	if _, code := g.admit(tok); code != 0 {
+	if _, code, _ := g.admit(tok); code != 0 {
 		t.Fatalf("first admit code = %d, want 0", code)
 	}
-	if _, code := g.admit(tok); code != http.StatusPaymentRequired {
+	if _, code, _ := g.admit(tok); code != http.StatusPaymentRequired {
 		t.Errorf("second concurrent admit code = %d, want 402 (reservation bound)", code)
 	}
 }
@@ -762,7 +790,7 @@ func TestAdmit_NoReservationWhenDisabled(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	tok, _ := g.Mint("anthropic", 1.0, 0, 0, 0, time.Hour) // R=0 disables reservation
 	for i := 0; i < 5; i++ {
-		if _, code := g.admit(tok); code != 0 {
+		if _, code, _ := g.admit(tok); code != 0 {
 			t.Fatalf("admit %d code = %d, want 0 (R=0, no reservation)", i, code)
 		}
 	}
@@ -845,7 +873,7 @@ func TestGateway_AggregateCap_DisabledByDefault(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	// No SetAggregateCap call: cap disabled.
 	tok, _ := g.Mint("anthropic", 100.0, 0, 0, 0, time.Hour)
-	if _, code := g.admit(tok); code != 0 {
+	if _, code, _ := g.admit(tok); code != 0 {
 		t.Errorf("cap disabled: admit code = %d, want 0", code)
 	}
 	if g.AggregateExceeded("anthropic") {

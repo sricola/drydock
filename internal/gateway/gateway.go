@@ -150,50 +150,60 @@ func (g *Gateway) AggregateExceeded(vendor string) bool {
 		g.ledger.windowed(vendor, time.Now()) >= g.aggBudget
 }
 
-// admit returns (lease, 0) when usable, or (nil, statusCode) to reject.
-// The bearer is compared against the stored token with subtle.ConstantTimeCompare
-// so future changes to the lookup path can't silently introduce a timing
-// side-channel on token validation. Named admit (not check) to reflect that it
-// mutates l.Requests++ on success — it's an authoritative admission decision.
-func (g *Gateway) admit(token string) (*Lease, int) {
+// admit returns (lease, 0, false) when usable, or (nil, statusCode, retryable)
+// to reject. retryable is true only for the transient in-flight-limit 429
+// (the in-flight slot frees on its own as the concurrent request completes);
+// every other rejection, including the terminal per-lease MaxRequests
+// exhaustion, is not retryable — no future admit call for this lease can ever
+// succeed differently. The bearer is compared against the stored token with
+// subtle.ConstantTimeCompare so future changes to the lookup path can't
+// silently introduce a timing side-channel on token validation. Named admit
+// (not check) to reflect that it mutates l.Requests++ on success — it's an
+// authoritative admission decision.
+func (g *Gateway) admit(token string) (*Lease, int, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	l := g.leases[token]
 	if l == nil {
-		return nil, http.StatusUnauthorized
+		return nil, http.StatusUnauthorized, false
 	}
 	if subtle.ConstantTimeCompare([]byte(l.Token), []byte(token)) != 1 {
-		return nil, http.StatusUnauthorized
+		return nil, http.StatusUnauthorized, false
 	}
 	if time.Now().After(l.Expiry) {
-		return nil, http.StatusUnauthorized
+		return nil, http.StatusUnauthorized, false
 	}
 	if l.SpentUSD >= l.BudgetUSD {
-		return nil, http.StatusPaymentRequired
+		return nil, http.StatusPaymentRequired, false
 	}
 	if l.MaxRequestCostUSD > 0 &&
 		l.SpentUSD+l.Reserved+l.MaxRequestCostUSD > l.BudgetUSD {
-		return nil, http.StatusPaymentRequired
+		return nil, http.StatusPaymentRequired, false
 	}
 	if l.MaxRequests > 0 && l.Requests >= l.MaxRequests {
-		return nil, http.StatusTooManyRequests
+		// Terminal: this lease will never admit another request, so a
+		// Retry-After would only invite the agent to spin on a condition
+		// that never clears.
+		return nil, http.StatusTooManyRequests, false
 	}
 	if l.MaxInFlight > 0 && l.InFlight >= l.MaxInFlight {
 		// Spend is metered when a response body completes, so every
 		// concurrently admitted request can overshoot the budget by its own
-		// cost. Serialize instead of admitting the race (F-02/F-05).
-		return nil, http.StatusTooManyRequests
+		// cost. Serialize instead of admitting the race (F-02/F-05). This is
+		// the one retryable case: the in-flight slot frees as soon as the
+		// concurrent request completes.
+		return nil, http.StatusTooManyRequests, true
 	}
 	if g.aggBudget > 0 && g.aggVendors[l.Vendor] &&
 		g.ledger.windowed(l.Vendor, time.Now()) >= g.aggBudget {
-		return nil, http.StatusPaymentRequired
+		return nil, http.StatusPaymentRequired, false
 	}
 	l.Requests++
 	l.InFlight++
 	if l.MaxRequestCostUSD > 0 {
 		l.Reserved += l.MaxRequestCostUSD
 	}
-	return l, 0
+	return l, 0, false
 }
 
 // release marks one admitted request complete, freeing its in-flight slot.
@@ -258,11 +268,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	lease, status := g.admit(tok)
+	lease, status, retryable := g.admit(tok)
 	if status != 0 {
-		if status == http.StatusTooManyRequests {
+		if retryable {
 			// A sequential agent CLI only hits this when a side call overlaps
-			// its main stream; SDKs back off and retry on 429.
+			// its main stream; SDKs back off and retry on 429. Set only for
+			// the transient in-flight case: the terminal per-lease
+			// MaxRequests exhaustion never clears, so it must not invite a
+			// retry loop.
 			w.Header().Set("Retry-After", "1")
 		}
 		http.Error(w, http.StatusText(status), status)
