@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -254,6 +255,12 @@ func Load(path string) (*Config, error) {
 			dec.KnownFields(true)
 			if err := dec.Decode(cfg); err != nil {
 				return nil, fmt.Errorf("parse %s: %w", path, err)
+			}
+			// A second YAML document (---) would be silently ignored, and it can
+			// carry security config the operator believes is active. Fail closed:
+			// exactly one document is allowed (F-08).
+			if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("parse %s: trailing YAML document; only one document is allowed", path)
 			}
 		case os.IsNotExist(err):
 			// fine — fall through, env-only / defaults-only

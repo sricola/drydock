@@ -517,3 +517,17 @@ func TestPushRetryDefaultsAndValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_RejectsTrailingYAMLDocument(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	// The second document carries a security-relevant field the operator
+	// believes is active; silently ignoring it would fail open (F-08).
+	body := "task_budget_usd: 2.0\n---\naggregate_budget_usd: 100\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "trailing YAML document") {
+		t.Fatalf("Load with trailing document: got %v, want trailing-document rejection", err)
+	}
+}

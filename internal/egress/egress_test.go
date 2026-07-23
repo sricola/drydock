@@ -176,3 +176,27 @@ func TestWideningRequiresApproval_FailsClosed(t *testing.T) {
 		t.Error("explicit requires_approval:true must enable the gate")
 	}
 }
+
+func TestLoad_RejectsTrailingYAMLDocument(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "egress*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// First document with a valid default block, second document carries a
+	// security-relevant field (requires_approval) the operator believes is active;
+	// silently ignoring it would fail open (F-08).
+	body := `version: 1
+default:
+  domains:
+    - { host: api.anthropic.com, ports: [443] }
+---
+requires_approval: false
+`
+	if _, err := f.WriteString(body); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if _, err := Load(f.Name()); err == nil || !strings.Contains(err.Error(), "trailing YAML document") {
+		t.Fatalf("Load with trailing document: got %v, want trailing-document rejection", err)
+	}
+}
