@@ -17,12 +17,11 @@
 </p>
 
 
-drydock runs **Claude Code**, **OpenAI Codex**, or **any OpenAI-compatible model**
-(Gemini, OpenRouter, local) full-throttle on your own repos, on your own Mac, no permission prompts, no babysitting. Each task runs
-sealed in a throwaway VM, so the agent **can't touch your API key, can't reach
-the open internet, and can't write to anything but a disposable copy**. The only
-thing that ever comes back is a `git diff`, and nothing reaches your real code
-until you approve it.
+drydock runs **Claude Code**, **OpenAI Codex**, or **any OpenAI-compatible
+model** (Gemini, OpenRouter, local) full-throttle on your own repos, on your
+own Mac — no permission prompts, no babysitting. Each task runs sealed in a
+throwaway VM. The only thing that ever comes back is a `git diff`, and nothing
+reaches your real code until you approve it.
 
 - **It never gets your key.** Your real API key stays on the host; the agent
   only ever sees a short-lived, budget-scoped token (spend overshoot is
@@ -35,79 +34,98 @@ until you approve it.
 
 Most agent tooling tries to keep the agent *well-behaved*: permission
 prompts, output filters, policy. drydock takes the opposite stance: **contain
-the blast radius** so a hostile agent (a poisoned repo, a malicious
-dependency, a prompt-injection that turns a fetched URL into a shell command)
-can't reach your key, your filesystem, your push credentials, or the open
-internet, regardless of what it tries.
+the blast radius**. A hostile agent — a poisoned repo, a malicious dependency,
+a prompt injection that turns a fetched URL into a shell command — can't reach
+your key, your filesystem, your push credentials, or the open internet,
+regardless of what it tries.
 
 <p align="center">
   <img src="demo/breach.gif" alt="drydock running four real attacks from its threat model, each is contained live" width="820">
 </p>
 
-<p align="center"><sub><b>Don't take the threat model's word for it.</b> Every green above is a real <code>go&nbsp;test</code> red-team case that runs the actual attack and asserts it fails. Reproduce them yourself: <code>make&nbsp;redteam</code>, or watch all seven, including live VM isolation, with <code>make&nbsp;demo&nbsp;VM=1</code>.</sub></p>
-
-> **Status: beta (v0.6.3).** The full task lifecycle works end-to-end
-> (submit → isolated VM → gated diff → push), and drydock ships through a
-> Homebrew tap. Every containment claim in the threat model is a red-team
-> test that runs the real attack and asserts it fails; reproduce them
-> yourself with `make redteam` (host) or `make demo VM=1` (live VM
-> isolation), and the security-sensitive changes are developed exploit-first
-> and adversarially reviewed. It is still pre-1.0: only `main` is supported,
-> behavior and config can change between minor versions, and it has not been
-> hardened by wide real-world use. **There has been no third-party security
-> audit**: the security model is written down in detail in the
-> [threat model](THREAT_MODEL.md), so read that and decide for yourself
-> before trusting it. **Hard requirement: macOS 26+ on Apple silicon**, it
-> runs on Apple's `container` runtime (1.x, validated through 1.1.0), so it
-> won't run anywhere else.
+<p align="center"><sub><b>Don't take the threat model's word for it.</b> Every green above is a real <code>go&nbsp;test</code> red-team case that runs the actual attack and asserts it fails. Reproduce them yourself: see <a href="#prove-it-yourself">Prove it yourself</a>.</sub></p>
 
 **[Docs](https://sricola.github.io/drydock/docs/)** ·
 [Threat model](THREAT_MODEL.md) ·
 [Website](https://sricola.github.io/drydock/) ·
 [Roadmap](docs/ROADMAP.md)
 
+## Status: beta (v0.6.3)
+
+- **Works end-to-end.** The full task lifecycle runs (submit → isolated VM →
+  gated diff → push), and drydock ships through a Homebrew tap.
+- **Containment claims are tested, not asserted.** Every claim in the
+  [threat model](THREAT_MODEL.md) is a red-team test that runs the real attack
+  and asserts it fails. Security-sensitive changes are developed exploit-first
+  and adversarially reviewed.
+- **Still pre-1.0.** Only `main` is supported, behavior and config can change
+  between minor versions, and it has not been hardened by wide real-world use.
+- **No third-party security audit yet.** The security model is written down in
+  detail in the [threat model](THREAT_MODEL.md) — read it and decide for
+  yourself before trusting it.
+- **Hard requirement: macOS 26+ on Apple silicon.** drydock runs on Apple's
+  `container` runtime (1.x, validated through 1.1.0), which ships nowhere else.
+
 ## Who it's for
 
 - **For:** unattended or batch agent runs you don't want to babysit, and anyone
   who'd rather *contain* an agent than trust it to behave.
 - **Not for:** interactive sessions where you're watching every step (that's
-  overkill), or anything off macOS 26+ Apple silicon (it won't run).  
+  overkill), or anything off macOS 26+ Apple silicon (it won't run).
 
 ## Install & first task
 
-> **Eligible?** drydock runs **locally on your Mac**, so it needs **macOS 26+ on
-> Apple silicon** (Apple's `container` runtime ships nowhere else). Check:
-> ```bash
-> [ "$(uname -m)" = arm64 ] && [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 26 ] \
->   && echo "eligible" || echo "not yet, needs macOS 26+ on Apple silicon"
-> ```
+**1. Check you're eligible.** drydock runs locally, and Apple's `container`
+runtime needs macOS 26+ on Apple silicon:
 
 ```bash
-# install + set up the runtime, squid, and ~/.drydock
-brew install sricola/drydock/drydock
-drydock setup
-
-# give it a credential: a vendor API key…
-export ANTHROPIC_API_KEY=sk-ant-...
-# …or skip keys entirely and reuse a plan you already pay for:
-#   drydock auth claude   # Claude Pro/Max  → anthropic_auth: subscription
-#   drydock auth codex    # ChatGPT         → openai_auth: subscription
-drydock start
-
-# in another shell: your first sandboxed task
-drydock submit --repo git@github.com:you/repo \
-  --instruction "Add a one-line comment to README.md."
-drydock review <id>     # read the diff, then approve or deny
+[ "$(uname -m)" = arm64 ] && [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 26 ] \
+  && echo "eligible" || echo "not yet, needs macOS 26+ on Apple silicon"
 ```
 
-To run brokerd unattended (login start, crash restart): `drydock daemon install`, see [Run unattended](https://sricola.github.io/drydock/docs/daemon.html); set `aggregate_budget_usd` to bound cross-task spend (subscription mode is bounded by `task_max_requests` instead).
+**2. Install.** Sets up the runtime, squid, and `~/.drydock`:
+
+```bash
+brew install sricola/drydock/drydock
+drydock setup
+```
+
+**3. Give it a credential and start.** A vendor API key works:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+drydock start
+```
+
+…or skip keys entirely and reuse a plan you already pay for:
+
+```bash
+drydock auth claude   # Claude Pro/Max → anthropic_auth: subscription
+drydock auth codex    # ChatGPT       → openai_auth: subscription
+drydock start
+```
+
+**4. Submit your first sandboxed task** (in another shell):
+
+```bash
+drydock submit --repo git@github.com:you/repo \
+  --instruction "Add a one-line comment to README.md."
+drydock review <id>   # read the diff, then approve or deny
+```
 
 That's the whole loop: the agent runs sealed, hands back a `git diff`, and
 nothing reaches your repo until you approve it. The full walkthrough is in the
 **[Quickstart](https://sricola.github.io/drydock/docs/quickstart.html)**.
 
-Prefer to build from source? `brew install go`, clone, then `make install &&
-drydock init`.
+A few things you'll probably want next:
+
+- **Run it unattended** (start at login, restart on crash):
+  `drydock daemon install` — see
+  [Run unattended](https://sricola.github.io/drydock/docs/daemon.html).
+- **Bound your spend:** set `aggregate_budget_usd` to cap cross-task spend
+  (subscription mode is bounded by `task_max_requests` instead).
+- **Build from source:** `brew install go`, clone, then
+  `make install && drydock init`.
 
 ## Documentation
 
@@ -125,14 +143,14 @@ Full operator docs live at **[sricola.github.io/drydock/docs](https://sricola.gi
 
 ## Prove it yourself
 
-You don't have to trust the threat model, run the attacks. `drydock redteam`
-boots throwaway VMs and runs the real red-team cases behind the security claims
-(key isolation, deny-by-default egress, VM teardown) and prints a pass/fail
-table. **No API key, no spend, ~5 minutes.**
+You don't have to trust the threat model — run the attacks. `drydock redteam`
+boots throwaway VMs and runs the real red-team cases behind the security
+claims (key isolation, deny-by-default egress, VM teardown) and prints a
+pass/fail table. **No API key, no spend, ~5 minutes.**
 
 ```bash
-drydock redteam        # live containment attacks
-make demo VM=1         # …or watch all seven, including live VM isolation
+drydock redteam    # live containment attacks
+make demo VM=1     # …or watch all seven, including live VM isolation
 ```
 
 ## Contributing & internals
