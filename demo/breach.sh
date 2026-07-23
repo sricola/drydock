@@ -116,4 +116,4 @@ else
   printf "  ${DIM}○ A1/A2/A7  VM-backed — run: ./demo/breach.sh --vm  (macOS, Apple silicon)${X}\n"
 fi
 printf "\n${DIM}Don't trust the threat model — check it: ${X}${B}make redteam${X}${DIM}  ·  verify the release: ${X}${B}cosign verify-blob${X} ${DIM}+ ${X}${B}gh attestation verify${X}\n"
-printf "${DIM}Working alpha · single maintainer · no third-party audit yet · macOS 26+, Apple silicon${X}\n\n"
+printf "${DIM}Beta · no third-party audit yet · macOS 26+, Apple silicon${X}\n\n"

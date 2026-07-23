@@ -33,5 +33,5 @@
 [0.000, "o", "  \u001b[32m✓\u001b[0m A2  egress to hostile hosts blocked      \u001b[2m(shown above)\u001b[0m\r\n"]
 [0.000, "o", "  \u001b[32m✓\u001b[0m A7  no state persists between tasks       \u001b[2m(shown above)\u001b[0m\r\n"]
 [0.000, "o", "\r\n\u001b[2mDon't trust the threat model — check it: \u001b[0m\u001b[1mmake redteam\u001b[0m\u001b[2m  ·  verify the release: \u001b[0m\u001b[1mcosign verify-blob\u001b[0m \u001b[2m+ \u001b[0m\u001b[1mgh attestation verify\u001b[0m\r\n"]
-[0.001, "o", "\u001b[2mWorking alpha · single maintainer · no third-party audit yet · macOS 26+, Apple silicon\u001b[0m\r\n\r\n"]
+[0.001, "o", "\u001b[2mBeta · no third-party audit yet · macOS 26+, Apple silicon\u001b[0m\r\n\r\n"]
 [0.010, "x", "0"]

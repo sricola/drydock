@@ -21,6 +21,6 @@
 [0.000, "o", "  \u001b[32m✓\u001b[0m A6  self-service egress widening denied  \u001b[2m(shown above)\u001b[0m\r\n"]
 [0.000, "o", "  \u001b[2m○ A1/A2/A7  VM-backed — run: ./demo/breach.sh --vm  (macOS, Apple silicon)\u001b[0m\r\n"]
 [0.000, "o", "\r\n\u001b[2mDon't trust the threat model — check it: \u001b[0m\u001b[1mmake redteam\u001b[0m\u001b[2m  ·  verify the release: \u001b[0m\u001b[1mcosign verify-blob\u001b[0m \u001b[2m+ \u001b[0m\u001b[1mgh attestation verify\u001b[0m\r\n"]
-[0.000, "o", "\u001b[2mWorking alpha · single maintainer · no third-party audit yet · macOS 26+, Apple silicon\u001b[0m\r\n"]
+[0.000, "o", "\u001b[2mBeta · no third-party audit yet · macOS 26+, Apple silicon\u001b[0m\r\n"]
 [0.000, "o", "\r\n"]
 [0.013, "x", "0"]
