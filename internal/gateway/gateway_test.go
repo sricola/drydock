@@ -275,8 +275,19 @@ func TestServeHTTP_InFlightLimit(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if w := do(); w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") == "" {
-		t.Fatalf("concurrent request: code %d retry-after %q, want 429 with Retry-After", w.Code, w.Header().Get("Retry-After"))
+	// The concurrent request must be rejected locally and immediately. Run it
+	// with a deadline: if a regression lets it through to the (still blocked)
+	// upstream, this fails fast here instead of deadlocking until the Go test
+	// binary's global timeout dumps goroutines.
+	second := make(chan *httptest.ResponseRecorder, 1)
+	go func() { second <- do() }()
+	select {
+	case w := <-second:
+		if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") == "" {
+			t.Fatalf("concurrent request: code %d retry-after %q, want 429 with Retry-After", w.Code, w.Header().Get("Retry-After"))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent request blocked instead of being rejected locally: in-flight cap not enforced")
 	}
 	close(unblock)
 	if w := <-first; w.Code != http.StatusOK {
@@ -867,6 +878,41 @@ func TestMeter_ReleasesReservation(t *testing.T) {
 			t.Errorf("SpentUSD = %v after usageless stream, want 0 (no delta to commit)", spent)
 		}
 	})
+}
+
+// TestServeHTTP_ReleasesReservationOnUpstreamError pins that a request admitted
+// with a reservation (max_request_cost_usd > 0) whose upstream round trip fails
+// before any response body, so meter's onDone never runs, still has its
+// reservation and in-flight slot released. Otherwise Reserved would leak on
+// every transport error and, after budget/R failures, the lease would deny its
+// own budget (402) despite ~0 real spend.
+func TestServeHTTP_ReleasesReservationOnUpstreamError(t *testing.T) {
+	const R = 0.5
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := up.URL
+	up.Close() // nothing is listening now: the proxy round trip fails before any response
+
+	g := newGW(t, url)
+	tok, _ := g.Mint("anthropic", 100, 0, R, 0, time.Minute)
+
+	if rec := do(g, tok); rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502 on upstream dial failure", rec.Code)
+	}
+
+	g.mu.Lock()
+	lease := g.leases[tok]
+	reserved, inflight, spent := lease.Reserved, lease.InFlight, lease.SpentUSD
+	g.mu.Unlock()
+
+	if reserved != 0 {
+		t.Errorf("Reserved = %v after upstream error, want 0 (reservation must not leak when metering is skipped)", reserved)
+	}
+	if inflight != 0 {
+		t.Errorf("InFlight = %v after upstream error, want 0", inflight)
+	}
+	if spent != 0 {
+		t.Errorf("SpentUSD = %v after upstream error, want 0 (no metered response)", spent)
+	}
 }
 
 func TestGateway_AggregateCap_DisabledByDefault(t *testing.T) {

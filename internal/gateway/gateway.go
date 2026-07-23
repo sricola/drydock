@@ -206,13 +206,29 @@ func (g *Gateway) admit(token string) (*Lease, int, bool) {
 	return l, 0, false
 }
 
-// release marks one admitted request complete, freeing its in-flight slot.
-// Looked up by token: the lease may have been revoked mid-request.
+// release marks one admitted request complete: it frees the in-flight slot and
+// the worst-case reservation admit took for it. ServeHTTP defers this on EVERY
+// post-admission exit path, so a reservation can never outlive its request,
+// including an upstream transport error that skips metering entirely (the
+// reverse proxy runs ModifyResponse, and thus meter's onDone, only on a
+// successful round trip). meter commits the real metered spend to SpentUSD and
+// no longer touches Reserved. Looked up by token: the lease may have been
+// revoked mid-request.
 func (g *Gateway) release(token string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if l := g.leases[token]; l != nil && l.InFlight > 0 {
+	l := g.leases[token]
+	if l == nil {
+		return
+	}
+	if l.InFlight > 0 {
 		l.InFlight--
+	}
+	if l.MaxRequestCostUSD > 0 {
+		l.Reserved -= l.MaxRequestCostUSD
+		if l.Reserved < 0 {
+			l.Reserved = 0 // floor: defense in depth
+		}
 	}
 }
 
@@ -281,9 +297,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
-	// ReverseProxy.ServeHTTP streams the response body before returning, so
-	// metering (which runs at body EOF) has already settled SpentUSD when the
-	// slot frees: the next admitted request sees the updated spend.
+	// release frees this request's in-flight slot and reservation. Deferred so
+	// it runs on every exit path below, including an upstream transport error
+	// that skips metering. On success ReverseProxy streams and closes the body
+	// (running meter's onDone, which settles SpentUSD) before returning, so the
+	// next admitted request sees the updated spend.
 	defer g.release(tok)
 	// Bound the request body: stripRequestFields (subscription) buffers it with
 	// io.ReadAll, and the proxy streams it otherwise. A legit LLM request is well
@@ -410,13 +428,10 @@ func (g *Gateway) meter(resp *http.Response) error {
 		if model, in, out, ok := vt.v.ParseUsage(body, ct); ok {
 			delta = cost(vt.v.Prices, model, in, out)
 		}
+		// Commit only the actual metered spend. The reservation is released by
+		// ServeHTTP's deferred release, which runs on every exit path, so an
+		// upstream error that skips metering cannot leak the reservation.
 		g.mu.Lock()
-		if rc.lease.MaxRequestCostUSD > 0 {
-			rc.lease.Reserved -= rc.lease.MaxRequestCostUSD
-			if rc.lease.Reserved < 0 {
-				rc.lease.Reserved = 0 // floor: defense in depth
-			}
-		}
 		rc.lease.SpentUSD += delta
 		g.mu.Unlock()
 		if g.aggBudget > 0 && delta > 0 {
