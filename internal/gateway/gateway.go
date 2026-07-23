@@ -154,11 +154,11 @@ func (g *Gateway) AggregateExceeded(vendor string) bool {
 // to reject. retryable is true only for the transient in-flight-limit 429
 // (the in-flight slot frees on its own as the concurrent request completes);
 // every other rejection, including the terminal per-lease MaxRequests
-// exhaustion, is not retryable — no future admit call for this lease can ever
+// exhaustion, is not retryable: no future admit call for this lease can ever
 // succeed differently. The bearer is compared against the stored token with
 // subtle.ConstantTimeCompare so future changes to the lookup path can't
 // silently introduce a timing side-channel on token validation. Named admit
-// (not check) to reflect that it mutates l.Requests++ on success — it's an
+// (not check) to reflect that it mutates l.Requests++ on success: it's an
 // authoritative admission decision.
 func (g *Gateway) admit(token string) (*Lease, int, bool) {
 	g.mu.Lock()
