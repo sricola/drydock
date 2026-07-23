@@ -19,6 +19,7 @@ import (
 	"drydock/internal/egress"
 	"drydock/internal/gateway"
 	"drydock/internal/remote"
+	"drydock/internal/stage"
 )
 
 // These tests drive the full broker.HandleTask lifecycle
@@ -305,6 +306,48 @@ func TestHandleTask_AgentRunFails_ErrorEvent(t *testing.T) {
 	audit := readOnlyAudit(t, b.AuditRoot)
 	if !strings.Contains(audit, `"subtype":"error"`) || !strings.Contains(audit, `"is_error":true`) {
 		t.Errorf("no synthesized error result:\n%s", audit)
+	}
+}
+
+// V-01: a staged diff that exceeds the review cap must fail the task closed,
+// with an operator-facing reason that names the cap rather than the generic
+// "diff capture failed" message. The wrapped error proves the broker's
+// errors.Is(err, stage.ErrDiffTooLarge) check unwraps correctly.
+func TestHandleTask_DiffTooLarge_FailsClosedWithReason(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), captureErr: fmt.Errorf("wrapped: %w", stage.ErrDiffTooLarge)}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	rec, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d, want 200 (streamed); body=%s", rec.Code, rec.Body)
+	}
+	if term["event"] != "error" {
+		t.Fatalf("terminal=%v, want error event", term)
+	}
+	reason, _ := term["reason"].(string)
+	if !strings.Contains(reason, "task failed closed: staged diff exceeds the 32 MiB review cap") {
+		t.Errorf("reason=%q, want the V-01 fail-closed reason", reason)
+	}
+	if st.pushed.Load() {
+		t.Error("stage.Push must not be called when the diff is too large")
+	}
+}
+
+// A generic (non-ErrDiffTooLarge) capture failure must still surface the
+// original, less specific "diff capture failed" reason, not the V-01 message.
+func TestHandleTask_DiffCaptureFails_GenericReason(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), captureErr: fmt.Errorf("disk i/o error")}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	_, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+
+	if term["event"] != "error" {
+		t.Fatalf("terminal=%v, want error event", term)
+	}
+	reason, _ := term["reason"].(string)
+	if reason != "diff capture failed" {
+		t.Errorf("reason=%q, want %q", reason, "diff capture failed")
 	}
 }
 

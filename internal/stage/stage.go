@@ -142,8 +142,8 @@ func (s *Stage) CaptureDiff() (string, error) {
 	return s.gitDiffCapped(maxDiffBytes)
 }
 
-// gitDiffCapped streams `git diff --cached` into a bounded buffer, appending a
-// truncation marker if the diff exceeds max. It reads (and discards) any excess
+// gitDiffCapped streams `git diff --cached` into a bounded buffer, returning
+// ErrDiffTooLarge if the diff exceeds max. It reads (and discards) any excess
 // so git is not left blocked on a full pipe, keeping broker memory bounded to
 // max regardless of how large the staged diff is.
 func (s *Stage) gitDiffCapped(max int64) (string, error) {
