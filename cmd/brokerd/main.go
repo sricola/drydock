@@ -365,6 +365,7 @@ func main() {
 			TTL:            cfg.TaskTimeout + 5*time.Minute,
 			MaxRequests:    maxReq,
 			MaxRequestCost: cfg.MaxRequestCostUSD,
+			MaxInFlight:    cfg.TaskMaxInFlight,
 		}
 	}
 	avail := make([]string, 0, len(providers))

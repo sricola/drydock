@@ -76,7 +76,7 @@ func routedGateway(t *testing.T, v Vendor) *Gateway {
 // pathHasTraversal check catches it exactly like a literal "..".
 func TestGateway_EncodedTraversalBlocked(t *testing.T) {
 	g := routedGateway(t, AnthropicVendor())
-	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Minute)
 	req := httptest.NewRequest("POST", "http://gw/v1/messages/%2e%2e/files", strings.NewReader("{}"))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
@@ -91,7 +91,7 @@ func TestGateway_EncodedTraversalBlocked(t *testing.T) {
 // is blocked locally.
 func TestGateway_HeaderTokenRouteChecked(t *testing.T) {
 	g := routedGateway(t, GoogleVendor())
-	tok, _ := g.Mint("google", 100, 0, 0, time.Minute)
+	tok, _ := g.Mint("google", 100, 0, 0, 0, time.Minute)
 	req := httptest.NewRequest("GET", "http://gw/v1/files", nil)
 	req.Header.Set("X-Goog-Api-Key", tok) // no Authorization: header-token path
 	rec := httptest.NewRecorder()

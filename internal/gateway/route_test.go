@@ -32,7 +32,7 @@ func TestGateway_RouteAllowlist(t *testing.T) {
 	}
 
 	send := func(method, path string) int {
-		tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
+		tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Minute)
 		req := httptest.NewRequest(method, "http://gw"+path, strings.NewReader("{}"))
 		req.Header.Set("Authorization", "Bearer "+tok)
 		rec := httptest.NewRecorder()

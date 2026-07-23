@@ -87,6 +87,13 @@ type Config struct {
 	// (broker.DefaultUncappedRequestCap) so a runaway task can't drain a subscription.
 	TaskMaxRequests int `yaml:"task_max_requests"`
 
+	// TaskMaxInFlight caps concurrently admitted gateway requests per task
+	// lease. Spend is metered post-hoc, so each concurrently admitted request
+	// can overshoot the budget by its own cost; this bounds the overshoot to
+	// task_max_inflight requests. 1 (the default) restores the documented
+	// "at most one request" bound. 0 = unlimited (pre-v0.6.3 behavior).
+	TaskMaxInFlight int `yaml:"task_max_inflight"`
+
 	// MaxRequestCostUSD is the worst-case USD a single request may cost,
 	// reserved against the lease budget while the request is in flight so
 	// concurrent requests cannot all admit at spend=0. 0 (default) disables the
@@ -149,6 +156,7 @@ func Defaults() *Config {
 		AnthropicAuth:          "api_key",
 		OpenAIAuth:             "api_key",
 		TaskMaxRequests:        0,
+		TaskMaxInFlight:        1,
 		MaxRequestCostUSD:      0,
 		AggregateBudgetUSD:     0,
 		AggregateWindow:        24 * time.Hour,
@@ -404,6 +412,9 @@ func (c *Config) validate() error {
 	if c.TaskMaxRequests < 0 {
 		return fmt.Errorf("config: task_max_requests must be >= 0, got %d", c.TaskMaxRequests)
 	}
+	if c.TaskMaxInFlight < 0 {
+		return fmt.Errorf("config: task_max_inflight must be >= 0, got %d", c.TaskMaxInFlight)
+	}
 	if oc := c.OpenAICompat; oc.BaseURL != "" {
 		if oc.APIKeyEnv == "" || oc.Model == "" {
 			return fmt.Errorf("config: openai_compat.base_url set but api_key_env and model are required")
@@ -472,6 +483,7 @@ default_agent:          claude         # sandbox CLI: claude | codex | gemini | 
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
 task_max_requests:      0              # per-task request cap. 0 = unlimited when a USD budget bounds spend; with an uncapped budget (subscription / priceless model) 0 falls closed to a built-in default cap
+task_max_inflight:      1              # concurrent gateway requests per task lease; bounds budget overshoot to this many in-flight requests (0 = unlimited)
 max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)

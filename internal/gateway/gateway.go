@@ -35,6 +35,8 @@ type Lease struct {
 	Requests          int     // number of requests served so far
 	MaxRequestCostUSD float64 // per-request reservation R (0 = disabled)
 	Reserved          float64 // sum of R for admitted-but-unmetered requests; guarded by g.mu
+	MaxInFlight       int     // max concurrently admitted requests (0 = unlimited)
+	InFlight          int     // admitted, response not yet complete; guarded by g.mu
 }
 
 type vendorRT struct {
@@ -80,7 +82,7 @@ func New(backends ...Backend) (*Gateway, error) {
 	return g, nil
 }
 
-func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, maxRequestCostUSD float64, ttl time.Duration) (string, error) {
+func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, maxRequestCostUSD float64, maxInFlight int, ttl time.Duration) (string, error) {
 	if _, ok := g.vendors[vendor]; !ok {
 		return "", fmt.Errorf("gateway: no backend for vendor %q", vendor)
 	}
@@ -94,7 +96,7 @@ func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, maxReq
 	g.mu.Lock()
 	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD,
 		MaxRequests: maxRequests, MaxRequestCostUSD: maxRequestCostUSD,
-		Expiry: time.Now().Add(ttl)}
+		MaxInFlight: maxInFlight, Expiry: time.Now().Add(ttl)}
 	g.mu.Unlock()
 	return tok, nil
 }
@@ -176,15 +178,32 @@ func (g *Gateway) admit(token string) (*Lease, int) {
 	if l.MaxRequests > 0 && l.Requests >= l.MaxRequests {
 		return nil, http.StatusTooManyRequests
 	}
+	if l.MaxInFlight > 0 && l.InFlight >= l.MaxInFlight {
+		// Spend is metered when a response body completes, so every
+		// concurrently admitted request can overshoot the budget by its own
+		// cost. Serialize instead of admitting the race (F-02/F-05).
+		return nil, http.StatusTooManyRequests
+	}
 	if g.aggBudget > 0 && g.aggVendors[l.Vendor] &&
 		g.ledger.windowed(l.Vendor, time.Now()) >= g.aggBudget {
 		return nil, http.StatusPaymentRequired
 	}
 	l.Requests++
+	l.InFlight++
 	if l.MaxRequestCostUSD > 0 {
 		l.Reserved += l.MaxRequestCostUSD
 	}
 	return l, 0
+}
+
+// release marks one admitted request complete, freeing its in-flight slot.
+// Looked up by token: the lease may have been revoked mid-request.
+func (g *Gateway) release(token string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if l := g.leases[token]; l != nil && l.InFlight > 0 {
+		l.InFlight--
+	}
 }
 
 // leaseVendor returns the vendor bound to token without mutating the lease, so
@@ -241,9 +260,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, status := g.admit(tok)
 	if status != 0 {
+		if status == http.StatusTooManyRequests {
+			// A sequential agent CLI only hits this when a side call overlaps
+			// its main stream; SDKs back off and retry on 429.
+			w.Header().Set("Retry-After", "1")
+		}
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
+	// ReverseProxy.ServeHTTP streams the response body before returning, so
+	// metering (which runs at body EOF) has already settled SpentUSD when the
+	// slot frees: the next admitted request sees the updated spend.
+	defer g.release(tok)
 	// Bound the request body: stripRequestFields (subscription) buffers it with
 	// io.ReadAll, and the proxy streams it otherwise. A legit LLM request is well
 	// under this; the cap stops a task from OOMing the gateway with a giant body.
