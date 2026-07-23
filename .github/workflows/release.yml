@@ -41,6 +41,8 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME}"
           case "$tag" in v*) ;; *) echo "::error::not a tag ref: $tag"; exit 2 ;; esac
+          # actions/checkout clobbers annotated tags on tag-push triggers (actions/checkout#290); re-fetch the real tag object before reading its annotation.
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
           commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
           if ! git tag -l --format='%(contents)' "$tag" | grep -Eq "^preflight: ${commit} green "; then
             echo "::error::tag ${tag} has no preflight receipt for ${commit}; cut releases with 'make tag-release VERSION=${tag}'"
