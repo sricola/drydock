@@ -119,27 +119,27 @@ func (s *Stage) stageAll() error {
 	return err
 }
 
-// ErrDiffTooLarge means the staged diff exceeds maxDiffBytes. The broker fails
+// ErrDiffTooLarge means the staged diff exceeds MaxDiffBytes. The broker fails
 // the task instead of truncating: the approval gate must never authorize bytes
 // it could not show the reviewer, and a hostile task could hide a malicious
 // change behind 32 MiB of alphabetically earlier padding (V-01).
 var ErrDiffTooLarge = errors.New("stage: staged diff exceeds the review cap")
 
-// maxDiffBytes bounds the review diff held in broker memory and written to the
+// MaxDiffBytes bounds the review diff held in broker memory and written to the
 // audit .diff file. A hostile task that stages a giant or binary diff would
 // otherwise allocate the whole thing (and a second copy on persist), risking
 // broker OOM. Exceeding the cap is a task failure (ErrDiffTooLarge), never a
 // truncated review: approve must only ever authorize fully reviewable bytes.
-const maxDiffBytes = 32 << 20 // 32 MiB
+const MaxDiffBytes = 32 << 20 // 32 MiB
 
 // CaptureDiff returns the unified diff of the agent's changes (no commit),
-// bounded to maxDiffBytes; a larger diff fails closed with ErrDiffTooLarge so a
+// bounded to MaxDiffBytes; a larger diff fails closed with ErrDiffTooLarge so a
 // partial diff can never reach review.
 func (s *Stage) CaptureDiff() (string, error) {
 	if err := s.stageAll(); err != nil {
 		return "", err
 	}
-	return s.gitDiffCapped(maxDiffBytes)
+	return s.gitDiffCapped(MaxDiffBytes)
 }
 
 // gitDiffCapped streams `git diff --cached` into a bounded buffer, returning

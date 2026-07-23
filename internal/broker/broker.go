@@ -39,14 +39,15 @@ var gitURLRef = regexp.MustCompile(
 	`^(?:https?://[A-Za-z0-9.-]+/|git@[A-Za-z0-9.-]+:|ssh://[A-Za-z0-9._-]+@[A-Za-z0-9.-]+/)[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?(?:\.git)?/?$`,
 )
 
-// DefaultUncappedRequestCap bounds a task when no USD budget applies to its
-// vendor's lane (subscription auth, or a priceless openai-compat lane) and
-// the operator hasn't set task_max_requests. High enough for a real agentic
-// task's many tool-use turns, low enough to stop a runaway loop from
-// draining a subscription. Exported so cmd/brokerd (which mints the lease
-// and decides the request cap) and writeBrief (which must report the cap
-// actually enforced) share one source of truth instead of two constants that
-// could drift apart.
+// DefaultUncappedRequestCap bounds every task whose operator left
+// task_max_requests unset, in every auth mode (F-02): api_key lanes with a USD
+// budget, subscription lanes with none, and a priceless openai-compat lane
+// alike. High enough for a real agentic task's many tool-use turns, low
+// enough to stop a runaway loop from draining a subscription or, in api_key
+// mode, running up spend between metered responses. Exported so cmd/brokerd
+// (which mints the lease and decides the request cap) and writeBrief (which
+// must report the cap actually enforced) share one source of truth instead of
+// two constants that could drift apart.
 const DefaultUncappedRequestCap = 1000
 
 type Task struct {
@@ -488,7 +489,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		reason := "diff capture failed"
 		if errors.Is(err, stage.ErrDiffTooLarge) {
-			reason = "task failed closed: staged diff exceeds the 32 MiB review cap, so it cannot be fully reviewed (V-01)"
+			reason = fmt.Sprintf("task failed closed: staged diff exceeds the %d MiB review cap, so it cannot be fully reviewed (V-01)", stage.MaxDiffBytes>>20)
 		}
 		sw.emit(errorEvent(taskID, reason, ""))
 		return
@@ -689,7 +690,7 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) {
 		EgressDefault:  domainStrings(b.Cfg.Default.Domains),
 		EgressWidened:  domainStrings(tr.egressExtra),
 	}
-	if policy.MaxRequests == 0 {
+	if policy.MaxRequests <= 0 {
 		policy.MaxRequests = DefaultUncappedRequestCap
 	}
 	if b.UnmeteredVendors[tr.taskVendor] {

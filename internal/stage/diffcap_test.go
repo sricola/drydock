@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// A hostile task can stage a giant/binary diff; CaptureDiff must bound the bytes
-// it holds in broker memory rather than buffering the whole thing.
-func TestCaptureDiff_TruncatesOversizeDiff(t *testing.T) {
+// A hostile task can stage a giant/binary diff; CaptureDiff must fail closed
+// rather than buffer or return a truncated (partially reviewable) diff.
+func TestCaptureDiff_OversizeDiffFailsClosed(t *testing.T) {
 	s := prepare(t, makeOriginRepo(t))
 	big := strings.Repeat("some added line of content\n", 2000) // ~54 KiB
 	if err := os.WriteFile(filepath.Join(s.WorkDir, "big.txt"), []byte(big), 0o644); err != nil {
