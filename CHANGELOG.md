@@ -5,7 +5,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.6.3 (2026-07-23)
+
+A follow-up security-hardening release closing the residual items from the
+v0.6.2 red-team verification pass (V-01, F-02, F-03, F-05, F-07, F-08, V-02).
+Every fix ships with an exploit-first regression test, and the whole branch was
+independently reviewed, mutation-tested, and run through the host and VM-backed
+red-team suites. No new features. Two operator-visible default changes on
+upgrade: `task_max_inflight` defaults to 1 (concurrent gateway requests per
+task serialize; raise it or set `DRYDOCK_TASK_MAX_INFLIGHT` if a
+subagent-parallel task stalls on 429s), and `task_max_requests: 0` now falls
+closed to a built-in 1000-request cap instead of unlimited.
 
 ### Security
 
@@ -38,6 +48,13 @@ entry below corresponds to a Git tag of the same name.
 - **The release workflow verifies a preflight receipt before tagging (V-02).**
   `tag-release` and `release.yml` now enforce a preflight receipt, closing a
   path to an accidental release bypassing the pre-release checks.
+- **The gateway releases a request's budget reservation on every exit path,
+  not only on metering (review).** When `max_request_cost_usd` was set, a
+  request whose upstream round trip failed before a response body skipped
+  metering and leaked its reservation, so a flaky upstream could make a lease
+  deny its own budget despite near-zero real spend; the reservation is now
+  released alongside the in-flight slot on success, credential failure, and
+  upstream error alike.
 
 ## v0.6.2 (2026-07-12)
 
