@@ -23,6 +23,10 @@ func TestSecurityClaimsNoDrift(t *testing.T) {
 		{"README.md", "no-aggregate-cap", "the aggregate cap landed"},
 		{"THREAT_MODEL.md", "gosu agent", "privilege drop uses setpriv via drop-agent.sh, not gosu"},
 		{"THREAT_MODEL.md", "bounded by one call", "a hostile agent fires concurrent requests, not sequentially (F-02)"},
+		{"README.md", "budget-capped token", "spend can overshoot by task_max_inflight requests (default 1); say budget-scoped and state the bound (F-02)"},
+		{"site/docs/quickstart.md", "budget-capped token", "same as README (F-02)"},
+		{"THREAT_MODEL.md", "budget-capped bearer", "same bound applies to the bearer description (F-02)"},
+		{"docs/ROADMAP.md", "every external input is pinned", "apt and npm transitive graphs still float at image build (F-09)"},
 	}
 	for _, f := range forbidden {
 		b, err := os.ReadFile(filepath.Join(root, f.file))

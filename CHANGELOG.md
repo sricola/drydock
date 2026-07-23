@@ -5,6 +5,40 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Security
+
+- **An oversize review diff now fails the task closed instead of being
+  truncated (V-01, High).** A staged diff over 32 MiB used to be truncated
+  and the task allowed to continue with a partial review; the operator could
+  approve a diff that hid content past the cutoff. Staging now fails the task
+  closed when the diff exceeds the cap.
+- **Both config loaders reject a trailing YAML document (F-08 residual).** A
+  config file with a second `---`-delimited document after the first was
+  silently ignored by one loader and honored by the other, letting a stray or
+  injected second document change behavior unnoticed; both loaders now reject
+  it.
+- **The gateway caps concurrent in-flight requests per task lease (F-05/F-02,
+  High).** `task_max_inflight` (default 1) serializes each task's admitted
+  requests, bounding budget overshoot to at most `task_max_inflight`
+  concurrent requests instead of an unbounded number a hostile in-VM agent
+  could otherwise fire before any of them completed.
+- **The gateway blocks the Batches API and matches inference routes
+  exactly (F-03 residual).** The per-vendor route allowlist previously
+  matched by prefix and missed the Batches API; routes are now matched
+  exactly against the pinned CLI's inference routes.
+- **`task_max_requests: 0` falls closed to a built-in default cap (F-02
+  defense in depth).** Leaving the per-task request cap unset used to mean
+  no cap in every auth mode; it now falls closed to a built-in default of
+  1000 requests per task, set explicitly to change the bound.
+- **The broker authors a terminal result on every sandbox exit path (F-07
+  residual).** Some `runSandbox` exit paths could leave a task without a
+  broker-authored terminal result; every exit path now produces one.
+- **The release workflow verifies a preflight receipt before tagging (V-02).**
+  `tag-release` and `release.yml` now enforce a preflight receipt, closing a
+  path to an accidental release bypassing the pre-release checks.
+
 ## v0.6.2 (2026-07-12)
 
 A security-hardening release closing the findings from a red-team review of
