@@ -46,7 +46,6 @@ func runStatus() {
 
 type healthBody struct {
 	OK              bool `json:"ok"`
-	Pending         int  `json:"pending"` // legacy; equals PendingApproval
 	AwaitingEgress  int  `json:"awaiting_egress"`
 	Running         int  `json:"running"`
 	PendingApproval int  `json:"pending_approval"`

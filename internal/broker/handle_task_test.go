@@ -46,14 +46,6 @@ func (f *fakeStage) WriteTaskFiles(prompt string) error {
 }
 func (f *fakeStage) CaptureDiff() (string, error) { return f.diff, f.captureErr }
 func (f *fakeStage) Cleanup() error               { f.cleaned.Store(true); return nil }
-func (f *fakeStage) Push(branch, msg string) error {
-	if f.pushErr != nil {
-		return f.pushErr
-	}
-	f.pushed.Store(true)
-	f.pushBranch = branch
-	return nil
-}
 func (f *fakeStage) Commit(branch, msg string) error {
 	if f.pushErr != nil {
 		return nil // let PushBranch surface the failure; Commit succeeds

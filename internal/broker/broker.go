@@ -170,7 +170,6 @@ type taskStage interface {
 	WorkDir() string
 	WriteTaskFiles(prompt string) error
 	CaptureDiff() (string, error)
-	Push(branch, msg string) error
 	Commit(branch, message string) error
 	PushBranch(localBranch, remoteBranch string) error
 	PushEnv() []string
@@ -184,7 +183,6 @@ func (r realStage) WriteTaskFiles(prompt string) error {
 	return r.s.WriteTaskFiles(prompt)
 }
 func (r realStage) CaptureDiff() (string, error)          { return r.s.CaptureDiff() }
-func (r realStage) Push(branch, msg string) error         { return r.s.Push(branch, msg) }
 func (r realStage) Commit(branch, msg string) error       { return r.s.Commit(branch, msg) }
 func (r realStage) PushBranch(local, remote string) error { return r.s.PushBranch(local, remote) }
 func (r realStage) PushEnv() []string                     { return r.s.PushEnv() }
@@ -780,11 +778,7 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"deny":    "drydock deny " + tr.id,
 			"review":  "drydock review " + tr.id})
 	}
-	approved := tr.autoApprove
-	cause := gateApproved
-	if !tr.autoApprove {
-		approved, cause = b.gatePushMarked(tr.ctx, tr, diff)
-	}
+	approved, cause := b.gatePushMarked(tr.ctx, tr, diff)
 	if !approved {
 		outcome := "denied"
 		if cause == gateKilled || cause == gateShutdown {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"drydock/internal/atomicfile"
 	"drydock/internal/provider"
 )
 
@@ -93,9 +94,5 @@ func WriteAPIKey(path, key, value string) error {
 			b.WriteString(k + "=" + v + "\n")
 		}
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return atomicfile.Write(path, []byte(b.String()), 0o600)
 }

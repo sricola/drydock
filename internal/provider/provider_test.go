@@ -1,10 +1,58 @@
 package provider
 
 import (
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// TestOAuthBackend_BuildsCredential exercises each provider's OAuthBackend
+// closure — the production credential wiring brokerd calls at startup — rather
+// than only the LoadOAuthSnap sibling that the other tests cover. It asserts the
+// backend loads a usable Credential from the OAuthFile, and (for codex) that the
+// captured account id threads into the vendor's request injection: a dropped
+// store.AccountID() would blank the chatgpt-account-id header at runtime while
+// every LoadOAuthSnap-based test still passed.
+func TestOAuthBackend_BuildsCredential(t *testing.T) {
+	for _, p := range Registry {
+		if p.OAuthBackend == nil {
+			continue // api-key-only / ConfigBuilt providers have no OAuth backend
+		}
+		p := p
+		t.Run(p.Agent, func(t *testing.T) {
+			dir := t.TempDir()
+			// Far-future expiry so Current() returns the on-disk token without a
+			// refresh round-trip. Codex reads account_id; claude ignores it.
+			cred := `{"access_token":"acc","refresh_token":"ref","expiry":"2999-01-01T00:00:00Z","account_id":"acct-xyz"}`
+			if err := os.WriteFile(filepath.Join(dir, p.OAuthFile), []byte(cred), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			be, err := p.OAuthBackend(dir)
+			if err != nil {
+				t.Fatalf("OAuthBackend: %v", err)
+			}
+			if be.Vendor.Name != p.Vendor {
+				t.Errorf("backend vendor = %q, want %q", be.Vendor.Name, p.Vendor)
+			}
+			if be.Cred == nil {
+				t.Fatal("backend has a nil Cred")
+			}
+			if got, err := be.Cred.Current(); err != nil || got != "acc" {
+				t.Errorf("Cred.Current() = %q, %v; want \"acc\", nil", got, err)
+			}
+
+			if p.Agent == "codex" {
+				req := httptest.NewRequest("POST", "/responses", nil)
+				be.Vendor.Inject(req, "secret")
+				if got := req.Header.Get("chatgpt-account-id"); got != "acct-xyz" {
+					t.Errorf("codex account id not wired into the vendor: chatgpt-account-id=%q, want acct-xyz", got)
+				}
+			}
+		})
+	}
+}
 
 func TestRegistry_Agents(t *testing.T) {
 	if got := Agents(); len(got) != 4 || got[0] != "claude" || got[1] != "codex" || got[2] != "gemini" || got[3] != "opencode" {

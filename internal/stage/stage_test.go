@@ -154,8 +154,13 @@ func setupPushable(t *testing.T) (string, *Stage) {
 func TestPush_CommitsAndPushes(t *testing.T) {
 	bare, s := setupPushable(t)
 
-	if err := s.Push("agent/abc123", "agent: add feature"); err != nil {
-		t.Fatalf("Push: %v", err)
+	// The production push path (broker pushWithRecovery) is Commit then
+	// PushBranch; on the happy path the remote name equals the local branch.
+	if err := s.Commit("agent/abc123", "agent: add feature"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := s.PushBranch("agent/abc123", "agent/abc123"); err != nil {
+		t.Fatalf("PushBranch: %v", err)
 	}
 
 	// The branch exists on the bare origin with the new commit.

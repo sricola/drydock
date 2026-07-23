@@ -79,7 +79,7 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleKill cancels the per-task context, which aborts the container run
-// (if still in flight) and the gatePush wait (if at the approval gate).
+// (if still in flight) and the push-gate wait (if at the approval gate).
 // Returns 204 on success, 404 if no such live task. The corresponding
 // `POST /tasks` request will return a body with "cancelled": true.
 func (b *Broker) HandleKill(w http.ResponseWriter, r *http.Request) {

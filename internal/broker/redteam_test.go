@@ -139,7 +139,7 @@ func TestRedteam_A6_AutoApproveCannotBypassWideningGate(t *testing.T) {
 
 	// The core anti-bypass proof: despite auto_approve:true, the task registers
 	// at a human gate. b.pending is only populated by the egress gate here
-	// (gatePush registers nothing when auto_approve is set), so reaching it means
+	// (gatePushMarked registers nothing when auto_approve is set), so reaching it means
 	// the widening gate held. A bypass regression would run straight to push and
 	// waitForPending would time out.
 	id := waitForPending(t, b)

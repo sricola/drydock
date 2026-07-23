@@ -30,7 +30,7 @@ const (
 	gateShutdown
 )
 
-// awaitGate is the shared skeleton for gatePush and gateEgressWiden. It:
+// awaitGate is the shared skeleton for gatePushMarked and gateEgressWiden. It:
 //   - optionally wraps ctx with the operator ApprovalTimeout;
 //   - registers a buffered channel in b.pending under taskID (deregisters on return);
 //   - calls onReady, which must persist the review artifact, log, and fire any
@@ -86,10 +86,16 @@ func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg st
 	}
 }
 
-// gatePushMarked is gatePush with a durable resume marker. It persists the diff
-// and a gate marker, blocks for approval, then removes the marker UNLESS the
-// gate was interrupted by shutdown (left for boot resume).
+// gatePushMarked blocks at the diff-approval gate with a durable resume marker.
+// It persists the diff and a gate marker, blocks for approval, then removes the
+// marker UNLESS the gate was interrupted by shutdown (left for boot resume).
+// When the task opted into auto-approve the gate is bypassed entirely (no wait,
+// no review artifact) — callers opt in explicitly via Task.AutoApprove.
 func (b *Broker) gatePushMarked(ctx context.Context, tr *taskRun, diff string) (bool, gateCause) {
+	if tr.autoApprove {
+		slog.Info("task auto-approve push", "task_id", tr.id, "reason", "caller opted in")
+		return true, gateApproved
+	}
 	ok, cause := b.awaitGate(ctx, tr.id,
 		"task auto-denied at approval gate (approval_timeout reached)",
 		"task killed or broker shutting down before approval; aborting",
@@ -123,7 +129,7 @@ func (b *Broker) gatePushMarked(ctx context.Context, tr *taskRun, diff string) (
 // gateEgressWiden blocks until POST /admin/approve/{id} or /admin/deny/{id}
 // (or the HTTP client disconnects / the task is killed). Returning false
 // aborts the task before any allowlist compilation — the requested hosts
-// never reach squid. Mirrors gatePush so the operator only has to learn one
+// never reach squid. Mirrors gatePushMarked so the operator only has to learn one
 // approval flow.
 func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []egress.Domain) bool {
 	ok, _ := b.awaitGate(ctx, taskID,
@@ -166,33 +172,6 @@ func summariseExtras(extras []egress.Domain) string {
 		parts = append(parts, fmt.Sprintf("%s:%s", d.Host, ports))
 	}
 	return strings.Join(parts, " ")
-}
-
-// gatePush blocks until POST /admin/approve/{id} or /admin/deny/{id} (or the
-// HTTP client disconnects). Returning false aborts the push and the diff is
-// returned to the caller without ever touching origin. When auto is true the
-// gate is bypassed — callers must opt in explicitly via Task.AutoApprove.
-func (b *Broker) gatePush(ctx context.Context, taskID, diff string, auto bool) bool {
-	if auto {
-		slog.Info("task auto-approve push", "task_id", taskID, "reason", "caller opted in")
-		return true
-	}
-	ok, _ := b.awaitGate(ctx, taskID,
-		"task auto-denied at approval gate (approval_timeout reached)",
-		"task killed or broker shutting down before approval; aborting",
-		func() {
-			// Persist the diff for the human reviewing it.
-			diffPath := filepath.Join(b.AuditRoot, taskID+".diff")
-			if werr := os.WriteFile(diffPath, []byte(diff), 0o600); werr != nil {
-				slog.Warn("could not persist diff for review", "task_id", taskID, "path", diffPath, "err", werr)
-			}
-			slog.Info("task awaiting approval",
-				"task_id", taskID, "diff_bytes", len(diff), "diff_path", diffPath,
-				"hint", "drydock approve "+taskID+" | drydock deny "+taskID)
-			b.notifyMac("drydock — task awaiting approval",
-				fmt.Sprintf("task %s · %d byte diff · drydock approve %s", taskID, len(diff), taskID))
-		})
-	return ok
 }
 
 // notifyMac fires a macOS notification via osascript. Silent no-op when the

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,10 +16,11 @@ type memStore struct {
 	snap      CredSnapshot
 	saved     CredSnapshot
 	saveCalls int
+	saveErr   error // when set, Save fails with it (default nil = success)
 }
 
 func (m *memStore) Load() (CredSnapshot, error) { return m.snap, nil }
-func (m *memStore) Save(s CredSnapshot) error   { m.saved = s; m.saveCalls++; return nil }
+func (m *memStore) Save(s CredSnapshot) error   { m.saved = s; m.saveCalls++; return m.saveErr }
 
 func TestOAuthCred_RefreshesWhenExpiring(t *testing.T) {
 	store := &memStore{}
@@ -354,6 +356,50 @@ func TestOAuthCred_RecoversRotatedTokenFromDisk(t *testing.T) {
 	}
 	if c.snap.Refresh != "r2" {
 		t.Errorf("in-memory refresh token not updated from disk: %q", c.snap.Refresh)
+	}
+}
+
+// TestOAuthCred_ReRefreshesExpiredDiskToken covers recoverFromDisk's re-refresh
+// branch: the disk holds a DIFFERENT refresh token than memory, but it too is
+// past the refresh margin, so recovery must re-refresh with the disk token
+// rather than adopt it stale or give up.
+func TestOAuthCred_ReRefreshesExpiredDiskToken(t *testing.T) {
+	store := &memStore{snap: CredSnapshot{Access: "disk-old", Refresh: "r2", Expiry: time.Now().Add(-time.Minute)}}
+	c := &OAuthCred{
+		snap:  CredSnapshot{Access: "mem-old", Refresh: "r1", Expiry: time.Now().Add(-time.Minute)},
+		store: store,
+		refresh: func(r string) (CredSnapshot, error) {
+			if r == "r1" {
+				return CredSnapshot{}, errors.New("stale in-memory token rejected")
+			}
+			// The disk's rotated token (r2) is the live one.
+			return CredSnapshot{Access: "fresh", Refresh: "r3", Expiry: time.Now().Add(time.Hour)}, nil
+		},
+	}
+	got, err := c.Current()
+	if err != nil || got != "fresh" {
+		t.Fatalf("Current()=%q,%v; want \"fresh\" (re-refreshed with the disk token)", got, err)
+	}
+	if c.snap.Refresh != "r3" {
+		t.Errorf("in-memory refresh not updated to the re-refreshed token: %q", c.snap.Refresh)
+	}
+}
+
+// TestOAuthCred_PersistFailureSurfaces: after a successful refresh, a failing
+// store.Save must surface as an error rather than silently handing back a token
+// whose rotation was never persisted (the next process would use a dead token).
+func TestOAuthCred_PersistFailureSurfaces(t *testing.T) {
+	store := &memStore{saveErr: errors.New("disk full")}
+	c := &OAuthCred{
+		snap:  CredSnapshot{Access: "old", Refresh: "r1", Expiry: time.Now().Add(30 * time.Second)},
+		store: store,
+		refresh: func(string) (CredSnapshot, error) {
+			return CredSnapshot{Access: "new", Refresh: "r2", Expiry: time.Now().Add(time.Hour)}, nil
+		},
+	}
+	_, err := c.Current()
+	if err == nil || !strings.Contains(err.Error(), "persist failed") {
+		t.Fatalf("Current() with a failing Save = %v, want a persist-failed error", err)
 	}
 }
 
