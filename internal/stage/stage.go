@@ -7,6 +7,7 @@ package stage
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -118,15 +119,22 @@ func (s *Stage) stageAll() error {
 	return err
 }
 
+// ErrDiffTooLarge means the staged diff exceeds maxDiffBytes. The broker fails
+// the task instead of truncating: the approval gate must never authorize bytes
+// it could not show the reviewer, and a hostile task could hide a malicious
+// change behind 32 MiB of alphabetically earlier padding (V-01).
+var ErrDiffTooLarge = errors.New("stage: staged diff exceeds the review cap")
+
 // maxDiffBytes bounds the review diff held in broker memory and written to the
 // audit .diff file. A hostile task that stages a giant or binary diff would
 // otherwise allocate the whole thing (and a second copy on persist), risking
-// broker OOM. The commit/push is taken from the work tree, not this string, so
-// truncating the review diff never changes what actually gets pushed.
+// broker OOM. Exceeding the cap is a task failure (ErrDiffTooLarge), never a
+// truncated review: approve must only ever authorize fully reviewable bytes.
 const maxDiffBytes = 32 << 20 // 32 MiB
 
 // CaptureDiff returns the unified diff of the agent's changes (no commit),
-// bounded to maxDiffBytes so a hostile diff cannot exhaust broker memory.
+// bounded to maxDiffBytes; a larger diff fails closed with ErrDiffTooLarge so a
+// partial diff can never reach review.
 func (s *Stage) CaptureDiff() (string, error) {
 	if err := s.stageAll(); err != nil {
 		return "", err
@@ -177,11 +185,10 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 	if werr := cmd.Wait(); werr != nil {
 		return "", fmt.Errorf("git diff --cached: %w\n%s", werr, stderr.String())
 	}
-	out := buf.String()
 	if truncated {
-		out += fmt.Sprintf("\n... [diff truncated at %d MiB; the full change is still committed] ...\n", max>>20)
+		return "", fmt.Errorf("%w (%d MiB)", ErrDiffTooLarge, max>>20)
 	}
-	return out, nil
+	return buf.String(), nil
 }
 
 // cappedBuffer collects up to max bytes and silently drops the rest, while

@@ -1,6 +1,7 @@
 package stage
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,14 +21,11 @@ func TestCaptureDiff_TruncatesOversizeDiff(t *testing.T) {
 	}
 
 	out, err := s.gitDiffCapped(512) // cap far below the diff size
-	if err != nil {
-		t.Fatalf("gitDiffCapped: %v", err)
+	if !errors.Is(err, ErrDiffTooLarge) {
+		t.Fatalf("gitDiffCapped over cap: got (%q, %v), want ErrDiffTooLarge", out, err)
 	}
-	if len(out) > 512+256 { // buffered bytes (<=512) + the truncation marker
-		t.Errorf("diff not bounded: %d bytes (cap 512)", len(out))
-	}
-	if !strings.Contains(out, "truncated") {
-		t.Errorf("oversize diff missing the truncation marker")
+	if out != "" {
+		t.Errorf("oversize diff must return no partial content, got %d bytes", len(out))
 	}
 }
 

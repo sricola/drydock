@@ -486,7 +486,11 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	diff, err := st.CaptureDiff()
 	if err != nil {
-		sw.emit(errorEvent(taskID, "diff capture failed", ""))
+		reason := "diff capture failed"
+		if errors.Is(err, stage.ErrDiffTooLarge) {
+			reason = "task failed closed: staged diff exceeds the 32 MiB review cap, so it cannot be fully reviewed (V-01)"
+		}
+		sw.emit(errorEvent(taskID, reason, ""))
 		return
 	}
 	if diff == "" {
