@@ -50,9 +50,12 @@ func TestReadmeStatusVersionCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`(?m)^>\s*\*\*Status:[^(]*\((v\d+\.\d+\.\d+)\)`).FindStringSubmatch(string(b))
+	// The status line is either a "## Status: …" heading or the older
+	// "> **Status: …**" blockquote; accept both so a format change doesn't
+	// silently disable the version-currency guard.
+	m := regexp.MustCompile(`(?m)^(?:##\s*|>\s*\*\*)Status:[^(]*\((v\d+\.\d+\.\d+)\)`).FindStringSubmatch(string(b))
 	if m == nil {
-		t.Fatal("README.md has no '> **Status: … (vX.Y.Z)** ' line")
+		t.Fatal("README.md has no '## Status: … (vX.Y.Z)' or '> **Status: … (vX.Y.Z)**' line")
 	}
 	if m[1] != want {
 		t.Errorf("README status says %s but current release is %s (CHANGELOG)", m[1], want)
