@@ -11,8 +11,10 @@ A follow-up security-hardening release closing the residual items from the
 v0.6.2 red-team verification pass (V-01, F-02, F-03, F-05, F-07, F-08, V-02).
 Every fix ships with an exploit-first regression test, and the whole branch was
 independently reviewed, mutation-tested, and run through the host and VM-backed
-red-team suites. No new features. Two operator-visible default changes on
-upgrade: `task_max_inflight` defaults to 1 (concurrent gateway requests per
+red-team suites. No new features. The project status graduates from alpha to
+beta: the containment is now continuously red-teamed and adversarially
+reviewed, while it stays pre-1.0 with no third-party security audit. Two
+operator-visible default changes on upgrade: `task_max_inflight` defaults to 1 (concurrent gateway requests per
 task serialize; raise it or set `DRYDOCK_TASK_MAX_INFLIGHT` if a
 subagent-parallel task stalls on 429s), and `task_max_requests: 0` now falls
 closed to a built-in 1000-request cap instead of unlimited.

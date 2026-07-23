@@ -10,7 +10,7 @@
 <p align="center"><b>Let a coding agent run wild on your Mac, without trusting it.</b></p>
 
 <p align="center">
-  <img alt="status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
+  <img alt="status: beta" src="https://img.shields.io/badge/status-beta-yellow">
   <img alt="version" src="https://img.shields.io/github/v/tag/sricola/drydock?label=release&color=brightgreen">
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2026%2B%20·%20Apple%20silicon-black">
   <img alt="license" src="https://img.shields.io/badge/license-Apache_2.0-blue">
@@ -46,12 +46,16 @@ internet, regardless of what it tries.
 
 <p align="center"><sub><b>Don't take the threat model's word for it.</b> Every green above is a real <code>go&nbsp;test</code> red-team case that runs the actual attack and asserts it fails. Reproduce them yourself: <code>make&nbsp;redteam</code>, or watch all seven, including live VM isolation, with <code>make&nbsp;demo&nbsp;VM=1</code>.</sub></p>
 
-> **Status: working alpha (v0.6.2).** The full task lifecycle works
-> end-to-end (submit → isolated VM → gated diff → push), and drydock ships
-> through a Homebrew tap. It is pre-1.0: only `main` is
-> supported, behavior and config can change between minor versions, and it
-> hasn't been hardened by real-world use. **There has been no third-party
-> security audit**: the security model is written down in detail in the
+> **Status: beta (v0.6.3).** The full task lifecycle works end-to-end
+> (submit → isolated VM → gated diff → push), and drydock ships through a
+> Homebrew tap. Every containment claim in the threat model is a red-team
+> test that runs the real attack and asserts it fails; reproduce them
+> yourself with `make redteam` (host) or `make demo VM=1` (live VM
+> isolation), and the security-sensitive changes are developed exploit-first
+> and adversarially reviewed. It is still pre-1.0: only `main` is supported,
+> behavior and config can change between minor versions, and it has not been
+> hardened by wide real-world use. **There has been no third-party security
+> audit**: the security model is written down in detail in the
 > [threat model](THREAT_MODEL.md), so read that and decide for yourself
 > before trusting it. **Hard requirement: macOS 26+ on Apple silicon**, it
 > runs on Apple's `container` runtime (1.x, validated through 1.1.0), so it
