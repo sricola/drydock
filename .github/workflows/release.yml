@@ -31,6 +31,24 @@ jobs:
         with:
           fetch-depth: 0 # full history so `git describe` resolves the tag
 
+      - name: Verify preflight receipt
+        # tag-release embeds "preflight: <commit> green <utc>" in the tag
+        # annotation only after release-preflight (unit + host red-team +
+        # VM-backed A1/A2/A7) passes. Refuse to build a bare `git tag` so the
+        # VM gate cannot be skipped by accident (V-02). This binds publication
+        # to the blessed workflow; it is not cryptographic proof against a
+        # deliberately hostile maintainer.
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in v*) ;; *) echo "::error::not a tag ref: $tag"; exit 2 ;; esac
+          # actions/checkout clobbers annotated tags on tag-push triggers (actions/checkout#290); re-fetch the real tag object before reading its annotation.
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          if ! git tag -l --format='%(contents)' "$tag" | grep -Eq "^preflight: ${commit} green "; then
+            echo "::error::tag ${tag} has no preflight receipt for ${commit}; cut releases with 'make tag-release VERSION=${tag}'"
+            exit 1
+          fi
+
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod

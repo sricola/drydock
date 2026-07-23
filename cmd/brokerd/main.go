@@ -76,15 +76,13 @@ func fatal(msg string, attrs ...any) {
 // (--user, readonly=).
 const supportedContainerMajor = "1"
 
-// effectiveRequestCap returns the per-task request cap to enforce. When no USD
-// budget bounds the backend (uncapped) and the operator left task_max_requests
-// at 0/unlimited, it fails closed to broker.DefaultUncappedRequestCap;
-// otherwise it honors the configured value (0 = unlimited when a USD budget is
-// doing the bounding). The constant lives in the broker package (not here) so
-// writeBrief's report of "what was actually enforced" and this mint-time
-// decision can never drift apart.
-func effectiveRequestCap(uncapped bool, configured int) int {
-	if uncapped && configured <= 0 {
+// effectiveRequestCap returns the per-task request cap to enforce. 0/unset
+// fails closed to broker.DefaultUncappedRequestCap in EVERY auth mode: the
+// request count is independent defense in depth against a runaway or hostile
+// task even when a USD budget also bounds the lane (F-02). The operator opts
+// into a different bound (or a higher one) by setting task_max_requests.
+func effectiveRequestCap(configured int) int {
+	if configured <= 0 {
 		return broker.DefaultUncappedRequestCap
 	}
 	return configured
@@ -342,17 +340,11 @@ func main() {
 			budget = math.MaxFloat64
 			unmeteredVendors[b.Vendor.Name] = true
 		}
-		// When no USD budget bounds a backend (subscription auth, or a priceless
-		// openai_compat lane), an unlimited request count is the whole runaway
-		// control — and it defaults to 0 = unlimited, so a looping task could
-		// drain a real subscription unbounded. Fail closed: apply a default
-		// per-task request cap. The operator opts into a different bound (or
-		// effectively unlimited) by setting task_max_requests explicitly.
-		maxReq := effectiveRequestCap(uncapped, cfg.TaskMaxRequests)
+		maxReq := effectiveRequestCap(cfg.TaskMaxRequests)
 		if maxReq != cfg.TaskMaxRequests {
-			slog.Warn("uncapped USD budget: applying a default per-task request cap",
+			slog.Info("task_max_requests unset: applying the default per-task request cap",
 				"vendor", b.Vendor.Name, "request_cap", maxReq,
-				"hint", "set task_max_requests to change or lift this bound")
+				"hint", "set task_max_requests to change this bound")
 		}
 		p, _ := provider.ByVendor(b.Vendor.Name)
 		providers[b.Vendor.Name] = &gateway.Provider{
@@ -365,6 +357,7 @@ func main() {
 			TTL:            cfg.TaskTimeout + 5*time.Minute,
 			MaxRequests:    maxReq,
 			MaxRequestCost: cfg.MaxRequestCostUSD,
+			MaxInFlight:    cfg.TaskMaxInFlight,
 		}
 	}
 	avail := make([]string, 0, len(providers))

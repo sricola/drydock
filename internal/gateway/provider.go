@@ -19,6 +19,7 @@ type Provider struct {
 	TTL            time.Duration // safety-net expiry (= task timeout + margin)
 	MaxRequests    int           // 0 = unlimited; primary runaway cap for subscription auth
 	MaxRequestCost float64       // per-request reservation R passed to Gateway.Mint (0 = disabled)
+	MaxInFlight    int           // 0 = unlimited; concurrently admitted requests per lease, passed to Gateway.Mint
 }
 
 type grant struct {
@@ -41,7 +42,7 @@ func (p *Provider) Mint(budgetUSD float64) (creds.Grant, error) {
 	if ttl == 0 {
 		ttl = time.Hour
 	}
-	tok, err := p.GW.Mint(p.Vendor, b, p.MaxRequests, p.MaxRequestCost, ttl)
+	tok, err := p.GW.Mint(p.Vendor, b, p.MaxRequests, p.MaxRequestCost, p.MaxInFlight, ttl)
 	if err != nil {
 		return nil, err
 	}

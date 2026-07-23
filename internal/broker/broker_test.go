@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -846,5 +847,30 @@ func TestRegisterTask_RuneSafeSnippet(t *testing.T) {
 
 	if !utf8.ValidString(ts.Instruction) {
 		t.Errorf("Instruction is not valid UTF-8 after truncation: %q", ts.Instruction)
+	}
+}
+
+// Every runSandbox exit path must end the audit stream with a broker-authored
+// result carrying gateway-metered spend: an untagged or zero-cost record makes
+// the restart seed (src:"broker" + positive cost only) drop real spend from
+// the aggregate ledger (F-07).
+func TestAppendBrokerResult_BrokerAuthoredSpend(t *testing.T) {
+	f, err := os.Create(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tr := &taskRun{logf: f, taskStart: time.Now().Add(-2 * time.Second), grant: &fakeGrant{spent: 1.25}}
+	tr.appendBrokerResult(true)
+	b, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(b, &rec); err != nil {
+		t.Fatalf("broker result is not one valid JSON line: %v\n%s", err, b)
+	}
+	if rec["src"] != "broker" || rec["is_error"] != true || rec["total_cost_usd"] != 1.25 {
+		t.Fatalf("broker result = %v; want src=broker is_error=true total_cost_usd=1.25", rec)
 	}
 }

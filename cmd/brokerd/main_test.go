@@ -337,20 +337,15 @@ func TestCheckContainerVersion_UnparseableOutput_NonStrict_Warns(t *testing.T) {
 }
 
 func TestEffectiveRequestCap(t *testing.T) {
-	cases := []struct {
-		uncapped   bool
-		configured int
-		want       int
-	}{
-		{true, 0, broker.DefaultUncappedRequestCap},  // uncapped + unlimited → fail closed to the default cap
-		{true, -1, broker.DefaultUncappedRequestCap}, // negative treated as unset
-		{true, 50, 50}, // uncapped but operator set a bound → honored
-		{false, 0, 0},  // a USD budget bounds spend → 0 stays unlimited
-		{false, 200, 200},
+	cases := []struct{ configured, want int }{
+		{0, broker.DefaultUncappedRequestCap},  // unset fails closed in every mode (F-02)
+		{-1, broker.DefaultUncappedRequestCap}, // nonsense treated as unset
+		{50, 50},                               // explicit operator bound wins
+		{5000, 5000},                           // explicit raise wins too
 	}
 	for _, c := range cases {
-		if got := effectiveRequestCap(c.uncapped, c.configured); got != c.want {
-			t.Errorf("effectiveRequestCap(%v, %d) = %d, want %d", c.uncapped, c.configured, got, c.want)
+		if got := effectiveRequestCap(c.configured); got != c.want {
+			t.Errorf("effectiveRequestCap(%d) = %d, want %d", c.configured, got, c.want)
 		}
 	}
 }

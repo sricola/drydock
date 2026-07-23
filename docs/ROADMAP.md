@@ -104,7 +104,9 @@ see SECURITY.md "Verifying a release". The tarball itself is not byte-stable
 but the binaries inside it (what actually runs) are verifiable.
 
 ### 2.5 Dependency-pinning policy: *landed*
-**Pin policy:** every external input is pinned and bumped deliberately:
+**Pin policy:** top-level external inputs are pinned and bumped deliberately
+(the apt and npm transitive graphs still float at image build; locking them
+is tracked as F-09 follow-up):
 - the sandbox base image `node:22-bookworm-slim` is pinned **by digest** in
   `image/Dockerfile` (re-pull + `container image inspect` to bump);
 - the agent CLIs (`@anthropic-ai/claude-code`, `@openai/codex`), npm itself
@@ -224,8 +226,9 @@ so it can ship independently.
   (bounded per-task by `task_max_requests`). With `aggregate_budget_usd` set
   (opt-in; default disabled), a runaway loop of cheap tasks can no longer drain
   an API key in aggregate; note enforcement is post-hoc unless
-  `max_request_cost_usd` is also set, so concurrent in-flight requests can
-  overshoot the ceiling by their aggregate cost before the next admission check.
+  `max_request_cost_usd` is also set, so the residual overshoot is one
+  in-flight request per concurrent task (bounded by `max_concurrent_tasks`)
+  before the next admission check.
 - **4.4 `drydock retry`.** *Landed (v0.6.0).* Re-run a prior task from the
   invocation the broker now records in its trace (repo, prompt, agent, model,
   platform, egress), without reconstructing the `submit` by hand. Re-enters the

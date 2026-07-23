@@ -56,16 +56,18 @@ func (v Vendor) routeAllowed(method, path string) bool {
 	return false
 }
 
-// routeMatch matches path against a route prefix on path-segment boundaries, so
-// a prefix cannot admit a same-stem sibling (e.g. /v1/models must not admit
-// /v1/models_secret). A prefix with a trailing slash is a directory prefix
-// (matches any sub-path); one without matches the exact path or a sub-resource
-// beneath it.
+// routeMatch matches path against a route pattern. A pattern with a trailing
+// slash is a directory prefix (matches any sub-path). One without matches ONLY
+// the exact path: sub-resources are never implied, because a sub-resource can
+// carry authority the parent's metering never sees, e.g. POST
+// /v1/messages/batches creates up to 100k Message requests whose spend the
+// response-usage meter cannot observe (F-03). Sub-resources a pinned CLI
+// actually needs are allowlisted explicitly.
 func routeMatch(path, prefix string) bool {
 	if strings.HasSuffix(prefix, "/") {
 		return strings.HasPrefix(path, prefix)
 	}
-	return path == prefix || strings.HasPrefix(path, prefix+"/")
+	return path == prefix
 }
 
 // Credential is the host-held secret the gateway injects upstream. Never seen by the VM.
@@ -97,8 +99,15 @@ func AnthropicVendor() Vendor {
 		},
 		ParseUsage: parseAnthropicUsage,
 		Prices:     AnthropicPrices(),
-		// Claude Code posts inference to /v1/messages and may list /v1/models.
-		AllowedRoutes: []Route{{"POST", "/v1/messages"}, {"GET", "/v1/models"}},
+		// Claude Code posts inference to /v1/messages, counts context with
+		// /v1/messages/count_tokens, and may list or retrieve models.
+		// /v1/messages/batches is deliberately NOT here (F-03).
+		AllowedRoutes: []Route{
+			{"POST", "/v1/messages"},
+			{"POST", "/v1/messages/count_tokens"},
+			{"GET", "/v1/models"},
+			{"GET", "/v1/models/"},
+		},
 	}
 }
 
@@ -141,6 +150,7 @@ func OpenAIVendor() Vendor {
 			{"POST", "/v1/chat/completions"},
 			{"POST", "/v1/responses"},
 			{"GET", "/v1/models"},
+			{"GET", "/v1/models/"},
 		},
 	}
 }
@@ -164,10 +174,11 @@ func GoogleVendor() Vendor {
 		ParseUsage: parseGoogleUsage,
 		Prices:     GooglePrices(),
 		// The Gemini CLI posts to /v1beta/models/{model}:generateContent (and
-		// :streamGenerateContent), and may list /v1beta/models.
+		// :streamGenerateContent), and may list or retrieve models.
 		AllowedRoutes: []Route{
 			{"POST", "/v1beta/models/"},
 			{"GET", "/v1beta/models"},
+			{"GET", "/v1beta/models/"},
 			{"GET", "/v1/models"},
 		},
 	}

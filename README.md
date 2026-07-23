@@ -25,7 +25,8 @@ thing that ever comes back is a `git diff`, and nothing reaches your real code
 until you approve it.
 
 - **It never gets your key.** Your real API key stays on the host; the agent
-  only ever sees a short-lived, budget-capped token.
+  only ever sees a short-lived, budget-scoped token (spend overshoot is
+  bounded to one in-flight request by default).
 - **It can't smuggle anything out.** The internet is deny-by-default: no
   exfiltrating your code, no calling home (you allow the package registries it
   needs, nothing else).

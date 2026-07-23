@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"regexp"
@@ -121,6 +122,11 @@ func Load(path string) (Config, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse egress config: %w", err)
+	}
+	// One document only: a trailing document could carry requires_approval or
+	// extra domains the operator believes are active. Fail closed (F-08).
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return Config{}, fmt.Errorf("parse egress config %s: trailing YAML document; only one document is allowed", path)
 	}
 	if err := ValidateDomains(cfg.Default.Domains); err != nil {
 		return Config{}, fmt.Errorf("egress config %s: %w", path, err)

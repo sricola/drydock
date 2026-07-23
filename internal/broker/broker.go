@@ -39,14 +39,15 @@ var gitURLRef = regexp.MustCompile(
 	`^(?:https?://[A-Za-z0-9.-]+/|git@[A-Za-z0-9.-]+:|ssh://[A-Za-z0-9._-]+@[A-Za-z0-9.-]+/)[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?(?:\.git)?/?$`,
 )
 
-// DefaultUncappedRequestCap bounds a task when no USD budget applies to its
-// vendor's lane (subscription auth, or a priceless openai-compat lane) and
-// the operator hasn't set task_max_requests. High enough for a real agentic
-// task's many tool-use turns, low enough to stop a runaway loop from
-// draining a subscription. Exported so cmd/brokerd (which mints the lease
-// and decides the request cap) and writeBrief (which must report the cap
-// actually enforced) share one source of truth instead of two constants that
-// could drift apart.
+// DefaultUncappedRequestCap bounds every task whose operator left
+// task_max_requests unset, in every auth mode (F-02): api_key lanes with a USD
+// budget, subscription lanes with none, and a priceless openai-compat lane
+// alike. High enough for a real agentic task's many tool-use turns, low
+// enough to stop a runaway loop from draining a subscription or, in api_key
+// mode, running up spend between metered responses. Exported so cmd/brokerd
+// (which mints the lease and decides the request cap) and writeBrief (which
+// must report the cap actually enforced) share one source of truth instead of
+// two constants that could drift apart.
 const DefaultUncappedRequestCap = 1000
 
 type Task struct {
@@ -486,7 +487,11 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	diff, err := st.CaptureDiff()
 	if err != nil {
-		sw.emit(errorEvent(taskID, "diff capture failed", ""))
+		reason := "diff capture failed"
+		if errors.Is(err, stage.ErrDiffTooLarge) {
+			reason = fmt.Sprintf("task failed closed: staged diff exceeds the %d MiB review cap, so it cannot be fully reviewed (V-01)", stage.MaxDiffBytes>>20)
+		}
+		sw.emit(errorEvent(taskID, reason, ""))
 		return
 	}
 	if diff == "" {
@@ -556,6 +561,25 @@ func (tr *taskRun) buildEnv() []string {
 		tr.agentName, tr.model, tr.b.OpenAICompatModel, tr.b.DefaultModel, tr.taskVendor)
 }
 
+// appendBrokerResult writes the broker-authored terminal result for this task.
+// It must be the LAST result line in the audit stream on EVERY exit path:
+// last-wins parsing plus the src:"broker" seed filter make it the only record
+// the cost display and the restart-seeded aggregate ledger trust. A path that
+// skips it (or writes total_cost_usd:0) erases that task's gateway-metered
+// spend from the rolling cap after a brokerd restart (F-07). The agent's own
+// stdout is an untrusted source (a compromised CLI can forge a cheap
+// total_cost_usd), so this record is written from the broker's own metering,
+// after the agent's output ends, making it the last result line.
+func (tr *taskRun) appendBrokerResult(isError bool) {
+	subtype := "success"
+	if isError {
+		subtype = "error"
+	}
+	_, _ = fmt.Fprintf(tr.logf,
+		`{"type":"result","subtype":"%s","is_error":%t,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
+		subtype, isError, time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent())
+}
+
 // runSandbox runs the agent container, writes to the audit log, and emits the
 // "running" stage event. It records the task start time on the taskRun and
 // returns nil on a successful run. On failure it emits the terminal event
@@ -602,14 +626,13 @@ func (tr *taskRun) runSandbox(args []string) error {
 		}
 		if tr.ctx.Err() != nil {
 			// Operator killed it, or the client went away. Be explicit.
+			tr.appendBrokerResult(true)
 			tr.sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": tr.id})
 			return errTaskTerminated
 		}
 		if outCap.exceeded() {
 			// We cancelled the task ourselves: its output crossed the host cap.
-			_, _ = fmt.Fprintf(tr.logf,
-				`{"type":"result","subtype":"error","is_error":true,"duration_ms":%d,"total_cost_usd":0,"num_turns":0}`+"\n",
-				time.Since(tr.taskStart).Milliseconds())
+			tr.appendBrokerResult(true)
 			tr.sw.emit(map[string]any{"event": "error", "task_id": tr.id,
 				"audit":       tr.auditPath,
 				"duration_ms": time.Since(tr.taskStart).Milliseconds(),
@@ -619,9 +642,7 @@ func (tr *taskRun) runSandbox(args []string) error {
 		if sizeGuard.exceeded() {
 			// We cancelled the task ourselves: its /work grew past the host disk
 			// cap, or host free space dropped below the floor.
-			_, _ = fmt.Fprintf(tr.logf,
-				`{"type":"result","subtype":"error","is_error":true,"duration_ms":%d,"total_cost_usd":0,"num_turns":0}`+"\n",
-				time.Since(tr.taskStart).Milliseconds())
+			tr.appendBrokerResult(true)
 			tr.sw.emit(map[string]any{"event": "error", "task_id": tr.id,
 				"audit":       tr.auditPath,
 				"duration_ms": time.Since(tr.taskStart).Milliseconds(),
@@ -632,9 +653,7 @@ func (tr *taskRun) runSandbox(args []string) error {
 		// before claude was even exec'd), `drydock tasks` would show this
 		// task as `running?` forever. Append a synthetic terminal event so
 		// the audit log is self-describing.
-		_, _ = fmt.Fprintf(tr.logf,
-			`{"type":"result","subtype":"error","is_error":true,"duration_ms":%d,"total_cost_usd":0,"num_turns":0}`+"\n",
-			time.Since(tr.taskStart).Milliseconds())
+		tr.appendBrokerResult(true)
 		reason := "task failed: " + safeErr(err)
 		ev := map[string]any{"event": "error", "task_id": tr.id,
 			"audit": tr.auditPath, "duration_ms": time.Since(tr.taskStart).Milliseconds()}
@@ -649,16 +668,11 @@ func (tr *taskRun) runSandbox(args []string) error {
 		return errTaskTerminated
 	}
 
-	// Append a broker-authored terminal result for EVERY agent, tagged
-	// src:"broker", carrying the gateway-metered spend. The agent's stdout is an
-	// untrusted source (a compromised CLI can forge a cheap total_cost_usd), so
-	// this record is written AFTER the agent's output ends, making it the last
-	// result line; last-wins parsing and a seed that trusts only src:"broker"
-	// cost keep the displayed cost/outcome and the aggregate ledger honest.
-	// (Claude also emits its own result line for its turn count; ours wins.)
-	_, _ = fmt.Fprintf(tr.logf,
-		`{"type":"result","subtype":"success","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-		time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent())
+	// Append a broker-authored terminal result for EVERY agent (Claude also
+	// emits its own result line for its turn count; ours wins via last-wins
+	// parsing). See appendBrokerResult for why this record, not the agent's
+	// own, is the one the cost display and the aggregate ledger trust.
+	tr.appendBrokerResult(false)
 	return nil
 }
 
@@ -676,18 +690,17 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) {
 		EgressDefault:  domainStrings(b.Cfg.Default.Domains),
 		EgressWidened:  domainStrings(tr.egressExtra),
 	}
+	if policy.MaxRequests <= 0 {
+		policy.MaxRequests = DefaultUncappedRequestCap
+	}
 	if b.UnmeteredVendors[tr.taskVendor] {
-		// This lane mints leases at math.MaxFloat64 — TaskBudget/BudgetHard
+		// This lane mints leases at math.MaxFloat64: TaskBudget/BudgetHard
 		// describe a cap that was never actually applied. Report the honest
 		// state: no USD metering, and the request-count backstop that is the
-		// real enforced bound (the lease's own default when the operator left
-		// task_max_requests at 0/unlimited).
+		// real enforced bound in every mode (F-02).
 		policy.BudgetUnbounded = true
 		policy.BudgetUSD = 0
 		policy.BudgetHard = false
-		if policy.MaxRequests == 0 {
-			policy.MaxRequests = DefaultUncappedRequestCap
-		}
 	}
 	policy.SnapshotSHA256 = policy.Fingerprint()
 

@@ -7,6 +7,7 @@ package stage
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -118,24 +119,31 @@ func (s *Stage) stageAll() error {
 	return err
 }
 
-// maxDiffBytes bounds the review diff held in broker memory and written to the
+// ErrDiffTooLarge means the staged diff exceeds MaxDiffBytes. The broker fails
+// the task instead of truncating: the approval gate must never authorize bytes
+// it could not show the reviewer, and a hostile task could hide a malicious
+// change behind 32 MiB of alphabetically earlier padding (V-01).
+var ErrDiffTooLarge = errors.New("stage: staged diff exceeds the review cap")
+
+// MaxDiffBytes bounds the review diff held in broker memory and written to the
 // audit .diff file. A hostile task that stages a giant or binary diff would
 // otherwise allocate the whole thing (and a second copy on persist), risking
-// broker OOM. The commit/push is taken from the work tree, not this string, so
-// truncating the review diff never changes what actually gets pushed.
-const maxDiffBytes = 32 << 20 // 32 MiB
+// broker OOM. Exceeding the cap is a task failure (ErrDiffTooLarge), never a
+// truncated review: approve must only ever authorize fully reviewable bytes.
+const MaxDiffBytes = 32 << 20 // 32 MiB
 
 // CaptureDiff returns the unified diff of the agent's changes (no commit),
-// bounded to maxDiffBytes so a hostile diff cannot exhaust broker memory.
+// bounded to MaxDiffBytes; a larger diff fails closed with ErrDiffTooLarge so a
+// partial diff can never reach review.
 func (s *Stage) CaptureDiff() (string, error) {
 	if err := s.stageAll(); err != nil {
 		return "", err
 	}
-	return s.gitDiffCapped(maxDiffBytes)
+	return s.gitDiffCapped(MaxDiffBytes)
 }
 
-// gitDiffCapped streams `git diff --cached` into a bounded buffer, appending a
-// truncation marker if the diff exceeds max. It reads (and discards) any excess
+// gitDiffCapped streams `git diff --cached` into a bounded buffer, returning
+// ErrDiffTooLarge if the diff exceeds max. It reads (and discards) any excess
 // so git is not left blocked on a full pipe, keeping broker memory bounded to
 // max regardless of how large the staged diff is.
 func (s *Stage) gitDiffCapped(max int64) (string, error) {
@@ -177,11 +185,10 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 	if werr := cmd.Wait(); werr != nil {
 		return "", fmt.Errorf("git diff --cached: %w\n%s", werr, stderr.String())
 	}
-	out := buf.String()
 	if truncated {
-		out += fmt.Sprintf("\n... [diff truncated at %d MiB; the full change is still committed] ...\n", max>>20)
+		return "", fmt.Errorf("%w (%d MiB)", ErrDiffTooLarge, max>>20)
 	}
-	return out, nil
+	return buf.String(), nil
 }
 
 // cappedBuffer collects up to max bytes and silently drops the rest, while

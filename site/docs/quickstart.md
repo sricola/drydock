@@ -21,7 +21,8 @@ full matrix.
 ## 2. Give it a credential
 
 The quickest path is a vendor API key. It stays **host-side** and never enters
-the VM: the sandbox only ever sees a short-lived, budget-capped token.
+the VM: the sandbox only ever sees a short-lived, budget-scoped token
+(spend overshoot is bounded to one in-flight request by default).
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...    # Claude Code tasks

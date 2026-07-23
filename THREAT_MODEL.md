@@ -109,8 +109,9 @@ experimental), and any operator-configured OpenAI-compatible endpoint
 (`opencode`). The real key for whichever vendor stays host-only in every case.
 No new trust assumptions are introduced by additional vendors: the same
 mint/validate/revoke cycle applies, and the VM still only ever sees a
-budget-capped bearer token (in `x-goog-api-key` for Gemini, `Authorization:
-Bearer` for the rest) regardless of which upstream backs it.
+budget-scoped bearer token (overshoot bounded by task_max_inflight, default 1)
+(in `x-goog-api-key` for Gemini, `Authorization: Bearer` for the rest)
+regardless of which upstream backs it.
 
 **Implementation:** `internal/gateway/provider.go` injects only
 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (Claude) or
@@ -228,17 +229,19 @@ as a flag.
 
 `task_budget_usd` is a **soft cap**: the gateway meters a request's cost only
 once its response completes, so a request that is in flight has not yet been
-charged. A normal agent CLI calls the API sequentially, so the overshoot is one
-call. But a hostile in-VM agent holds its own task bearer and can fire many
-requests concurrently: each sees `SpentUSD` still at its last-completed value
-and is admitted, so the worst-case overshoot is the number of in-flight
-requests times their per-request cost, not one call. Two backstops bound this:
-the per-task USD cap still refuses once completed spend crosses it, and an
-uncapped lane falls closed to a built-in request cap (default 1,000). To bound
-the concurrent case precisely, set `max_request_cost_usd`: it reserves that
-worst-case amount per in-flight request against the budget at admission, so
-concurrent requests cannot admit past the ceiling. Set the budget (and, for
-adversarial workloads, `max_request_cost_usd`) with that headroom in mind.
+charged. A hostile in-VM agent holds its own task bearer and could once fire
+many requests concurrently to ride past the cap before any of them completed.
+Admission now serializes each task's lease to `task_max_inflight` concurrent
+requests (default 1), so the worst-case overshoot is bounded: at most
+`task_max_inflight` requests in flight at once, times the cost of the largest
+single request, not an unbounded number of concurrent calls.
+`max_request_cost_usd` adds a reservation-backed bound on top of that: it
+reserves that worst-case amount per in-flight request against the budget at
+admission, so a concurrent request cannot be admitted past the ceiling at
+all. Across concurrent tasks, the aggregate ledger's residual overshoot is
+one in-flight request per concurrent task, bounded by `max_concurrent_tasks`.
+Set the budget (and, for adversarial workloads, `max_request_cost_usd`) with
+that headroom in mind.
 
 **`subscription` mode (`anthropic_auth: subscription`).** When
 `anthropic_auth: subscription` is set, drydock routes through the operator's

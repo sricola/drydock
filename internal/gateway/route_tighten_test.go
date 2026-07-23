@@ -18,13 +18,15 @@ func TestRouteAllowed_SegmentBoundary(t *testing.T) {
 		method, path string
 		want         bool
 	}{
-		{"POST", "/v1/messages", true},         // exact endpoint
-		{"POST", "/v1/messages/batches", true}, // sub-resource (accepted residual)
-		{"POST", "/v1/messagesX", false},       // sibling prefix: now blocked
-		{"GET", "/v1/models", true},            // exact list
-		{"GET", "/v1/models/claude-x", true},   // sub-resource retrieve
-		{"GET", "/v1/models_secret", false},    // sibling prefix: the latent gap, now closed
-		{"GET", "/v1/messages", false},         // wrong method
+		{"POST", "/v1/messages", true},                 // exact endpoint
+		{"POST", "/v1/messages/batches", false},        // batch API: up to 100k unmetered messages (F-03), blocked
+		{"POST", "/v1/messages/count_tokens", true},    // used by Claude Code, explicitly allowed
+		{"POST", "/v1/messages/count_tokens/x", false}, // no implied sub-resources
+		{"POST", "/v1/messagesX", false},               // sibling prefix: blocked
+		{"GET", "/v1/models", true},                    // exact list
+		{"GET", "/v1/models/claude-x", true},           // retrieve, via the /v1/models/ directory route
+		{"GET", "/v1/models_secret", false},            // sibling prefix: blocked
+		{"GET", "/v1/messages", false},                 // wrong method
 	}
 	for _, c := range cases {
 		if got := v.routeAllowed(c.method, c.path); got != c.want {
@@ -44,6 +46,7 @@ func TestRouteAllowed_DirectoryPrefix(t *testing.T) {
 		{"POST", "/v1beta/models/gemini-2:generateContent", true},
 		{"POST", "/v1beta/models/gemini-2:streamGenerateContent", true},
 		{"GET", "/v1beta/models", true},          // exact list
+		{"GET", "/v1beta/models/gemini-2", true}, // retrieve, via the /v1beta/models/ directory route
 		{"GET", "/v1beta/models_secret", false},  // sibling of the list route: blocked
 		{"POST", "/v1beta/tunedModels/x", false}, // different prefix: blocked
 	}
@@ -76,7 +79,7 @@ func routedGateway(t *testing.T, v Vendor) *Gateway {
 // pathHasTraversal check catches it exactly like a literal "..".
 func TestGateway_EncodedTraversalBlocked(t *testing.T) {
 	g := routedGateway(t, AnthropicVendor())
-	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Minute)
 	req := httptest.NewRequest("POST", "http://gw/v1/messages/%2e%2e/files", strings.NewReader("{}"))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
@@ -91,12 +94,29 @@ func TestGateway_EncodedTraversalBlocked(t *testing.T) {
 // is blocked locally.
 func TestGateway_HeaderTokenRouteChecked(t *testing.T) {
 	g := routedGateway(t, GoogleVendor())
-	tok, _ := g.Mint("google", 100, 0, 0, time.Minute)
+	tok, _ := g.Mint("google", 100, 0, 0, 0, time.Minute)
 	req := httptest.NewRequest("GET", "http://gw/v1/files", nil)
 	req.Header.Set("X-Goog-Api-Key", tok) // no Authorization: header-token path
 	rec := httptest.NewRecorder()
 	g.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("GET /v1/files via header token = %d, want 403", rec.Code)
+	}
+}
+
+// The Batches endpoint creates up to 100k Message requests whose spend the
+// response-usage meter never sees; it must 403 locally, never reach upstream.
+func TestGateway_MessagesBatchesBlockedLocally(t *testing.T) {
+	g := routedGateway(t, AnthropicVendor())
+	tok, err := g.Mint("anthropic", 5, 0, 0, 0, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/v1/messages/batches", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("POST /v1/messages/batches: code %d, want 403", w.Code)
 	}
 }

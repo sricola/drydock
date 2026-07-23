@@ -64,7 +64,7 @@ func TestGateway_RequestBodyCapped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Minute)
 
 	req := httptest.NewRequest("POST", "http://gw/v1/messages", strings.NewReader(strings.Repeat("x", 8192)))
 	req.Header.Set("Authorization", "Bearer "+tok)

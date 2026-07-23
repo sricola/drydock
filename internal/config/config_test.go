@@ -153,6 +153,7 @@ func TestEnvOverrides_AllOperatorKnobs(t *testing.T) {
 		"DRYDOCK_ANTHROPIC_AUTH":           "subscription",
 		"DRYDOCK_OPENAI_AUTH":              "subscription",
 		"DRYDOCK_TASK_MAX_REQUESTS":        "42",
+		"DRYDOCK_TASK_MAX_INFLIGHT":        "3",
 		"DRYDOCK_AGGREGATE_BUDGET_USD":     "9.5",
 		"DRYDOCK_MAX_REQUEST_COST_USD":     "0.75",
 		"DRYDOCK_AGGREGATE_WINDOW":         "6h",
@@ -181,6 +182,7 @@ func TestEnvOverrides_AllOperatorKnobs(t *testing.T) {
 		t.Errorf("runtime env overrides not applied: %+v", c)
 	}
 	if c.TaskBudgetUSD != 3.25 || c.MaxConcurrent != 7 || c.TaskMaxRequests != 42 ||
+		c.TaskMaxInFlight != 3 ||
 		c.MaxRequestCostUSD != 0.75 || c.AggregateBudgetUSD != 9.5 || c.AggregateWindow != 6*time.Hour {
 		t.Errorf("budget/concurrency env overrides not applied: %+v", c)
 	}
@@ -515,5 +517,19 @@ func TestPushRetryDefaultsAndValidation(t *testing.T) {
 		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "push_") {
 			t.Errorf("yaml=%q want push_ rejection, got %v", y, err)
 		}
+	}
+}
+
+func TestLoad_RejectsTrailingYAMLDocument(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	// The second document carries a security-relevant field the operator
+	// believes is active; silently ignoring it would fail open (F-08).
+	body := "task_budget_usd: 2.0\n---\naggregate_budget_usd: 100\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "trailing YAML document") {
+		t.Fatalf("Load with trailing document: got %v, want trailing-document rejection", err)
 	}
 }

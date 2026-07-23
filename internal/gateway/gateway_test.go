@@ -56,7 +56,7 @@ func TestGateway_ValidTokenProxiesAndMeters(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Minute)
 
 	rec := do(g, tok)
 	if rec.Code != http.StatusOK {
@@ -85,7 +85,7 @@ func TestGateway_MetersStreamingWithoutBufferingBody(t *testing.T) {
 	defer up.Close()
 
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Minute)
 	if rec := do(g, tok); rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -104,7 +104,7 @@ func TestGateway_UnknownToken401(t *testing.T) {
 
 func TestGateway_ExpiredToken401(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok, _ := g.Mint("anthropic", 100, 0, 0, -time.Second) // already expired
+	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, -time.Second) // already expired
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rec.Code)
 	}
@@ -114,7 +114,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 	up := upstream(t)
 	defer up.Close()
 	g := newGW(t, up.URL)
-	tok, _ := g.Mint("anthropic", 1.0, 0, 0, time.Minute) // budget 1.0; one call spends ~18 -> next call 402
+	tok, _ := g.Mint("anthropic", 1.0, 0, 0, 0, time.Minute) // budget 1.0; one call spends ~18 -> next call 402
 	do(g, tok)
 	if rec := do(g, tok); rec.Code != http.StatusPaymentRequired {
 		t.Errorf("status = %d, want 402", rec.Code)
@@ -123,7 +123,7 @@ func TestGateway_OverBudget402(t *testing.T) {
 
 func TestGateway_RevokeInvalidates(t *testing.T) {
 	g := newGW(t, "http://unused")
-	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Minute)
 	g.Revoke(tok)
 	if rec := do(g, tok); rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d after revoke, want 401", rec.Code)
@@ -166,8 +166,8 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	atok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
-	otok, _ := g.Mint("openai", 100, 0, 0, time.Minute)
+	atok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Minute)
+	otok, _ := g.Mint("openai", 100, 0, 0, 0, time.Minute)
 
 	if rec := do(g, atok); rec.Code != http.StatusOK {
 		t.Fatalf("anthropic token: status=%d body=%s", rec.Code, rec.Body.String())
@@ -185,25 +185,144 @@ func TestGateway_MultiVendorRouting(t *testing.T) {
 
 func TestRequestCap_RejectsOverLimit(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
-	tok, _ := g.Mint("anthropic", 100, 2, 0, time.Hour) // maxRequests = 2
-	if _, s := g.admit(tok); s != 0 {
+	tok, _ := g.Mint("anthropic", 100, 2, 0, 0, time.Hour) // maxRequests = 2
+	if _, s, _ := g.admit(tok); s != 0 {
 		t.Fatalf("req1 rejected: %d", s)
 	}
-	if _, s := g.admit(tok); s != 0 {
+	if _, s, _ := g.admit(tok); s != 0 {
 		t.Fatalf("req2 rejected: %d", s)
 	}
-	if _, s := g.admit(tok); s != http.StatusTooManyRequests {
+	if _, s, _ := g.admit(tok); s != http.StatusTooManyRequests {
 		t.Fatalf("req3 status = %d, want 429", s)
 	}
 }
 
 func TestRequestCap_ZeroMeansUnlimited(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
-	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Hour) // 0 = unlimited
+	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Hour) // 0 = unlimited
 	for i := 0; i < 50; i++ {
-		if _, s := g.admit(tok); s != 0 {
+		if _, s, _ := g.admit(tok); s != 0 {
 			t.Fatalf("req %d rejected: %d", i, s)
 		}
+	}
+}
+
+// A lease with MaxInFlight=1 admits a second concurrent request only after the
+// first completes. Spend is metered at response completion, so every
+// concurrently admitted request can overshoot the budget by its own cost;
+// this cap bounds that overshoot (F-02/F-05).
+func TestAdmit_InFlightLimit(t *testing.T) {
+	g, err := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := g.Mint("anthropic", 5, 0, 0, 1, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, code, _ := g.admit(tok); code != 0 {
+		t.Fatalf("first admit: code %d", code)
+	}
+	if _, code, _ := g.admit(tok); code != http.StatusTooManyRequests {
+		t.Fatalf("second concurrent admit: code %d, want 429", code)
+	}
+	g.release(tok)
+	if _, code, _ := g.admit(tok); code != 0 {
+		t.Fatalf("admit after release: want admitted")
+	}
+}
+
+// End to end: while one proxied request is still streaming, a second request
+// gets a local 429 with Retry-After, and succeeds after the first completes.
+func TestServeHTTP_InFlightLimit(t *testing.T) {
+	unblock := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-unblock
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"model":"claude-x","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer up.Close()
+	v := AnthropicVendor()
+	v.BaseURL = up.URL
+	g, err := New(Backend{Vendor: v, Cred: StaticKey("k")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := g.Mint("anthropic", 100, 0, 0, 1, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	do := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		return w
+	}
+	first := make(chan *httptest.ResponseRecorder, 1)
+	go func() { first <- do() }()
+	// Wait until the first request is admitted and blocked in the upstream.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		g.mu.Lock()
+		inflight := g.leases[tok].InFlight
+		g.mu.Unlock()
+		if inflight == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first request never became in-flight")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The concurrent request must be rejected locally and immediately. Run it
+	// with a deadline: if a regression lets it through to the (still blocked)
+	// upstream, this fails fast here instead of deadlocking until the Go test
+	// binary's global timeout dumps goroutines.
+	second := make(chan *httptest.ResponseRecorder, 1)
+	go func() { second <- do() }()
+	select {
+	case w := <-second:
+		if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") == "" {
+			t.Fatalf("concurrent request: code %d retry-after %q, want 429 with Retry-After", w.Code, w.Header().Get("Retry-After"))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent request blocked instead of being rejected locally: in-flight cap not enforced")
+	}
+	close(unblock)
+	if w := <-first; w.Code != http.StatusOK {
+		t.Fatalf("first request: code %d", w.Code)
+	}
+	if w := do(); w.Code != http.StatusOK {
+		t.Fatalf("request after completion: code %d, want 200", w.Code)
+	}
+}
+
+// A lease that has exhausted its per-task MaxRequests hits a terminal 429:
+// retrying can never succeed, so ServeHTTP must NOT send Retry-After. Only the
+// transient in-flight 429 (TestServeHTTP_InFlightLimit) invites a retry.
+func TestServeHTTP_RequestCapExhausted_NoRetryAfter(t *testing.T) {
+	g := newGW(t, "http://unused")
+	tok, err := g.Mint("anthropic", 100, 1, 0, 0, time.Hour) // maxRequests = 1
+	if err != nil {
+		t.Fatal(err)
+	}
+	do := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		return w
+	}
+	// First request fails at the (unreachable) upstream, but it consumes the
+	// one allowed request slot, which is all this test needs.
+	do()
+	w := do()
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request: code %d, want 429", w.Code)
+	}
+	if ra := w.Header().Get("Retry-After"); ra != "" {
+		t.Errorf("request-cap-exhausted 429 carries Retry-After %q, want none (retrying can never succeed)", ra)
 	}
 }
 
@@ -215,7 +334,7 @@ func TestNew_RejectsNilCred(t *testing.T) {
 
 func TestGateway_MintUnknownVendorErrors(t *testing.T) {
 	g := newGW(t, "http://unused")
-	if _, err := g.Mint("nope", 100, 0, 0, time.Minute); err == nil {
+	if _, err := g.Mint("nope", 100, 0, 0, 0, time.Minute); err == nil {
 		t.Error("Mint for a vendor with no backend should error")
 	}
 }
@@ -416,7 +535,7 @@ func TestGateway_OpenAICompatMetersAndCaps(t *testing.T) {
 
 	// Budget of 1.0 USD; first request costs 0.5 USD; second also 0.5 → budget
 	// exactly exhausted, third should 402.
-	tok, _ := g.Mint("openai-compat", 1.0, 0, 0, time.Minute)
+	tok, _ := g.Mint("openai-compat", 1.0, 0, 0, 0, time.Minute)
 
 	req1 := httptest.NewRequest("POST", "http://gw/v1/chat/completions", strings.NewReader("{}"))
 	req1.Header.Set("Authorization", "Bearer "+tok)
@@ -513,7 +632,7 @@ func TestServeHTTP_OAuthVendor_StripRequestFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := g.Mint("anthropic", 100, 0, 0, time.Minute)
+	tok, _ := g.Mint("anthropic", 100, 0, 0, 0, time.Minute)
 
 	// Body contains context_management, which AnthropicOAuthVendor must strip.
 	const body = `{"model":"claude-opus-4","messages":[{"role":"user","content":"hi"}],"context_management":{"edits":[1]}}`
@@ -573,7 +692,7 @@ func TestServeHTTP_BearerWinsOverGoogleKeyHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := g.Mint("google", 1.0, 0, 0, time.Minute)
+	tok, _ := g.Mint("google", 1.0, 0, 0, 0, time.Minute)
 
 	r := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
 	r.Header.Set("Authorization", "Bearer "+tok)
@@ -592,7 +711,7 @@ func TestServeHTTP_MalformedAuthDoesNotFallBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := g.Mint("google", 1.0, 0, 0, time.Minute)
+	tok, _ := g.Mint("google", 1.0, 0, 0, 0, time.Minute)
 	r := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
 	r.Header.Set("Authorization", "Basic Zm9vOmJhcg==") // malformed (not Bearer)
 	r.Header.Set("X-Goog-Api-Key", tok)                 // valid token, but must be ignored
@@ -619,7 +738,7 @@ func TestServeHTTP_AdmitsGoogleKeyHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := g.Mint("google", 1.0, 0, 0, time.Minute)
+	tok, _ := g.Mint("google", 1.0, 0, 0, 0, time.Minute)
 
 	// Present the bearer ONLY in x-goog-api-key (how the Gemini CLI sends it).
 	r := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
@@ -645,14 +764,14 @@ func TestGateway_AggregateCap(t *testing.T) {
 
 	// anthropic at the cap: a fresh lease's request must be refused with 402.
 	g.SeedAggregate("anthropic", 5.0, now)
-	tok, _ := g.Mint("anthropic", 100.0, 0, 0, time.Hour) // generous per-task budget
-	if _, code := g.admit(tok); code != http.StatusPaymentRequired {
+	tok, _ := g.Mint("anthropic", 100.0, 0, 0, 0, time.Hour) // generous per-task budget
+	if _, code, _ := g.admit(tok); code != http.StatusPaymentRequired {
 		t.Errorf("anthropic over aggregate cap: admit code = %d, want 402", code)
 	}
 
 	// openai is under its own cap: must still admit (per-vendor isolation).
-	tok2, _ := g.Mint("openai", 100.0, 0, 0, time.Hour)
-	if _, code := g.admit(tok2); code != 0 {
+	tok2, _ := g.Mint("openai", 100.0, 0, 0, 0, time.Hour)
+	if _, code, _ := g.admit(tok2); code != 0 {
 		t.Errorf("openai under aggregate cap: admit code = %d, want 0 (admitted)", code)
 	}
 
@@ -669,20 +788,20 @@ func TestAdmit_InFlightReservationBounds(t *testing.T) {
 	// Budget 1.0, per-request reservation 0.6: the first admit reserves 0.6,
 	// a second concurrent admit (before any meter) would need 0.6+0.6=1.2 > 1.0
 	// and must be rejected.
-	tok, _ := g.Mint("anthropic", 1.0, 0, 0.6, time.Hour)
-	if _, code := g.admit(tok); code != 0 {
+	tok, _ := g.Mint("anthropic", 1.0, 0, 0.6, 0, time.Hour)
+	if _, code, _ := g.admit(tok); code != 0 {
 		t.Fatalf("first admit code = %d, want 0", code)
 	}
-	if _, code := g.admit(tok); code != http.StatusPaymentRequired {
+	if _, code, _ := g.admit(tok); code != http.StatusPaymentRequired {
 		t.Errorf("second concurrent admit code = %d, want 402 (reservation bound)", code)
 	}
 }
 
 func TestAdmit_NoReservationWhenDisabled(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
-	tok, _ := g.Mint("anthropic", 1.0, 0, 0, time.Hour) // R=0 disables reservation
+	tok, _ := g.Mint("anthropic", 1.0, 0, 0, 0, time.Hour) // R=0 disables reservation
 	for i := 0; i < 5; i++ {
-		if _, code := g.admit(tok); code != 0 {
+		if _, code, _ := g.admit(tok); code != 0 {
 			t.Fatalf("admit %d code = %d, want 0 (R=0, no reservation)", i, code)
 		}
 	}
@@ -708,7 +827,7 @@ func TestMeter_ReleasesReservation(t *testing.T) {
 
 		g := newGW(t, up.URL)
 		// generous budget, R=0.5 per request
-		tok, _ := g.Mint("anthropic", 100, 0, R, time.Minute)
+		tok, _ := g.Mint("anthropic", 100, 0, R, 0, time.Minute)
 
 		if rec := do(g, tok); rec.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -740,7 +859,7 @@ func TestMeter_ReleasesReservation(t *testing.T) {
 		defer up.Close()
 
 		g := newGW(t, up.URL)
-		tok, _ := g.Mint("anthropic", 100, 0, R, time.Minute)
+		tok, _ := g.Mint("anthropic", 100, 0, R, 0, time.Minute)
 
 		if rec := do(g, tok); rec.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -761,11 +880,46 @@ func TestMeter_ReleasesReservation(t *testing.T) {
 	})
 }
 
+// TestServeHTTP_ReleasesReservationOnUpstreamError pins that a request admitted
+// with a reservation (max_request_cost_usd > 0) whose upstream round trip fails
+// before any response body, so meter's onDone never runs, still has its
+// reservation and in-flight slot released. Otherwise Reserved would leak on
+// every transport error and, after budget/R failures, the lease would deny its
+// own budget (402) despite ~0 real spend.
+func TestServeHTTP_ReleasesReservationOnUpstreamError(t *testing.T) {
+	const R = 0.5
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := up.URL
+	up.Close() // nothing is listening now: the proxy round trip fails before any response
+
+	g := newGW(t, url)
+	tok, _ := g.Mint("anthropic", 100, 0, R, 0, time.Minute)
+
+	if rec := do(g, tok); rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502 on upstream dial failure", rec.Code)
+	}
+
+	g.mu.Lock()
+	lease := g.leases[tok]
+	reserved, inflight, spent := lease.Reserved, lease.InFlight, lease.SpentUSD
+	g.mu.Unlock()
+
+	if reserved != 0 {
+		t.Errorf("Reserved = %v after upstream error, want 0 (reservation must not leak when metering is skipped)", reserved)
+	}
+	if inflight != 0 {
+		t.Errorf("InFlight = %v after upstream error, want 0", inflight)
+	}
+	if spent != 0 {
+		t.Errorf("SpentUSD = %v after upstream error, want 0 (no metered response)", spent)
+	}
+}
+
 func TestGateway_AggregateCap_DisabledByDefault(t *testing.T) {
 	g, _ := New(Backend{Vendor: AnthropicVendor(), Cred: StaticKey("k")})
 	// No SetAggregateCap call: cap disabled.
-	tok, _ := g.Mint("anthropic", 100.0, 0, 0, time.Hour)
-	if _, code := g.admit(tok); code != 0 {
+	tok, _ := g.Mint("anthropic", 100.0, 0, 0, 0, time.Hour)
+	if _, code, _ := g.admit(tok); code != 0 {
 		t.Errorf("cap disabled: admit code = %d, want 0", code)
 	}
 	if g.AggregateExceeded("anthropic") {

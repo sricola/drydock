@@ -11,7 +11,7 @@ sandbox_image:  drydock-sandbox:latest # per-task agent VM image
 anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
 
 # --- Per-task limits ---
-task_budget_usd:        2.0            # soft USD cap: metered post-hoc, so concurrent in-flight requests can overshoot; set max_request_cost_usd to bound them (api_key mode only; ignored in subscription mode)
+task_budget_usd:        2.0            # soft USD cap: metered post-hoc; overshoot bounded to task_max_inflight in-flight requests (default 1); set max_request_cost_usd for a reservation-backed bound (api_key mode only; ignored in subscription mode)
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
 approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs)
@@ -19,7 +19,8 @@ default_model:          ""             # model fallback for Claude Code and Code
 default_agent:          claude         # sandbox CLI: claude | codex | gemini | opencode. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
-task_max_requests:      0              # per-task request cap. 0 = unlimited when a USD budget bounds spend; with an uncapped budget (subscription / priceless model) 0 falls closed to a built-in default cap
+task_max_requests:      0              # per-task request cap. 0 falls closed to a built-in default (1000) in every mode; set explicitly to change the bound
+task_max_inflight:      1              # concurrent gateway requests per task lease; bounds budget overshoot to this many in-flight requests (0 = unlimited)
 max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)

@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -80,11 +81,17 @@ type Config struct {
 	// OpenAIAuth selects authentication mode: "api_key" or "subscription".
 	OpenAIAuth string `yaml:"openai_auth"`
 
-	// TaskMaxRequests is a per-task request cap. 0 = unlimited when a USD budget
-	// is bounding spend; but when no USD budget applies (subscription auth, or a
-	// priceless openai_compat lane) a 0 here fails closed to a default cap
-	// (broker.DefaultUncappedRequestCap) so a runaway task can't drain a subscription.
+	// TaskMaxRequests is a per-task request cap. 0 falls closed to a built-in
+	// default (broker.DefaultUncappedRequestCap) in every auth mode; set
+	// explicitly to change the bound.
 	TaskMaxRequests int `yaml:"task_max_requests"`
+
+	// TaskMaxInFlight caps concurrently admitted gateway requests per task
+	// lease. Spend is metered post-hoc, so each concurrently admitted request
+	// can overshoot the budget by its own cost; this bounds the overshoot to
+	// task_max_inflight requests. 1 (the default) restores the documented
+	// "at most one request" bound. 0 = unlimited (pre-v0.6.3 behavior).
+	TaskMaxInFlight int `yaml:"task_max_inflight"`
 
 	// MaxRequestCostUSD is the worst-case USD a single request may cost,
 	// reserved against the lease budget while the request is in flight so
@@ -148,6 +155,7 @@ func Defaults() *Config {
 		AnthropicAuth:          "api_key",
 		OpenAIAuth:             "api_key",
 		TaskMaxRequests:        0,
+		TaskMaxInFlight:        1,
 		MaxRequestCostUSD:      0,
 		AggregateBudgetUSD:     0,
 		AggregateWindow:        24 * time.Hour,
@@ -255,6 +263,12 @@ func Load(path string) (*Config, error) {
 			if err := dec.Decode(cfg); err != nil {
 				return nil, fmt.Errorf("parse %s: %w", path, err)
 			}
+			// A second YAML document (---) would be silently ignored, and it can
+			// carry security config the operator believes is active. Fail closed:
+			// exactly one document is allowed (F-08).
+			if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("parse %s: trailing YAML document; only one document is allowed", path)
+			}
 		case os.IsNotExist(err):
 			// fine — fall through, env-only / defaults-only
 		default:
@@ -308,6 +322,11 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("DRYDOCK_TASK_MAX_REQUESTS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			c.TaskMaxRequests = n
+		}
+	}
+	if v := os.Getenv("DRYDOCK_TASK_MAX_INFLIGHT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.TaskMaxInFlight = n
 		}
 	}
 	if v := os.Getenv("DRYDOCK_AGGREGATE_BUDGET_USD"); v != "" {
@@ -397,6 +416,9 @@ func (c *Config) validate() error {
 	if c.TaskMaxRequests < 0 {
 		return fmt.Errorf("config: task_max_requests must be >= 0, got %d", c.TaskMaxRequests)
 	}
+	if c.TaskMaxInFlight < 0 {
+		return fmt.Errorf("config: task_max_inflight must be >= 0, got %d", c.TaskMaxInFlight)
+	}
 	if oc := c.OpenAICompat; oc.BaseURL != "" {
 		if oc.APIKeyEnv == "" || oc.Model == "" {
 			return fmt.Errorf("config: openai_compat.base_url set but api_key_env and model are required")
@@ -456,7 +478,7 @@ sandbox_image:  drydock-sandbox:latest # per-task agent VM image
 anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gateway IP
 
 # --- Per-task limits ---
-task_budget_usd:        2.0            # soft USD cap: metered post-hoc, so concurrent in-flight requests can overshoot; set max_request_cost_usd to bound them (api_key mode only; ignored in subscription mode)
+task_budget_usd:        2.0            # soft USD cap: metered post-hoc; overshoot bounded to task_max_inflight in-flight requests (default 1); set max_request_cost_usd for a reservation-backed bound (api_key mode only; ignored in subscription mode)
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
 approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs)
@@ -464,7 +486,8 @@ default_model:          ""             # model fallback for Claude Code and Code
 default_agent:          claude         # sandbox CLI: claude | codex | gemini | opencode. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
-task_max_requests:      0              # per-task request cap. 0 = unlimited when a USD budget bounds spend; with an uncapped budget (subscription / priceless model) 0 falls closed to a built-in default cap
+task_max_requests:      0              # per-task request cap. 0 falls closed to a built-in default (1000) in every mode; set explicitly to change the bound
+task_max_inflight:      1              # concurrent gateway requests per task lease; bounds budget overshoot to this many in-flight requests (0 = unlimited)
 max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)

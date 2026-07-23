@@ -97,7 +97,7 @@ func a1Verdict(vmEnv, sentinel string) (bool, string) {
 	if !strings.Contains(vmEnv, "tok_") {
 		return false, "no gateway bearer (tok_) in the VM env — setup incomplete"
 	}
-	return true, "only a budget-capped tok_ bearer present"
+	return true, "only a budget-scoped tok_ bearer present"
 }
 
 // redteamA2 — the agent cannot reach a hostile or unintended host. Pin the

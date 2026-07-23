@@ -35,6 +35,8 @@ type Lease struct {
 	Requests          int     // number of requests served so far
 	MaxRequestCostUSD float64 // per-request reservation R (0 = disabled)
 	Reserved          float64 // sum of R for admitted-but-unmetered requests; guarded by g.mu
+	MaxInFlight       int     // max concurrently admitted requests (0 = unlimited)
+	InFlight          int     // admitted, response not yet complete; guarded by g.mu
 }
 
 type vendorRT struct {
@@ -80,7 +82,7 @@ func New(backends ...Backend) (*Gateway, error) {
 	return g, nil
 }
 
-func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, maxRequestCostUSD float64, ttl time.Duration) (string, error) {
+func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, maxRequestCostUSD float64, maxInFlight int, ttl time.Duration) (string, error) {
 	if _, ok := g.vendors[vendor]; !ok {
 		return "", fmt.Errorf("gateway: no backend for vendor %q", vendor)
 	}
@@ -94,7 +96,7 @@ func (g *Gateway) Mint(vendor string, budgetUSD float64, maxRequests int, maxReq
 	g.mu.Lock()
 	g.leases[tok] = &Lease{Token: tok, Vendor: vendor, BudgetUSD: budgetUSD,
 		MaxRequests: maxRequests, MaxRequestCostUSD: maxRequestCostUSD,
-		Expiry: time.Now().Add(ttl)}
+		MaxInFlight: maxInFlight, Expiry: time.Now().Add(ttl)}
 	g.mu.Unlock()
 	return tok, nil
 }
@@ -148,43 +150,86 @@ func (g *Gateway) AggregateExceeded(vendor string) bool {
 		g.ledger.windowed(vendor, time.Now()) >= g.aggBudget
 }
 
-// admit returns (lease, 0) when usable, or (nil, statusCode) to reject.
-// The bearer is compared against the stored token with subtle.ConstantTimeCompare
-// so future changes to the lookup path can't silently introduce a timing
-// side-channel on token validation. Named admit (not check) to reflect that it
-// mutates l.Requests++ on success — it's an authoritative admission decision.
-func (g *Gateway) admit(token string) (*Lease, int) {
+// admit returns (lease, 0, false) when usable, or (nil, statusCode, retryable)
+// to reject. retryable is true only for the transient in-flight-limit 429
+// (the in-flight slot frees on its own as the concurrent request completes);
+// every other rejection, including the terminal per-lease MaxRequests
+// exhaustion, is not retryable: no future admit call for this lease can ever
+// succeed differently. The bearer is compared against the stored token with
+// subtle.ConstantTimeCompare so future changes to the lookup path can't
+// silently introduce a timing side-channel on token validation. Named admit
+// (not check) to reflect that it mutates l.Requests++ on success: it's an
+// authoritative admission decision.
+func (g *Gateway) admit(token string) (*Lease, int, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	l := g.leases[token]
 	if l == nil {
-		return nil, http.StatusUnauthorized
+		return nil, http.StatusUnauthorized, false
 	}
 	if subtle.ConstantTimeCompare([]byte(l.Token), []byte(token)) != 1 {
-		return nil, http.StatusUnauthorized
+		return nil, http.StatusUnauthorized, false
 	}
 	if time.Now().After(l.Expiry) {
-		return nil, http.StatusUnauthorized
+		return nil, http.StatusUnauthorized, false
 	}
 	if l.SpentUSD >= l.BudgetUSD {
-		return nil, http.StatusPaymentRequired
+		return nil, http.StatusPaymentRequired, false
 	}
 	if l.MaxRequestCostUSD > 0 &&
 		l.SpentUSD+l.Reserved+l.MaxRequestCostUSD > l.BudgetUSD {
-		return nil, http.StatusPaymentRequired
+		return nil, http.StatusPaymentRequired, false
 	}
 	if l.MaxRequests > 0 && l.Requests >= l.MaxRequests {
-		return nil, http.StatusTooManyRequests
+		// Terminal: this lease will never admit another request, so a
+		// Retry-After would only invite the agent to spin on a condition
+		// that never clears.
+		return nil, http.StatusTooManyRequests, false
+	}
+	if l.MaxInFlight > 0 && l.InFlight >= l.MaxInFlight {
+		// Spend is metered when a response body completes, so every
+		// concurrently admitted request can overshoot the budget by its own
+		// cost. Serialize instead of admitting the race (F-02/F-05). This is
+		// the one retryable case: the in-flight slot frees as soon as the
+		// concurrent request completes.
+		return nil, http.StatusTooManyRequests, true
 	}
 	if g.aggBudget > 0 && g.aggVendors[l.Vendor] &&
 		g.ledger.windowed(l.Vendor, time.Now()) >= g.aggBudget {
-		return nil, http.StatusPaymentRequired
+		return nil, http.StatusPaymentRequired, false
 	}
 	l.Requests++
+	l.InFlight++
 	if l.MaxRequestCostUSD > 0 {
 		l.Reserved += l.MaxRequestCostUSD
 	}
-	return l, 0
+	return l, 0, false
+}
+
+// release marks one admitted request complete: it frees the in-flight slot and
+// the worst-case reservation admit took for it. ServeHTTP defers this on EVERY
+// post-admission exit path, so a reservation can never outlive its request,
+// including an upstream transport error that skips metering entirely (the
+// reverse proxy runs ModifyResponse, and thus meter's onDone, only on a
+// successful round trip). meter commits the real metered spend to SpentUSD and
+// no longer touches Reserved. Looked up by token: the lease may have been
+// revoked mid-request.
+func (g *Gateway) release(token string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	l := g.leases[token]
+	if l == nil {
+		return
+	}
+	if l.InFlight > 0 {
+		l.InFlight--
+	}
+	if l.MaxRequestCostUSD > 0 {
+		l.Reserved -= l.MaxRequestCostUSD
+		if l.Reserved < 0 {
+			l.Reserved = 0 // floor: defense in depth
+		}
+	}
 }
 
 // leaseVendor returns the vendor bound to token without mutating the lease, so
@@ -239,11 +284,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	lease, status := g.admit(tok)
+	lease, status, retryable := g.admit(tok)
 	if status != 0 {
+		if retryable {
+			// A sequential agent CLI only hits this when a side call overlaps
+			// its main stream; SDKs back off and retry on 429. Set only for
+			// the transient in-flight case: the terminal per-lease
+			// MaxRequests exhaustion never clears, so it must not invite a
+			// retry loop.
+			w.Header().Set("Retry-After", "1")
+		}
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
+	// release frees this request's in-flight slot and reservation. Deferred so
+	// it runs on every exit path below, including an upstream transport error
+	// that skips metering. On success ReverseProxy streams and closes the body
+	// (running meter's onDone, which settles SpentUSD) before returning, so the
+	// next admitted request sees the updated spend.
+	defer g.release(tok)
 	// Bound the request body: stripRequestFields (subscription) buffers it with
 	// io.ReadAll, and the proxy streams it otherwise. A legit LLM request is well
 	// under this; the cap stops a task from OOMing the gateway with a giant body.
@@ -369,13 +428,10 @@ func (g *Gateway) meter(resp *http.Response) error {
 		if model, in, out, ok := vt.v.ParseUsage(body, ct); ok {
 			delta = cost(vt.v.Prices, model, in, out)
 		}
+		// Commit only the actual metered spend. The reservation is released by
+		// ServeHTTP's deferred release, which runs on every exit path, so an
+		// upstream error that skips metering cannot leak the reservation.
 		g.mu.Lock()
-		if rc.lease.MaxRequestCostUSD > 0 {
-			rc.lease.Reserved -= rc.lease.MaxRequestCostUSD
-			if rc.lease.Reserved < 0 {
-				rc.lease.Reserved = 0 // floor: defense in depth
-			}
-		}
 		rc.lease.SpentUSD += delta
 		g.mu.Unlock()
 		if g.aggBudget > 0 && delta > 0 {
