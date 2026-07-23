@@ -81,10 +81,9 @@ type Config struct {
 	// OpenAIAuth selects authentication mode: "api_key" or "subscription".
 	OpenAIAuth string `yaml:"openai_auth"`
 
-	// TaskMaxRequests is a per-task request cap. 0 = unlimited when a USD budget
-	// is bounding spend; but when no USD budget applies (subscription auth, or a
-	// priceless openai_compat lane) a 0 here fails closed to a default cap
-	// (broker.DefaultUncappedRequestCap) so a runaway task can't drain a subscription.
+	// TaskMaxRequests is a per-task request cap. 0 falls closed to a built-in
+	// default (broker.DefaultUncappedRequestCap) in every auth mode; set
+	// explicitly to change the bound.
 	TaskMaxRequests int `yaml:"task_max_requests"`
 
 	// TaskMaxInFlight caps concurrently admitted gateway requests per task
@@ -482,7 +481,7 @@ default_model:          ""             # model fallback for Claude Code and Code
 default_agent:          claude         # sandbox CLI: claude | codex | gemini | opencode. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
 openai_auth:            api_key        # authentication mode: api_key | subscription
-task_max_requests:      0              # per-task request cap. 0 = unlimited when a USD budget bounds spend; with an uncapped budget (subscription / priceless model) 0 falls closed to a built-in default cap
+task_max_requests:      0              # per-task request cap. 0 falls closed to a built-in default (1000) in every mode; set explicitly to change the bound
 task_max_inflight:      1              # concurrent gateway requests per task lease; bounds budget overshoot to this many in-flight requests (0 = unlimited)
 max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)

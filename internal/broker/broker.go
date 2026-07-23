@@ -680,18 +680,17 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) {
 		EgressDefault:  domainStrings(b.Cfg.Default.Domains),
 		EgressWidened:  domainStrings(tr.egressExtra),
 	}
+	if policy.MaxRequests == 0 {
+		policy.MaxRequests = DefaultUncappedRequestCap
+	}
 	if b.UnmeteredVendors[tr.taskVendor] {
-		// This lane mints leases at math.MaxFloat64 — TaskBudget/BudgetHard
+		// This lane mints leases at math.MaxFloat64: TaskBudget/BudgetHard
 		// describe a cap that was never actually applied. Report the honest
 		// state: no USD metering, and the request-count backstop that is the
-		// real enforced bound (the lease's own default when the operator left
-		// task_max_requests at 0/unlimited).
+		// real enforced bound in every mode (F-02).
 		policy.BudgetUnbounded = true
 		policy.BudgetUSD = 0
 		policy.BudgetHard = false
-		if policy.MaxRequests == 0 {
-			policy.MaxRequests = DefaultUncappedRequestCap
-		}
 	}
 	policy.SnapshotSHA256 = policy.Fingerprint()
 
