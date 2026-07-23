@@ -127,13 +127,17 @@ release-preflight: build image network
 
 # tag-release is the blessed release path: it enforces release-preflight (so a
 # release can never ship without the VM containment tests behind its headline
-# claims), then creates and pushes the vX.Y.Z tag, which triggers the signed
-# release build in release.yml. Requires main, a clean tree, a stamped CHANGELOG,
-# and VERSION, e.g.  make tag-release VERSION=v0.6.3
+# claims), then creates and pushes the vX.Y.Z tag. The tag annotation carries a
+# preflight receipt line that release.yml verifies before building, so a bare
+# `git tag && git push` cannot publish artifacts by accident. (The receipt is
+# workflow enforcement, not cryptographic proof against a hostile maintainer.)
+# Requires main, a clean tree, a stamped CHANGELOG, and VERSION, e.g.
+# make tag-release VERSION=v0.6.3
 tag-release: check-release-args release-preflight
-	git tag -a "$(VERSION)" -m "drydock $(VERSION)"
+	git tag -a "$(VERSION)" -m "drydock $(VERSION)" \
+		-m "preflight: $$(git rev-parse HEAD) green $$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	git push origin "$(VERSION)"
-	@echo "== tagged + pushed $(VERSION); release.yml now builds the signed artifacts =="
+	@echo "== tagged + pushed $(VERSION); release.yml verifies the receipt, then builds the signed artifacts =="
 
 check-release-args:
 	@# VERSION defaults to `git describe` (for build ldflags); a release needs an
