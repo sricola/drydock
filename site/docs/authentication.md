@@ -77,7 +77,10 @@ burning your subscription's rate limit, set `task_max_requests` in
 `config.yaml`. `task_timeout` still applies as a wall-clock backstop. The cap
 stops *inference* the moment it's hit (the gateway returns HTTP 429), but the
 agent retries with backoff before giving up, so a capped task can spin for a
-minute or two before erroring out.
+minute or two before erroring out. Concurrent side calls (e.g. parallel
+subagents) also serialize against `task_max_inflight` (default 1) and retry on
+429; if a task stalls on repeated 429s, raise `task_max_inflight` in
+config.yaml, at the cost of a wider worst-case budget overshoot.
 
 **Credential blast radius.** The stored OAuth credential
 (`~/.drydock/claude-oauth.json` or `codex-oauth.json`) is a **full-account

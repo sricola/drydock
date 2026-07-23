@@ -153,6 +153,7 @@ func TestEnvOverrides_AllOperatorKnobs(t *testing.T) {
 		"DRYDOCK_ANTHROPIC_AUTH":           "subscription",
 		"DRYDOCK_OPENAI_AUTH":              "subscription",
 		"DRYDOCK_TASK_MAX_REQUESTS":        "42",
+		"DRYDOCK_TASK_MAX_INFLIGHT":        "3",
 		"DRYDOCK_AGGREGATE_BUDGET_USD":     "9.5",
 		"DRYDOCK_MAX_REQUEST_COST_USD":     "0.75",
 		"DRYDOCK_AGGREGATE_WINDOW":         "6h",
@@ -181,6 +182,7 @@ func TestEnvOverrides_AllOperatorKnobs(t *testing.T) {
 		t.Errorf("runtime env overrides not applied: %+v", c)
 	}
 	if c.TaskBudgetUSD != 3.25 || c.MaxConcurrent != 7 || c.TaskMaxRequests != 42 ||
+		c.TaskMaxInFlight != 3 ||
 		c.MaxRequestCostUSD != 0.75 || c.AggregateBudgetUSD != 9.5 || c.AggregateWindow != 6*time.Hour {
 		t.Errorf("budget/concurrency env overrides not applied: %+v", c)
 	}

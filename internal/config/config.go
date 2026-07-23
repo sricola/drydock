@@ -324,6 +324,11 @@ func (c *Config) applyEnvOverrides() {
 			c.TaskMaxRequests = n
 		}
 	}
+	if v := os.Getenv("DRYDOCK_TASK_MAX_INFLIGHT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.TaskMaxInFlight = n
+		}
+	}
 	if v := os.Getenv("DRYDOCK_AGGREGATE_BUDGET_USD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
 			c.AggregateBudgetUSD = f
