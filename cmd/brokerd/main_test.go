@@ -504,14 +504,17 @@ func TestExecCmd_Timeout(t *testing.T) {
 	runCmdTimeout = 150 * time.Millisecond
 	t.Cleanup(func() { runCmdTimeout = orig })
 
-	// `sh -c "sleep 10"` exec-replaces sh with sleep, so the ctx-deadline kill
-	// hits the sleep directly and its pipe closes at once — this exercises the
-	// context-kill fast path (well under WaitDelay's 5s backstop).
+	// The command sleeps far longer than runCmdTimeout. execCmd must return well
+	// before its natural end, via one of two bounded paths: the ctx-deadline kill
+	// closes the pipe at once (when sh exec-replaces sleep), or, if a forked child
+	// keeps the pipe open (some shells), the 5s WaitDelay backstop force-closes
+	// it. Either way it is bounded; the 15s ceiling is far under the 30s sleep so
+	// a broken bound (which would run the full sleep) fails loudly.
 	start := time.Now()
-	if _, err := execCmd("sh", "-c", "sleep 10"); err == nil {
+	if _, err := execCmd("sh", "-c", "sleep 30"); err == nil {
 		t.Fatal("expected a timeout error from a command that outlives runCmdTimeout")
 	}
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("execCmd did not time out promptly: took %v", d)
+	if d := time.Since(start); d > 15*time.Second {
+		t.Fatalf("execCmd did not stay bounded: took %v (want well under the 30s sleep)", d)
 	}
 }
