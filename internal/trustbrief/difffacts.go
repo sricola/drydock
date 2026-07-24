@@ -7,13 +7,34 @@ package trustbrief
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"io"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
+)
+
+// Diff line prefixes/suffixes the classifier dispatches on, as package-level
+// byte slices so Analyze can match against the raw ReadLine buffer without
+// allocating a string per line (a 32 MiB diff is ~500k lines).
+var (
+	bpDiffGit       = []byte("diff --git ")
+	bpHunk          = []byte("@@")
+	bpNewFileMode   = []byte("new file mode ")
+	bpNewMode       = []byte("new mode ")
+	bpIndex         = []byte("index ")
+	bpRenameFrom    = []byte("rename from ")
+	bpBinaryFiles   = []byte("Binary files ")
+	bpPlusPlus      = []byte("+++")
+	bpMinusMinus    = []byte("---")
+	bpTruncated     = []byte("... [diff truncated at ")
+	bsDiffer        = []byte(" differ")
+	bsSymlinkMode   = []byte(" 120000")
+	bGitBinaryPatch = []byte("GIT binary patch")
+	bModeSymlink    = []byte("120000")
+	bModeExec       = []byte("100755")
 )
 
 // FileChange is one changed file with its hunk-line counts.
@@ -93,12 +114,12 @@ func Analyze(diff string) DiffFacts {
 	inHunk := false
 	for {
 		line, err := boundedLine(r)
-		if line == "" && err != nil {
+		if len(line) == 0 && err != nil {
 			break
 		}
 		switch {
-		case strings.HasPrefix(line, "diff --git "):
-			curPath = capPath(parseGitHeaderPath(line))
+		case bytes.HasPrefix(line, bpDiffGit):
+			curPath = capPath(parseGitHeaderPath(string(line)))
 			inHunk = false
 			if len(facts.Files) < maxTrackedFiles {
 				facts.Files = append(facts.Files, FileChange{Path: curPath})
@@ -108,17 +129,17 @@ func Analyze(diff string) DiffFacts {
 				cur = nil
 			}
 			classifyPath(curPath, addFlag)
-		case strings.HasPrefix(line, "@@"):
+		case bytes.HasPrefix(line, bpHunk):
 			inHunk = true
-		case strings.HasPrefix(line, "new file mode "), strings.HasPrefix(line, "new mode "):
-			mode := line[strings.LastIndexByte(line, ' ')+1:]
-			if strings.HasPrefix(mode, "120000") {
+		case bytes.HasPrefix(line, bpNewFileMode), bytes.HasPrefix(line, bpNewMode):
+			mode := line[bytes.LastIndexByte(line, ' ')+1:]
+			if bytes.HasPrefix(mode, bModeSymlink) {
 				addFlag(FlagSymlink, curPath)
 			}
-			if strings.HasPrefix(mode, "100755") {
+			if bytes.HasPrefix(mode, bModeExec) {
 				addFlag(FlagExecBit, curPath)
 			}
-		case !inHunk && strings.HasPrefix(line, "index "):
+		case !inHunk && bytes.HasPrefix(line, bpIndex):
 			// `index aaa..bbb 120000` (no mode lines) is what git emits when an
 			// EXISTING symlink's target changes — new/old mode lines only appear
 			// when the mode itself changes. Without this, retargeting a tracked
@@ -127,10 +148,10 @@ func Analyze(diff string) DiffFacts {
 			// an existing file's content changed (with its exec bit unchanged),
 			// which is normal and must NOT re-trigger FlagExecBit (that flag means
 			// the bit was ADDED, which "new mode "/"new file mode " already catch).
-			if strings.HasSuffix(line, " 120000") {
+			if bytes.HasSuffix(line, bsSymlinkMode) {
 				addFlag(FlagSymlink, curPath)
 			}
-		case !inHunk && strings.HasPrefix(line, "rename from "):
+		case !inHunk && bytes.HasPrefix(line, bpRenameFrom):
 			// A pure rename (`similarity index 100%` / rename from / rename to,
 			// no hunks) only classifies the b-path via the "diff --git" header
 			// above. That misses a rename that moves a flagged path OUT of its
@@ -143,21 +164,21 @@ func Analyze(diff string) DiffFacts {
 			// above — `rename from ".github/workflows/ci\302\251.yml"`. Without
 			// unquoting, every prefix/base check in classifyPath fails against
 			// the literal quoted+escaped string and the rename-out goes unflagged.
-			classifyPath(capPath(unquotePath(strings.TrimPrefix(line, "rename from "))), addFlag)
-		case strings.HasPrefix(line, "Binary files ") && strings.HasSuffix(line, " differ"),
-			line == "GIT binary patch":
+			classifyPath(capPath(unquotePath(string(bytes.TrimPrefix(line, bpRenameFrom)))), addFlag)
+		case bytes.HasPrefix(line, bpBinaryFiles) && bytes.HasSuffix(line, bsDiffer),
+			bytes.Equal(line, bGitBinaryPatch):
 			addFlag(FlagBinary, curPath)
-		case !inHunk && (strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---")):
+		case !inHunk && (bytes.HasPrefix(line, bpPlusPlus) || bytes.HasPrefix(line, bpMinusMinus)):
 			// hunk file headers, not content
-		case inHunk && strings.HasPrefix(line, "+"):
+		case inHunk && len(line) > 0 && line[0] == '+':
 			if cur != nil {
 				cur.Adds++
 			}
-		case inHunk && strings.HasPrefix(line, "-"):
+		case inHunk && len(line) > 0 && line[0] == '-':
 			if cur != nil {
 				cur.Dels++
 			}
-		case strings.HasPrefix(line, "... [diff truncated at "):
+		case bytes.HasPrefix(line, bpTruncated):
 			// The exact marker stage.gitDiffCapped appends when the review
 			// diff exceeded its cap. The committed change is complete; the
 			// reviewer must know this summary is not.
@@ -183,19 +204,28 @@ func Analyze(diff string) DiffFacts {
 // discarding the remainder. Every line the parser *interprets* (git headers,
 // mode lines) is short; content lines only need their first byte for +/-
 // counting, so dropping long tails loses nothing and keeps memory bounded.
-func boundedLine(r *bufio.Reader) (string, error) {
+// The returned slice is valid only until the next boundedLine call (it aliases
+// bufio's internal buffer in the common case); callers must string()-copy any
+// bytes they retain. Avoiding a per-line copy is the whole point.
+func boundedLine(r *bufio.Reader) ([]byte, error) {
 	frag, isPrefix, err := r.ReadLine()
-	line := string(frag)
-	if len(line) > maxHeaderLine {
-		line = line[:maxHeaderLine]
+	if !isPrefix {
+		// Whole line fit the reader buffer: frag is stable until the next read
+		// (which the caller does next iteration, after using this line). No copy.
+		if len(frag) > maxHeaderLine {
+			return frag[:maxHeaderLine], err
+		}
+		return frag, err
 	}
+	// Over-long line (exceeds the reader buffer): copy the bounded prefix before
+	// draining the rest, since draining reuses frag's backing array.
+	n := len(frag)
+	if n > maxHeaderLine {
+		n = maxHeaderLine
+	}
+	line := append([]byte(nil), frag[:n]...)
 	for isPrefix && err == nil {
-		var rest []byte
-		rest, isPrefix, err = r.ReadLine()
-		_ = rest // discard: only the line's prefix is ever interpreted
-	}
-	if err == io.EOF {
-		return line, io.EOF
+		_, isPrefix, err = r.ReadLine() // discard: only the prefix is interpreted
 	}
 	return line, err
 }

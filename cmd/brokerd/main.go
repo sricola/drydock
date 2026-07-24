@@ -272,27 +272,14 @@ func main() {
 		srv      *http.Server
 		sockToRm string
 	)
+	// Arm signal delivery at startup (buffered, so a SIGINT/SIGTERM arriving
+	// during boot is retained), but start the shutdown goroutine only later,
+	// once brk and srv exist — a signal received before then would otherwise be
+	// consumed by a one-shot handler that races the srv/brk writes and then
+	// exits, leaving the daemon killable only by SIGKILL (which skips cleanup
+	// and orphans squid).
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	// Closed once the signal handler's srv.Shutdown returns. main waits on it
-	// before cleanup+exit so the process cannot outrun the graceful drain.
-	shutdownDone := make(chan struct{})
-	go func() {
-		<-sigCh
-		slog.Info("shutting down — cancelling in-flight tasks")
-		if brk != nil {
-			brk.CancelAll() // each task force-deletes its own VM and responds
-		}
-		if srv != nil {
-			ctx, c := context.WithTimeout(context.Background(), 20*time.Second)
-			_ = srv.Shutdown(ctx) // block until in-flight task handlers drain
-			c()
-		}
-		close(shutdownDone)
-		// Teardown (squid + anchor) and exit happen in main, NOT here: if this
-		// goroutine ran cleanup() while main returned from Serve in parallel,
-		// main could exit the process first and skip cleanup, orphaning squid.
-	}()
 
 	// Credential gateway: real key host-only; the VM gets a bearer token.
 	backends, err := buildBackends(cfg, fileKeys)
@@ -444,6 +431,25 @@ func main() {
 	srv = hardenedServer(brokerHandler(cfg, mux))
 	l, sock := listen(cfg, gwAddr, proxyAddr)
 	sockToRm = sock
+
+	// Graceful shutdown. Started only now that brk and srv are both assigned, so
+	// it never races those writes. A signal buffered during boot is read here
+	// immediately: srv.Shutdown before Serve makes the imminent Serve return
+	// ErrServerClosed at once, so a boot-time signal still shuts down cleanly.
+	// Closed once Shutdown returns; main waits on it before cleanup so the
+	// process cannot outrun the drain. Teardown stays in main (not here) so the
+	// process can't exit in parallel and skip it, orphaning squid.
+	shutdownDone := make(chan struct{})
+	go func() {
+		<-sigCh
+		slog.Info("shutting down — cancelling in-flight tasks")
+		brk.CancelAll() // each task force-deletes its own VM and responds
+		ctx, c := context.WithTimeout(context.Background(), 20*time.Second)
+		_ = srv.Shutdown(ctx) // block until in-flight task handlers drain
+		c()
+		close(shutdownDone)
+	}()
+
 	// Blocks until the signal handler calls srv.Shutdown (clean) or the
 	// listener errors.
 	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
