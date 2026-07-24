@@ -108,7 +108,7 @@ func testBroker(t *testing.T, vendor string, st taskStage, grant *fakeGrant,
 		ProxyPort:     3128,
 		TaskBudget:    1.0,
 		MaxConcurrent: 4,
-		prepareStage:  func(root, repo string) (taskStage, error) { return st, nil },
+		prepareStage:  func(context.Context, string, string) (taskStage, error) { return st, nil },
 		runAgent:      run,
 		newAdapter: func(repoRef, platform string) remote.Adapter {
 			return &fakeAdapter{name: remote.AdapterFor(repoRef, platform).Name()}
@@ -662,7 +662,7 @@ func TestHandleTask_RealKeyNeverEntersContainerEnv(t *testing.T) {
 		ProxyPort:     3128,
 		TaskBudget:    1.0,
 		MaxConcurrent: 4,
-		prepareStage:  func(string, string) (taskStage, error) { return st, nil },
+		prepareStage:  func(context.Context, string, string) (taskStage, error) { return st, nil },
 		runAgent:      run,
 		newAdapter:    func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} },
 	}

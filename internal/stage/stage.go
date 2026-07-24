@@ -7,6 +7,7 @@ package stage
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -15,18 +16,42 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
+
+// gitWaitDelay force-closes a git subprocess's pipes this long after its context
+// is cancelled, so a clone/push against a black-holing remote returns shortly
+// after an operator kill or task timeout instead of pinning the task goroutine
+// (and its concurrency slot) until the pipes happen to close.
+const gitWaitDelay = 5 * time.Second
 
 // Stage is a prepared task workspace.
 type Stage struct {
 	Root    string // host scratch root (removed by Cleanup)
 	WorkDir string // the ONLY path mounted into the VM
 	gitDir  string // host-only git dir; never exposed to the VM
+	// ctx cancels the git subprocesses (clone/commit/push/diff) so an operator
+	// kill or task timeout aborts a network-hung git instead of blocking forever.
+	// nil means an uncancellable context (tests, or a stage reopened before its
+	// task context exists); WithContext installs the real one.
+	ctx context.Context
 }
 
-func runGit(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+func (s *Stage) execCtx() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
+}
+
+// WithContext binds ctx to the stage's git subprocesses. Used on the resume
+// path, where the stage is reopened before its per-task context exists.
+func (s *Stage) WithContext(ctx context.Context) { s.ctx = ctx }
+
+func runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.WaitDelay = gitWaitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("git %v: %w\n%s", args, err, out)
@@ -36,9 +61,10 @@ func runGit(dir string, args ...string) (string, error) {
 
 // Prepare clones repoRef on the host, then separates the work tree (mounted into
 // the VM) from the .git dir (host-only). After Prepare, WorkDir contains no .git.
-func Prepare(root, repoRef string) (*Stage, error) {
+// ctx cancels the clone (a hung remote must not block the task).
+func Prepare(ctx context.Context, root, repoRef string) (*Stage, error) {
 	clone := filepath.Join(root, "clone")
-	if _, err := runGit("", "clone", "--depth", "1", repoRef, clone); err != nil {
+	if _, err := runGit(ctx, "", "clone", "--depth", "1", repoRef, clone); err != nil {
 		return nil, err
 	}
 	workDir := filepath.Join(root, "work")
@@ -49,7 +75,7 @@ func Prepare(root, repoRef string) (*Stage, error) {
 	if err := os.Rename(clone, workDir); err != nil {
 		return nil, fmt.Errorf("move work tree: %w", err)
 	}
-	return &Stage{Root: root, WorkDir: workDir, gitDir: gitDir}, nil
+	return &Stage{Root: root, WorkDir: workDir, gitDir: gitDir, ctx: ctx}, nil
 }
 
 // git runs a host-side git command bound to the separated git dir and work tree,
@@ -62,7 +88,7 @@ func (s *Stage) git(args ...string) (string, error) {
 		"-c", "core.hooksPath=/dev/null",
 		"-c", "core.fsmonitor=false",
 	}, args...)
-	return runGit(s.WorkDir, full...)
+	return runGit(s.execCtx(), s.WorkDir, full...)
 }
 
 // BaseCommit returns the commit the work tree was cloned at — the base the
@@ -147,7 +173,7 @@ func (s *Stage) CaptureDiff() (string, error) {
 // so git is not left blocked on a full pipe, keeping broker memory bounded to
 // max regardless of how large the staged diff is.
 func (s *Stage) gitDiffCapped(max int64) (string, error) {
-	cmd := exec.Command("git",
+	cmd := exec.CommandContext(s.execCtx(), "git",
 		"--git-dir="+s.gitDir,
 		"--work-tree="+s.WorkDir,
 		"-c", "core.hooksPath=/dev/null",
@@ -155,6 +181,7 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 		"diff", "--cached",
 	)
 	cmd.Dir = s.WorkDir
+	cmd.WaitDelay = gitWaitDelay
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err

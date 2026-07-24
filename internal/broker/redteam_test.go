@@ -64,7 +64,7 @@ func TestRedteam_A6_EgressWidenDenied(t *testing.T) {
 		Timeout:       5 * time.Second,
 		TaskBudget:    1.0,
 		MaxConcurrent: 4,
-		prepareStage: func(string, string) (taskStage, error) {
+		prepareStage: func(context.Context, string, string) (taskStage, error) {
 			staged.Store(true) // reaching staging means the gate failed
 			return &fakeStage{workDir: t.TempDir()}, nil
 		},
@@ -118,7 +118,7 @@ func TestRedteam_A6_AutoApproveCannotBypassWideningGate(t *testing.T) {
 		TaskBudget:    1.0,
 		MaxConcurrent: 4,
 		Squid:         fs,
-		prepareStage: func(string, string) (taskStage, error) {
+		prepareStage: func(context.Context, string, string) (taskStage, error) {
 			staged.Store(true) // reaching staging means the gate was bypassed
 			return st, nil
 		},

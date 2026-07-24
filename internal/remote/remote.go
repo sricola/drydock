@@ -6,12 +6,21 @@
 package remote
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// remoteCLITimeout bounds a vendor-CLI shell-out. The PR/MR open is best-effort
+// and runs after the push already landed, but a hung gh/glab (blackholed API,
+// stuck auth prompt) would otherwise pin the task goroutine and its concurrency
+// slot indefinitely on a long-running broker. Generous: a real pr-create is
+// seconds. WaitDelay force-closes the pipes shortly after the timeout fires.
+const remoteCLITimeout = 60 * time.Second
 
 // lookPath / probeCLI are package vars so tests can simulate a missing or
 // unauthenticated CLI without the real binaries.
@@ -19,7 +28,11 @@ var lookPath = exec.LookPath
 
 // probeCLI runs `args` and returns its error (used for `gh auth status` etc.).
 var probeCLI = func(name string, args ...string) error {
-	return exec.Command(name, args...).Run()
+	ctx, cancel := context.WithTimeout(context.Background(), remoteCLITimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 5 * time.Second
+	return cmd.Run()
 }
 
 // Request describes a PR/MR to open for a freshly pushed branch. Title/Body
@@ -91,9 +104,12 @@ var stderr io.Writer = os.Stderr
 // package var (not a plain func) so tests can swap it to capture the argv each
 // adapter builds without invoking the real vendor CLI.
 var runCLI = func(workDir string, env []string, args ...string) error {
-	cmd := exec.Command(args[0], args[1:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), remoteCLITimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = env
+	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w\n%s", args[0], err, out)

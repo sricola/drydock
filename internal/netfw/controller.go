@@ -1,19 +1,31 @@
 package netfw
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"drydock/internal/egress"
 )
 
+// squidExecTimeout bounds the `squid -k` control commands. They run under the
+// controller mutex, so a wedged squid (unresponsive reconfigure/rotate) would
+// otherwise block every widened task's setup and cleanup, and the daily rotate,
+// indefinitely. A generous ceiling: a healthy reconfigure returns in ms.
+const squidExecTimeout = 30 * time.Second
+
 // squidReconfigure applies a live config reload. Package var so tests swap it.
 var squidReconfigure = func(binPath, confPath string) error {
-	out, err := exec.Command(binPath, "-k", "reconfigure", "-f", confPath).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), squidExecTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, "-k", "reconfigure", "-f", confPath)
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("netfw: squid reconfigure: %w\n%s", err, out)
 	}
@@ -23,7 +35,11 @@ var squidReconfigure = func(binPath, confPath string) error {
 // squidRotate rolls the access/cache logs, keeping the `logfile_rotate`
 // generations set in the conf. Package var so tests swap it.
 var squidRotate = func(binPath, confPath string) error {
-	out, err := exec.Command(binPath, "-k", "rotate", "-f", confPath).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), squidExecTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, "-k", "rotate", "-f", confPath)
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("netfw: squid rotate: %w\n%s", err, out)
 	}

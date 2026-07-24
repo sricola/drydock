@@ -136,7 +136,7 @@ type Broker struct {
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
 	// drive HandleTask without a git clone or a container run.
-	prepareStage func(root, repoRef string) (taskStage, error)
+	prepareStage func(ctx context.Context, root, repoRef string) (taskStage, error)
 	runAgent     func(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// newAdapter selects the remote PR/MR adapter. nil in production ->
 	// remote.AdapterFor. White-box tests inject a fake to drive the
@@ -189,10 +189,14 @@ func (r realStage) PushEnv() []string                     { return r.s.PushEnv()
 func (r realStage) Cleanup() error                        { return r.s.Cleanup() }
 func (r realStage) BaseCommit() (string, error)           { return r.s.BaseCommit() }
 
+// WithContext binds the task context to the stage's git subprocesses. Used on
+// the resume path (the stage is reopened before the per-task context exists).
+func (r realStage) WithContext(ctx context.Context) { r.s.WithContext(ctx) }
+
 // defaultPrepareStage is the production prepareStage: a real host clone with
-// the .git dir moved out of the mounted work tree.
-func defaultPrepareStage(root, repoRef string) (taskStage, error) {
-	s, err := stage.Prepare(root, repoRef)
+// the .git dir moved out of the mounted work tree. ctx cancels the clone.
+func defaultPrepareStage(ctx context.Context, root, repoRef string) (taskStage, error) {
+	s, err := stage.Prepare(ctx, root, repoRef)
 	if err != nil {
 		return nil, err
 	}
@@ -215,6 +219,12 @@ func runContainer(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	cmd := exec.CommandContext(ctx, "container", args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	// On ctx cancel (operator kill / task timeout) CommandContext kills the
+	// container process, but cmd.Run would otherwise block until the stdout and
+	// stderr pipes close. If the CLI leaves a helper holding them, WaitDelay
+	// force-closes the pipes so Run returns shortly after the kill instead of
+	// pinning the task goroutine (and its concurrency slot) indefinitely.
+	cmd.WaitDelay = 5 * time.Second
 	return cmd.Run()
 }
 
@@ -382,7 +392,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sw.emit(map[string]any{"event": "stage", "stage": "preparing", "task_id": taskID})
-	st, err := prepare(stageDir, t.RepoRef)
+	st, err := prepare(tr.ctx, stageDir, t.RepoRef)
 	if err != nil {
 		slog.Warn("task clone failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "clone failed", "check the repo URL and that brokerd can reach it"))
@@ -792,13 +802,13 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 		return
 	}
 
-	tr.finishPush(diff, files, insertions, deletions)
+	tr.finishPush(files, insertions, deletions)
 }
 
 // finishPush performs the branch push (with recovery) and PR-open after the
 // approval gate has passed, emitting the terminal pushed/push_failed event and,
 // on failure, the synthetic audit line. Shared by the live path and resume.
-func (tr *taskRun) finishPush(diff string, files, insertions, deletions int) {
+func (tr *taskRun) finishPush(files, insertions, deletions int) {
 	b := tr.b
 	b.setStage(tr.id, StagePushing)
 	base := "agent/" + tr.id
