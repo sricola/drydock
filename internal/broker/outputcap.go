@@ -47,18 +47,20 @@ type capWriter struct {
 
 func (cw capWriter) Write(p []byte) (int, error) {
 	c := cw.c
+	// The lock is held across the forwarded write, not just the counter update:
+	// an exec.Cmd's stdout and stderr are copied by two goroutines, and both
+	// wrap the SAME audit file, so releasing before forwarding would let their
+	// writes interleave mid-line and corrupt the stream-json .jsonl that
+	// audit.Reason/TotalCost later parse. Serializing is cheap (a local-file
+	// append); onExceed is a context cancel, non-reentrant, safe under the lock.
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.fired {
-		c.mu.Unlock()
 		return len(p), nil
 	}
 	c.n += int64(len(p))
-	crossed := c.n > c.max
-	if crossed {
+	if c.n > c.max {
 		c.fired = true
-	}
-	c.mu.Unlock()
-	if crossed {
 		if c.onExceed != nil {
 			c.onExceed()
 		}

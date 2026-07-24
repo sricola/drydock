@@ -1,6 +1,7 @@
 package stage
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,7 +42,7 @@ func gitRun(t *testing.T, dir string, args ...string) {
 
 func prepare(t *testing.T, origin string) *Stage {
 	t.Helper()
-	s, err := Prepare(filepath.Join(t.TempDir(), "stage"), origin)
+	s, err := Prepare(context.Background(), filepath.Join(t.TempDir(), "stage"), origin)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -344,7 +345,7 @@ func TestBaseCommit_ReturnsCloneHead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	st, err := Prepare(t.TempDir(), src)
+	st, err := Prepare(context.Background(), t.TempDir(), src)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}

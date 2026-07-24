@@ -2,8 +2,47 @@ package broker
 
 import (
 	"bytes"
+	"sync"
 	"testing"
 )
+
+// recordingWriter records each Write's bytes as a separate entry. It is NOT
+// goroutine-safe on purpose: if two capWriters sharing one outputCap were to
+// forward concurrently (the stdout+stderr-into-one-audit-file case), the race
+// detector flags the concurrent append here — which is exactly the mid-line
+// interleave the lock-across-forward prevents.
+type recordingWriter struct{ writes [][]byte }
+
+func (r *recordingWriter) Write(p []byte) (int, error) {
+	cp := append([]byte(nil), p...)
+	r.writes = append(r.writes, cp)
+	return len(p), nil
+}
+
+// TestOutputCap_SerializesConcurrentWriters drives the shared stdout+stderr
+// writers concurrently into one sink; under `-race` this fails if capWriter
+// forwards without holding the lock.
+func TestOutputCap_SerializesConcurrentWriters(t *testing.T) {
+	sink := &recordingWriter{}
+	oc := newOutputCap(1<<30, func() {})
+	wOut, wErr := oc.wrap(sink), oc.wrap(sink)
+
+	var wg sync.WaitGroup
+	for _, w := range []interface{ Write([]byte) (int, error) }{wOut, wErr} {
+		w := w
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				_, _ = w.Write([]byte("a stream-json line\n"))
+			}
+		}()
+	}
+	wg.Wait()
+	if len(sink.writes) != 1000 {
+		t.Fatalf("got %d recorded writes, want 1000 (all forwarded, serialized)", len(sink.writes))
+	}
+}
 
 func TestOutputCap_StopsForwardingAndFiresOnce(t *testing.T) {
 	var buf bytes.Buffer

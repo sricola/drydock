@@ -21,7 +21,7 @@ func TestHandleTask_LowDiskRefusesBeforeStaging(t *testing.T) {
 	prepared := &fakeStage{workDir: t.TempDir()}
 	b := testBroker(t, "anthropic", prepared, &fakeGrant{},
 		func(context.Context, []string, io.Writer, io.Writer) error { return nil })
-	b.prepareStage = func(string, string) (taskStage, error) { staged = true; return prepared, nil }
+	b.prepareStage = func(context.Context, string, string) (taskStage, error) { staged = true; return prepared, nil }
 
 	_, _, terminal := submit(b, `{"repo_ref":"git@github.com:x/y","instruction":"go"}`)
 

@@ -274,6 +274,9 @@ func main() {
 	)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// Closed once the signal handler's srv.Shutdown returns. main waits on it
+	// before cleanup+exit so the process cannot outrun the graceful drain.
+	shutdownDone := make(chan struct{})
 	go func() {
 		<-sigCh
 		slog.Info("shutting down — cancelling in-flight tasks")
@@ -282,13 +285,13 @@ func main() {
 		}
 		if srv != nil {
 			ctx, c := context.WithTimeout(context.Background(), 20*time.Second)
-			_ = srv.Shutdown(ctx) // drain the cancelled handlers' responses
+			_ = srv.Shutdown(ctx) // block until in-flight task handlers drain
 			c()
 		}
-		// Teardown (squid + anchor) and exit happen in main once Serve unblocks,
-		// NOT here: if this goroutine ran cleanup() while main returned from
-		// Serve in parallel, main could exit the process first and skip cleanup,
-		// orphaning squid (it kept holding :3128 and broke the next start).
+		close(shutdownDone)
+		// Teardown (squid + anchor) and exit happen in main, NOT here: if this
+		// goroutine ran cleanup() while main returned from Serve in parallel,
+		// main could exit the process first and skip cleanup, orphaning squid.
 	}()
 
 	// Credential gateway: real key host-only; the VM gets a bearer token.
@@ -446,9 +449,15 @@ func main() {
 	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
 		fatal("serve failed", "err", err)
 	}
-	// ErrServerClosed means the signal handler asked for a graceful shutdown.
-	// Tear squid + the anchor down HERE, sequentially after Serve returns, so
-	// process exit cannot race ahead of cleanup (the bug that orphaned squid).
+	// Serve returns ErrServerClosed the instant Shutdown closes the listener —
+	// EARLY in the drain, while the cancelled task handlers are still finishing
+	// their teardown (VM delete, stage cleanup, the broker-authored terminal
+	// result line + Sync). Wait for the signal handler's Shutdown to actually
+	// return before tearing down squid and exiting, so the process cannot exit
+	// mid-teardown and truncate that work (losing the src:"broker" result line,
+	// which TerminateStuckAudits would then rewrite as $0 and erase from the
+	// aggregate-cap seed — the F-07 failure). Bounded by Shutdown's 20s timeout.
+	<-shutdownDone
 	cleanup()
 	if sockToRm != "" {
 		_ = os.Remove(sockToRm)

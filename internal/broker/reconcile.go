@@ -3,7 +3,6 @@ package broker
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -114,11 +113,21 @@ func (b *Broker) ResumeAwaiting(stageRoot string) {
 // tail headlessly (no live client). Approve pushes the surviving branch;
 // deny/timeout write the honest terminal outcome. On shutdown the marker is
 // left for the next boot (idempotent).
-func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, logf io.Writer) {
+func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, logf *os.File) {
+	// The resumed task owns this O_APPEND audit fd. Flush the terminal result and
+	// close it, matching HandleTask's Sync-then-Close for the live path: without
+	// this the fd leaks per resumed task and the terminal line is never fsynced.
+	defer func() { _ = logf.Sync(); _ = logf.Close() }()
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	b.registerTask(id, m.RepoRef, m.Instruction, cancel)
 	defer b.unregisterTask(id)
+
+	// Bind this resume's context to the reopened stage so a kill/shutdown aborts
+	// its git push (the stage was reopened at boot, before this context existed).
+	if wc, ok := st.(interface{ WithContext(context.Context) }); ok {
+		wc.WithContext(ctx)
+	}
 
 	tr := &taskRun{
 		b: b, ctx: ctx, sw: newDiscardStream(), id: id,
@@ -153,5 +162,5 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 			subtype, audit.TotalCost(tr.auditPath))
 		return
 	}
-	tr.finishPush(diff, files, insertions, deletions)
+	tr.finishPush(files, insertions, deletions)
 }
