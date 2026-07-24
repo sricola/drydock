@@ -135,9 +135,26 @@ var brokerdLock *os.File
 // production behaviour is identical to what the inline calls were. Tests
 // replace this variable with a fake that records calls without spawning
 // real processes.
-var runCmd = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+// runCmdTimeout bounds every runCmd shell-out (all are `container` control
+// calls: version, ls, run, rm, delete). A wedged container daemon would
+// otherwise hang boot (the version check, orphan prune, and anchor setup) or a
+// task's VM force-delete indefinitely — and during boot, before the shutdown
+// goroutine starts, a hung call leaves the daemon killable only by SIGKILL.
+// Generous: a healthy container op is sub-second; -d detaches immediately.
+// A var so a test can lower it.
+var runCmdTimeout = 60 * time.Second
+
+func execCmd(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 5 * time.Second
+	return cmd.CombinedOutput()
 }
+
+// runCmd is a package var so tests can stub the container CLI. Production is
+// execCmd (timeout-bounded).
+var runCmd = execCmd
 
 func main() {
 	// Hidden subcommand: squid invokes this same binary as its basic-auth

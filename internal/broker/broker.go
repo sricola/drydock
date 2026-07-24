@@ -228,6 +228,21 @@ func runContainer(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	return cmd.Run()
 }
 
+// vmDeleteTimeout bounds the best-effort force-delete of a task's VM on
+// kill/timeout. It uses a FRESH context (not the task's, which is already
+// cancelled by the kill) so the delete still runs, but bounded so a wedged
+// container daemon can't pin the task goroutine and its concurrency slot here.
+// A VM that outlives this is reaped at the next brokerd boot anyway.
+const vmDeleteTimeout = 30 * time.Second
+
+func forceDeleteVM(id string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), vmDeleteTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "container", "delete", "--force", "task-"+id)
+	cmd.WaitDelay = 5 * time.Second
+	return cmd.Run()
+}
+
 // MaxTaskBodyBytes caps the size of POST /tasks bodies. Generous enough for
 // long instructions but small enough that local-DoS via 1GB instruction
 // strings (or TCP-listener attacks when BROKER_ADDR is set) can't burn
@@ -628,7 +643,7 @@ func (tr *taskRun) runSandbox(args []string) error {
 	if err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf)); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
-		if derr := exec.Command("container", "delete", "--force", "task-"+tr.id).Run(); derr != nil {
+		if derr := forceDeleteVM(tr.id); derr != nil {
 			slog.Warn("force-delete of task VM failed; reaped at next brokerd boot",
 				"task_id", tr.id, "err", derr)
 		}

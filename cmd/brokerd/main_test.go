@@ -495,3 +495,20 @@ func TestSeedAggregateFromAudit_IgnoresForgedAgentCost(t *testing.T) {
 		t.Error("a forged (non-broker) agent cost of 9999 seeded the ledger; the seed must trust only src:broker")
 	}
 }
+
+// TestExecCmd_Timeout verifies the production container shell-out (execCmd) is
+// bounded: a command that outlives runCmdTimeout is killed and returns promptly,
+// rather than hanging boot on a wedged container daemon.
+func TestExecCmd_Timeout(t *testing.T) {
+	orig := runCmdTimeout
+	runCmdTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { runCmdTimeout = orig })
+
+	start := time.Now()
+	if _, err := execCmd("sh", "-c", "sleep 10"); err == nil {
+		t.Fatal("expected a timeout error from a command that outlives runCmdTimeout")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("execCmd did not time out promptly: took %v (WaitDelay should close it fast)", d)
+	}
+}
