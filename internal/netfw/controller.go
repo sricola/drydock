@@ -43,11 +43,8 @@ func NewSquidController(binPath, confPath, runDir string) *SquidController {
 	return &SquidController{binPath: binPath, confPath: confPath, runDir: runDir}
 }
 
-func (c *SquidController) tokenPath() string { return filepath.Join(c.runDir, "task-tokens") }
-func (c *SquidController) aclDir() string    { return filepath.Join(c.runDir, "task-acls") }
-func (c *SquidController) domainsPath(u string) string {
-	return filepath.Join(c.aclDir(), u+".domains")
-}
+func (c *SquidController) tokenPath() string        { return filepath.Join(c.runDir, "task-tokens") }
+func (c *SquidController) aclDir() string           { return filepath.Join(c.runDir, "task-acls") }
 func (c *SquidController) fragPath(u string) string { return filepath.Join(c.aclDir(), u+".conf") }
 
 // AddTask registers user→secret + the user's widened domains, writes the ACL
@@ -81,17 +78,14 @@ func (c *SquidController) AddTask(user, secret string, domains []egress.Domain) 
 	return squidReconfigure(c.binPath, c.confPath)
 }
 
-// RemoveTask deletes the user's token line, domains file, and fragment, then
-// reconfigures. A missing artifact is not an error (idempotent cleanup), but any
-// other removal failure (e.g. EPERM) is surfaced rather than silently leaving a
-// stale fragment that a later reconfigure would reload.
+// RemoveTask deletes the user's token line and ACL fragment, then reconfigures.
+// A missing artifact is not an error (idempotent cleanup), but any other removal
+// failure (e.g. EPERM) is surfaced rather than silently leaving a stale fragment
+// that a later reconfigure would reload.
 func (c *SquidController) RemoveTask(user string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := os.Remove(c.fragPath(user)); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.Remove(c.domainsPath(user)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	if err := c.removeToken(user); err != nil {
@@ -109,20 +103,10 @@ func (c *SquidController) Rotate() error {
 	return squidRotate(c.binPath, c.confPath)
 }
 
-func (c *SquidController) upsertToken(user, secret string) error {
-	lines := c.readTokenLines()
-	out := lines[:0:0]
-	for _, ln := range lines {
-		if f := strings.Fields(ln); len(f) >= 1 && f[0] == user {
-			continue // drop any prior entry for this user
-		}
-		out = append(out, ln)
-	}
-	out = append(out, user+" "+secret)
-	return os.WriteFile(c.tokenPath(), []byte(strings.Join(out, "\n")+"\n"), 0o600)
-}
-
-func (c *SquidController) removeToken(user string) error {
+// tokenLinesWithout returns the current task-token lines with any entry for
+// user dropped (matched on the first whitespace-separated field). Shared by
+// upsertToken and removeToken so the filter logic lives in one place.
+func (c *SquidController) tokenLinesWithout(user string) []string {
 	lines := c.readTokenLines()
 	out := lines[:0:0]
 	for _, ln := range lines {
@@ -131,6 +115,16 @@ func (c *SquidController) removeToken(user string) error {
 		}
 		out = append(out, ln)
 	}
+	return out
+}
+
+func (c *SquidController) upsertToken(user, secret string) error {
+	out := append(c.tokenLinesWithout(user), user+" "+secret)
+	return os.WriteFile(c.tokenPath(), []byte(strings.Join(out, "\n")+"\n"), 0o600)
+}
+
+func (c *SquidController) removeToken(user string) error {
+	out := c.tokenLinesWithout(user)
 	body := ""
 	if len(out) > 0 {
 		body = strings.Join(out, "\n") + "\n"

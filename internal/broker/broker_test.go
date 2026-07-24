@@ -68,17 +68,27 @@ func TestGitURLRef(t *testing.T) {
 	}
 }
 
+// runPushGate drives the production diff-approval gate (gatePushMarked) for a
+// bare task id. The gate-behavior tests below care only about the approved
+// bool; the marker fields and cause are exercised in gatecause_test.go, so a
+// minimal taskRun suffices.
+func runPushGate(b *Broker, ctx context.Context, id string) bool {
+	ok, _ := b.gatePushMarked(ctx, &taskRun{b: b, id: id}, "diff")
+	return ok
+}
+
 func TestGatePush_AutoApproveBypassesGate(t *testing.T) {
 	b := &Broker{AuditRoot: t.TempDir()}
-	if !b.gatePush(context.Background(), "task1", "diff", true) {
-		t.Fatal("AutoApprove=true must return true without waiting")
+	tr := &taskRun{b: b, id: "task1", autoApprove: true}
+	if ok, cause := b.gatePushMarked(context.Background(), tr, "diff"); !ok || cause != gateApproved {
+		t.Fatalf("AutoApprove=true must return (true, gateApproved) without waiting; got (%v, %v)", ok, cause)
 	}
 }
 
 func TestGatePush_BlocksUntilApprove(t *testing.T) {
 	b := &Broker{AuditRoot: t.TempDir()}
 	done := make(chan bool, 1)
-	go func() { done <- b.gatePush(context.Background(), "task2", "diff", false) }()
+	go func() { done <- runPushGate(b, context.Background(), "task2") }()
 
 	if !waitFor(50*time.Millisecond, func() bool {
 		b.pendingMu.Lock()
@@ -100,17 +110,17 @@ func TestGatePush_BlocksUntilApprove(t *testing.T) {
 	select {
 	case got := <-done:
 		if !got {
-			t.Fatal("gatePush returned false after approve")
+			t.Fatal("push gate returned false after approve")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("gatePush did not return after approve")
+		t.Fatal("push gate did not return after approve")
 	}
 }
 
 func TestGatePush_DenyReturnsFalse(t *testing.T) {
 	b := &Broker{AuditRoot: t.TempDir()}
 	done := make(chan bool, 1)
-	go func() { done <- b.gatePush(context.Background(), "task3", "diff", false) }()
+	go func() { done <- runPushGate(b, context.Background(), "task3") }()
 
 	if !waitFor(50*time.Millisecond, func() bool {
 		b.pendingMu.Lock()
@@ -132,10 +142,10 @@ func TestGatePush_DenyReturnsFalse(t *testing.T) {
 	select {
 	case got := <-done:
 		if got {
-			t.Fatal("gatePush returned true after deny")
+			t.Fatal("push gate returned true after deny")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("gatePush did not return after deny")
+		t.Fatal("push gate did not return after deny")
 	}
 }
 
@@ -143,7 +153,7 @@ func TestGatePush_ClientDisconnectAbortsPush(t *testing.T) {
 	b := &Broker{AuditRoot: t.TempDir()}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan bool, 1)
-	go func() { done <- b.gatePush(ctx, "task4", "diff", false) }()
+	go func() { done <- runPushGate(b, ctx, "task4") }()
 
 	if !waitFor(50*time.Millisecond, func() bool {
 		b.pendingMu.Lock()
@@ -157,10 +167,10 @@ func TestGatePush_ClientDisconnectAbortsPush(t *testing.T) {
 	select {
 	case got := <-done:
 		if got {
-			t.Fatal("gatePush returned true after client disconnect")
+			t.Fatal("push gate returned true after client disconnect")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("gatePush did not abort after client disconnect")
+		t.Fatal("push gate did not abort after client disconnect")
 	}
 }
 
@@ -318,7 +328,7 @@ func TestHandleKill_FiresStoredCancel(t *testing.T) {
 
 // TestHandleKill_AlsoUnblocksApprovalGate is the integration of the two
 // concerns: a task waiting at the approval gate should be unblocked when
-// /admin/kill cancels its context, returning false from gatePush. This
+// /admin/kill cancels its context, returning false from the push gate. This
 // is what makes "drydock kill" useful when a task is sitting at approval.
 func TestHandleKill_AlsoUnblocksApprovalGate(t *testing.T) {
 	b := &Broker{AuditRoot: t.TempDir()}
@@ -326,7 +336,7 @@ func TestHandleKill_AlsoUnblocksApprovalGate(t *testing.T) {
 	b.registerTask("t-gate", "git@github.com:o/r", "go", cancel)
 
 	done := make(chan bool, 1)
-	go func() { done <- b.gatePush(ctx, "t-gate", "diff", false) }()
+	go func() { done <- runPushGate(b, ctx, "t-gate") }()
 
 	if !waitFor(50*time.Millisecond, func() bool {
 		b.pendingMu.Lock()
@@ -348,10 +358,10 @@ func TestHandleKill_AlsoUnblocksApprovalGate(t *testing.T) {
 	select {
 	case got := <-done:
 		if got {
-			t.Fatal("gatePush returned true after kill")
+			t.Fatal("push gate returned true after kill")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("gatePush did not return after kill")
+		t.Fatal("push gate did not return after kill")
 	}
 }
 
@@ -542,7 +552,7 @@ func TestHandleApprove_AlreadySignaledIs409(t *testing.T) {
 	// channel; the second must observe the conflict, not panic.
 	b := &Broker{AuditRoot: t.TempDir()}
 	done := make(chan bool, 1)
-	go func() { done <- b.gatePush(context.Background(), "twice", "diff", false) }()
+	go func() { done <- runPushGate(b, context.Background(), "twice") }()
 	if !waitFor(50*time.Millisecond, func() bool {
 		b.pendingMu.Lock()
 		_, ok := b.pending["twice"]
@@ -786,14 +796,14 @@ func TestDefaultModelNotLeakedToOpenAICompat(t *testing.T) {
 func TestGatePush_AutoDeniesOnApprovalTimeout(t *testing.T) {
 	b := &Broker{AuditRoot: t.TempDir(), ApprovalTimeout: 40 * time.Millisecond}
 	done := make(chan bool, 1)
-	go func() { done <- b.gatePush(context.Background(), "task-to", "a diff", false) }()
+	go func() { done <- runPushGate(b, context.Background(), "task-to") }()
 	select {
 	case approved := <-done:
 		if approved {
 			t.Error("expected auto-deny (false) on approval_timeout, got approved")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("gatePush did not return; approval_timeout not enforced")
+		t.Fatal("push gate did not return; approval_timeout not enforced")
 	}
 }
 

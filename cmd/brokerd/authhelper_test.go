@@ -7,6 +7,25 @@ import (
 	"testing"
 )
 
+func TestParseHelperLine(t *testing.T) {
+	cases := []struct {
+		line, user, pass string
+	}{
+		{"alice s3cret", "alice", "s3cret"},             // plain
+		{"  alice   s3cret  ", "alice", "s3cret"},       // extra whitespace trimmed/split
+		{"a%20b p%2Fw", "a b", "p/w"},                   // URL-escaped space and slash round-trip
+		{"user%40host tok%3Aen", "user@host", "tok:en"}, // escaped @ and :
+		{"alice", "", ""},                               // fewer than two fields → empty (deny)
+		{"", "", ""},                                    // empty line → empty
+	}
+	for _, c := range cases {
+		u, p := parseHelperLine(c.line)
+		if u != c.user || p != c.pass {
+			t.Errorf("parseHelperLine(%q) = (%q, %q), want (%q, %q)", c.line, u, p, c.user, c.pass)
+		}
+	}
+}
+
 func TestRunSquidAuthHelper_OKAndERR(t *testing.T) {
 	dir := t.TempDir()
 	tok := filepath.Join(dir, "tokens")

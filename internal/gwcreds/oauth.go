@@ -9,6 +9,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"drydock/internal/atomicfile"
 )
 
 // CredSnapshot holds the OAuth token pair and its expiry.
@@ -47,11 +49,7 @@ func (f *fileStore) Save(s CredSnapshot) error {
 	if err != nil {
 		return err
 	}
-	tmp := f.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, f.path)
+	return atomicfile.Write(f.path, data, 0o600)
 }
 
 // OAuthCred satisfies gateway.Credential (via structural typing) for a Claude

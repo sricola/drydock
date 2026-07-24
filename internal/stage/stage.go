@@ -166,19 +166,8 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
-	var buf bytes.Buffer
-	_, cerr := io.CopyN(&buf, stdout, max)
-	truncated := false
-	switch cerr {
-	case nil:
-		// Read exactly max bytes; there may be more. Drain the rest (discarded,
-		// so memory stays bounded) and mark the diff truncated.
-		if extra, _ := io.Copy(io.Discard, stdout); extra > 0 {
-			truncated = true
-		}
-	case io.EOF:
-		// The whole diff fit under the cap.
-	default:
+	buf, truncated, cerr := capCopy(stdout, max)
+	if cerr != nil {
 		_ = cmd.Wait()
 		return "", cerr
 	}
@@ -188,7 +177,30 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 	if truncated {
 		return "", fmt.Errorf("%w (%d MiB)", ErrDiffTooLarge, max>>20)
 	}
-	return buf.String(), nil
+	return buf, nil
+}
+
+// capCopy reads from r into a buffer bounded to max bytes. If r yields more than
+// max, it drains and discards the excess (so a pipe writer is never left blocked
+// on a full pipe) and reports truncated=true; the caller decides what an oversize
+// stream means. A read error other than io.EOF is returned as-is.
+func capCopy(r io.Reader, max int64) (string, bool, error) {
+	var buf bytes.Buffer
+	_, cerr := io.CopyN(&buf, r, max)
+	switch cerr {
+	case nil:
+		// Read exactly max bytes; there may be more. Drain the rest (discarded,
+		// so memory stays bounded) and mark it truncated.
+		if extra, _ := io.Copy(io.Discard, r); extra > 0 {
+			return buf.String(), true, nil
+		}
+		return buf.String(), false, nil
+	case io.EOF:
+		// The whole stream fit under the cap.
+		return buf.String(), false, nil
+	default:
+		return "", false, cerr
+	}
 }
 
 // cappedBuffer collects up to max bytes and silently drops the rest, while
@@ -258,15 +270,6 @@ func (s *Stage) Commit(branch, message string) error {
 func (s *Stage) PushBranch(localBranch, remoteBranch string) error {
 	_, err := s.git("push", "origin", localBranch+":"+remoteBranch)
 	return err
-}
-
-// Push commits then pushes to the same-named remote branch. Kept for callers
-// that do not need recovery.
-func (s *Stage) Push(branch, message string) error {
-	if err := s.Commit(branch, message); err != nil {
-		return err
-	}
-	return s.PushBranch(branch, branch)
 }
 
 // PushEnv is the curated host env a PR/MR adapter must run with: the allowlisted
