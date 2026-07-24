@@ -23,7 +23,9 @@ const squidExecTimeout = 30 * time.Second
 var squidReconfigure = func(binPath, confPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), squidExecTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binPath, "-k", "reconfigure", "-f", confPath).CombinedOutput()
+	cmd := exec.CommandContext(ctx, binPath, "-k", "reconfigure", "-f", confPath)
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("netfw: squid reconfigure: %w\n%s", err, out)
 	}
@@ -35,7 +37,9 @@ var squidReconfigure = func(binPath, confPath string) error {
 var squidRotate = func(binPath, confPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), squidExecTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binPath, "-k", "rotate", "-f", confPath).CombinedOutput()
+	cmd := exec.CommandContext(ctx, binPath, "-k", "rotate", "-f", confPath)
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("netfw: squid rotate: %w\n%s", err, out)
 	}
