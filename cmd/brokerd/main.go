@@ -196,6 +196,14 @@ func main() {
 	// Failure is loud but NOT fatal: exiting would make launchd's KeepAlive
 	// loop; staying up lets tasks fail with a clear per-task error instead.
 	containerRun := func(args ...string) (string, error) {
+		// The liveness probe (`network ls`) goes through the bounded path so a
+		// wedged container daemon can't hang boot before the shutdown handler is
+		// armed. `system start` is left unbounded on purpose: a first-run kernel
+		// install legitimately takes minutes and the operator expects to wait.
+		if len(args) > 0 && args[0] == "network" {
+			out, err := execCmd("container", args...)
+			return string(out), err
+		}
 		out, err := exec.Command("container", args...).CombinedOutput()
 		return string(out), err
 	}
