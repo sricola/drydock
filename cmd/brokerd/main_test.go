@@ -495,3 +495,26 @@ func TestSeedAggregateFromAudit_IgnoresForgedAgentCost(t *testing.T) {
 		t.Error("a forged (non-broker) agent cost of 9999 seeded the ledger; the seed must trust only src:broker")
 	}
 }
+
+// TestExecCmd_Timeout verifies the production container shell-out (execCmd) is
+// bounded: a command that outlives runCmdTimeout is killed and returns promptly,
+// rather than hanging boot on a wedged container daemon.
+func TestExecCmd_Timeout(t *testing.T) {
+	orig := runCmdTimeout
+	runCmdTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { runCmdTimeout = orig })
+
+	// The command sleeps far longer than runCmdTimeout. execCmd must return well
+	// before its natural end, via one of two bounded paths: the ctx-deadline kill
+	// closes the pipe at once (when sh exec-replaces sleep), or, if a forked child
+	// keeps the pipe open (some shells), the 5s WaitDelay backstop force-closes
+	// it. Either way it is bounded; the 15s ceiling is far under the 30s sleep so
+	// a broken bound (which would run the full sleep) fails loudly.
+	start := time.Now()
+	if _, err := execCmd("sh", "-c", "sleep 30"); err == nil {
+		t.Fatal("expected a timeout error from a command that outlives runCmdTimeout")
+	}
+	if d := time.Since(start); d > 15*time.Second {
+		t.Fatalf("execCmd did not stay bounded: took %v (want well under the 30s sleep)", d)
+	}
+}

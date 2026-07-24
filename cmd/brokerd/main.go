@@ -135,9 +135,26 @@ var brokerdLock *os.File
 // production behaviour is identical to what the inline calls were. Tests
 // replace this variable with a fake that records calls without spawning
 // real processes.
-var runCmd = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+// runCmdTimeout bounds every runCmd shell-out (all are `container` control
+// calls: version, ls, run, rm, delete). A wedged container daemon would
+// otherwise hang boot (the version check, orphan prune, and anchor setup) or a
+// task's VM force-delete indefinitely — and during boot, before the shutdown
+// goroutine starts, a hung call leaves the daemon killable only by SIGKILL.
+// Generous: a healthy container op is sub-second; -d detaches immediately.
+// A var so a test can lower it.
+var runCmdTimeout = 60 * time.Second
+
+func execCmd(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 5 * time.Second
+	return cmd.CombinedOutput()
 }
+
+// runCmd is a package var so tests can stub the container CLI. Production is
+// execCmd (timeout-bounded).
+var runCmd = execCmd
 
 func main() {
 	// Hidden subcommand: squid invokes this same binary as its basic-auth
@@ -179,6 +196,14 @@ func main() {
 	// Failure is loud but NOT fatal: exiting would make launchd's KeepAlive
 	// loop; staying up lets tasks fail with a clear per-task error instead.
 	containerRun := func(args ...string) (string, error) {
+		// The liveness probe (`network ls`) goes through the bounded path so a
+		// wedged container daemon can't hang boot before the shutdown handler is
+		// armed. `system start` is left unbounded on purpose: a first-run kernel
+		// install legitimately takes minutes and the operator expects to wait.
+		if len(args) > 0 && args[0] == "network" {
+			out, err := execCmd("container", args...)
+			return string(out), err
+		}
 		out, err := exec.Command("container", args...).CombinedOutput()
 		return string(out), err
 	}
