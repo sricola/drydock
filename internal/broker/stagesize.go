@@ -14,18 +14,29 @@ import (
 // wall. These polling bounds are the early-cancel layer on top: they stop a
 // task cleanly before it slams into ENOSPC, and they are the only layer on
 // non-darwin builds (CI). Worst-case soft overshoot is about
-// fill_rate * stageSizeInterval, now capped by the image size. Vars (not
-// consts) only so tests can lower them; nothing in production writes them.
+// fill_rate * stageSizeInterval, now capped by the image size.
+
+// Defaults for the polling stage bounds, exported so the generated
+// security-defaults table (cmd/docs-build) renders them from code instead
+// of restating them (F-10).
+const (
+	DefaultMaxStageBytes     int64 = 4 << 30 // total file bytes under the stage
+	DefaultMaxStageFiles           = 200_000 // file-count (inode) bound
+	DefaultMinFreeStageBytes int64 = 2 << 30 // host free-space floor
+)
+
+// Vars (not consts) only so tests can lower them; nothing in production
+// writes them.
 var (
-	maxStageBytes     int64 = 4 << 30 // total file bytes under the stage
-	maxStageFiles           = 200_000 // file-count (inode) bound
-	stageSizeInterval       = 2 * time.Second
+	maxStageBytes     = DefaultMaxStageBytes
+	maxStageFiles     = DefaultMaxStageFiles
+	stageSizeInterval = 2 * time.Second
 )
 
 // minFreeStageBytes is the host free space below which a task is refused at
-// submit (preflight) or cancelled mid-run (monitor): fail closed rather than
-// exhaust the host disk.
-var minFreeStageBytes int64 = 2 << 30 // 2 GiB
+// submit (preflight) or cancelled mid-run (monitor): fail closed rather
+// than exhaust the host disk.
+var minFreeStageBytes = DefaultMinFreeStageBytes
 
 // freeBytes returns the bytes available to an unprivileged user on the
 // filesystem containing path.
