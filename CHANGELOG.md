@@ -21,6 +21,10 @@ entry below corresponds to a Git tag of the same name.
   `stage_quota_gb` (default 8 GiB). The polling guard remains as the
   early-cancel layer. VM-verified by the new A8 red-team test.
 
+### Docs
+
+- The July 2026 red-team review is committed at docs/audits/, with a closure addendum mapping every finding to its fix.
+
 ## v0.6.3 (2026-07-23)
 
 A follow-up security-hardening release closing the residual items from the

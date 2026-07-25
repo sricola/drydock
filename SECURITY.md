@@ -112,6 +112,10 @@ carries supply-chain attestations you can check before trusting a binary
   The release tarball itself is not byte-reproducible (tar/gzip embed
   metadata), but the binaries inside it are, which is what matters.
 
+Past security reviews are kept in-tree: the July 2026 red-team review and
+its remediation history live at
+[docs/audits/2026-07-12-red-team-review.md](docs/audits/2026-07-12-red-team-review.md).
+
 ## Documented residuals
 
 These are known limits we've decided not to engineer around at v0.x.
