@@ -669,10 +669,12 @@ func watchStageSize(root, hostRoot string, interval time.Duration, onExceed func
 
 and change line 96 to `if stageOverLimit(root, maxStageBytes, maxStageFiles) || belowFreeFloor(hostRoot) {`.
 
-(d) runSandbox call site (broker.go line ~641):
+(d) runSandbox call site (broker.go line ~641). Correction from review:
+stageRoot there is the work dir (stageDir/work), so its parent is the quota
+image's mountpoint, NOT the host fs; the host path must come from the Broker:
 
 ```go
-	sizeGuard := watchStageSize(stageRoot, filepath.Dir(stageRoot), stageSizeInterval, runCancel)
+	sizeGuard := watchStageSize(stageRoot, tr.b.StageRoot, stageSizeInterval, runCancel)
 ```
 
 (e) Update every `watchStageSize(` call in `internal/broker/stagesize_test.go` to pass the same dir twice (`watchStageSize(dir, dir, ...)`), preserving each test's intent.
