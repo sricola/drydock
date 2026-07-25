@@ -55,6 +55,13 @@ func AttachQuota(root string, sizeBytes int64) error {
 	}
 	if _, err := runHdiutil("attach", img,
 		"-mountpoint", root, "-nobrowse", "-noautoopen"); err != nil {
+		// A failed attach can still have attached the device (a timeout
+		// between kernel attach and CLI exit); tear it down before the
+		// backing file is removed, or the mount becomes invisible to
+		// every later cleanup (they gate on the image file existing).
+		if isMounted(root) {
+			_, _ = runHdiutil("detach", root, "-force")
+		}
 		_ = os.Remove(img)
 		return err
 	}
@@ -62,7 +69,7 @@ func AttachQuota(root string, sizeBytes int64) error {
 }
 
 // isMounted reports whether root is a mountpoint (its device differs from
-// its parent's). Statfs errors read as "not mounted": callers then skip the
+// its parent's). Stat errors read as "not mounted": callers then skip the
 // detach and fall through to the file removal, which is the safe direction.
 func isMounted(root string) bool {
 	var a, b syscall.Stat_t
