@@ -11,7 +11,7 @@ What the shipped defaults bound, how hard each bound is, and the test that enfor
 | `task_max_requests` | 0 (0 falls closed to 1000) | Total gateway requests per task, every auth mode. Hard at admission. | `TestRequestCap_RejectsOverLimit` |
 | `max_request_cost_usd` | 0.00 (0 = reservation off) | Per-request USD reservation taken at admission. Off by default; setting it makes the per-task budget reservation-backed. | `TestAdmit_InFlightReservationBounds` |
 | `aggregate_budget_usd` | 0.00 (0 = off) | Cross-task USD ceiling per api_key vendor over aggregate_window. Soft in the same post-hoc sense as task_budget_usd. | `TestGateway_AggregateCap` |
-| `task_timeout` | 30m0s | Wall-clock bound per task via context.WithTimeout (internal/broker); VM teardown at expiry is not covered by an automated test. The cited test pins the default value. | `TestDefaults_MatchV01EnvFallbacks` |
+| `task_timeout` | 30m0s | Wall-clock bound per task: on expiry the run context is cancelled and the task terminates without pushing (VM force-delete is best effort). Hard. | `TestHandleTask_TimeoutTerminatesAndDoesNotPush` |
 | `stage_quota_gb` | 8 | Per-task disk bound: the stage dir is an APFS sparse image of this size (macOS). Hard (filesystem ENOSPC). | `TestQuota_HardBoundENOSPC` |
 | `(built-in) stage soft bounds` | 4 GiB, 200000 files, 2 GiB host free floor | Polling guard (2s) cancels a task growing past these, before the hard quota wall. Soft by design; the quota is the wall. | `TestRedteam_A8_WorkQuotaHardBound` |
 | `(built-in) review diff cap` | 32 MiB | A staged diff over the cap fails the task closed; a diff is never truncated for review. Hard. | `TestCaptureDiff_OversizeDiffFailsClosed` |
