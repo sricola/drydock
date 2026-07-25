@@ -145,6 +145,9 @@ type Broker struct {
 	// in production falls back to stage.AttachQuota (a no-op off macOS).
 	// Tests inject fakes.
 	attachQuota func(root string, sizeBytes int64) error
+	// watchStage seams the stage-size guard so a test can capture the host
+	// root the free-floor is measured on. nil in production -> watchStageSize.
+	watchStage func(root, hostRoot string, interval time.Duration, onExceed func()) *stageSizeGuard
 	// newAdapter selects the remote PR/MR adapter. nil in production ->
 	// remote.AdapterFor. White-box tests inject a fake to drive the
 	// best-effort PR-open path without shelling out to gh/glab/tea.
@@ -677,7 +680,11 @@ func (tr *taskRun) runSandbox(args []string) error {
 	// the work dir inside the (possibly quota-image-backed) stage, and its
 	// parent is the image mountpoint, so neither works: b.StageRoot is the
 	// one path that stays on the host no matter the stage layout (F-04).
-	sizeGuard := watchStageSize(stageRoot, b.StageRoot, stageSizeInterval, runCancel)
+	watch := b.watchStage
+	if watch == nil {
+		watch = watchStageSize
+	}
+	sizeGuard := watch(stageRoot, b.StageRoot, stageSizeInterval, runCancel)
 	defer sizeGuard.stop()
 	if err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf)); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,

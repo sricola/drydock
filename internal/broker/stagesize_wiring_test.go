@@ -131,3 +131,31 @@ func TestHandleTask_QuotaAttachedBeforePrepare(t *testing.T) {
 		t.Errorf("quota size = %d, want %d", gotSize, int64(2<<30))
 	}
 }
+
+// The stage-size guard's free-floor must be measured on the HOST filesystem
+// (b.StageRoot), never on filepath.Dir(stageRoot) (the quota image's own
+// mountpoint): a silent revert there would make the guard measure the
+// image's own free space and never trip. Pins the wiring via a seam so a
+// revert fails this test instead of only a code comment.
+func TestRunSandbox_FreeFloorMeasuredOnHostRoot(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "d"}
+	b := testBroker(t, "anthropic", st, &fakeGrant{}, writesResult(`{"type":"result","subtype":"success"}`))
+
+	var gotHost string
+	b.watchStage = func(root, hostRoot string, iv time.Duration, onExceed func()) *stageSizeGuard {
+		gotHost = hostRoot
+		return watchStageSize(root, hostRoot, iv, onExceed)
+	}
+
+	_, _, terminal := submit(b, `{"repo_ref":"git@github.com:x/y","instruction":"go","auto_approve":true}`)
+
+	if terminal["event"] == "error" {
+		t.Fatalf("unexpected error terminal: %+v", terminal)
+	}
+	if gotHost != b.StageRoot {
+		t.Errorf("hostRoot = %q, want b.StageRoot %q", gotHost, b.StageRoot)
+	}
+	if gotHost == filepath.Dir(st.WorkDir()) {
+		t.Error("hostRoot equals filepath.Dir(stageRoot); want the host root, not the quota image mountpoint's parent")
+	}
+}
