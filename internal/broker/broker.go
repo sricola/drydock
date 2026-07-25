@@ -673,7 +673,11 @@ func (tr *taskRun) runSandbox(args []string) error {
 	if tr.st != nil {
 		stageRoot = tr.st.WorkDir()
 	}
-	sizeGuard := watchStageSize(stageRoot, filepath.Dir(stageRoot), stageSizeInterval, runCancel)
+	// The free floor must be measured on the HOST filesystem. stageRoot is
+	// the work dir inside the (possibly quota-image-backed) stage, and its
+	// parent is the image mountpoint, so neither works: b.StageRoot is the
+	// one path that stays on the host no matter the stage layout (F-04).
+	sizeGuard := watchStageSize(stageRoot, b.StageRoot, stageSizeInterval, runCancel)
 	defer sizeGuard.stop()
 	if err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf)); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
