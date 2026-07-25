@@ -12,6 +12,7 @@ package stage
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +99,18 @@ func teardownQuota(root string) error {
 			// A straggling fd (dying VM, Spotlight) can hold the mount;
 			// -force revokes it. The VM is gone by every caller's point.
 			if _, ferr := runHdiutil("detach", root, "-force"); ferr != nil {
+				// Doubly degraded: even the forced detach failed, so the
+				// image is still mounted and we must NOT delete its backing
+				// file (that would strand a live, untracked mount). Leave
+				// both in place and alert loudly with the exact paths: a
+				// caller may swallow the returned error, but this line is not
+				// silent. The next brokerd boot re-runs ReapOrphans, which
+				// calls teardownQuota again and usually succeeds once the
+				// straggling fd is gone; a persistently stuck mount needs a
+				// manual `diskutil eject -force` then `rm` of the image.
+				slog.Error("stage quota image stuck mounted; manual cleanup needed",
+					"mount", root, "image", img, "err", ferr,
+					"hint", "diskutil eject -force "+root+" && rm "+img)
 				return ferr
 			}
 		}
