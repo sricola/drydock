@@ -334,13 +334,24 @@ func (s *Stage) Cleanup() error {
 	if clean == "" || clean == "/" || clean == "." || !filepath.IsAbs(clean) {
 		return fmt.Errorf("stage: refusing to clean unsafe path %q", s.Root)
 	}
-	return os.RemoveAll(s.Root)
+	// Quota-backed stage (F-04): detach the image and delete its backing
+	// file first; RemoveAll on a live mountpoint would delete inside the
+	// image and then fail on the mountpoint itself.
+	if err := teardownQuota(clean); err != nil {
+		return err
+	}
+	return os.RemoveAll(clean)
 }
 
 // Reopen reconstructs a Stage from an existing root left by a prior Prepare
 // (e.g. an awaiting-approval task that survived a brokerd restart), without
 // cloning. It errors if the work tree or the host-only git dir is missing.
 func Reopen(root string) (*Stage, error) {
+	// A quota-backed stage that survived a host reboot has its image
+	// detached; remount it so the work tree is visible again (F-04).
+	if err := reattachQuota(root); err != nil {
+		return nil, fmt.Errorf("stage: cannot reattach quota image for %q: %w", root, err)
+	}
 	workDir := filepath.Join(root, "work")
 	gitDir := filepath.Join(root, "git")
 	for _, d := range []string{workDir, gitDir} {
@@ -355,8 +366,10 @@ func Reopen(root string) (*Stage, error) {
 // clear stage dirs orphaned by a crash (the per-task Cleanup defer never ran).
 // SAFE ONLY AT BOOT, when no task is live. Applies the same guard as Cleanup so
 // a misconfigured (empty/relative/root-shaped) StageRoot can't widen the blast
-// radius. A missing root is a no-op. Non-directory entries are left untouched.
-// Dirs named in keep are skipped (awaiting-approval stages preserved for resume).
+// radius. A missing root is a no-op. A quota-backed dir (F-04) has its image
+// detached and deleted before the dir is removed; an orphan .sparseimage file
+// with no mountpoint dir is deleted directly. Dirs and images named in keep
+// are skipped (awaiting-approval stages preserved for resume).
 // Returns the count of dirs reaped and the first error (per-entry errors are
 // non-fatal and don't abort the sweep).
 func ReapOrphans(root string, keep map[string]bool) (int, error) {
@@ -375,12 +388,29 @@ func ReapOrphans(root string, keep map[string]bool) (int, error) {
 	var firstErr error
 	for _, e := range entries {
 		if !e.IsDir() {
+			// An orphan quota image whose mountpoint dir is already gone
+			// (F-04). Mounted images always have their dir, so a bare
+			// .sparseimage here is safe to delete unless its task is kept.
+			if id, ok := strings.CutSuffix(e.Name(), ".sparseimage"); ok && !keep[id] {
+				if rerr := os.Remove(filepath.Join(root, e.Name())); rerr != nil && !os.IsNotExist(rerr) && firstErr == nil {
+					firstErr = rerr
+				}
+			}
 			continue
 		}
 		if keep[e.Name()] {
 			continue // awaiting-approval stage: preserved for resume
 		}
-		if rerr := os.RemoveAll(filepath.Join(root, e.Name())); rerr != nil {
+		child := filepath.Join(root, e.Name())
+		// Detach + delete the quota image (no-op for plain stages) before
+		// removing the dir, same ordering reason as Cleanup (F-04).
+		if terr := teardownQuota(child); terr != nil {
+			if firstErr == nil {
+				firstErr = terr
+			}
+			continue
+		}
+		if rerr := os.RemoveAll(child); rerr != nil {
 			if firstErr == nil {
 				firstErr = rerr
 			}
