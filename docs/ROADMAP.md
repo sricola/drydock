@@ -105,17 +105,26 @@ see SECURITY.md "Verifying a release". The tarball itself is not byte-stable
 but the binaries inside it (what actually runs) are verifiable.
 
 ### 2.5 Dependency-pinning policy: *landed*
-**Pin policy:** top-level external inputs are pinned and bumped deliberately
-(the apt and npm transitive graphs still float at image build; locking them
-is tracked as F-09 follow-up):
+**Pin policy:** top-level external inputs are pinned and bumped deliberately:
 - the sandbox base image `node:22-bookworm-slim` is pinned **by digest** in
   `image/Dockerfile` (re-pull + `container image inspect` to bump);
 - the agent CLIs (`@anthropic-ai/claude-code`, `@openai/codex`), npm itself
   (the base image's bundled npm vendors its own node_modules, a CVE surface
   that only an npm bump refreshes), and the Go tarball are version-pinned via
   `ARG`s in the Dockerfile;
+- apt resolves against a dated snapshot.debian.org archive (`DEBIAN_SNAPSHOT`),
+  and npm resolution (including transitives) is cut at a pinned date
+  (`NPM_BEFORE`), so two builds of the same commit produce the same
+  dependency set (F-09); both dates move deliberately with the weekly bump
+  lane (`cmd/cli-bump -before`), so a bump never leaves a freshly pinned
+  package unresolvable against a stale cutoff;
 - the Go toolchain is pinned to `go 1.26.5` in `go.mod`;
 - `go.sum` pins module checksums.
+
+Accepted residuals: a dated snapshot buys reproducibility, not provenance,
+so registry/mirror trust (snapshot.debian.org, registry.npmjs.org) is not
+independently verified; and two of the pinned CLIs (`@anthropic-ai/claude-code`,
+`opencode-ai`) run root install scripts because their packaging requires it.
 
 `govulncheck` runs in CI (`.github/workflows/test.yml`) and **fails the build on
 a known vulnerability** in any dependency.

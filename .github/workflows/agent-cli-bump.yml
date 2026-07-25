@@ -46,7 +46,7 @@ jobs:
         id: rewrite
         run: |
           set -euo pipefail
-          SUMMARY=$(printf '%s\n' "$VERSIONS" | go run ./cmd/cli-bump)
+          SUMMARY=$(printf '%s\n' "$VERSIONS" | go run ./cmd/cli-bump -before "$(date -u +%F)")
           {
             echo "summary<<EOF"
             printf '%s\n' "$SUMMARY"

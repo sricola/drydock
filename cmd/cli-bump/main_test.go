@@ -189,3 +189,29 @@ ARG GEMINI_CLI_VERSION=0.49.0
 		t.Error("poisoned string must not appear in output Dockerfile")
 	}
 }
+
+// -before: when a bump lands, ARG NPM_BEFORE moves with it, or the freshly
+// bumped pin (published after the old date) would fail the image build.
+// With no bumps, the date must not move (a date-only weekly PR is noise).
+func TestApplyBeforeDate(t *testing.T) {
+	df := "ARG NPM_BEFORE=2026-07-25\nARG CLAUDE_CODE_VERSION=2.1.207\n"
+
+	out, bumps := planBumps(df, map[string]string{"@anthropic-ai/claude-code": "2.2.0"})
+	if len(bumps) != 1 {
+		t.Fatalf("bumps = %v, want one", bumps)
+	}
+	out = applyBeforeDate(out, "2026-08-01", len(bumps) > 0)
+	if !strings.Contains(out, "ARG NPM_BEFORE=2026-08-01") {
+		t.Errorf("NPM_BEFORE not moved with the bump:\n%s", out)
+	}
+
+	same := applyBeforeDate(df, "2026-08-01", false)
+	if !strings.Contains(same, "ARG NPM_BEFORE=2026-07-25") {
+		t.Errorf("NPM_BEFORE moved with no bumps:\n%s", same)
+	}
+
+	bad := applyBeforeDate(df, "8/1/2026; rm -rf /", true)
+	if !strings.Contains(bad, "ARG NPM_BEFORE=2026-07-25") {
+		t.Errorf("malformed date was written into the Dockerfile:\n%s", bad)
+	}
+}
