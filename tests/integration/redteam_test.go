@@ -5,6 +5,8 @@ package integration
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"drydock/internal/gateway"
 	"drydock/internal/gwcreds"
 	"drydock/internal/provider"
+	"drydock/internal/stage"
 )
 
 // gwEnvNames returns the injected env-var names for a vendor, sourced from the
@@ -312,5 +315,41 @@ func TestRedteam_A7_NoStatePersistsBetweenTasks(t *testing.T) {
 	}
 	if !strings.Contains(out, "absent") {
 		t.Errorf("expected the marker to be absent in a fresh VM; got:\n%s", out)
+	}
+}
+
+// A8: /work is quota-backed (F-04). An in-VM write flood hits the APFS
+// image's hard byte wall (ENOSPC through virtiofs), and the sparse backing
+// file on the host never grows meaningfully past the quota. This is the
+// hard bound the polling stage guard cannot provide.
+func TestRedteam_A8_WorkQuotaHardBound(t *testing.T) {
+	requireContainer(t)
+	if runtime.GOOS != "darwin" {
+		t.Skip("quota images are hdiutil-backed; darwin only")
+	}
+	root := filepath.Join(t.TempDir(), "stage")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const quota = int64(256 << 20)
+	if err := stage.AttachQuota(root, quota); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = (&stage.Stage{Root: root}).Cleanup() })
+
+	out := containerRun(t, "run", "--rm", "--entrypoint", "/bin/bash",
+		"--mount", "type=bind,source="+root+",target=/work",
+		sandboxImage(), "-lc",
+		"dd if=/dev/zero of=/work/fill bs=1M count=1024 2>&1; df -h /work")
+
+	if !strings.Contains(out, "No space left") {
+		t.Errorf("A8: expected the in-VM flood to hit ENOSPC; got:\n%s", out)
+	}
+	fi, err := os.Stat(stage.QuotaImagePath(root))
+	if err != nil {
+		t.Fatalf("stat quota image: %v", err)
+	}
+	if fi.Size() > quota+(64<<20) {
+		t.Errorf("A8 BREACH: backing image grew to %d MiB, want <= quota (256 MiB) + 64 MiB slack", fi.Size()>>20)
 	}
 }

@@ -9,11 +9,13 @@ import (
 	"time"
 )
 
-// A task's /work is a plain host bind mount, so a hostile in-VM agent can fill
-// the host filesystem (dd of=/work/x) or exhaust inodes (millions of small
-// files). These are soft (polling) bounds that cancel such a task; worst-case
-// overshoot is about fill_rate * stageSizeInterval. Vars (not consts) only so
-// tests can lower them; nothing in production writes them.
+// A task's /work is bounded twice (F-04). On macOS the stage root is a
+// size-capped APFS sparse image (see internal/stage AttachQuota): the hard
+// wall. These polling bounds are the early-cancel layer on top: they stop a
+// task cleanly before it slams into ENOSPC, and they are the only layer on
+// non-darwin builds (CI). Worst-case soft overshoot is about
+// fill_rate * stageSizeInterval, now capped by the image size. Vars (not
+// consts) only so tests can lower them; nothing in production writes them.
 var (
 	maxStageBytes     int64 = 4 << 30 // total file bytes under the stage
 	maxStageFiles           = 200_000 // file-count (inode) bound

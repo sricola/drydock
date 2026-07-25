@@ -14,7 +14,7 @@ until Phases 1–2 make drydock self-evidently testable and reproducible.
 
 Honesty constraint (unchanged): no overclaiming. Credibility comes from
 *precise, checkable* claims plus loudly-stated limits: the `THREAT_MODEL.md`
-A1–A7 / N1–N6 split and the SECURITY.md residuals are the model, and this
+A1–A8 / N1–N6 split and the SECURITY.md residuals are the model, and this
 roadmap deepens them rather than papering over them.
 
 **Scope (deliberate non-goal):** drydock is a containment runtime for **coding
@@ -47,12 +47,13 @@ whether the attack can run host-side (pure Go, CI-able) or needs the sandbox VM
 | **A5** agent crafts a malicious diff to bypass the gate | submit a backdoor diff without `auto_approve`; deny; assert nothing is pushed | **covered** | host | `TestRedteam_A5_GateBlocksUnapprovedPush` |
 | **A6** agent widens its own egress | submit `egress_extra: evil:443`; deny; assert 403 and never reaches staging | **covered** | host | `TestRedteam_A6_EgressWidenDenied` |
 | **A7** task state persists between tasks | run two tasks; assert task 2 cannot see task 1's VM/stage; `--rm` + `Cleanup` ran | **covered** | VM (+ host `TestCleanup_*`) | `TestRedteam_A7_NoStatePersistsBetweenTasks` |
+| **A8** agent floods `/work` to exhaust host disk | in-VM: `dd` flood past the quota; assert ENOSPC and the backing image stays within slack of the quota | **covered** | VM | `TestRedteam_A8_WorkQuotaHardBound` |
 
-**Phase 1 status:** all seven A-claims are now backed by a runnable
+**Phase 1 status:** all eight A-claims are now backed by a runnable
 attack-that-fails. Host-side (A3–A6) run in CI via `make redteam`; VM-backed
-(A1, A2, A7) run via `make redteam-vm` on macOS / Apple silicon. THREAT_MODEL
-carries `Verified by:` links for each. Remaining polish: a nicer per-claim
-green/red report wrapper (currently raw `go test` output).
+(A1, A2, A7, A8) run via `make redteam-vm` on macOS / Apple silicon.
+THREAT_MODEL carries `Verified by:` links for each. Remaining polish: a nicer
+per-claim green/red report wrapper (currently raw `go test` output).
 
 ### 1.2 Adversarial tests for the gaps: *landed*
 The missing tests (A1, A2, A6, A7) are written, each named/labeled to its
@@ -60,7 +61,7 @@ claim; A3/A4/A5 were promoted into the same convention.
 
 ### 1.3 `make redteam`: *landed*
 A target that runs the whole labeled suite. The host-side subset (A3–A6) runs
-in CI; the VM subset (A1, A2, A7) runs via `make redteam-vm` on macOS /
+in CI; the VM subset (A1, A2, A7, A8) runs via `make redteam-vm` on macOS /
 Apple-silicon. This is the skeptic demo: *clone it, run it, watch every attack
 fail.* Remaining polish: a per-claim green/red report wrapper (currently raw
 `go test` output).
@@ -69,7 +70,7 @@ fail.* Remaining polish: a per-claim green/red report wrapper (currently raw
 Every A-claim cites its enforcing test.
 
 **Done when:** `make redteam` is green on a capable host, CI runs the host-side
-subset, and every A1–A7 cites a test.
+subset, and every A1–A8 cites a test.
 
 ---
 
@@ -352,8 +353,11 @@ a squid SSRF guard (4.10), plus 4.4 (`retry`), alongside audit durability, a
 loopback-only admin bind, and supply-chain nits. Since then: 4.14 (resume
 awaiting-approval across restart), the aggregate budget cap (4.3, now fully
 landed), 4.10 (plain-HTTP vs HTTPS-CONNECT edge documented in the egress doc),
-and 4.15 (precise gateway metering: per-request in-flight reservation) have all
-landed. See the Unreleased CHANGELOG entry for details.
+4.15 (precise gateway metering: per-request in-flight reservation), and the
+F-04 `/work` bound going from soft-polling-only to a hard `stage_quota_gb`
+APFS quota image on macOS (the polling guard remains as the early-cancel
+layer and the only bound on non-macOS builds) have all landed. See the
+Unreleased CHANGELOG entry for details.
 
 1. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
@@ -371,10 +375,10 @@ landed. See the Unreleased CHANGELOG entry for details.
 - **3D config-declared providers, 4.8 runtime abstraction**: stretch, by
   this doc's own YAGNI rule.
 
-**Standing note:** the A1/A2/A7 red-team tests need the VM (Apple `container`,
+**Standing note:** the A1/A2/A7/A8 red-team tests need the VM (Apple `container`,
 macOS 26 + Apple silicon), which hosted CI cannot provide, so CI runs only the
 host-side subset (A3–A6). To keep a release from shipping without the isolation
 tests behind its headline claims, `make release-preflight` (run automatically by
 `make tag-release VERSION=vX.Y.Z`) is the enforced local gate: it rebuilds the
 images and runs the unit suite, the host red-team (A3–A6), and the VM-backed
-red-team (A1/A2/A7) before the tag is created.
+red-team (A1/A2/A7/A8) before the tag is created.
