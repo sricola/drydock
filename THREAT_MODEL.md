@@ -85,7 +85,7 @@ Each claim below is backed by a test that runs the attack and asserts it
 fails. **Reproduce:** `make redteam` executes the host-side attacks (A3–A6) and
 watches them fail; the VM-backed claims (A1, A2, A7, A8) run via
 `make redteam-vm` on macOS / Apple silicon. With an installed build,
-`drydock redteam` runs the VM-backed attacks (A1, A2, A7, A8) live against your
+`drydock redteam` runs the VM-backed attacks (A1, A2, A7) live against your
 own sandbox, no source checkout, no API spend. See
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full coverage map.
 

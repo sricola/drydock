@@ -115,9 +115,10 @@ but the binaries inside it (what actually runs) are verifiable.
 - apt resolves against a dated snapshot.debian.org archive (`DEBIAN_SNAPSHOT`),
   and npm resolution (including transitives) is cut at a pinned date
   (`NPM_BEFORE`), so two builds of the same commit produce the same
-  dependency set (F-09); both dates move deliberately with the weekly bump
-  lane (`cmd/cli-bump -before`), so a bump never leaves a freshly pinned
-  package unresolvable against a stale cutoff;
+  dependency set (F-09); the npm cutoff (`NPM_BEFORE`) moves with the
+  weekly bump lane (`cmd/cli-bump -before`) so a bump never leaves a
+  freshly pinned package unresolvable against a stale cutoff; the Debian
+  snapshot (`DEBIAN_SNAPSHOT`) is bumped by hand;
 - the Go toolchain is pinned to `go 1.26.5` in `go.mod`;
 - `go.sum` pins module checksums.
 

@@ -88,13 +88,13 @@ test-integration: build
 
 # redteam runs the adversarial containment suite: each test performs an attack
 # from THREAT_MODEL.md and asserts it is blocked. Host-side claims (A3-A6) run
-# here and in CI. VM-backed claims (A1, A2, A7) need the sandbox — run
+# here and in CI. VM-backed claims (A1, A2, A7, A8) need the sandbox — run
 # `make test-integration` on macOS / Apple silicon (added as they land).
 REDTEAM := TestRedteam_A[0-9]|TestHostCommit_IgnoresPlantedHook|TestCaptureDiff_ExcludesTaskDir|TestGateway_RouteAllowlist
 redteam:
 	@echo "== drydock red-team — attacks that must fail (host-side: A3-A6) =="
 	go test -count=1 -run '$(REDTEAM)' ./...
-	@echo "== host-side containment verified. VM-backed A1/A2/A7: make redteam-vm =="
+	@echo "== host-side containment verified. VM-backed A1, A2, A7, A8: make redteam-vm =="
 
 # redteam-report runs the same red-team tests with -json output and pipes
 # through cmd/redteam-report to print a per-claim GREEN/RED table.
@@ -102,10 +102,10 @@ redteam-report:
 	@go test -json -count=1 -run '$(REDTEAM)' ./... | go run ./cmd/redteam-report
 
 # redteam-vm runs the VM-backed attacks (A1 key-exfil, A2 egress, A7
-# ephemerality) inside the sandbox. macOS / Apple silicon only; needs the
-# `container` runtime + the drydock-sandbox image (`make image`).
+# ephemerality, A8 disk-quota) inside the sandbox. macOS / Apple silicon only;
+# needs the `container` runtime + the drydock-sandbox image (`make image`).
 redteam-vm: build
-	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7) =="
+	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7, A8) =="
 	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
 
 # --- Release gate ---

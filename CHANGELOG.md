@@ -12,8 +12,9 @@ entry below corresponds to a Git tag of the same name.
 - **The sandbox image's apt and npm dependency graphs are date-pinned
   (F-09).** apt installs resolve against a dated snapshot.debian.org
   archive and every npm resolution is cut at a pinned --before date, so
-  two builds of the same commit produce the same dependency set; both
-  dates move deliberately via the weekly bump lane.
+  two builds of the same commit produce the same dependency set; the npm
+  --before date moves deliberately via the weekly bump lane, while the
+  Debian snapshot is bumped by hand.
 - **Each task's stage dir is now a size-capped APFS sparse image, making the
   /work disk bound hard (F-04).** A hostile in-VM agent writing through
   /work previously raced a 2-second polling guard and could overshoot by

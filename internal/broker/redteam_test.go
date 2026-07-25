@@ -16,7 +16,7 @@ import (
 // Red-team tests: each runs an actual attack from THREAT_MODEL.md and asserts
 // containment. `make redteam` collects these (TestRedteam_*) alongside the
 // stage-package enforcers for A3/A4. A failure here is a containment breach,
-// not a flake. The VM-backed claims (A1, A2, A7) live in the integration suite.
+// not a flake. The VM-backed claims (A1, A2, A7, A8) live in the integration suite.
 
 // A5 — a malicious diff must not reach origin without explicit approval. The
 // agent produces a backdoor diff; with no auto_approve and an operator DENY,
