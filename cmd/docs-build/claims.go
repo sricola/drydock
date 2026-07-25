@@ -41,7 +41,7 @@ func securityClaims() []claim {
 			"Cross-task USD ceiling per api_key vendor over aggregate_window. Soft in the same post-hoc sense as task_budget_usd.",
 			"TestGateway_AggregateCap"},
 		{"task_timeout", d.TaskTimeout.String(),
-			"Wall-clock bound per task; the VM is killed at expiry. Hard.",
+			"Wall-clock bound per task via context.WithTimeout (internal/broker); VM teardown at expiry is not covered by an automated test. The cited test pins the default value.",
 			"TestDefaults_MatchV01EnvFallbacks"},
 		{"stage_quota_gb", fmt.Sprintf("%d", d.StageQuotaGB),
 			"Per-task disk bound: the stage dir is an APFS sparse image of this size (macOS). Hard (filesystem ENOSPC).",
