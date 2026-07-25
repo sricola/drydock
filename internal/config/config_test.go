@@ -533,3 +533,23 @@ func TestLoad_RejectsTrailingYAMLDocument(t *testing.T) {
 		t.Fatalf("Load with trailing document: got %v, want trailing-document rejection", err)
 	}
 }
+
+func TestStageQuotaGB_DefaultEnvValidate(t *testing.T) {
+	if got := Defaults().StageQuotaGB; got != 8 {
+		t.Errorf("Defaults().StageQuotaGB = %d, want 8", got)
+	}
+	t.Setenv("DRYDOCK_STAGE_QUOTA_GB", "16")
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\n"), 0o644)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.StageQuotaGB != 16 {
+		t.Errorf("env override: StageQuotaGB = %d, want 16", c.StageQuotaGB)
+	}
+	c.StageQuotaGB = -1
+	if err := c.validate(); err == nil {
+		t.Error("validate accepted stage_quota_gb: -1, want error")
+	}
+}
