@@ -240,6 +240,10 @@ time, but does not detect it programmatically.
 
 ### N4. Cost exhaustion and runaway tasks
 
+See the [security defaults](https://sricola.github.io/drydock/docs/security-defaults.html)
+page for the full table of shipped bounds (budget, request caps, timeouts,
+disk quota), generated from code, and the test that enforces each one.
+
 **`api_key` mode (default).** The per-task USD ceiling (`task_budget_usd` /
 `DRYDOCK_TASK_BUDGET_USD`) caps spend but does not cap usefulness. An agent
 that burns $2 on no-op API calls hits the cap and produces no diff. Operators

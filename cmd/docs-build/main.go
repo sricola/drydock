@@ -16,7 +16,7 @@ const docsDir = "site/docs"
 var h1Re = regexp.MustCompile(`(?m)^#\s+(.+?)\s*$`)
 
 // order pins sidebar order; files not listed sort after, alphabetically.
-var order = []string{"index", "quickstart", "authentication", "models", "submitting-tasks", "web-ui", "daemon", "egress", "configuration", "troubleshooting", "threat-model"}
+var order = []string{"index", "quickstart", "authentication", "models", "submitting-tasks", "web-ui", "daemon", "egress", "configuration", "security-defaults", "troubleshooting", "threat-model"}
 
 func main() {
 	if err := run(); err != nil {
@@ -34,6 +34,13 @@ type source struct {
 func run() error {
 	tmpl, err := os.ReadFile(filepath.Join(docsDir, "_template.html"))
 	if err != nil {
+		return err
+	}
+
+	// Generate the security-defaults page from code first, so this run
+	// renders it like any other doc page (F-10).
+	if err := os.WriteFile(filepath.Join(docsDir, "security-defaults.md"),
+		[]byte(renderClaims(securityClaims())), 0o644); err != nil {
 		return err
 	}
 
