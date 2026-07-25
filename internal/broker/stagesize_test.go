@@ -41,7 +41,7 @@ func TestWatchStageSize_FiresOnOverLimit(t *testing.T) {
 	t.Cleanup(func() { maxStageBytes = orig })
 
 	fired := make(chan struct{}, 1)
-	g := watchStageSize(dir, 10*time.Millisecond, func() { fired <- struct{}{} })
+	g := watchStageSize(dir, dir, 10*time.Millisecond, func() { fired <- struct{}{} })
 	defer g.stop()
 
 	select {
@@ -93,7 +93,7 @@ func TestWatchStageSize_FiresOnLowFreeSpace(t *testing.T) {
 	t.Cleanup(func() { minFreeStageBytes = orig })
 
 	fired := make(chan struct{}, 1)
-	g := watchStageSize(dir, 10*time.Millisecond, func() { fired <- struct{}{} })
+	g := watchStageSize(dir, dir, 10*time.Millisecond, func() { fired <- struct{}{} })
 	defer g.stop()
 
 	select {

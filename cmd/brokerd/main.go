@@ -404,6 +404,7 @@ func main() {
 		DefaultAgent:         cfg.DefaultAgent,
 		ImageRef:             cfg.SandboxImage,
 		StageRoot:            cfg.StageRoot,
+		StageQuotaBytes:      int64(cfg.StageQuotaGB) << 30,
 		AuditRoot:            cfg.AuditRoot,
 		Timeout:              cfg.TaskTimeout,
 		ApprovalTimeout:      cfg.ApprovalTimeout,

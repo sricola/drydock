@@ -78,9 +78,12 @@ type stageSizeGuard struct {
 func (g *stageSizeGuard) exceeded() bool { return g.fired.Load() }
 
 // watchStageSize polls root every interval until stop() is called, invoking
-// onExceed once if the stage crosses its bounds or host free space drops below
-// the floor. Cross-platform (no runtime dependency), so it is CI-testable.
-func watchStageSize(root string, interval time.Duration, onExceed func()) *stageSizeGuard {
+// onExceed once if the stage crosses its bounds or host free space drops
+// below the floor. hostRoot is where the free floor is measured: with a
+// quota image mounted at root, statfs(root) sees the image filesystem, while
+// the sparse backing file grows on the host filesystem that contains it.
+// Cross-platform (no runtime dependency), so it is CI-testable.
+func watchStageSize(root, hostRoot string, interval time.Duration, onExceed func()) *stageSizeGuard {
 	g := &stageSizeGuard{}
 	done := make(chan struct{})
 	var once sync.Once
@@ -93,7 +96,7 @@ func watchStageSize(root string, interval time.Duration, onExceed func()) *stage
 			case <-done:
 				return
 			case <-t.C:
-				if stageOverLimit(root, maxStageBytes, maxStageFiles) || belowFreeFloor(root) {
+				if stageOverLimit(root, maxStageBytes, maxStageFiles) || belowFreeFloor(hostRoot) {
 					if g.fired.CompareAndSwap(false, true) {
 						onExceed()
 					}
