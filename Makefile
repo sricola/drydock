@@ -120,10 +120,10 @@ release-preflight: build image network
 	go test -race -count=1 ./...
 	@echo "== release preflight [2/3]: host red-team (A3-A6) =="
 	go test -count=1 -run '$(REDTEAM)' ./...
-	@echo "== release preflight [3/3]: VM-backed red-team (A1, A2, A7) =="
+	@echo "== release preflight [3/3]: VM-backed red-team (A1, A2, A7, A8) =="
 	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
 	@echo ""
-	@echo "== release preflight GREEN: unit + host (A3-A6) + VM (A1/A2/A7) all pass =="
+	@echo "== release preflight GREEN: unit + host (A3-A6) + VM (A1/A2/A7/A8) all pass =="
 
 # tag-release is the blessed release path: it enforces release-preflight (so a
 # release can never ship without the VM containment tests behind its headline
