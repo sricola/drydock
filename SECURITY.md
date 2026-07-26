@@ -61,7 +61,7 @@ Out of scope (don't report; documented in `THREAT_MODEL.md`):
 - Prompt injection in staged repo files influencing the agent for that
   task; the diff gate is the backstop.
 
-See `THREAT_MODEL.md` for the precise threat model (A1–A7 defended,
+See `THREAT_MODEL.md` for the precise threat model (A1–A8 defended,
 N1–N7 not).
 
 ## Supported versions
@@ -111,6 +111,10 @@ carries supply-chain attestations you can check before trusting a binary
 
   The release tarball itself is not byte-reproducible (tar/gzip embed
   metadata), but the binaries inside it are, which is what matters.
+
+Past security reviews are kept in-tree: the July 2026 red-team review and
+its remediation history live at
+[docs/audits/2026-07-12-red-team-review.md](docs/audits/2026-07-12-red-team-review.md).
 
 ## Documented residuals
 
@@ -163,6 +167,17 @@ why this check exists.
   `~/.drydock/audit`) grows monotonically. On a long-running brokerd
   this becomes a disk-fill DoS. Run `drydock prune --older-than DUR`
   (dry-run unless `--yes`), or schedule it via cron.
+
+- **`/work` disk exhaustion is hard-bounded on macOS only.** `stage_quota_gb`
+  (default 8 GiB, 0 disables) backs each task's stage dir with a size-capped
+  APFS sparse image, so a hostile in-VM agent hits the image's filesystem
+  wall (ENOSPC) instead of the host disk. Off macOS the image is a no-op and
+  the task is protected only by the polling guard (4 GiB total bytes, 200k
+  files, 2 GiB host free floor, checked every 2s), which bounds overshoot to
+  roughly one polling interval's write rate rather than stopping it outright.
+  Even on macOS, file-count exhaustion inside an attached image (many small
+  files) is still bounded only by that same soft polling guard, not by the
+  image itself. See [`THREAT_MODEL.md` § A8](THREAT_MODEL.md#a8-agent-floods-work-to-exhaust-host-disk).
 
 - **macOS notifications contain attacker-controlled hostnames.**
   Per-task `egress_extra` hostnames flow into the notification body.

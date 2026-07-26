@@ -90,8 +90,11 @@ type Broker struct {
 	DefaultAgent string                    // "" -> "claude"
 	ImageRef     string
 	StageRoot    string
-	AuditRoot    string
-	Timeout      time.Duration
+	// StageQuotaBytes, when > 0, hard-bounds each task's stage dir with an
+	// APFS sparse image of this size (F-04). 0 = plain host dir.
+	StageQuotaBytes int64
+	AuditRoot       string
+	Timeout         time.Duration
 	// ApprovalTimeout, when > 0, auto-denies a task waiting at an approval gate
 	// after this long and frees its concurrency slot. 0 = wait indefinitely.
 	ApprovalTimeout time.Duration
@@ -138,6 +141,13 @@ type Broker struct {
 	// drive HandleTask without a git clone or a container run.
 	prepareStage func(ctx context.Context, root, repoRef string) (taskStage, error)
 	runAgent     func(ctx context.Context, args []string, stdout, stderr io.Writer) error
+	// attachQuota mounts the hard per-task disk bound at a stage root. nil
+	// in production falls back to stage.AttachQuota (a no-op off macOS).
+	// Tests inject fakes.
+	attachQuota func(root string, sizeBytes int64) error
+	// watchStage seams the stage-size guard so a test can capture the host
+	// root the free-floor is measured on. nil in production -> watchStageSize.
+	watchStage func(root, hostRoot string, interval time.Duration, onExceed func()) *stageSizeGuard
 	// newAdapter selects the remote PR/MR adapter. nil in production ->
 	// remote.AdapterFor. White-box tests inject a fake to drive the
 	// best-effort PR-open path without shelling out to gh/glab/tea.
@@ -407,6 +417,34 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sw.emit(map[string]any{"event": "stage", "stage": "preparing", "task_id": taskID})
+
+	if b.StageQuotaBytes > 0 {
+		attach := b.attachQuota
+		if attach == nil {
+			attach = stage.AttachQuota
+		}
+		qerr := os.MkdirAll(stageDir, 0o700)
+		if qerr == nil {
+			qerr = attach(stageDir, b.StageQuotaBytes)
+		}
+		if qerr != nil {
+			// Fail closed: never fall back to an unbounded plain dir when
+			// the operator configured a hard bound (F-04).
+			slog.Warn("task stage quota failed", "task_id", taskID, "err", qerr)
+			sw.emit(errorEvent(taskID, "stage quota setup failed",
+				"hdiutil could not create or mount the stage image; see the broker log"))
+			_ = (&stage.Stage{Root: stageDir}).Cleanup()
+			return
+		}
+		// Until tr.st exists, no defer tears the mount down; cover the
+		// clone/prompt-write failure exits in between.
+		defer func() {
+			if tr.st == nil {
+				_ = (&stage.Stage{Root: stageDir}).Cleanup()
+			}
+		}()
+	}
+
 	st, err := prepare(tr.ctx, stageDir, t.RepoRef)
 	if err != nil {
 		slog.Warn("task clone failed", "task_id", taskID, "err", err)
@@ -638,7 +676,15 @@ func (tr *taskRun) runSandbox(args []string) error {
 	if tr.st != nil {
 		stageRoot = tr.st.WorkDir()
 	}
-	sizeGuard := watchStageSize(stageRoot, stageSizeInterval, runCancel)
+	// The free floor must be measured on the HOST filesystem. stageRoot is
+	// the work dir inside the (possibly quota-image-backed) stage, and its
+	// parent is the image mountpoint, so neither works: b.StageRoot is the
+	// one path that stays on the host no matter the stage layout (F-04).
+	watch := b.watchStage
+	if watch == nil {
+		watch = watchStageSize
+	}
+	sizeGuard := watch(stageRoot, b.StageRoot, stageSizeInterval, runCancel)
 	defer sizeGuard.stop()
 	if err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf)); err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,

@@ -93,6 +93,15 @@ type Config struct {
 	// "at most one request" bound. 0 = unlimited (pre-v0.6.3 behavior).
 	TaskMaxInFlight int `yaml:"task_max_inflight"`
 
+	// StageQuotaGB is the hard per-task disk bound in GiB. On macOS each
+	// task's stage dir is an APFS sparse image of this size mounted at the
+	// stage root, so a hostile in-VM agent writing to /work hits a
+	// filesystem wall instead of the host disk (F-04). The polling stage
+	// guard (4 GiB soft) fires first in normal operation; this is the
+	// backstop it cannot provide. 0 disables the image (plain host dir,
+	// polling guard only). Ignored off macOS.
+	StageQuotaGB int `yaml:"stage_quota_gb"`
+
 	// MaxRequestCostUSD is the worst-case USD a single request may cost,
 	// reserved against the lease budget while the request is in flight so
 	// concurrent requests cannot all admit at spend=0. 0 (default) disables the
@@ -156,6 +165,7 @@ func Defaults() *Config {
 		OpenAIAuth:             "api_key",
 		TaskMaxRequests:        0,
 		TaskMaxInFlight:        1,
+		StageQuotaGB:           8,
 		MaxRequestCostUSD:      0,
 		AggregateBudgetUSD:     0,
 		AggregateWindow:        24 * time.Hour,
@@ -329,6 +339,11 @@ func (c *Config) applyEnvOverrides() {
 			c.TaskMaxInFlight = n
 		}
 	}
+	if v := os.Getenv("DRYDOCK_STAGE_QUOTA_GB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.StageQuotaGB = n
+		}
+	}
 	if v := os.Getenv("DRYDOCK_AGGREGATE_BUDGET_USD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
 			c.AggregateBudgetUSD = f
@@ -419,6 +434,9 @@ func (c *Config) validate() error {
 	if c.TaskMaxInFlight < 0 {
 		return fmt.Errorf("config: task_max_inflight must be >= 0, got %d", c.TaskMaxInFlight)
 	}
+	if c.StageQuotaGB < 0 {
+		return fmt.Errorf("config: stage_quota_gb must be >= 0, got %d", c.StageQuotaGB)
+	}
 	if oc := c.OpenAICompat; oc.BaseURL != "" {
 		if oc.APIKeyEnv == "" || oc.Model == "" {
 			return fmt.Errorf("config: openai_compat.base_url set but api_key_env and model are required")
@@ -488,6 +506,7 @@ anthropic_auth:         api_key        # authentication mode: api_key | subscrip
 openai_auth:            api_key        # authentication mode: api_key | subscription
 task_max_requests:      0              # per-task request cap. 0 falls closed to a built-in default (1000) in every mode; set explicitly to change the bound
 task_max_inflight:      1              # concurrent gateway requests per task lease; bounds budget overshoot to this many in-flight requests (0 = unlimited)
+stage_quota_gb:         8              # hard per-task disk bound (GiB): /work lives in an APFS sparse image this big (macOS). 0 = plain host dir, polling guard only
 max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)

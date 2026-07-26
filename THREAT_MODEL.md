@@ -83,10 +83,10 @@ outside drydock:
 
 Each claim below is backed by a test that runs the attack and asserts it
 fails. **Reproduce:** `make redteam` executes the host-side attacks (A3–A6) and
-watches them fail; the VM-backed claims (A1, A2, A7) run via
+watches them fail; the VM-backed claims (A1, A2, A7, A8) run via
 `make redteam-vm` on macOS / Apple silicon. With an installed build,
-`drydock redteam` runs the VM-backed attacks (A1, A2, A7) live against your own
-sandbox, no source checkout, no API spend. See
+`drydock redteam` runs the VM-backed attacks (A1, A2, A7) live against your
+own sandbox, no source checkout, no API spend. See
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full coverage map.
 
 ### A1. Agent reads a vendor API key from environment, config file, or memory
@@ -194,6 +194,25 @@ up.
 written by one task is absent in the next) plus the host-side
 `TestCleanup_*` stage tests.
 
+### A8. Agent floods /work to exhaust host disk
+
+A task's `/work` is bounded twice (F-04). On macOS the stage root is a
+size-capped APFS sparse image (`stage_quota_gb`, default 8 GiB, 0 disables
+it): a hostile in-VM agent writing through `/work` hits the image's
+filesystem wall (ENOSPC) no matter how fast it writes. A polling guard (4
+GiB total bytes, 200k files, 2 GiB host free floor, checked every 2s) sits
+on top as the early-cancel layer: it stops a task cleanly before it reaches
+the quota and is the only layer on non-macOS builds, where the image is a
+no-op. File-count exhaustion within an attached image is still bounded
+only by the soft polling guard, an image full of many small files can hit
+the 200k-file cap before it hits the byte quota.
+
+**Implementation:** `internal/stage/quota_darwin.go` (`AttachQuota`,
+`QuotaImagePath`) plus `internal/broker/stagesize.go` (the polling guard).
+**Verified by** `TestRedteam_A8_WorkQuotaHardBound` (an in-VM `dd` flood
+hits "No space left on device" and the backing image stays within slack of
+the quota) plus `TestQuota_HardBoundENOSPC`.
+
 ## Attacks drydock does NOT defend against
 
 These are real and the operator must be aware:
@@ -220,6 +239,10 @@ comment text. drydock makes this visible to the operator at review
 time, but does not detect it programmatically.
 
 ### N4. Cost exhaustion and runaway tasks
+
+See the [security defaults](https://sricola.github.io/drydock/docs/security-defaults.html)
+page for the full table of shipped bounds (budget, request caps, timeouts,
+disk quota), generated from code, and the test that enforces each one.
 
 **`api_key` mode (default).** The per-task USD ceiling (`task_budget_usd` /
 `DRYDOCK_TASK_BUDGET_USD`) caps spend but does not cap usefulness. An agent

@@ -138,6 +138,7 @@ Full operator docs live at **[sricola.github.io/drydock/docs](https://sricola.gi
 - [Web UI](https://sricola.github.io/drydock/docs/web-ui.html): the board, approval gate, and history in a local browser app.
 - [Egress & widening](https://sricola.github.io/drydock/docs/egress.html): the allowlist and per-task widening.
 - [Configuration](https://sricola.github.io/drydock/docs/configuration.html): `config.yaml` and env overrides.
+- [Security defaults](https://sricola.github.io/drydock/docs/security-defaults.html): the shipped financial and containment bounds, generated from code.
 - [Troubleshooting](https://sricola.github.io/drydock/docs/troubleshooting.html): `drydock doctor` and common failures.
 - [Threat model](THREAT_MODEL.md): what drydock defends, and what it doesn't.
 

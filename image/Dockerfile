@@ -7,13 +7,18 @@ FROM node:22-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28
 # Privilege drop uses setpriv (util-linux, already in the base) — not gosu — so
 # the agent drop gets no-new-privs + an emptied capability bounding set, and the
 # image sheds gosu's stale go1.19 CVE cluster. See image/drop-agent.sh.
-# `apt-get upgrade` layers current Debian point-release security fixes on top of
-# the digest-pinned base, so a rebuild (a user's `drydock setup`, or the daily
-# image-scan CI) picks them up without waiting for a base-digest bump or a lucky
-# rebuild. The base stays digest-pinned as a reproducible starting point (bumped
-# deliberately, see Phase 2.5); we trade exact bit-reproducibility of the package
-# set for security currency, which is the right call for a locally-built sandbox
-# runtime (not a user-verified released artifact). See docs/ROADMAP.md 4.13.
+# F-09: apt resolves against a dated snapshot.debian.org archive, so the same
+# Dockerfile yields the same Debian package set on every build. Security
+# currency comes from bumping DEBIAN_SNAPSHOT deliberately when the daily CVE
+# scan or Debian security tracker shows it is due, not from whatever Debian
+# shipped the minute the build ran. Snapshot Release files carry
+# expired Valid-Until stamps by design, hence Check-Valid-Until off; retries
+# because snapshot.debian.org rate-limits.
+ARG DEBIAN_SNAPSHOT=20260725T000000Z
+RUN set -eu; \
+    printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s/\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s/\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list.d/debian.sources; \
+    printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/80snapshot
 RUN apt-get update && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
       git ca-certificates curl jq nftables dnsutils ipset \
@@ -54,7 +59,12 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # version IS the security invariant, and a half-applied self-install that
 # leaves the old npm answering must fail the build, not the next daily scan.
 ARG NPM_VERSION=11.18.0
-RUN npm install -g --ignore-scripts --no-audit --no-fund npm@${NPM_VERSION} \
+# F-09: --before restricts every npm resolution (including transitives) to
+# versions published before this UTC timestamp, the npm analogue of the Debian
+# snapshot above. An exact pin published after the cutoff fails the build
+# (fail closed), so the bump lane moves this timestamp whenever it bumps a pin.
+ARG NPM_BEFORE=2026-07-25T15:34:11Z
+RUN npm install -g --ignore-scripts --no-audit --no-fund --before=${NPM_BEFORE} npm@${NPM_VERSION} \
  && [ "$(npm --version)" = "${NPM_VERSION}" ] \
  && rm -rf /root/.npm
 
@@ -70,25 +80,25 @@ RUN npm install -g --ignore-scripts --no-audit --no-fund npm@${NPM_VERSION} \
 # so they keep scripts and are pinned by exact version instead. Every install
 # ends with a `<cli> --version` smoke check so a broken install fails the build.
 ARG CLAUDE_CODE_VERSION=2.1.207
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && claude --version
+RUN npm install -g --before=${NPM_BEFORE} @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && claude --version
 
 # Pin the Codex CLI alongside claude-code. Bump deliberately; every drydock
 # release anchors to a known codex version. Override with
 # --build-arg CODEX_VERSION=x.y.z. No own install script -> --ignore-scripts.
 ARG CODEX_VERSION=0.144.1
-RUN npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION} && codex --version
+RUN npm install -g --ignore-scripts --before=${NPM_BEFORE} @openai/codex@${CODEX_VERSION} && codex --version
 
 # Pin the opencode CLI for the OpenAI-compatible (bring-your-own-model) lane.
 # Bump deliberately. Override with --build-arg OPENCODE_VERSION=x.y.z. The
 # build-time `opencode --version` is a smoke check that the (script-running)
 # install produced a working binary.
 ARG OPENCODE_VERSION=1.17.18
-RUN npm install -g --foreground-scripts opencode-ai@${OPENCODE_VERSION} && opencode --version
+RUN npm install -g --foreground-scripts --before=${NPM_BEFORE} opencode-ai@${OPENCODE_VERSION} && opencode --version
 
 # Pin the Gemini CLI for the native google vendor. Bump deliberately; every
 # drydock release anchors to a known version (0.49.0 validated by the 3B spike).
 ARG GEMINI_CLI_VERSION=0.50.0
-RUN npm install -g --ignore-scripts @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
+RUN npm install -g --ignore-scripts --before=${NPM_BEFORE} @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
 
 RUN useradd -m -u 10001 -s /bin/bash agent
 

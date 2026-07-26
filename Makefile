@@ -25,8 +25,8 @@ help:
 	@echo "  test-squid-e2e   VM-level egress widening (squide2e tag); requires container runtime + images + squid"
 	@echo "  redteam     run the host-side adversarial containment suite (A3-A6)"
 	@echo "  redteam-report  same as redteam but prints a per-claim GREEN/RED table"
-	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7); macOS + container runtime"
-	@echo "  release-preflight  full pre-release gate: unit + host (A3-A6) + VM (A1/A2/A7)"
+	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7/A8); macOS + container runtime"
+	@echo "  release-preflight  full pre-release gate: unit + host (A3-A6) + VM (A1/A2/A7/A8)"
 	@echo "  tag-release VERSION=vX.Y.Z  run the preflight, then tag + push the release"
 	@echo "  demo        run the narrated breach demo (real attacks; add VM=1 for A1/A2/A7)"
 	@echo "  sbom        write a CycloneDX SBOM to dist/drydock.cdx.json"
@@ -88,13 +88,13 @@ test-integration: build
 
 # redteam runs the adversarial containment suite: each test performs an attack
 # from THREAT_MODEL.md and asserts it is blocked. Host-side claims (A3-A6) run
-# here and in CI. VM-backed claims (A1, A2, A7) need the sandbox — run
+# here and in CI. VM-backed claims (A1, A2, A7, A8) need the sandbox — run
 # `make test-integration` on macOS / Apple silicon (added as they land).
 REDTEAM := TestRedteam_A[0-9]|TestHostCommit_IgnoresPlantedHook|TestCaptureDiff_ExcludesTaskDir|TestGateway_RouteAllowlist
 redteam:
 	@echo "== drydock red-team — attacks that must fail (host-side: A3-A6) =="
 	go test -count=1 -run '$(REDTEAM)' ./...
-	@echo "== host-side containment verified. VM-backed A1/A2/A7: make redteam-vm =="
+	@echo "== host-side containment verified. VM-backed A1, A2, A7, A8: make redteam-vm =="
 
 # redteam-report runs the same red-team tests with -json output and pipes
 # through cmd/redteam-report to print a per-claim GREEN/RED table.
@@ -102,10 +102,10 @@ redteam-report:
 	@go test -json -count=1 -run '$(REDTEAM)' ./... | go run ./cmd/redteam-report
 
 # redteam-vm runs the VM-backed attacks (A1 key-exfil, A2 egress, A7
-# ephemerality) inside the sandbox. macOS / Apple silicon only; needs the
-# `container` runtime + the drydock-sandbox image (`make image`).
+# ephemerality, A8 disk-quota) inside the sandbox. macOS / Apple silicon only;
+# needs the `container` runtime + the drydock-sandbox image (`make image`).
 redteam-vm: build
-	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7) =="
+	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7, A8) =="
 	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
 
 # --- Release gate ---
@@ -120,10 +120,10 @@ release-preflight: build image network
 	go test -race -count=1 ./...
 	@echo "== release preflight [2/3]: host red-team (A3-A6) =="
 	go test -count=1 -run '$(REDTEAM)' ./...
-	@echo "== release preflight [3/3]: VM-backed red-team (A1, A2, A7) =="
+	@echo "== release preflight [3/3]: VM-backed red-team (A1, A2, A7, A8) =="
 	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
 	@echo ""
-	@echo "== release preflight GREEN: unit + host (A3-A6) + VM (A1/A2/A7) all pass =="
+	@echo "== release preflight GREEN: unit + host (A3-A6) + VM (A1/A2/A7/A8) all pass =="
 
 # tag-release is the blessed release path: it enforces release-preflight (so a
 # release can never ship without the VM containment tests behind its headline

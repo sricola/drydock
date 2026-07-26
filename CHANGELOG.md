@@ -5,6 +5,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Security
+
+- **The sandbox image's apt and npm dependency graphs are date-pinned
+  (F-09).** apt installs resolve against a dated snapshot.debian.org
+  archive and every npm resolution is cut at a pinned --before date, so
+  two builds of the same commit produce the same dependency set; the npm
+  --before date moves deliberately via the weekly bump lane, while the
+  Debian snapshot is bumped by hand.
+- **Each task's stage dir is now a size-capped APFS sparse image, making the
+  /work disk bound hard (F-04).** A hostile in-VM agent writing through
+  /work previously raced a 2-second polling guard and could overshoot by
+  its write rate; it now hits the image's filesystem wall (ENOSPC) at
+  `stage_quota_gb` (default 8 GiB). The polling guard remains as the
+  early-cancel layer. VM-verified by the new A8 red-team test.
+
+### Docs
+
+- The July 2026 red-team review is committed at docs/audits/, with a closure addendum mapping every finding to its fix.
+
 ## v0.6.3 (2026-07-23)
 
 A follow-up security-hardening release closing the residual items from the

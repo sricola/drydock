@@ -9,21 +9,34 @@ import (
 	"time"
 )
 
-// A task's /work is a plain host bind mount, so a hostile in-VM agent can fill
-// the host filesystem (dd of=/work/x) or exhaust inodes (millions of small
-// files). These are soft (polling) bounds that cancel such a task; worst-case
-// overshoot is about fill_rate * stageSizeInterval. Vars (not consts) only so
-// tests can lower them; nothing in production writes them.
+// A task's /work is bounded twice (F-04). On macOS the stage root is a
+// size-capped APFS sparse image (see internal/stage AttachQuota): the hard
+// wall. These polling bounds are the early-cancel layer on top: they stop a
+// task cleanly before it slams into ENOSPC, and they are the only layer on
+// non-darwin builds (CI). Worst-case soft overshoot is about
+// fill_rate * stageSizeInterval, now capped by the image size.
+
+// Defaults for the polling stage bounds, exported so the generated
+// security-defaults table (cmd/docs-build) renders them from code instead
+// of restating them (F-10).
+const (
+	DefaultMaxStageBytes     int64 = 4 << 30 // total file bytes under the stage
+	DefaultMaxStageFiles           = 200_000 // file-count (inode) bound
+	DefaultMinFreeStageBytes int64 = 2 << 30 // host free-space floor
+)
+
+// Vars (not consts) only so tests can lower them; nothing in production
+// writes them.
 var (
-	maxStageBytes     int64 = 4 << 30 // total file bytes under the stage
-	maxStageFiles           = 200_000 // file-count (inode) bound
-	stageSizeInterval       = 2 * time.Second
+	maxStageBytes     = DefaultMaxStageBytes
+	maxStageFiles     = DefaultMaxStageFiles
+	stageSizeInterval = 2 * time.Second
 )
 
 // minFreeStageBytes is the host free space below which a task is refused at
-// submit (preflight) or cancelled mid-run (monitor): fail closed rather than
-// exhaust the host disk.
-var minFreeStageBytes int64 = 2 << 30 // 2 GiB
+// submit (preflight) or cancelled mid-run (monitor): fail closed rather
+// than exhaust the host disk.
+var minFreeStageBytes = DefaultMinFreeStageBytes
 
 // freeBytes returns the bytes available to an unprivileged user on the
 // filesystem containing path.
@@ -78,9 +91,12 @@ type stageSizeGuard struct {
 func (g *stageSizeGuard) exceeded() bool { return g.fired.Load() }
 
 // watchStageSize polls root every interval until stop() is called, invoking
-// onExceed once if the stage crosses its bounds or host free space drops below
-// the floor. Cross-platform (no runtime dependency), so it is CI-testable.
-func watchStageSize(root string, interval time.Duration, onExceed func()) *stageSizeGuard {
+// onExceed once if the stage crosses its bounds or host free space drops
+// below the floor. hostRoot is where the free floor is measured: with a
+// quota image mounted at root, statfs(root) sees the image filesystem, while
+// the sparse backing file grows on the host filesystem that contains it.
+// Cross-platform (no runtime dependency), so it is CI-testable.
+func watchStageSize(root, hostRoot string, interval time.Duration, onExceed func()) *stageSizeGuard {
 	g := &stageSizeGuard{}
 	done := make(chan struct{})
 	var once sync.Once
@@ -93,7 +109,7 @@ func watchStageSize(root string, interval time.Duration, onExceed func()) *stage
 			case <-done:
 				return
 			case <-t.C:
-				if stageOverLimit(root, maxStageBytes, maxStageFiles) || belowFreeFloor(root) {
+				if stageOverLimit(root, maxStageBytes, maxStageFiles) || belowFreeFloor(hostRoot) {
 					if g.fired.CompareAndSwap(false, true) {
 						onExceed()
 					}
