@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	cli-bump [-dockerfile path] [-latest 'pkg=ver,...'] [-list] [-before YYYY-MM-DD]
+//	cli-bump [-dockerfile path] [-latest 'pkg=ver,...'] [-list] [-before YYYY-MM-DDTHH:MM:SSZ]
 //
 // -list prints one "npm-name query-spec" line per pinned package and exits;
 // the bump workflow feeds these specs to `npm view` so the pkgs table below
@@ -160,31 +160,33 @@ func planBumps(dockerfile string, latest map[string]string) (string, []bump) {
 	return out, bumps
 }
 
-// beforeDateRE guards -before against injection: strict ISO date only.
-var beforeDateRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+// beforeTimestampRE guards -before against injection and, deliberately,
+// requires a time as well as a date. JavaScript parses a date-only value at
+// midnight UTC, which would exclude a pin published later on the bump day.
+var beforeTimestampRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`)
 
 var npmBeforeArgRE = regexp.MustCompile(`(?m)^(ARG NPM_BEFORE=)([^\s]+)`)
 
-// applyBeforeDate rewrites ARG NPM_BEFORE to date when a bump was written
-// (bumped). A fresh pin may be published after the old cutoff, so the date
+// applyBeforeDate rewrites ARG NPM_BEFORE to timestamp when a bump was written
+// (bumped). A fresh pin may be published after the old cutoff, so the timestamp
 // must move with the pins; with no bumps it stays put so the weekly lane
-// does not open date-only PRs. Malformed dates are rejected with a warning.
-func applyBeforeDate(dockerfile, date string, bumped bool) string {
-	if !bumped || date == "" {
+// does not open cutoff-only PRs. Malformed timestamps are rejected with a warning.
+func applyBeforeDate(dockerfile, timestamp string, bumped bool) string {
+	if !bumped || timestamp == "" {
 		return dockerfile
 	}
-	if !beforeDateRE.MatchString(date) {
-		fmt.Fprintf(os.Stderr, "cli-bump: warning: rejected malformed -before date %q\n", date)
+	if !beforeTimestampRE.MatchString(timestamp) {
+		fmt.Fprintf(os.Stderr, "cli-bump: warning: rejected malformed -before timestamp %q\n", timestamp)
 		return dockerfile
 	}
-	return npmBeforeArgRE.ReplaceAllString(dockerfile, "${1}"+date)
+	return npmBeforeArgRE.ReplaceAllString(dockerfile, "${1}"+timestamp)
 }
 
 func main() {
 	dockerfilePath := flag.String("dockerfile", "image/Dockerfile", "path to Dockerfile to patch")
 	latestFlag := flag.String("latest", "", "comma-separated pkg=version pairs (default: read from stdin)")
 	listFlag := flag.Bool("list", false, "print 'npm-name query-spec' per pinned package and exit")
-	beforeFlag := flag.String("before", "", "when bumps are written, also move ARG NPM_BEFORE to this UTC date (YYYY-MM-DD)")
+	beforeFlag := flag.String("before", "", "when bumps are written, also move ARG NPM_BEFORE to this UTC timestamp (YYYY-MM-DDTHH:MM:SSZ)")
 	flag.Parse()
 
 	// -list makes this table the single source of truth for the bump lane:

@@ -49,7 +49,7 @@ func securityClaims() []claim {
 		{"(built-in) stage soft bounds", fmt.Sprintf("%d GiB, %d files, %d GiB host free floor",
 			broker.DefaultMaxStageBytes>>30, broker.DefaultMaxStageFiles, broker.DefaultMinFreeStageBytes>>30),
 			"Polling guard (2s) cancels a task growing past these, before the hard quota wall. Soft by design; the quota is the wall.",
-			"TestRedteam_A8_WorkQuotaHardBound"},
+			"TestHandleTask_StageFillTerminatesAndDoesNotPush"},
 		{"(built-in) review diff cap", fmt.Sprintf("%d MiB", int64(stage.MaxDiffBytes)>>20),
 			"A staged diff over the cap fails the task closed; a diff is never truncated for review. Hard.",
 			"TestCaptureDiff_OversizeDiffFailsClosed"},

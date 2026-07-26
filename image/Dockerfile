@@ -9,9 +9,9 @@ FROM node:22-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28
 # image sheds gosu's stale go1.19 CVE cluster. See image/drop-agent.sh.
 # F-09: apt resolves against a dated snapshot.debian.org archive, so the same
 # Dockerfile yields the same Debian package set on every build. Security
-# currency comes from bumping DEBIAN_SNAPSHOT deliberately (the weekly bump
-# lane and the daily CVE scan flag when a bump is due), not from whatever
-# Debian shipped the minute the build ran. Snapshot Release files carry
+# currency comes from bumping DEBIAN_SNAPSHOT deliberately when the daily CVE
+# scan or Debian security tracker shows it is due, not from whatever Debian
+# shipped the minute the build ran. Snapshot Release files carry
 # expired Valid-Until stamps by design, hence Check-Valid-Until off; retries
 # because snapshot.debian.org rate-limits.
 ARG DEBIAN_SNAPSHOT=20260725T000000Z
@@ -60,10 +60,10 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # leaves the old npm answering must fail the build, not the next daily scan.
 ARG NPM_VERSION=11.18.0
 # F-09: --before restricts every npm resolution (including transitives) to
-# versions published before this UTC date, the npm analogue of the Debian
-# snapshot above. An exact pin published after the date fails the build
-# (fail closed), so the bump lane moves this date whenever it bumps a pin.
-ARG NPM_BEFORE=2026-07-25
+# versions published before this UTC timestamp, the npm analogue of the Debian
+# snapshot above. An exact pin published after the cutoff fails the build
+# (fail closed), so the bump lane moves this timestamp whenever it bumps a pin.
+ARG NPM_BEFORE=2026-07-25T15:34:11Z
 RUN npm install -g --ignore-scripts --no-audit --no-fund --before=${NPM_BEFORE} npm@${NPM_VERSION} \
  && [ "$(npm --version)" = "${NPM_VERSION}" ] \
  && rm -rf /root/.npm

@@ -13,7 +13,7 @@ What the shipped defaults bound, how hard each bound is, and the test that enfor
 | `aggregate_budget_usd` | 0.00 (0 = off) | Cross-task USD ceiling per api_key vendor over aggregate_window. Soft in the same post-hoc sense as task_budget_usd. | `TestGateway_AggregateCap` |
 | `task_timeout` | 30m0s | Wall-clock bound per task: on expiry the run context is cancelled and the task terminates without pushing (VM force-delete is best effort). Hard. | `TestHandleTask_TimeoutTerminatesAndDoesNotPush` |
 | `stage_quota_gb` | 8 | Per-task disk bound: the stage dir is an APFS sparse image of this size (macOS). Hard (filesystem ENOSPC). | `TestQuota_HardBoundENOSPC` |
-| `(built-in) stage soft bounds` | 4 GiB, 200000 files, 2 GiB host free floor | Polling guard (2s) cancels a task growing past these, before the hard quota wall. Soft by design; the quota is the wall. | `TestRedteam_A8_WorkQuotaHardBound` |
+| `(built-in) stage soft bounds` | 4 GiB, 200000 files, 2 GiB host free floor | Polling guard (2s) cancels a task growing past these, before the hard quota wall. Soft by design; the quota is the wall. | `TestHandleTask_StageFillTerminatesAndDoesNotPush` |
 | `(built-in) review diff cap` | 32 MiB | A staged diff over the cap fails the task closed; a diff is never truncated for review. Hard. | `TestCaptureDiff_OversizeDiffFailsClosed` |
 
 Soft means enforcement is post-hoc or polling-based with a stated overshoot bound; hard means the mechanism cannot be raced. The full adversarial context is in the [threat model](threat-model.html).

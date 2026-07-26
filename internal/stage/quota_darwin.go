@@ -127,7 +127,10 @@ func teardownQuota(root string) error {
 func reattachQuota(root string) error {
 	img := QuotaImagePath(root)
 	if _, err := os.Lstat(img); err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	if isMounted(root) {
 		return nil

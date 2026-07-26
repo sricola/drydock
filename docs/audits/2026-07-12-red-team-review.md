@@ -1,13 +1,13 @@
 # Red-team security and product review
 
-**Target:** drydock v0.6.1 (`7cac3a9efda098e5e9129486a3a071a6ce3098b8`)  
-**Review date:** 2026-07-12  
+**Target:** drydock v0.6.1 (`7cac3a9efda098e5e9129486a3a071a6ce3098b8`)
+**Review date:** 2026-07-12
 **Perspective:** hostile staged repository, hostile/compromised in-VM agent and agent CLI, malicious web origin, operator error, and unattended-operation failure modes.
 
 ## Remediation verification pass, 2026-07-13
 
-**Verification target:** `d655c70d166a` on `main` (post-v0.6.2; changes `cc0ac77` through `d655c70`)  
-**Baseline audited:** v0.6.1, `7cac3a9efda0`  
+**Verification target:** `d655c70d166a` on `main` (post-v0.6.2; changes `cc0ac77` through `d655c70`)
+**Baseline audited:** v0.6.1, `7cac3a9efda0`
 **Method:** source/diff review, adversarial path analysis, full race/static/vulnerability checks, no-cache image build, host red-team suite, and Apple `container` VM-backed A1/A2/A7 suite.
 
 ### Verification outcome

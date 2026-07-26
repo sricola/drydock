@@ -191,27 +191,34 @@ ARG GEMINI_CLI_VERSION=0.49.0
 }
 
 // -before: when a bump lands, ARG NPM_BEFORE moves with it, or the freshly
-// bumped pin (published after the old date) would fail the image build.
-// With no bumps, the date must not move (a date-only weekly PR is noise).
+// bumped pin (published after the old cutoff) would fail the image build.
+// A full timestamp is required: a date-only value parses as midnight UTC and
+// would reject a package published later on the same day. With no bumps, the
+// cutoff must not move (a cutoff-only weekly PR is noise).
 func TestApplyBeforeDate(t *testing.T) {
-	df := "ARG NPM_BEFORE=2026-07-25\nARG CLAUDE_CODE_VERSION=2.1.207\n"
+	df := "ARG NPM_BEFORE=2026-07-25T15:34:11Z\nARG CLAUDE_CODE_VERSION=2.1.207\n"
 
 	out, bumps := planBumps(df, map[string]string{"@anthropic-ai/claude-code": "2.2.0"})
 	if len(bumps) != 1 {
 		t.Fatalf("bumps = %v, want one", bumps)
 	}
-	out = applyBeforeDate(out, "2026-08-01", len(bumps) > 0)
-	if !strings.Contains(out, "ARG NPM_BEFORE=2026-08-01") {
+	out = applyBeforeDate(out, "2026-08-01T12:34:56Z", len(bumps) > 0)
+	if !strings.Contains(out, "ARG NPM_BEFORE=2026-08-01T12:34:56Z") {
 		t.Errorf("NPM_BEFORE not moved with the bump:\n%s", out)
 	}
 
-	same := applyBeforeDate(df, "2026-08-01", false)
-	if !strings.Contains(same, "ARG NPM_BEFORE=2026-07-25") {
+	same := applyBeforeDate(df, "2026-08-01T12:34:56Z", false)
+	if !strings.Contains(same, "ARG NPM_BEFORE=2026-07-25T15:34:11Z") {
 		t.Errorf("NPM_BEFORE moved with no bumps:\n%s", same)
 	}
 
 	bad := applyBeforeDate(df, "8/1/2026; rm -rf /", true)
-	if !strings.Contains(bad, "ARG NPM_BEFORE=2026-07-25") {
-		t.Errorf("malformed date was written into the Dockerfile:\n%s", bad)
+	if !strings.Contains(bad, "ARG NPM_BEFORE=2026-07-25T15:34:11Z") {
+		t.Errorf("malformed timestamp was written into the Dockerfile:\n%s", bad)
+	}
+
+	dateOnly := applyBeforeDate(df, "2026-08-01", true)
+	if !strings.Contains(dateOnly, "ARG NPM_BEFORE=2026-07-25T15:34:11Z") {
+		t.Errorf("date-only cutoff was accepted; it would exclude same-day releases:\n%s", dateOnly)
 	}
 }
