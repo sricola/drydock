@@ -23,25 +23,29 @@ per-task audit JSONL by hand. Closes roadmap item 4.7.
 
 ## Why the audit rows cannot answer this today
 
-The per-task JSONL carries a terminal `result` row (`duration_ms`,
-`total_cost_usd`, `subtype`) and interim `event` rows (accepted, stage
-transitions, errors, outcomes), but:
+The per-task JSONL carries the `drydock_meta` and `drydock_task` head rows,
+the agent's stream output, and a terminal `result` row (`duration_ms`,
+`total_cost_usd`, `subtype`), but:
 
-- event rows carry no timestamps, so stage durations are not derivable;
+- the broker's lifecycle events (accepted, stage transitions, gates,
+  outcomes) go only to the submit client's NDJSON response stream; they are
+  never written to the audit file, so no stage timing is persisted at all;
 - gate wait durations (egress widen, approval) are never persisted;
 - per-lease request counts stay inside the gateway (`num_turns` in the
   result row is reserved and always 0);
-- egress-widen outcomes live in `<id>.widen.json` and interim events, not
-  in any aggregatable summary.
+- egress-widen outcomes live in `<id>.widen.json`, and a task denied at the
+  egress gate dies before the audit file is even created, so it leaves a
+  `.widen.json` with no `.jsonl` at all.
 
 ## Recording design (write side)
 
-### 1. `ts` on event rows
+### 1. `ts` on stream events
 
-Every broker-written event row (`accepted`, `stage`, `error`, interim
-`result`) gains `ts` (RFC 3339 UTC, second precision). Near-free, and makes
-single-task debugging read like a timeline. No reader depends on its
-absence; rows remain NDJSON-additive.
+Every broker-emitted lifecycle event on the submit NDJSON stream
+(`accepted`, `stage`, `error`, interim `result`) gains `ts` (RFC 3339 UTC).
+Near-free (one line in `stream.emit`), and gives live clients a timeline.
+These events are not persisted (they never were); all *persistent* timing
+comes from the terminal metrics row below.
 
 ### 2. Terminal `metrics` row
 
@@ -80,9 +84,20 @@ Gate waits are wall-clock on purpose: queued human review time is the
 latency being measured.
 
 The broker already holds each of these at task end (taskStart, stage
-transition times, `grant.Spent()`, DiffFacts, widen gate outcome). One
-gateway addition is needed: a per-lease admitted-request counter surfaced
-on the grant (also used to finally populate `num_turns` in the result row).
+transition times, DiffFacts, widen gate outcome). The row is written by a
+deferred hook registered when the audit log opens, so it runs on every
+exit path and is guaranteed to be the file's last row; the boot-resume
+path (`resumePush`) appends one too. The gateway lease already counts
+admitted requests (`Lease.Requests`); it is surfaced on the grant via an
+optional-capability interface (the codebase's `BaseCommit` idiom), so the
+`creds.Grant` interface and its test fakes stay untouched, and it also
+finally populates `num_turns` in the result row.
+
+Known visibility limits, accepted: a task denied (or cancelled) at the
+egress gate never creates an audit file, so it appears in stats only via
+its orphan `.widen.json` (counted as "widen requested, task never ran");
+denied and cancelled are indistinguishable there. Auto-approved tasks
+record a 0 approval-gate wait and are excluded from gate-wait percentiles.
 
 ## `drydock stats` (read side)
 
