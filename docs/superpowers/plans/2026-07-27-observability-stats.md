@@ -929,7 +929,7 @@ func TestCollect_MixedFormatsAndSinceFilter(t *testing.T) {
 	}
 
 	samples, orphans, _ := Collect(dir, now.Add(-30*24*time.Hour))
-	if len(samples) != 3 { // new1, old1, garbled(as running/unknown) — ancient filtered
+	if len(samples) != 3 { // new1, old1, garbled(as running/unknown), ancient filtered
 		t.Fatalf("samples=%d, want 3 (ancient filtered by since)", len(samples))
 	}
 	if orphans != 1 {
@@ -1047,7 +1047,7 @@ package stats
   - `SpendUSD` = sum of `CostUSD` over `Metered` samples; `UnmeteredTasks` = count of `!Metered`.
   - `SpendPerDayUSD` = `SpendUSD / days` where `days = max(1, ceil(newestMTime.Sub(oldestMTime).Hours()/24))` over the sample set; 0 tasks → 0.
   - `Requests` = sum of `M.Requests` over `HasMetrics`; `WidenRequested`/`WidenApproved` = sums over `HasMetrics` (`WidenApproved` counts samples with `M.WidenOutcome == "approved"`); `PreMetricsTasks` = count of `!HasMetrics`.
-- `GroupBy(samples, dim)`: key funcs — `agent`→Agent, `vendor`→Vendor, `repo`→Repo, `day`→`MTime.Format("2006-01-02")`, `week`→`fmt.Sprintf("%d-W%02d", y, w)` from `MTime.ISOWeek()`; empty key → `"(unknown)"`. Any other dim returns an error naming the valid set. Sort groups by key ascending; run `Summarize` per group.
+- `GroupBy(samples, dim)`: key funcs (`agent`→Agent, `vendor`→Vendor, `repo`→Repo, `day`→`MTime.Format("2006-01-02")`, `week`→`fmt.Sprintf("%d-W%02d", y, w)` from `MTime.ISOWeek()`); empty key → `"(unknown)"`. Any other dim returns an error naming the valid set. Sort groups by key ascending; run `Summarize` per group.
 - `percentile(vals []int64, p float64) int64`: sort a copy ascending; `idx := int(math.Ceil(p/100*float64(len(vals)))) - 1`, clamp to `[0, len-1]`; empty input → 0.
 
 - [ ] **Step 4: Run tests**

@@ -89,7 +89,8 @@ drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
 ```
 
 - `--since <duration>`: only include tasks whose audit file was modified in
-  the last `<duration>` (e.g. `30d`, `12h`); omit for all history.
+  the last `<duration>` (e.g. `30d`, `12h`); defaults to `30d` if omitted,
+  use `--since 0` for all history.
 - `--by agent|vendor|repo|day|week`: break the summary out by that
   dimension instead of one aggregate.
 - `--json`: emit the report as JSON instead of a table.
@@ -98,7 +99,9 @@ drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
 percentiles, spend, and egress-widen frequency straight from the audit dir
 (no brokerd needed). Tasks from before this feature shipped still count
 toward outcomes, durations, and cost, but report their gate-wait and
-request-count fields as absent rather than zero.
+request-count fields as absent rather than zero. The audit result rows
+cannot distinguish `no_diff`/`cancelled` outcomes: they record as
+ok/error respectively, consistent with `drydock tasks`.
 
 ## Audit stream format
 
