@@ -33,22 +33,24 @@ type Sample struct {
 
 // Summary is the aggregated view over a set of Samples.
 type Summary struct {
-	Tasks             int            `json:"tasks"`
-	Outcomes          map[string]int `json:"outcomes"`
-	DurP50Ms          int64          `json:"dur_p50_ms"`
-	DurP95Ms          int64          `json:"dur_p95_ms"`
-	DurSamples        int            `json:"dur_samples"`
-	EgressWaitP50Ms   int64          `json:"egress_wait_p50_ms"`
-	EgressWaitP95Ms   int64          `json:"egress_wait_p95_ms"`
-	ApprovalWaitP50Ms int64          `json:"approval_wait_p50_ms"`
-	ApprovalWaitP95Ms int64          `json:"approval_wait_p95_ms"`
-	SpendUSD          float64        `json:"spend_usd"`
-	SpendPerDayUSD    float64        `json:"spend_per_day_usd"`
-	UnmeteredTasks    int            `json:"unmetered_tasks"`
-	Requests          int            `json:"requests"`
-	WidenRequested    int            `json:"widen_requested"`
-	WidenApproved     int            `json:"widen_approved"`
-	PreMetricsTasks   int            `json:"pre_metrics_tasks"`
+	Tasks               int            `json:"tasks"`
+	Outcomes            map[string]int `json:"outcomes"`
+	DurP50Ms            int64          `json:"dur_p50_ms"`
+	DurP95Ms            int64          `json:"dur_p95_ms"`
+	DurSamples          int            `json:"dur_samples"`
+	EgressWaitP50Ms     int64          `json:"egress_wait_p50_ms"`
+	EgressWaitP95Ms     int64          `json:"egress_wait_p95_ms"`
+	EgressWaitSamples   int            `json:"egress_wait_samples"`
+	ApprovalWaitP50Ms   int64          `json:"approval_wait_p50_ms"`
+	ApprovalWaitP95Ms   int64          `json:"approval_wait_p95_ms"`
+	ApprovalWaitSamples int            `json:"approval_wait_samples"`
+	SpendUSD            float64        `json:"spend_usd"`
+	SpendPerDayUSD      float64        `json:"spend_per_day_usd"`
+	UnmeteredTasks      int            `json:"unmetered_tasks"`
+	Requests            int            `json:"requests"`
+	WidenRequested      int            `json:"widen_requested"`
+	WidenApproved       int            `json:"widen_approved"`
+	PreMetricsTasks     int            `json:"pre_metrics_tasks"`
 }
 
 // Group is a Summary keyed by one value of a grouping dimension.
@@ -147,7 +149,7 @@ func buildSample(path, id string, mtime time.Time) (Sample, bool) {
 	s := Sample{
 		ID:          id,
 		MTime:       mtime,
-		Outcome:     outcomeFor(last, hasResult),
+		Outcome:     audit.OutcomeKey(last, hasResult),
 		DurationMs:  last.DurationMs,
 		HasDuration: audit.HasDuration(last, hasResult),
 		Metered:     !meta.Subscription,
@@ -171,34 +173,13 @@ func buildSample(path, id string, mtime time.Time) (Sample, bool) {
 		}
 		s.Repo = m.Repo
 	} else {
-		s.Agent = audit.TaskAgent(path)
+		s.Agent = audit.TaskAgentFile(f)
 		if v, ok := provider.VendorForAgent(s.Agent); ok {
 			s.Vendor = v
 		}
 	}
 
 	return s, true
-}
-
-// outcomeFor maps a Result to the stable outcome keys used in JSON output.
-// The default case mirrors audit.Outcome: any subtype not recognized above
-// (e.g. broker-authored "denied") passes through as-is rather than
-// collapsing into "ok".
-func outcomeFor(r audit.Result, ok bool) string {
-	switch {
-	case !ok:
-		return "running"
-	case r.Subtype == "interrupted":
-		return "interrupted"
-	case r.Subtype == "push_failed":
-		return "push_failed"
-	case r.IsError:
-		return "error"
-	case r.Subtype == "success":
-		return "ok"
-	default:
-		return r.Subtype
-	}
 }
 
 // Summarize aggregates samples into a Summary.
@@ -251,8 +232,10 @@ func Summarize(samples []Sample) Summary {
 	s.DurSamples = len(durs)
 	s.EgressWaitP50Ms = percentile(egressWaits, 50)
 	s.EgressWaitP95Ms = percentile(egressWaits, 95)
+	s.EgressWaitSamples = len(egressWaits)
 	s.ApprovalWaitP50Ms = percentile(approvalWaits, 50)
 	s.ApprovalWaitP95Ms = percentile(approvalWaits, 95)
+	s.ApprovalWaitSamples = len(approvalWaits)
 
 	if s.Tasks > 0 {
 		days := math.Ceil(newest.Sub(oldest).Hours() / 24)

@@ -64,7 +64,7 @@ type Metrics struct {
 	Vendor             string  `json:"vendor"`
 	Auth               string  `json:"auth"`
 	Repo               string  `json:"repo"`
-	Model              string  `json:"model"`
+	Model              string  `json:"model,omitempty"`
 	StageMs            StageMs `json:"stage_ms"`
 	EgressGateWaitMs   int64   `json:"egress_gate_wait_ms"`
 	ApprovalGateWaitMs int64   `json:"approval_gate_wait_ms"`
@@ -90,24 +90,35 @@ func readFirstMeta(r io.Reader) Meta {
 	return m
 }
 
-// scanTailForResult reads the last ~16KB of f (from the given size) and returns
-// the final {"type":"result",...} line. found=false when none is present; err is
-// a seek/read error. It tolerates an unterminated trailing line (brokerd may be
-// mid-write). Shared by LastResult, LastResultFile, and HasResultLine.
-func scanTailForResult(f *os.File, size int64) (Result, bool, error) {
+// tailLines reads the last ~16KB of f (from the given size) and returns it
+// split into lines, for last-wins scans of terminal rows. It tolerates an
+// unterminated trailing line (brokerd may be mid-write). Shared by the
+// result-row and metrics-row tail scans so the window and seek handling
+// cannot drift between them.
+func tailLines(f *os.File, size int64) ([][]byte, error) {
 	const tail = 16 * 1024
 	off := int64(0)
 	if size > tail {
 		off = size - tail
 	}
 	if _, err := f.Seek(off, io.SeekStart); err != nil {
-		return Result{}, false, err
+		return nil, err
 	}
 	data, err := io.ReadAll(f)
 	if err != nil {
+		return nil, err
+	}
+	return bytes.Split(data, []byte("\n")), nil
+}
+
+// scanTailForResult returns the final {"type":"result",...} line in f's tail.
+// found=false when none is present; err is a seek/read error. Shared by
+// LastResult, LastResultFile, and HasResultLine.
+func scanTailForResult(f *os.File, size int64) (Result, bool, error) {
+	lines, err := tailLines(f, size)
+	if err != nil {
 		return Result{}, false, err
 	}
-	lines := bytes.Split(data, []byte("\n"))
 	for i := len(lines) - 1; i >= 0; i-- {
 		var x Result
 		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" {
@@ -165,20 +176,39 @@ func LastResultFile(f *os.File) (Result, bool) {
 // (brokerd died under it) has a synthetic 0ms we must not display as "0s".
 func HasDuration(r Result, ok bool) bool { return ok && r.Subtype != "interrupted" }
 
-// Outcome derives the human outcome string. Mirrors the old summarize() switch.
+// OutcomeKey classifies a result into a stable machine key: "running" (no
+// result row), "interrupted", "push_failed", "error", "ok", or the raw
+// subtype for anything else (e.g. a broker-authored "denied"). Outcome
+// renders its display string from this key and `drydock stats` aggregates
+// on it, so the two views classify a task identically by construction.
+func OutcomeKey(r Result, ok bool) string {
+	switch {
+	case !ok:
+		return "running"
+	case r.Subtype == "interrupted":
+		return "interrupted"
+	case r.Subtype == "push_failed":
+		return "push_failed"
+	case r.IsError:
+		return "error"
+	case r.Subtype == "success":
+		return "ok"
+	default:
+		return r.Subtype
+	}
+}
+
+// Outcome derives the human outcome string from OutcomeKey.
 func Outcome(r Result, ok bool, m Meta) string {
-	if !ok {
+	key := OutcomeKey(r, ok)
+	if key == "running" {
 		return "running?"
 	}
 	var s string
-	switch {
-	case r.Subtype == "interrupted":
-		s = "interrupted"
-	case r.Subtype == "push_failed":
+	switch key {
+	case "push_failed":
 		s = "push failed"
-	case r.IsError:
-		s = "error"
-	case r.Subtype == "success":
+	case "ok":
 		if r.NumTurns > 0 {
 			unit := "turns"
 			if r.NumTurns == 1 {
@@ -189,7 +219,7 @@ func Outcome(r Result, ok bool, m Meta) string {
 			s = "ok"
 		}
 	default:
-		s = r.Subtype
+		s = key
 	}
 	if m.Sensitive {
 		s += " · sensitive"
@@ -269,6 +299,25 @@ func TaskAgent(path string) string {
 	return ""
 }
 
+// TaskAgentFile is TaskAgent for an already-open file. The invocation record
+// is written immediately after drydock_meta, before any agent output, so
+// only the first few lines are scanned instead of the whole (potentially
+// MB-sized) trace; "" for pre-v0.6.0 traces or when absent from the head.
+func TaskAgentFile(f *os.File) string {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return ""
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for i := 0; i < 4 && sc.Scan(); i++ {
+		var tl taskLine
+		if json.Unmarshal(sc.Bytes(), &tl) == nil && tl.Type == "drydock_task" {
+			return tl.Agent
+		}
+	}
+	return ""
+}
+
 var progressLine = regexp.MustCompile(`^\[\d+/\d+\]`)
 
 // looksLikeError reports whether a line reads as a failure message, so
@@ -326,19 +375,10 @@ func LastMetricsFile(f *os.File) (Metrics, bool) {
 	if err != nil {
 		return Metrics{}, false
 	}
-	const tail = 16 * 1024
-	off := int64(0)
-	if info.Size() > tail {
-		off = info.Size() - tail
-	}
-	if _, err := f.Seek(off, io.SeekStart); err != nil {
-		return Metrics{}, false
-	}
-	data, err := io.ReadAll(f)
+	lines, err := tailLines(f, info.Size())
 	if err != nil {
 		return Metrics{}, false
 	}
-	lines := bytes.Split(data, []byte("\n"))
 	for i := len(lines) - 1; i >= 0; i-- {
 		var m Metrics
 		if json.Unmarshal(lines[i], &m) == nil && m.Type == "metrics" && m.Src == "broker" {
