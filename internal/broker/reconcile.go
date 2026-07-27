@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"drydock/internal/audit"
+	"drydock/internal/provider"
 )
 
 // interruptedResultLine is the synthetic terminal event appended to a task
@@ -136,6 +137,13 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		auditPath: filepath.Join(b.AuditRoot, id+".jsonl"),
 		taskStart: time.UnixMilli(m.TaskStartMs),
 	}
+	tr.subscription = audit.ReadMeta(tr.auditPath).Subscription
+	if v, ok := provider.VendorForAgent(m.Agent); ok {
+		tr.taskVendor = v
+	}
+	// Registered after the Sync/Close defer above, so it runs before them
+	// (LIFO): the metrics row lands as the last line, matching the live path.
+	defer tr.appendMetrics()
 	if c, ok := st.(interface{ Cleanup() error }); ok {
 		defer func() {
 			if !tr.keepStage {
@@ -144,12 +152,16 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		}()
 	}
 
+	gateStart := time.Now()
 	ok, cause := b.gatePushMarked(ctx, tr, diff)
+	tr.approvalGateWait = time.Since(gateStart)
 	if cause == gateShutdown {
 		tr.keepStage = true
 		return // leave the marker; next boot resumes
 	}
 	files, insertions, deletions := diffStat(diff)
+	tr.diffFiles = files
+	tr.diffBytes = int64(len(diff))
 	if !ok {
 		subtype := "denied"
 		if cause == gateTimeout {

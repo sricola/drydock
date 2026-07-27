@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"drydock/internal/creds"
 )
@@ -85,5 +86,77 @@ func TestAppendBrokerResult_NumTurnsFromGrantRequests(t *testing.T) {
 	audit := readAudit(t, b.AuditRoot, id)
 	if !strings.Contains(audit, `"num_turns":7`) {
 		t.Errorf("result row does not carry the lease request count:\n%s", audit)
+	}
+}
+
+// approveWhenPending waits for a task to reach the approval gate, sleeps
+// briefly so the measured wall-clock gate wait rounds to at least 1ms, then
+// approves it. Thin wrapper over the existing waitForPending/approve helpers
+// (handle_task_test.go); it does not duplicate their polling/approve logic.
+func approveWhenPending(t *testing.T, b *Broker) string {
+	t.Helper()
+	id := waitForPending(t, b)
+	time.Sleep(5 * time.Millisecond)
+	approve(t, b, id)
+	return id
+}
+
+func TestHandleTask_ApprovalGate_RecordsWaitAndDiffFacts(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{spent: 0.02}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+
+	done := make(chan string, 1)
+	go func() {
+		_, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`)
+		id, _ := events[0]["task_id"].(string)
+		done <- id
+	}()
+	id := approveWhenPending(t, b)
+	got := <-done
+	if got != id {
+		t.Fatalf("approved %s but submit returned %s", id, got)
+	}
+
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	if w, _ := m["approval_gate_wait_ms"].(float64); w <= 0 {
+		t.Errorf("approval_gate_wait_ms=%v, want > 0", m["approval_gate_wait_ms"])
+	}
+	if f, _ := m["diff_files"].(float64); f != 1 {
+		t.Errorf("diff_files=%v, want 1", m["diff_files"])
+	}
+	if bts, _ := m["diff_bytes"].(float64); bts <= 0 {
+		t.Errorf("diff_bytes=%v, want > 0", m["diff_bytes"])
+	}
+	if p, ok := m["stage_ms"].(map[string]any); !ok || p["pushing"] == nil {
+		t.Errorf("stage_ms.pushing missing: %v", m)
+	}
+}
+
+func TestHandleTask_WidenApproved_RecordsOutcomeAndWait(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{spent: 0}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	yes := true
+	b.Cfg.PerTaskWidening.RequiresApproval = &yes
+
+	done := make(chan string, 1)
+	go func() {
+		_, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true,"egress_extra":[{"host":"proxy.example.com","ports":[443]}]}`)
+		id, _ := events[0]["task_id"].(string)
+		done <- id
+	}()
+	approveWhenPending(t, b)
+	id := <-done
+
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	if m["widen_outcome"] != "approved" {
+		t.Errorf("widen_outcome=%v, want approved", m["widen_outcome"])
+	}
+	if n, _ := m["widen_requested"].(float64); n != 1 {
+		t.Errorf("widen_requested=%v, want 1", m["widen_requested"])
+	}
+	if w, _ := m["egress_gate_wait_ms"].(float64); w <= 0 {
+		t.Errorf("egress_gate_wait_ms=%v, want > 0", m["egress_gate_wait_ms"])
 	}
 }

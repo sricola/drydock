@@ -588,6 +588,11 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 func (tr *taskRun) runEgressGate() bool {
 	b, extras := tr.b, tr.egressExtra
 	if len(extras) == 0 || !b.Cfg.WideningRequiresApproval() {
+		if len(extras) > 0 {
+			// Widening required but no gate configured: extras are applied
+			// without a human gate, so the outcome is still "approved".
+			tr.widenOutcome = "approved"
+		}
 		return true
 	}
 	b.setStage(tr.id, StageAwaitingEgress)
@@ -598,7 +603,9 @@ func (tr *taskRun) runEgressGate() bool {
 		"deny":    "drydock deny " + tr.id,
 	})
 	b.setEgressExtra(tr.id, extras)
+	gateStart := time.Now()
 	ok := b.gateEgressWiden(tr.ctx, tr.id, extras)
+	tr.egressGateWait = time.Since(gateStart)
 	b.setEgressExtra(tr.id, nil)
 	if !ok {
 		if tr.ctx.Err() != nil {
@@ -608,6 +615,7 @@ func (tr *taskRun) runEgressGate() bool {
 		tr.sw.emit(errorEvent(tr.id, "egress widening denied", ""))
 		return false
 	}
+	tr.widenOutcome = "approved"
 	b.setStage(tr.id, StageRunning)
 	return true
 }
@@ -860,6 +868,8 @@ func domainStrings(ds []egress.Domain) []string {
 func (tr *taskRun) pushAndOpenPR(diff string) {
 	b := tr.b
 	files, insertions, deletions := diffStat(diff)
+	tr.diffFiles = files
+	tr.diffBytes = int64(len(diff))
 	b.writeBrief(tr, diff)
 	b.setStage(tr.id, StagePending)
 	// Only announce the approval gate when there's actually a human gate to
@@ -872,7 +882,11 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"deny":    "drydock deny " + tr.id,
 			"review":  "drydock review " + tr.id})
 	}
+	gateStart := time.Now()
 	approved, cause := b.gatePushMarked(tr.ctx, tr, diff)
+	if !tr.autoApprove {
+		tr.approvalGateWait = time.Since(gateStart)
+	}
 	if !approved {
 		outcome := "denied"
 		if cause == gateKilled || cause == gateShutdown {
@@ -893,6 +907,8 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 // approval gate has passed, emitting the terminal pushed/push_failed event and,
 // on failure, the synthetic audit line. Shared by the live path and resume.
 func (tr *taskRun) finishPush(files, insertions, deletions int) {
+	pushStart := time.Now()
+	defer func() { tr.pushDur = time.Since(pushStart) }()
 	b := tr.b
 	b.setStage(tr.id, StagePushing)
 	base := "agent/" + tr.id
