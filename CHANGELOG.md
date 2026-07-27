@@ -5,7 +5,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.6.4 (2026-07-26)
+
+A security-hardening release closing the two residual findings from the July
+2026 red-team review (F-04, F-09). The review itself is now committed under
+docs/audits/ with a closure addendum mapping every finding to its fix. No new
+features. One operator-visible change on upgrade: each task's stage dir is
+bound by a hard disk quota, `stage_quota_gb` (default 8 GiB); raise it for
+tasks that legitimately stage more.
 
 ### Security
 
