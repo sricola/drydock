@@ -301,6 +301,16 @@ func (s *Stage) PushBranch(localBranch, remoteBranch string) error {
 	return err
 }
 
+// PushPreflight proves write auth against the actual remote before any VM
+// work: a dry-run push authenticates and computes ref updates without
+// sending objects or moving refs. Uses the same refspec the real push
+// will, through the hardened non-interactive git wrapper, so a missing
+// credential fails here in milliseconds instead of after the agent ran.
+func (s *Stage) PushPreflight(branch string) error {
+	_, err := s.git("push", "--dry-run", "origin", "HEAD:refs/heads/"+branch)
+	return err
+}
+
 // PushEnv is the curated host env a PR/MR adapter must run with: the allowlisted
 // vars plus GIT_DIR and hook-neutralization that keep any vendor CLI on the
 // host-only git dir even if the work tree contains a planted .git. The broker
