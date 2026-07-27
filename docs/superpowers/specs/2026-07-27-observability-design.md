@@ -50,8 +50,11 @@ for every terminal path that today gets a real result row. An `interrupted`
 task (brokerd died under it) gets no metrics row, exactly as it gets only a
 synthetic result.
 
-Fields (all broker-observed; `src:"broker"` required, forged rows without
-it are ignored, same trust rule as cost today):
+Fields (all broker-observed; `src:"broker"` required, and the aggregator
+takes only the *last* metrics row in the file, mirroring `LastResult`:
+the broker writes it after the agent's stream has ended, so an in-VM
+agent printing a forged row, even one carrying `src:"broker"`, is
+superseded):
 
 | Field | Type | Source |
 |---|---|---|
@@ -99,6 +102,9 @@ drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
   (compact). `day`/`week` bucket on the task's result mtime.
 - Percentiles are computed exactly over the retained sample; task counts
   are small enough that no estimation is warranted.
+- Subscription-lane tasks are unmetered: spend lines aggregate api_key
+  tasks only and report the subscription task count as "unmetered"
+  alongside, never as $0.
 - `--json` emits the same aggregates as a single JSON object.
 
 The aggregator lives in a new `internal/stats` package (parse rows,
