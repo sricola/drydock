@@ -17,7 +17,7 @@ import (
 // This test focuses on the data structure rather than os.Exit.
 
 var dispatchedCommands = []string{
-	"setup", "init", "start", "daemon", "submit", "status", "tasks",
+	"setup", "init", "start", "daemon", "submit", "status", "tasks", "stats",
 	"logs", "retry", "review", "inspect", "kill", "cancel", "prune", "pending",
 	"approve", "deny", "doctor", "redteam", "auth", "ui", "version",
 }

@@ -25,6 +25,7 @@ Setup:
 Tasks:
   drydock submit <flags>         POST a new task; blocks until approval/completion
   drydock tasks                  list recent runs (id, age, duration, cost, outcome)
+  drydock stats [--since 30d] [--by DIM] [--json]   aggregate run metrics (outcomes, durations, gate waits, spend)
   drydock logs    <id> [-f]      print (or follow) the task's stream-json audit log
   drydock review  <id>           open the diff in $PAGER, then prompt y/N
   drydock inspect <id> [--json]  show the trust brief (diff facts, risk flags, policy, spend)
@@ -66,6 +67,7 @@ var subHelp = map[string]string{
 	"daemon":  "install|uninstall|status — manage the brokerd LaunchAgent (login start, crash restart). Credentials must be host-side (api-keys.env / oauth files).",
 	"status":  "brokerd up?, in-flight stage breakdown, recent task counts.",
 	"tasks":   "list recent runs: id, age, duration, cost, outcome.",
+	"stats":   "aggregate run metrics from the audit dir: outcomes, durations, gate waits, spend, egress widens. --since 30d [--by agent|vendor|repo|day|week] [--json].",
 	"logs":    "<id> [-f] — print the task's stream-json audit log; -f to follow.",
 	"review":  "<id> — open the diff in $PAGER, prompt y/N to approve or deny.",
 	"inspect": "<id> [--json] — show the task's trust brief: broker-observed diff facts, risk flags, policy, and spend.",
@@ -125,6 +127,9 @@ func main() {
 	case "tasks":
 		consumeHelpFlag(cmd, subArgs)
 		runTasks()
+	case "stats":
+		// `stats` has its own flag.FlagSet which handles -h/--help.
+		runStats(subArgs)
 	case "logs":
 		consumeHelpFlag(cmd, subArgs)
 		fs := flag.NewFlagSet("logs", flag.ExitOnError)
