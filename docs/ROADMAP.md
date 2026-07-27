@@ -268,9 +268,17 @@ so it can ship independently.
   workflow's fetch loop and the Dockerfile rewriter cannot drift. The
   red-team suite (`make redteam` and `make redteam-vm`) is the gate before
   merging.
-- **4.7 Observability.** Structured run metrics (durations, gate latencies,
-  egress-widen frequency, budget burn) beyond the per-task JSONL, enough to
-  answer "what is drydock doing across many runs" without grepping audit files.
+- **4.7 Observability.** *Landed.* The broker records a terminal
+  broker-authored `metrics` row in each task's audit stream (stage
+  durations, egress/approval gate waits, admitted request count, diff
+  size, spend, widen outcome; `src:"broker"`, last-wins like the result
+  row) and stamps stream events with `ts`. `drydock stats [--since]
+  [--by agent|vendor|repo|day|week] [--json]` aggregates the audit dir
+  into outcome rates, duration and gate-wait percentiles, spend (metered
+  lanes only; subscription tasks reported as unmetered), and egress-widen
+  frequency, including widen requests whose task never ran. Pre-upgrade
+  audit files still aggregate (outcomes/durations/cost), with timings
+  reported as absent.
 - **4.8 Runtime abstraction.** The VM backend is Apple `container`-specific.
   Factor the container operations behind an interface so an alternative backend
   (e.g. Linux microVM) is a port, not a rewrite. *Stretch: only once a second
@@ -369,8 +377,7 @@ APFS quota image on macOS (the polling guard remains as the early-cancel
 layer and the only bound on non-macOS builds) have all landed, most
 recently in v0.6.4 (2026-07-26); see the CHANGELOG for details.
 
-1. **4.7 Observability**: wants real multi-run usage first, which unattended
-   operation generates.
+(backlog empty; next items are event-driven or parked, below)
 
 [#139]: https://github.com/sricola/drydock/issues/139
 
