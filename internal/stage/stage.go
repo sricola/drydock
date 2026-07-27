@@ -51,6 +51,7 @@ func (s *Stage) WithContext(ctx context.Context) { s.ctx = ctx }
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = gitHardenedEnv(os.Environ())
 	cmd.WaitDelay = gitWaitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -181,6 +182,7 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 		"diff", "--cached",
 	)
 	cmd.Dir = s.WorkDir
+	cmd.Env = gitHardenedEnv(os.Environ())
 	cmd.WaitDelay = gitWaitDelay
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -312,7 +314,7 @@ func (s *Stage) PushEnv() []string {
 		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
 		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
 	)
-	return env
+	return gitHardenedEnv(env)
 }
 
 func curatedEnv() []string {
@@ -323,6 +325,23 @@ func curatedEnv() []string {
 		}
 	}
 	return out
+}
+
+// gitHardenedEnv returns base plus the vars that make every host-side git
+// invocation non-interactive: a missing credential fails in milliseconds
+// with a classifiable error instead of prompting on stdin (foreground
+// start) or wedging under launchd (no TTY). The SSH BatchMode default is
+// applied only when the operator has no GIT_SSH_COMMAND of their own
+// (empty counts as unset); a custom transport is never clobbered.
+func gitHardenedEnv(base []string) []string {
+	env := append(append([]string{}, base...),
+		"GIT_TERMINAL_PROMPT=0",
+		"GCM_INTERACTIVE=never",
+	)
+	if os.Getenv("GIT_SSH_COMMAND") == "" {
+		env = append(env, "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
+	}
+	return env
 }
 
 // Cleanup removes the entire host scratch dir (work tree + git dir).
