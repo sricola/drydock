@@ -77,9 +77,9 @@ func renderStats(w io.Writer, rep stats.Report) {
 
 	renderOutcomes(w, rep.Overall)
 
-	fmt.Fprintf(w, "dur p50/p95: %s\n", durPair(rep.Overall.DurP50Ms, rep.Overall.DurP95Ms, rep.Overall.DurSamples))
-	fmt.Fprintf(w, "approval wait p50/p95: %s\n", gateWaitPair(rep.Overall.ApprovalWaitP50Ms, rep.Overall.ApprovalWaitP95Ms))
-	fmt.Fprintf(w, "egress wait p50/p95: %s\n", gateWaitPair(rep.Overall.EgressWaitP50Ms, rep.Overall.EgressWaitP95Ms))
+	fmt.Fprintf(w, "dur p50/p95: %s\n", pair(rep.Overall.DurP50Ms, rep.Overall.DurP95Ms, rep.Overall.DurSamples))
+	fmt.Fprintf(w, "approval wait p50/p95: %s\n", pair(rep.Overall.ApprovalWaitP50Ms, rep.Overall.ApprovalWaitP95Ms, rep.Overall.ApprovalWaitSamples))
+	fmt.Fprintf(w, "egress wait p50/p95: %s\n", pair(rep.Overall.EgressWaitP50Ms, rep.Overall.EgressWaitP95Ms, rep.Overall.EgressWaitSamples))
 
 	renderSpend(w, rep.Overall)
 	renderWidens(w, rep.Overall, rep.OrphanWidens)
@@ -124,20 +124,12 @@ func renderOutcomes(w io.Writer, s stats.Summary) {
 	}
 }
 
-// durPair renders "p50/p95" for a duration pair, or "-" when there were no
-// samples with a recorded duration (n is Summary.DurSamples, the count of
-// samples with HasDuration; a real 0ms percentile must not read as absent).
-func durPair(p50, p95 int64, n int) string {
+// pair renders "p50/p95" for a percentile pair, or "-" when no samples
+// backed it. n is the explicit sample count the aggregator states
+// (DurSamples / ApprovalWaitSamples / EgressWaitSamples); absence is never
+// inferred from the values, so a real 0ms percentile cannot read as absent.
+func pair(p50, p95 int64, n int) string {
 	if n <= 0 {
-		return "-"
-	}
-	return shortDur(p50) + "/" + shortDur(p95)
-}
-
-// gateWaitPair renders "p50/p95" for a gate-wait pair, or "-" when neither
-// percentile has a nonzero value (i.e. no engaged-gate samples).
-func gateWaitPair(p50, p95 int64) string {
-	if p50 == 0 && p95 == 0 {
 		return "-"
 	}
 	return shortDur(p50) + "/" + shortDur(p95)
@@ -207,7 +199,7 @@ func renderGroups(w io.Writer, rep stats.Report) {
 			dur = shortDur(g.DurP50Ms)
 		}
 		wait := "-"
-		if g.ApprovalWaitP50Ms > 0 {
+		if g.ApprovalWaitSamples > 0 {
 			wait = shortDur(g.ApprovalWaitP50Ms)
 		}
 		spend := "-"
