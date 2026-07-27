@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -89,20 +90,37 @@ func renderStats(w io.Writer, rep stats.Report) {
 	}
 }
 
-// renderOutcomes prints one line per outcome present, newest/most-common
-// ordering doesn't matter here so we just walk the map; rates are rounded to
-// the nearest percent.
+// renderOutcomes prints one line per outcome present: the fixed list first
+// (in its declared order), then any remaining keys not in that list (e.g. a
+// broker-authored "denied" passthrough subtype), sorted for determinism.
+// Rates are rounded to the nearest percent.
 func renderOutcomes(w io.Writer, s stats.Summary) {
-	for _, outcome := range []string{"ok", "error", "push_failed", "interrupted", "running"} {
+	fixed := []string{"ok", "error", "push_failed", "interrupted", "running"}
+	seen := make(map[string]bool, len(fixed))
+	printOne := func(outcome string) {
 		n, ok := s.Outcomes[outcome]
 		if !ok || n == 0 {
-			continue
+			return
 		}
 		rate := 0
 		if s.Tasks > 0 {
 			rate = (n*100 + s.Tasks/2) / s.Tasks
 		}
 		fmt.Fprintf(w, "  %s: %d (%d%%)\n", outcome, n, rate)
+	}
+	for _, outcome := range fixed {
+		seen[outcome] = true
+		printOne(outcome)
+	}
+	var rest []string
+	for outcome := range s.Outcomes {
+		if !seen[outcome] {
+			rest = append(rest, outcome)
+		}
+	}
+	sort.Strings(rest)
+	for _, outcome := range rest {
+		printOne(outcome)
 	}
 }
 

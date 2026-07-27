@@ -88,6 +88,28 @@ func TestWriteStats_AllOldFormat(t *testing.T) {
 	}
 }
 
+// TestWriteStats_DeniedOutcome is the regression test for the deny-after-
+// restart path: a broker-authored {"subtype":"denied","is_error":false,...}
+// result row must render as its own outcome line, not be folded into "ok".
+func TestWriteStats_DeniedOutcome(t *testing.T) {
+	dir := t.TempDir()
+	denied := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"denied","is_error":false,"duration_ms":0,"total_cost_usd":0.02,"num_turns":0,"src":"broker"}
+`
+	if err := os.WriteFile(filepath.Join(dir, "denied1.jsonl"), []byte(denied), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "denied: 1") {
+		t.Errorf("output missing %q:\n%s", "denied: 1", out)
+	}
+}
+
 func TestWriteStats_JSON(t *testing.T) {
 	var buf bytes.Buffer
 	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "", true); err != nil {

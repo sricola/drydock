@@ -21,7 +21,7 @@ import (
 type Sample struct {
 	ID                        string
 	MTime                     time.Time
-	Outcome                   string // "ok"|"error"|"push_failed"|"interrupted"|"running"
+	Outcome                   string // "ok"|"error"|"push_failed"|"interrupted"|"running", or a passthrough subtype (e.g. "denied")
 	DurationMs                int64
 	HasDuration               bool
 	CostUSD                   float64
@@ -181,6 +181,9 @@ func buildSample(path, id string, mtime time.Time) (Sample, bool) {
 }
 
 // outcomeFor maps a Result to the stable outcome keys used in JSON output.
+// The default case mirrors audit.Outcome: any subtype not recognized above
+// (e.g. broker-authored "denied") passes through as-is rather than
+// collapsing into "ok".
 func outcomeFor(r audit.Result, ok bool) string {
 	switch {
 	case !ok:
@@ -191,8 +194,10 @@ func outcomeFor(r audit.Result, ok bool) string {
 		return "push_failed"
 	case r.IsError:
 		return "error"
-	default:
+	case r.Subtype == "success":
 		return "ok"
+	default:
+		return r.Subtype
 	}
 }
 
@@ -260,11 +265,12 @@ func Summarize(samples []Sample) Summary {
 	return s
 }
 
-// groupKeyFuncs maps a dimension name to a function extracting a sample's
-// group key for that dimension.
+// groupDims lists the valid dimensions accepted by GroupBy.
 var groupDims = []string{"agent", "vendor", "repo", "day", "week"}
 
-func groupKey(sm Sample, dim string) (string, error) {
+// groupKey extracts sm's group key for dim. Callers must validate dim
+// against groupDims first (GroupBy does); dim is assumed valid here.
+func groupKey(sm Sample, dim string) string {
 	var key string
 	switch dim {
 	case "agent":
@@ -278,13 +284,11 @@ func groupKey(sm Sample, dim string) (string, error) {
 	case "week":
 		y, w := sm.MTime.ISOWeek()
 		key = fmt.Sprintf("%d-W%02d", y, w)
-	default:
-		return "", fmt.Errorf("unknown group dimension %q, want one of %s", dim, strings.Join(groupDims, "|"))
 	}
 	if key == "" {
 		key = "(unknown)"
 	}
-	return key, nil
+	return key
 }
 
 // GroupBy partitions samples by dim ("agent"|"vendor"|"repo"|"day"|"week"),
@@ -304,10 +308,7 @@ func GroupBy(samples []Sample, dim string) ([]Group, error) {
 
 	buckets := map[string][]Sample{}
 	for _, sm := range samples {
-		key, err := groupKey(sm, dim)
-		if err != nil {
-			return nil, err
-		}
+		key := groupKey(sm, dim)
 		buckets[key] = append(buckets[key], sm)
 	}
 

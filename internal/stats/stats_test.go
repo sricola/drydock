@@ -94,6 +94,27 @@ func TestSummarize_SpendGatesAndFallbacks(t *testing.T) {
 	}
 }
 
+// TestOutcomeFor_DeniedPassthrough is the regression test for the
+// deny-after-restart path: reconcile.go writes a broker-authored
+// {"subtype":"denied","is_error":false,...} result row, and outcomeFor must
+// pass that subtype through (mirroring audit.Outcome's default case)
+// rather than collapsing it into "ok".
+func TestOutcomeFor_DeniedPassthrough(t *testing.T) {
+	dir := t.TempDir()
+	denied := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"denied","is_error":false,"duration_ms":0,"total_cost_usd":0.02,"num_turns":0,"src":"broker"}
+`
+	writeAudit(t, dir, "denied1", denied, time.Now())
+	samples, _, _ := Collect(dir, time.Time{})
+	if len(samples) != 1 {
+		t.Fatalf("samples=%d, want 1", len(samples))
+	}
+	if samples[0].Outcome != "denied" {
+		t.Errorf("Outcome=%q, want %q", samples[0].Outcome, "denied")
+	}
+}
+
 func TestGroupBy_Dimensions(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
