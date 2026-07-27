@@ -206,7 +206,13 @@ func runDoctor() {
 
 	// Git push credentials (heuristic; the per-repo submit preflight is
 	// the enforced gate). Non-interactive: prompts are disabled everywhere.
-	helperOut, _ := runCmd("git", "config", "--get", "credential.helper")
+	// --get-regexp (not --get credential.helper) so a URL-scoped helper
+	// entry counts too: `gh auth setup-git` (doctor's own https remedy)
+	// writes credential.https://github.com.helper, which --get on the bare
+	// "credential.helper" key never matches, so doctor would otherwise
+	// report no helper right after following its own fix.
+	helperOut, _ := runCmd("git", "config", "--get-regexp", `^credential\.`)
+	credHelper := firstNonEmptyLine(string(helperOut))
 	keys, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), ".ssh", "id_*"))
 	// Public keys don't count; keep only files without .pub.
 	priv := keys[:0]
@@ -215,7 +221,7 @@ func runDoctor() {
 			priv = append(priv, k)
 		}
 	}
-	ok, detail := pushCredsAvailable(strings.TrimSpace(string(helperOut)), os.Getenv("SSH_AUTH_SOCK"), priv)
+	ok, detail := pushCredsAvailable(credHelper, os.Getenv("SSH_AUTH_SOCK"), priv)
 	step("git push credentials", ok, detail)
 	if !ok {
 		failed = true
@@ -267,6 +273,20 @@ func claudeVersionLine(s string) string {
 		}
 	}
 	return strings.TrimSpace(s)
+}
+
+// firstNonEmptyLine returns the first non-blank line of s, trimmed. Used to
+// turn `git config --get-regexp ^credential\.` output (one "key value" pair
+// per line, in config-file order) into a single representative helper
+// string for the doctor detail line: any matching line, global or
+// URL-scoped, is proof a helper is configured.
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // apiKeySource names where an api_key for envName would come from, so the

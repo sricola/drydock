@@ -183,6 +183,29 @@ resolver #1
 	}
 }
 
+func TestFirstNonEmptyLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"single line", "credential.helper osxkeychain", "credential.helper osxkeychain"},
+		{
+			"url-scoped helper from get-regexp",
+			"credential.https://github.com.helper !/usr/bin/gh auth git-credential\n",
+			"credential.https://github.com.helper !/usr/bin/gh auth git-credential",
+		},
+		{"blank lines only", "\n\n", ""},
+		{"leading blank then value", "\ncredential.helper store\n", "credential.helper store"},
+	}
+	for _, c := range cases {
+		if got := firstNonEmptyLine(c.in); got != c.want {
+			t.Errorf("%s: firstNonEmptyLine(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
 func TestPushCredsAvailable(t *testing.T) {
 	cases := []struct {
 		name       string

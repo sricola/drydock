@@ -23,7 +23,9 @@ A macOS notification fires when the diff is ready (opt out with
 Before the sandbox boots, drydock runs `git push --dry-run` against your repo
 with the exact branch it would later push (`agent/<id>`). A dry-run push
 authenticates and computes ref updates without sending objects or moving
-refs, so it proves write auth in milliseconds. If it fails, the task ends
+refs: one remote round trip, before the sandbox boots. A missing local
+credential (no helper, no key, no agent) fails even faster, in milliseconds,
+without touching the network at all. Either way, if it fails, the task ends
 immediately with a classified reason and nothing spent: no VM, no agent run.
 
 The consequence is plain: a task against a repo you cannot push to fails at
