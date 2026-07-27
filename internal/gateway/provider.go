@@ -65,3 +65,15 @@ func (g *grant) Spent() float64 {
 	}
 	return s
 }
+
+// Requests reports how many requests the gateway admitted on this grant's
+// lease. Not part of creds.Grant: the broker discovers it via an optional
+// interface{ Requests() int } assertion, so non-gateway grants and test
+// fakes need no change.
+func (g *grant) Requests() int {
+	n := g.gw.requests(g.token)
+	if n < 0 {
+		return 0
+	}
+	return n
+}

@@ -293,6 +293,18 @@ type taskRun struct {
 	auditPath  string      // path to the audit .jsonl
 	taskStart  time.Time   // set by runSandbox when the agent starts
 
+	// Metrics capture (observability 4.7): filled as the lifecycle advances,
+	// written once by the deferred appendMetrics.
+	prepStart        time.Time     // set at the "preparing" stage emit
+	runEnd           time.Time     // set when the agent run returns
+	egressGateWait   time.Duration // wall-clock at the egress-widen gate
+	approvalGateWait time.Duration // wall-clock at the diff-approval gate
+	pushDur          time.Duration // finishPush wall-clock
+	subscription     bool          // this task's lane is unmetered
+	widenOutcome     string        // "" (none) | "approved"; denied dies pre-audit
+	diffFiles        int
+	diffBytes        int64
+
 	// keepStage, when true, suppresses the deferred stage Cleanup so the stage
 	// directory survives a brokerd shutdown and can be resumed at next boot.
 	// Set by pushAndOpenPR and resumePush when gatePushMarked returns gateShutdown.
@@ -416,6 +428,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("only %d MiB free at the stage root; free space before submitting", free>>20)))
 		return
 	}
+	tr.prepStart = time.Now()
 	sw.emit(map[string]any{"event": "stage", "stage": "preparing", "task_id": taskID})
 
 	if b.StageQuotaBytes > 0 {
@@ -504,6 +517,9 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// it runs LAST (LIFO); Sync registered after runs first: flush, then close.
 	defer logf.Close()
 	defer func() { _ = logf.Sync() }()
+	// Terminal metrics row (observability): registered after the Sync/Close
+	// defers so it runs before them, on every exit path from here on.
+	defer tr.appendMetrics()
 	tr.logf = logf
 	tr.auditPath = filepath.Join(b.AuditRoot, taskID+".jsonl")
 
@@ -515,6 +531,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	tr.taskVendor = taskVendor
 	subscription := (taskVendor == "anthropic" && b.AnthropicAuth == "subscription") ||
 		(taskVendor == "openai" && b.OpenAIAuth == "subscription")
+	tr.subscription = subscription
 	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t,"sensitive":%t}`+"\n", subscription, t.Sensitive)
 
 	// Persist the invocation so `drydock retry <id>` can re-run this task
@@ -571,6 +588,11 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 func (tr *taskRun) runEgressGate() bool {
 	b, extras := tr.b, tr.egressExtra
 	if len(extras) == 0 || !b.Cfg.WideningRequiresApproval() {
+		if len(extras) > 0 {
+			// Widening required but no gate configured: extras are applied
+			// without a human gate, so the outcome is still "approved".
+			tr.widenOutcome = "approved"
+		}
 		return true
 	}
 	b.setStage(tr.id, StageAwaitingEgress)
@@ -581,7 +603,9 @@ func (tr *taskRun) runEgressGate() bool {
 		"deny":    "drydock deny " + tr.id,
 	})
 	b.setEgressExtra(tr.id, extras)
+	gateStart := time.Now()
 	ok := b.gateEgressWiden(tr.ctx, tr.id, extras)
+	tr.egressGateWait = time.Since(gateStart)
 	b.setEgressExtra(tr.id, nil)
 	if !ok {
 		if tr.ctx.Err() != nil {
@@ -591,6 +615,7 @@ func (tr *taskRun) runEgressGate() bool {
 		tr.sw.emit(errorEvent(tr.id, "egress widening denied", ""))
 		return false
 	}
+	tr.widenOutcome = "approved"
 	b.setStage(tr.id, StageRunning)
 	return true
 }
@@ -636,9 +661,13 @@ func (tr *taskRun) appendBrokerResult(isError bool) {
 	if isError {
 		subtype = "error"
 	}
+	turns := 0
+	if rc, ok := tr.grant.(interface{ Requests() int }); ok {
+		turns = rc.Requests()
+	}
 	_, _ = fmt.Fprintf(tr.logf,
-		`{"type":"result","subtype":"%s","is_error":%t,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-		subtype, isError, time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent())
+		`{"type":"result","subtype":"%s","is_error":%t,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":%d,"src":"broker"}`+"\n",
+		subtype, isError, time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent(), turns)
 }
 
 // runSandbox runs the agent container, writes to the audit log, and emits the
@@ -686,7 +715,9 @@ func (tr *taskRun) runSandbox(args []string) error {
 	}
 	sizeGuard := watch(stageRoot, b.StageRoot, stageSizeInterval, runCancel)
 	defer sizeGuard.stop()
-	if err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf)); err != nil {
+	err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf))
+	tr.runEnd = time.Now()
+	if err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
 		if derr := forceDeleteVM(tr.id); derr != nil {
@@ -837,6 +868,8 @@ func domainStrings(ds []egress.Domain) []string {
 func (tr *taskRun) pushAndOpenPR(diff string) {
 	b := tr.b
 	files, insertions, deletions := diffStat(diff)
+	tr.diffFiles = files
+	tr.diffBytes = int64(len(diff))
 	b.writeBrief(tr, diff)
 	b.setStage(tr.id, StagePending)
 	// Only announce the approval gate when there's actually a human gate to
@@ -849,7 +882,11 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"deny":    "drydock deny " + tr.id,
 			"review":  "drydock review " + tr.id})
 	}
+	gateStart := time.Now()
 	approved, cause := b.gatePushMarked(tr.ctx, tr, diff)
+	if !tr.autoApprove {
+		tr.approvalGateWait = time.Since(gateStart)
+	}
 	if !approved {
 		outcome := "denied"
 		if cause == gateKilled || cause == gateShutdown {
@@ -870,6 +907,8 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 // approval gate has passed, emitting the terminal pushed/push_failed event and,
 // on failure, the synthetic audit line. Shared by the live path and resume.
 func (tr *taskRun) finishPush(files, insertions, deletions int) {
+	pushStart := time.Now()
+	defer func() { tr.pushDur = time.Since(pushStart) }()
 	b := tr.b
 	b.setStage(tr.id, StagePushing)
 	base := "agent/" + tr.id

@@ -5,6 +5,20 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Added
+
+- **Run metrics + `drydock stats` (roadmap 4.7).** Each task's audit stream
+  now ends with a broker-authored `{"type":"metrics"}` row (stage durations,
+  egress/approval gate waits, admitted request count, diff size, spend,
+  egress-widen outcome), stream events carry an RFC 3339 `ts`, and the
+  result row's `num_turns` now reports the gateway-admitted request count.
+  `drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]`
+  aggregates the audit dir into outcome rates, duration and gate-wait
+  percentiles, spend, and egress-widen frequency, with graceful fallback for
+  pre-upgrade audit files.
+
 ## v0.6.4 (2026-07-26)
 
 A security-hardening release closing the two residual findings from the July

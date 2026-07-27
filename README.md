@@ -124,6 +124,10 @@ A few things you'll probably want next:
   [Run unattended](https://sricola.github.io/drydock/docs/daemon.html).
 - **Bound your spend:** set `aggregate_budget_usd` to cap cross-task spend
   (subscription mode is bounded by `task_max_requests` instead).
+- **See run metrics across tasks:** `drydock stats [--since 30d] [--by
+  agent|vendor|repo|day|week] [--json]` aggregates outcome rates, duration
+  and gate-wait percentiles, spend, and egress-widen frequency straight from
+  the audit dir.
 - **Build from source:** `brew install go`, clone, then
   `make install && drydock init`.
 

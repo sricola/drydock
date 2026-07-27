@@ -72,6 +72,8 @@ attempt.
 drydock status             # brokerd up?, breakdown (running · egress · diff · pushing)
 drydock tasks              # recent runs: id, age, duration, cost, outcome
 drydock logs <id> [-f]     # stream-json audit (use -f to follow)
+drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
+                           # aggregate run metrics across tasks
 drydock kill <id>          # cancel the in-flight task (VM down + gate unblocked)
 drydock doctor             # smoke-test the sandbox setup (no API spend)
 drydock redteam            # run live containment attacks on your own sandbox (no API spend)
@@ -79,6 +81,40 @@ drydock redteam            # run live containment attacks on your own sandbox (n
 
 Prefer a browser? `drydock ui` puts the board, the diff/approve gate, and
 history in a local web app; see [Web UI](web-ui.html).
+
+### Run metrics: `drydock stats`
+
+```bash
+drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
+```
+
+- `--since <duration>`: only include tasks whose audit file was modified in
+  the last `<duration>` (e.g. `30d`, `12h`); defaults to `30d` if omitted,
+  use `--since 0` for all history.
+- `--by agent|vendor|repo|day|week`: break the summary out by that
+  dimension instead of one aggregate.
+- `--json`: emit the report as JSON instead of a table.
+
+`drydock stats` aggregates outcome rates, duration and gate-wait
+percentiles, spend, and egress-widen frequency straight from the audit dir
+(no brokerd needed). Tasks from before this feature shipped still count
+toward outcomes, durations, and cost, but report their gate-wait and
+request-count fields as absent rather than zero. The audit result rows
+cannot distinguish `no_diff`/`cancelled` outcomes: they record as
+ok/error respectively, consistent with `drydock tasks`.
+
+## Audit stream format
+
+Each task's audit file (`~/.drydock/audit/<id>.jsonl`) is newline-delimited
+JSON: one event per line, in the order they happened. Separately, the live
+`drydock submit --json` / `POST /tasks` NDJSON stream now stamps every event
+with a `ts` field (RFC 3339); that timestamp is on the submit stream only,
+not persisted into the audit file. The audit file ends with a
+broker-authored row, `{"type":"metrics","src":"broker"}`, holding stage
+durations, egress/approval gate waits, the admitted request count, spend,
+and the egress-widen outcome; if brokerd ever appends more than one (e.g.
+after a resumed task), the last such row wins, so readers should take the
+last `metrics` line, not the first.
 
 ## Variations
 

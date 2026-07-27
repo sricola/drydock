@@ -414,7 +414,7 @@ function renderLogs(box, text){
   for (const line of text.split("\n")){
     if (!line.trim()) continue;
     let o; try { o = JSON.parse(line); } catch { pre.append(el("span", { class: "lg", text: line + "\n" })); continue; }
-    if (o.type === "stream_event" || o.type === "drydock_meta") continue; // streaming deltas + meta: noise, the coarse events carry the content
+    if (o.type === "stream_event" || o.type === "drydock_meta" || o.type === "metrics") continue; // streaming deltas + meta + broker metrics row: noise, the coarse events carry the content
     let cls = "lg", txt = line;
     if (o.type === "assistant"){
       const c = (o.message && o.message.content) || [];

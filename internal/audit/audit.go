@@ -45,6 +45,37 @@ type Meta struct {
 	Sensitive    bool   `json:"sensitive"`
 }
 
+// StageMs is the per-stage wall-clock breakdown of a metrics row.
+type StageMs struct {
+	Preparing int64 `json:"preparing"`
+	Running   int64 `json:"running"`
+	Pushing   int64 `json:"pushing"`
+}
+
+// Metrics is the broker-authored terminal {"type":"metrics"} row (one per
+// task, last line of the file). Only Src=="broker" rows count, and the last
+// one wins: the broker writes it after the agent's output ends, so a forged
+// in-VM row is always superseded.
+type Metrics struct {
+	Type               string  `json:"type"`
+	Src                string  `json:"src"`
+	TaskID             string  `json:"task_id"`
+	Agent              string  `json:"agent"`
+	Vendor             string  `json:"vendor"`
+	Auth               string  `json:"auth"`
+	Repo               string  `json:"repo"`
+	Model              string  `json:"model"`
+	StageMs            StageMs `json:"stage_ms"`
+	EgressGateWaitMs   int64   `json:"egress_gate_wait_ms"`
+	ApprovalGateWaitMs int64   `json:"approval_gate_wait_ms"`
+	Requests           int     `json:"requests"`
+	DiffFiles          int     `json:"diff_files"`
+	DiffBytes          int64   `json:"diff_bytes"`
+	CostUSD            float64 `json:"cost_usd"`
+	WidenRequested     int     `json:"widen_requested"`
+	WidenOutcome       string  `json:"widen_outcome"`
+}
+
 // readFirstMeta parses the first line of r as a {"type":"drydock_meta"} record.
 // Legacy/absent/malformed → zero value. Shared by ReadMeta and ReadMetaFile.
 func readFirstMeta(r io.Reader) Meta {
@@ -149,7 +180,11 @@ func Outcome(r Result, ok bool, m Meta) string {
 		s = "error"
 	case r.Subtype == "success":
 		if r.NumTurns > 0 {
-			s = fmt.Sprintf("ok (%d turn)", r.NumTurns)
+			unit := "turns"
+			if r.NumTurns == 1 {
+				unit = "turn"
+			}
+			s = fmt.Sprintf("ok (%d %s)", r.NumTurns, unit)
 		} else {
 			s = "ok"
 		}
@@ -281,4 +316,34 @@ func Reason(path string) (line string, ok bool) {
 		return lastMeaningful, true
 	}
 	return "", false
+}
+
+// LastMetricsFile finds the final broker-authored {"type":"metrics"} line by
+// reading only the file tail (same 16KB window as LastResultFile). ok=false
+// when absent (pre-metrics trace, interrupted task, or still running).
+func LastMetricsFile(f *os.File) (Metrics, bool) {
+	info, err := f.Stat()
+	if err != nil {
+		return Metrics{}, false
+	}
+	const tail = 16 * 1024
+	off := int64(0)
+	if info.Size() > tail {
+		off = info.Size() - tail
+	}
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return Metrics{}, false
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return Metrics{}, false
+	}
+	lines := bytes.Split(data, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		var m Metrics
+		if json.Unmarshal(lines[i], &m) == nil && m.Type == "metrics" && m.Src == "broker" {
+			return m, true
+		}
+	}
+	return Metrics{}, false
 }

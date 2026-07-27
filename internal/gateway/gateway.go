@@ -116,6 +116,17 @@ func (g *Gateway) spent(token string) float64 {
 	return -1
 }
 
+// requests mirrors spent for the admitted-request count: -1 when the lease
+// is gone (revoked/expired), so callers can distinguish absence from zero.
+func (g *Gateway) requests(token string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if l := g.leases[token]; l != nil {
+		return l.Requests
+	}
+	return -1
+}
+
 // SetAggregateCap enables the per-vendor aggregate USD cap. Call once at boot
 // before serving. vendors is the set the cap applies to (api_key-mode only).
 //

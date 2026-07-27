@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // stream writes newline-delimited JSON events to the POST /tasks response and
@@ -36,6 +37,9 @@ func newStream(w http.ResponseWriter) *stream {
 // ignored on purpose — task cancellation is driven by /admin/kill or brokerd
 // shutdown (CancelAll), never by the success of this write.
 func (s *stream) emit(ev map[string]any) {
+	if _, ok := ev["ts"]; !ok {
+		ev["ts"] = time.Now().UTC().Format(time.RFC3339)
+	}
 	_ = s.enc.Encode(ev)
 	if s.f != nil {
 		s.f.Flush()

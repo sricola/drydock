@@ -213,6 +213,15 @@ func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
 	if !fs.pushed.Load() {
 		t.Error("approve after resume should have pushed the surviving branch")
 	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "live.jsonl"))
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	m := lastMetricsLine(t, string(data))
+	if m["task_id"] != "live" {
+		t.Errorf("metrics row task_id=%v, want live", m["task_id"])
+	}
 }
 
 // TestResumePush_ShutdownKeepsStage verifies that when a resumed task's gate is
