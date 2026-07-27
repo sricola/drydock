@@ -18,6 +18,21 @@ drydock submit \
 A macOS notification fires when the diff is ready (opt out with
 `DRYDOCK_NO_NOTIFY=1`).
 
+## Push-credential preflight
+
+Before the sandbox boots, drydock runs `git push --dry-run` against your repo
+with the exact branch it would later push (`agent/<id>`). A dry-run push
+authenticates and computes ref updates without sending objects or moving
+refs, so it proves write auth in milliseconds. If it fails, the task ends
+immediately with a classified reason and nothing spent: no VM, no agent run.
+
+The consequence is plain: a task against a repo you cannot push to fails at
+submit, not after a long agent run. There is no opt-out.
+
+git never prompts during this check. HTTPS needs a credential helper
+(`gh auth setup-git`); SSH runs in BatchMode unless you've set
+`GIT_SSH_COMMAND` yourself.
+
 ## The approval gate
 
 Nothing reaches your real repo until you say so. Review and act on a pending
