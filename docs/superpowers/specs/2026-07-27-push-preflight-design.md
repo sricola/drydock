@@ -60,7 +60,7 @@ helper adds:
 
 The helper applies to: `runGit` (all stage git calls including clone and
 push), the direct `exec.CommandContext` git invocation in stage.go
-(commit path), and `PushEnv` (the curated env handed to gh/glab adapters,
+(`gitDiffCapped`, the diff-capture path), and `PushEnv` (the curated env handed to gh/glab adapters,
 which run their own git under the hood). Result: a credential gap
 anywhere in the host git path fails in milliseconds with a classifiable
 error instead of prompting or hanging.
@@ -98,7 +98,7 @@ real gate; this is early warning during setup.
   (failure), no network needed; env helper unit tests assert
   `GIT_TERMINAL_PROMPT=0`/`GCM_INTERACTIVE=never` always present and
   `GIT_SSH_COMMAND` preserved when pre-set, on `runGit`, the direct
-  commit call, and `PushEnv`.
+  `gitDiffCapped` call, and `PushEnv`.
 - Broker: a fake stage implementing `PushPreflight` with an auth error
   asserts the task fails at accept (no WriteTaskFiles, no mint, no run),
   with the classified reason in the terminal event; a fake without the
