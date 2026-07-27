@@ -152,6 +152,10 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		}()
 	}
 
+	// Recorded unconditionally, unlike pushAndOpenPR's !tr.autoApprove guard:
+	// auto-approved tasks return from gatePushMarked before its onReady ever
+	// writes a gate marker, and resumePush only runs for marked tasks, so this
+	// wait is always a real human-gate wait.
 	gateStart := time.Now()
 	ok, cause := b.gatePushMarked(ctx, tr, diff)
 	tr.approvalGateWait = time.Since(gateStart)
