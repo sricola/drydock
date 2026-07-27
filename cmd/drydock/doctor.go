@@ -3,12 +3,30 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"drydock/internal/config"
 	"drydock/internal/provider"
 	"drydock/internal/remote"
 )
+
+// pushCredsAvailable is the pure heart of doctor's git-credential check: a
+// heuristic (doctor knows no target repo; the per-repo preflight at submit
+// is the real gate). Passes when an HTTPS credential helper is configured
+// or SSH looks usable (agent socket or a private key on disk).
+func pushCredsAvailable(credHelper, sshAuthSock string, sshKeys []string) (bool, string) {
+	switch {
+	case credHelper != "":
+		return true, "https credential helper: " + credHelper
+	case sshAuthSock != "":
+		return true, "ssh agent socket present"
+	case len(sshKeys) > 0:
+		return true, "ssh key on disk: " + filepath.Base(sshKeys[0])
+	default:
+		return false, "no https credential helper and no ssh key/agent; pushes will fail at the submit preflight. Fix: `gh auth setup-git` (https) or create/load an ssh key"
+	}
+}
 
 // runDoctor is the no-API-spend smoke. It catches the failure modes that
 // only show up at task time today — stale image entrypoint, sandbox can't
@@ -184,6 +202,23 @@ func runDoctor() {
 	}
 	if !anyAuthed {
 		fmt.Println("note: no PR CLI (gh/glab/tea) is authenticated — tasks will push a branch but not open a PR until you authenticate one.")
+	}
+
+	// Git push credentials (heuristic; the per-repo submit preflight is
+	// the enforced gate). Non-interactive: prompts are disabled everywhere.
+	helperOut, _ := runCmd("git", "config", "--get", "credential.helper")
+	keys, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), ".ssh", "id_*"))
+	// Public keys don't count; keep only files without .pub.
+	priv := keys[:0]
+	for _, k := range keys {
+		if !strings.HasSuffix(k, ".pub") {
+			priv = append(priv, k)
+		}
+	}
+	ok, detail := pushCredsAvailable(strings.TrimSpace(string(helperOut)), os.Getenv("SSH_AUTH_SOCK"), priv)
+	step("git push credentials", ok, detail)
+	if !ok {
+		failed = true
 	}
 
 	fmt.Println()

@@ -182,3 +182,27 @@ resolver #1
 		})
 	}
 }
+
+func TestPushCredsAvailable(t *testing.T) {
+	cases := []struct {
+		name       string
+		credHelper string
+		sshSock    string
+		sshKeys    []string
+		wantOK     bool
+	}{
+		{"https helper", "osxkeychain", "", nil, true},
+		{"ssh agent", "", "/tmp/agent.sock", nil, true},
+		{"ssh key on disk", "", "", []string{"/Users/x/.ssh/id_ed25519"}, true},
+		{"nothing", "", "", nil, false},
+	}
+	for _, c := range cases {
+		ok, detail := pushCredsAvailable(c.credHelper, c.sshSock, c.sshKeys)
+		if ok != c.wantOK {
+			t.Errorf("%s: ok=%v want %v (%s)", c.name, ok, c.wantOK, detail)
+		}
+		if detail == "" {
+			t.Errorf("%s: empty detail", c.name)
+		}
+	}
+}
