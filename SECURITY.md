@@ -94,6 +94,10 @@ carries supply-chain attestations you can check before trusting a binary
     drydock-vX.Y.Z-darwin-arm64.tar.gz
   ```
 
+  cosign v3 prints deprecation warnings for `--certificate`/`--signature`
+  (it prefers Sigstore bundles, which releases don't ship yet) but still
+  verifies; expect the warnings, then `Verified OK`.
+
 - **SBOM**: `drydock.cdx.json` (CycloneDX) lists the module dependencies.
 - **sha256**: the `.sha256` asset matches the value the Homebrew formula pins.
 - **Sandbox-image CVE scanning.** CI scans the built `drydock-sandbox` image
