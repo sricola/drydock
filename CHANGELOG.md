@@ -5,7 +5,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.6.5 (2026-07-27)
+
+A feature release landing roadmap item 4.7 (observability): per-task run
+metrics recorded in the audit stream and a `drydock stats` command that
+aggregates them. Fully backward compatible; pre-upgrade audit files keep
+working, with timing columns reported as absent. Two cosmetic
+operator-visible changes: `drydock tasks` shows `ok (N turns)` for new runs
+now that `num_turns` carries the real gateway-admitted request count, and
+submit-stream events carry an RFC 3339 `ts` field.
 
 ### Added
 
