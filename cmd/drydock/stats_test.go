@@ -49,6 +49,45 @@ func TestWriteStats_Text(t *testing.T) {
 	}
 }
 
+// TestWriteStats_AllOldFormat is the regression test for the duration
+// fallback: a dir of only pre-upgrade files (result rows with real
+// duration_ms, no metrics rows) must still render the real duration
+// percentiles, not "-". PreMetricsTasks tracks the metrics row, not the
+// result row, so it must not gate the duration display.
+func TestWriteStats_AllOldFormat(t *testing.T) {
+	dir := t.TempDir()
+	old1 := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":5000,"total_cost_usd":0.05,"num_turns":2,"src":"broker"}
+`
+	old2 := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":60000,"total_cost_usd":0.20,"num_turns":6,"src":"broker"}
+`
+	for id, content := range map[string]string{"c": old1, "d": old2} {
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "agent", false); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// p50 of [5000,60000] is 5000 (nearest-rank), p95 is 60000.
+	if !strings.Contains(out, "dur p50/p95: 5.0s/1m00s") {
+		t.Errorf("output missing real duration percentiles:\n%s", out)
+	}
+	if strings.Contains(out, "dur p50/p95: -") {
+		t.Errorf("real durations rendered as absent:\n%s", out)
+	}
+	// The single claude group row must carry the real dur p50 too, not "-":
+	// one "5.0s" from the overall line, a second from the group table.
+	if strings.Count(out, "5.0s") < 2 {
+		t.Errorf("group row lost its duration:\n%s", out)
+	}
+}
+
 func TestWriteStats_JSON(t *testing.T) {
 	var buf bytes.Buffer
 	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "", true); err != nil {

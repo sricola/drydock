@@ -37,6 +37,7 @@ type Summary struct {
 	Outcomes          map[string]int `json:"outcomes"`
 	DurP50Ms          int64          `json:"dur_p50_ms"`
 	DurP95Ms          int64          `json:"dur_p95_ms"`
+	DurSamples        int            `json:"dur_samples"`
 	EgressWaitP50Ms   int64          `json:"egress_wait_p50_ms"`
 	EgressWaitP95Ms   int64          `json:"egress_wait_p95_ms"`
 	ApprovalWaitP50Ms int64          `json:"approval_wait_p50_ms"`
@@ -242,6 +243,7 @@ func Summarize(samples []Sample) Summary {
 
 	s.DurP50Ms = percentile(durs, 50)
 	s.DurP95Ms = percentile(durs, 95)
+	s.DurSamples = len(durs)
 	s.EgressWaitP50Ms = percentile(egressWaits, 50)
 	s.EgressWaitP95Ms = percentile(egressWaits, 95)
 	s.ApprovalWaitP50Ms = percentile(approvalWaits, 50)

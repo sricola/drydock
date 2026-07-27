@@ -25,7 +25,7 @@ Setup:
 Tasks:
   drydock submit <flags>         POST a new task; blocks until approval/completion
   drydock tasks                  list recent runs (id, age, duration, cost, outcome)
-  drydock stats [--since 30d] [--by DIM] [--json]   aggregate run metrics (outcomes, durations, gate waits, spend)
+  drydock stats   <flags>        aggregate run metrics (--since DUR [--by DIM] [--json])
   drydock logs    <id> [-f]      print (or follow) the task's stream-json audit log
   drydock review  <id>           open the diff in $PAGER, then prompt y/N
   drydock inspect <id> [--json]  show the trust brief (diff facts, risk flags, policy, spend)

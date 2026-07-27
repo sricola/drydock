@@ -76,7 +76,7 @@ func renderStats(w io.Writer, rep stats.Report) {
 
 	renderOutcomes(w, rep.Overall)
 
-	fmt.Fprintf(w, "dur p50/p95: %s\n", durPair(rep.Overall.DurP50Ms, rep.Overall.DurP95Ms, rep.Overall.Tasks-rep.Overall.PreMetricsTasks))
+	fmt.Fprintf(w, "dur p50/p95: %s\n", durPair(rep.Overall.DurP50Ms, rep.Overall.DurP95Ms, rep.Overall.DurSamples))
 	fmt.Fprintf(w, "approval wait p50/p95: %s\n", gateWaitPair(rep.Overall.ApprovalWaitP50Ms, rep.Overall.ApprovalWaitP95Ms))
 	fmt.Fprintf(w, "egress wait p50/p95: %s\n", gateWaitPair(rep.Overall.EgressWaitP50Ms, rep.Overall.EgressWaitP95Ms))
 
@@ -107,7 +107,8 @@ func renderOutcomes(w io.Writer, s stats.Summary) {
 }
 
 // durPair renders "p50/p95" for a duration pair, or "-" when there were no
-// samples with a recorded duration (n counts samples that have metrics/duration).
+// samples with a recorded duration (n is Summary.DurSamples, the count of
+// samples with HasDuration; a real 0ms percentile must not read as absent).
 func durPair(p50, p95 int64, n int) string {
 	if n <= 0 {
 		return "-"
@@ -178,7 +179,7 @@ func renderGroups(w io.Writer, rep stats.Report) {
 			okRate = (g.Outcomes["ok"]*100 + g.Tasks/2) / g.Tasks
 		}
 		dur := "-"
-		if g.Tasks-g.PreMetricsTasks > 0 {
+		if g.DurSamples > 0 {
 			dur = shortDur(g.DurP50Ms)
 		}
 		wait := "-"
