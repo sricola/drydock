@@ -366,8 +366,8 @@ landed), 4.10 (plain-HTTP vs HTTPS-CONNECT edge documented in the egress doc),
 4.15 (precise gateway metering: per-request in-flight reservation), and the
 F-04 `/work` bound going from soft-polling-only to a hard `stage_quota_gb`
 APFS quota image on macOS (the polling guard remains as the early-cancel
-layer and the only bound on non-macOS builds) have all landed. See the
-Unreleased CHANGELOG entry for details.
+layer and the only bound on non-macOS builds) have all landed, most
+recently in v0.6.4 (2026-07-26); see the CHANGELOG for details.
 
 1. **4.7 Observability**: wants real multi-run usage first, which unattended
    operation generates.
