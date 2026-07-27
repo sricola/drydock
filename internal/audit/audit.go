@@ -180,7 +180,11 @@ func Outcome(r Result, ok bool, m Meta) string {
 		s = "error"
 	case r.Subtype == "success":
 		if r.NumTurns > 0 {
-			s = fmt.Sprintf("ok (%d turn)", r.NumTurns)
+			unit := "turns"
+			if r.NumTurns == 1 {
+				unit = "turn"
+			}
+			s = fmt.Sprintf("ok (%d %s)", r.NumTurns, unit)
 		} else {
 			s = "ok"
 		}

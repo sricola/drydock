@@ -131,3 +131,24 @@ func TestWriteStats_BadDimension(t *testing.T) {
 		t.Fatal("unknown --by dimension must error")
 	}
 }
+
+// A shop that only runs subscription (unmetered) tasks must never see a
+// dollar amount in the overall spend line; renderGroups already held this
+// rule, renderSpend regressed it.
+func TestWriteStats_AllUnmeteredSpendNotZeroDollar(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "s1.jsonl"), []byte(statsOldFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := writeStats(&buf, dir, 0, "", false); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "$0.00") {
+		t.Errorf("all-subscription dir rendered a dollar amount:\n%s", out)
+	}
+	if !strings.Contains(out, "spend: -") {
+		t.Errorf("expected 'spend: -' for all-unmetered dir:\n%s", out)
+	}
+}

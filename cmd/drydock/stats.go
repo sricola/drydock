@@ -146,7 +146,13 @@ func gateWaitPair(p50, p95 int64) string {
 // renderSpend prints the spend line. Unmetered (subscription) tasks are never
 // folded into the dollar total; their count is appended as a parenthetical.
 func renderSpend(w io.Writer, s stats.Summary) {
-	fmt.Fprintf(w, "spend: $%.2f total, $%.2f/day", s.SpendUSD, s.SpendPerDayUSD)
+	if s.Tasks-s.UnmeteredTasks > 0 {
+		fmt.Fprintf(w, "spend: $%.2f total, $%.2f/day", s.SpendUSD, s.SpendPerDayUSD)
+	} else {
+		// All tasks unmetered (subscription lanes): a $0.00 total would
+		// misread as "free", the same rule renderGroups already applies.
+		fmt.Fprint(w, "spend: -")
+	}
 	if s.UnmeteredTasks > 0 {
 		fmt.Fprintf(w, " (+%d unmetered subscription task(s))", s.UnmeteredTasks)
 	}

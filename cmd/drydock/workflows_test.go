@@ -176,7 +176,7 @@ func TestRunTasksListsNewestFirstAndIgnoresOtherArtifacts(t *testing.T) {
 	if newPos < 0 || oldPos < 0 || newPos >= oldPos {
 		t.Fatalf("tasks not listed newest-first:\n%s", out)
 	}
-	for _, want := range []string{"1.2s", "$0.1250", "ok (2 turn)"} {
+	for _, want := range []string{"1.2s", "$0.1250", "ok (2 turns)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("tasks output missing %q:\n%s", want, out)
 		}

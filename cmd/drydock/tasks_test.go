@@ -47,8 +47,8 @@ func TestSummarize_FindsResultPastTailSeek(t *testing.T) {
 	}
 	info, _ := os.Stat(path)
 	got := summarize("task-big", path, info)
-	if got.outcome != "ok (3 turn)" {
-		t.Errorf("outcome = %q, want %q (tail read must find the final result line)", got.outcome, "ok (3 turn)")
+	if got.outcome != "ok (3 turns)" {
+		t.Errorf("outcome = %q, want %q (tail read must find the final result line)", got.outcome, "ok (3 turns)")
 	}
 	if got.cost != "$0.0500" {
 		t.Errorf("cost = %q, want $0.0500", got.cost)

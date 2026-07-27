@@ -56,7 +56,7 @@ func TestHistory(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Outcome != "ok (3 turn)" || items[0].Cost != "$0.0500" || !items[0].HasDuration || items[0].DurationMs != 1200 {
+	if len(items) != 1 || items[0].Outcome != "ok (3 turns)" || items[0].Cost != "$0.0500" || !items[0].HasDuration || items[0].DurationMs != 1200 {
 		t.Fatalf("history item wrong: %+v", items)
 	}
 }

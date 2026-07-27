@@ -32,7 +32,7 @@ func TestOutcomeAndCost(t *testing.T) {
 		wantCost    string
 		wantDur     bool
 	}{
-		{"success with turns", []string{meta, `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0.0731,"num_turns":2}`}, "ok (2 turn)", "$0.0731", true},
+		{"success with turns", []string{meta, `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0.0731,"num_turns":2}`}, "ok (2 turns)", "$0.0731", true},
 		{"success no turns", []string{meta, `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0,"num_turns":0}`}, "ok", "$0.0000", true},
 		{"error", []string{meta, `{"type":"result","subtype":"error","is_error":true,"duration_ms":5,"total_cost_usd":0.01,"num_turns":1}`}, "error", "$0.0100", true},
 		{"interrupted", []string{meta, `{"type":"result","subtype":"interrupted","is_error":false,"duration_ms":0,"total_cost_usd":0,"num_turns":0}`}, "interrupted", "$0.0000", false},
