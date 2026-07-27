@@ -485,7 +485,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 				hint = "no working push credential for this remote; run `gh auth setup-git` (https) or check your SSH key/agent"
 			}
 			sw.emit(errorEvent(taskID,
-				"push preflight failed ("+string(class)+"): "+firstLine(safeErr(err)), hint))
+				"push preflight failed ("+string(class)+"): "+gitOutputFirstLine(err), hint))
 			return
 		}
 	}

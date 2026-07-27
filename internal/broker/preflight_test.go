@@ -19,9 +19,15 @@ func (p *preflightStage) PushPreflight(branch string) error {
 }
 
 func TestHandleTask_PushPreflightAuthFailure_FailsBeforeAnyWork(t *testing.T) {
+	// Shaped like runGit's wrap ("git %v: %w\n%s"): argv first, then a
+	// newline, then git's actual combined output. The emitted reason must
+	// come from the line AFTER the newline (git's message), never the argv.
 	st := &preflightStage{
-		fakeStage:    fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"},
-		preflightErr: errors.New("git push --dry-run: fatal: Authentication failed for 'https://github.com/o/r.git'"),
+		fakeStage: fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"},
+		preflightErr: errors.New(
+			"git [--git-dir=/Users/op/.drydock/stage/t1/git --work-tree=/Users/op/.drydock/stage/t1/work " +
+				"push --dry-run origin HEAD:refs/heads/agent/t1]: exit status 128\n" +
+				"fatal: Authentication failed for 'https://github.com/o/r.git'"),
 	}
 	grant := &fakeGrant{}
 	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
@@ -33,6 +39,12 @@ func TestHandleTask_PushPreflightAuthFailure_FailsBeforeAnyWork(t *testing.T) {
 	reason, _ := term["reason"].(string)
 	if !strings.Contains(reason, "push preflight failed (auth)") {
 		t.Errorf("reason=%q, want push preflight failed (auth)", reason)
+	}
+	if !strings.Contains(reason, "fatal: Authentication failed for 'https://github.com/o/r.git'") {
+		t.Errorf("reason=%q, want git's fatal line, not the argv echo", reason)
+	}
+	if strings.Contains(reason, "--git-dir") {
+		t.Errorf("reason=%q leaks the argv/stage path", reason)
 	}
 	if hint, _ := term["hint"].(string); hint == "" {
 		t.Error("auth-class preflight failure carries no hint")
