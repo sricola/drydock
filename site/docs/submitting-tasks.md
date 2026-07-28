@@ -116,9 +116,17 @@ drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
 percentiles, spend, and egress-widen frequency straight from the audit dir
 (no brokerd needed). Tasks from before this feature shipped still count
 toward outcomes, durations, and cost, but report their gate-wait and
-request-count fields as absent rather than zero. The audit result rows
-cannot distinguish `no_diff`/`cancelled` outcomes: they record as
-ok/error respectively, consistent with `drydock tasks`.
+request-count fields as absent rather than zero.
+
+The audit result row alone cannot tell a diff denied at the approval gate
+apart from a normal success, or a mid-run kill apart from a plain agent
+error: the terminal metrics row's `outcome` field carries the distinction
+(`denied`, `cancelled`, alongside `pushed`, `push_failed`, `error`, and
+`no_diff`), and `drydock tasks`, `drydock stats`, and the web UI all read it.
+`no_diff` still displays as `ok` (unchanged operator muscle memory: a clean
+no-op run isn't a failure). Audit files from before the `outcome` field
+shipped keep recording denied/cancelled as ok/error respectively, same as
+today.
 
 ## Audit stream format
 
@@ -129,9 +137,10 @@ with a `ts` field (RFC 3339); that timestamp is on the submit stream only,
 not persisted into the audit file. The audit file ends with a
 broker-authored row, `{"type":"metrics","src":"broker"}`, holding stage
 durations, egress/approval gate waits, the admitted request count, spend,
-and the egress-widen outcome; if brokerd ever appends more than one (e.g.
-after a resumed task), the last such row wins, so readers should take the
-last `metrics` line, not the first.
+the terminal `outcome` (`pushed`, `denied`, `cancelled`, `push_failed`,
+`error`, or `no_diff`), and the egress-widen outcome; if brokerd ever
+appends more than one (e.g. after a resumed task), the last such row wins,
+so readers should take the last `metrics` line, not the first.
 
 ## Variations
 

@@ -29,6 +29,7 @@ func (tr *taskRun) appendMetrics() {
 		Type: "metrics", Src: "broker", TaskID: tr.id,
 		Agent: tr.agentName, Vendor: tr.taskVendor,
 		Auth:               "api_key",
+		Outcome:            tr.outcome,
 		Repo:               trustbrief.RedactRepoRef(tr.repoRef),
 		Model:              tr.model,
 		EgressGateWaitMs:   tr.egressGateWait.Milliseconds(),

@@ -25,7 +25,12 @@ var runCmd = func(name string, args ...string) ([]byte, error) {
 // Falls back to `container delete --force task-<id>` only when brokerd is
 // unreachable or doesn't know the task — for example, the operator killed
 // brokerd itself and the orphan container is still up.
-func runKill(id string) {
+//
+// Returns the process exit code: 0 on a confirmed cancel/cleanup, 1 on any
+// path that leaves the task unresolved (unknown id, brokerd error, or a
+// failed cleanup attempt): matches the sibling approve/deny exit contract
+// (see signal in client.go) rather than the old implicit 0 on every branch.
+func runKill(id string) int {
 	c, base := brokerClient()
 	resp, err := c.Post(base+"/admin/kill/"+id, "", nil)
 	if err == nil {
@@ -33,13 +38,13 @@ func runKill(id string) {
 		switch resp.StatusCode {
 		case http.StatusNoContent:
 			fmt.Printf("task %s cancelled\n", id)
-			return
+			return 0
 		case http.StatusNotFound:
 			// brokerd is up but doesn't track this task; try the
 			// container CLI in case it's an orphan.
 		default:
 			fmt.Fprintf(os.Stderr, "drydock kill: brokerd returned %s\n", resp.Status)
-			return
+			return 1
 		}
 	}
 	if brokerdDown(err) {
@@ -55,10 +60,13 @@ func runKill(id string) {
 	switch {
 	case ferr == nil:
 		fmt.Printf("task %s VM removed (brokerd didn't know about it)\n", id)
+		return 0
 	case isNoSuchContainer(string(out)):
 		fmt.Fprintf(os.Stderr, "drydock kill: no such task %s\n", id)
+		return 1
 	default:
 		fmt.Fprintf(os.Stderr, "drydock kill: container delete: %v\n%s", ferr, out)
+		return 1
 	}
 }
 

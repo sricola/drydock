@@ -56,7 +56,35 @@ func TestHistory(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Outcome != "ok (3 turns)" || items[0].Cost != "$0.0500" || !items[0].HasDuration || items[0].DurationMs != 1200 {
+	if len(items) != 1 || items[0].Outcome != "ok (3 turns)" || items[0].OutcomeKey != "ok" ||
+		items[0].Cost != "$0.0500" || !items[0].HasDuration || items[0].DurationMs != 1200 {
+		t.Fatalf("history item wrong: %+v", items)
+	}
+}
+
+// TestHistory_DeniedOutcomeFromMetricsRow is the regression test for the
+// history rail/table bug: a denied task's result row is the agent's own
+// pre-gate success line, so before the metrics row's outcome field existed
+// this showed "ok (3 turns)" with a ✓ icon instead of "denied" with a
+// neutral glyph.
+func TestHistory_DeniedOutcomeFromMetricsRow(t *testing.T) {
+	dir := t.TempDir()
+	id := "0123456789abcdef0123456789abcdef"
+	os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(
+		`{"type":"drydock_meta","subscription":false,"sensitive":false}`+"\n"+
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":0.05,"num_turns":3}`+"\n"+
+			`{"type":"metrics","src":"broker","task_id":"`+id+`","outcome":"denied"}`+"\n"), 0o600)
+	s := &Server{AuditRoot: dir, Token: "secret"}
+
+	rec := do(t, s, "GET", "/api/history", "127.0.0.1:7878", "Bearer secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history = %d", rec.Code)
+	}
+	var items []HistoryItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Outcome != "denied" || items[0].OutcomeKey != "denied" {
 		t.Fatalf("history item wrong: %+v", items)
 	}
 }

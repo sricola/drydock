@@ -225,9 +225,16 @@ async function renderFinishedStrip(container, liveIDs){
   if (!recent.length) return;
   const strip = el("div", { class: "recent" }, el("div", { class: "recent-title", text: "Just finished" }));
   for (const it of recent){
-    const isErr = it.outcome.startsWith("error");
+    // outcome_key is the stable machine classification (audit.OutcomeKeyWithMetrics):
+    // "ok" covers both a real push and a no-diff run (unchanged operator
+    // muscle memory); "denied"/"cancelled" get a neutral glyph, not a
+    // false-positive checkmark or cross.
+    const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed";
+    const isNeutral = it.outcome_key === "denied" || it.outcome_key === "cancelled";
     const icon = isErr
       ? el("span", { style: "color:var(--red)", text: "✕" })
+      : isNeutral
+      ? el("span", { style: "color:var(--muted)", text: "∅" })
       : el("span", { style: "color:var(--green)", text: "✓" });
     const row = el("div", { class: "recent-row", onclick: () => openReview(it.id, true) },
       icon,

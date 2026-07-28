@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,6 +222,52 @@ func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
 	m := lastMetricsLine(t, string(data))
 	if m["task_id"] != "live" {
 		t.Errorf("metrics row task_id=%v, want live", m["task_id"])
+	}
+}
+
+// TestResumeAwaiting_CountsAsPendingApprovalNotRunning is the regression test
+// for the healthz bug: registerTask always stamps StageRunning, and
+// resumePush used to leave it there instead of moving it to StagePending like
+// the live pushAndOpenPR path does, so a task resumed at the diff-approval
+// gate after a brokerd restart showed up in healthz/`drydock status` as
+// "running" instead of "pending_approval" until the gate resolved.
+func TestResumeAwaiting_CountsAsPendingApprovalNotRunning(t *testing.T) {
+	dir := t.TempDir()
+	stageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stageRoot, "live2", "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(stageRoot, "live2", "git"), 0o700)
+	os.WriteFile(filepath.Join(dir, "live2.diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, "live2", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, "live2", "work")}
+	b := &Broker{AuditRoot: dir,
+		reopenStage: func(root string) (taskStage, error) { return fs, nil },
+		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
+	b.ResumeAwaiting(stageRoot)
+
+	if !waitFor(2*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending["live2"]
+		b.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("resumed task never reached the approval gate")
+	}
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rr := httptest.NewRecorder()
+	b.HandleHealth(rr, req)
+	var body struct {
+		Running         int `json:"running"`
+		PendingApproval int `json:"pending_approval"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Running != 0 || body.PendingApproval != 1 {
+		t.Errorf("breakdown = %+v, want running=0 pending_approval=1", body)
 	}
 }
 

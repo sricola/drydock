@@ -233,3 +233,54 @@ func TestOutcome_DeniedAndPushed(t *testing.T) {
 		t.Errorf("pushed = %q, want pushed", got)
 	}
 }
+
+// TestOutcomeKeyWithMetrics_OverridesOnlyDeniedAndCancelled is the direct
+// unit test for the fold-in rule: the metrics row's outcome wins only for
+// "denied"/"cancelled" (the two the result row alone cannot express); every
+// other outcome value, and a pre-outcome-field row (hasMetrics but Outcome
+// == ""), must leave the result-row-derived key untouched.
+func TestOutcomeKeyWithMetrics_OverridesOnlyDeniedAndCancelled(t *testing.T) {
+	successResult := Result{Type: "result", Subtype: "success", NumTurns: 2}
+	cases := []struct {
+		name       string
+		r          Result
+		ok         bool
+		m          Metrics
+		hasMetrics bool
+		want       string
+	}{
+		{"denied overrides a success result row", successResult, true, Metrics{Outcome: "denied"}, true, "denied"},
+		{"cancelled overrides an error result row",
+			Result{Type: "result", Subtype: "error", IsError: true}, true, Metrics{Outcome: "cancelled"}, true, "cancelled"},
+		{"pushed does not override (already ok)", successResult, true, Metrics{Outcome: "pushed"}, true, "ok"},
+		{"no_diff does not override (already ok)", successResult, true, Metrics{Outcome: "no_diff"}, true, "ok"},
+		{"pre-outcome-field metrics row falls back to the result row", successResult, true, Metrics{}, true, "ok"},
+		{"no metrics row at all falls back to the result row", successResult, true, Metrics{Outcome: "denied"}, false, "ok"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := OutcomeKeyWithMetrics(tc.r, tc.ok, tc.m, tc.hasMetrics); got != tc.want {
+				t.Errorf("OutcomeKeyWithMetrics = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOutcomeWithMetrics_RendersDeniedAndCancelledAsThemselves confirms the
+// display-string counterpart: "denied"/"cancelled" render as themselves (no
+// turn count, no "push failed"-style relabeling), matching the requirement
+// that these two outcomes get their own distinct line instead of collapsing
+// into "ok (N turns)".
+func TestOutcomeWithMetrics_RendersDeniedAndCancelledAsThemselves(t *testing.T) {
+	r := Result{Type: "result", Subtype: "success", NumTurns: 4}
+	if got := OutcomeWithMetrics(r, true, Meta{}, Metrics{Outcome: "denied"}, true); got != "denied" {
+		t.Errorf("denied = %q, want %q", got, "denied")
+	}
+	if got := OutcomeWithMetrics(r, true, Meta{}, Metrics{Outcome: "cancelled"}, true); got != "cancelled" {
+		t.Errorf("cancelled = %q, want %q", got, "cancelled")
+	}
+	// Unaffected outcome: still "ok (N turns)", the unchanged operator muscle memory.
+	if got := OutcomeWithMetrics(r, true, Meta{}, Metrics{Outcome: "pushed"}, true); got != "ok (4 turns)" {
+		t.Errorf("pushed = %q, want %q", got, "ok (4 turns)")
+	}
+}

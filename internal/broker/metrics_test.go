@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -158,5 +160,147 @@ func TestHandleTask_WidenApproved_RecordsOutcomeAndWait(t *testing.T) {
 	}
 	if w, _ := m["egress_gate_wait_ms"].(float64); w <= 0 {
 		t.Errorf("egress_gate_wait_ms=%v, want > 0", m["egress_gate_wait_ms"])
+	}
+}
+
+// --- terminal outcome taxonomy (#200): the metrics row's Outcome field must
+// reflect the terminal path the broker actually took. "denied" and
+// "cancelled" are the two paths the result row's subtype alone cannot
+// express (see audit.OutcomeKeyWithMetrics), so those two get their own
+// full-flow tests below alongside the more direct pushed/no_diff/error/
+// push_failed paths.
+
+func TestAppendMetrics_Outcome_Pushed(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{spent: 0.02}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	_, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"claude","auto_approve":true}`)
+	id, _ := events[0]["task_id"].(string)
+
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	if m["outcome"] != "pushed" {
+		t.Errorf("outcome=%v, want pushed", m["outcome"])
+	}
+}
+
+func TestAppendMetrics_Outcome_NoDiff(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: ""} // agent changed nothing
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	_, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+	id, _ := events[0]["task_id"].(string)
+
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	if m["outcome"] != "no_diff" {
+		t.Errorf("outcome=%v, want no_diff", m["outcome"])
+	}
+}
+
+func TestAppendMetrics_Outcome_Error(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "ignored-on-failure"}
+	grant := &fakeGrant{}
+	run := func(context.Context, []string, io.Writer, io.Writer) error {
+		return errors.New("container exited 1")
+	}
+	b := testBroker(t, "anthropic", st, grant, run)
+	_, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`)
+	id, _ := events[0]["task_id"].(string)
+
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	if m["outcome"] != "error" {
+		t.Errorf("outcome=%v, want error", m["outcome"])
+	}
+}
+
+func TestAppendMetrics_Outcome_PushFailed(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x", pushErr: errors.New("fatal: Could not resolve host")}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	b.PushMaxRetries = 1
+	b.PushRetryBackoff = 0
+	b.PushFreshBranchTries = 0
+	_, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"claude","auto_approve":true}`)
+	id, _ := events[0]["task_id"].(string)
+
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	if m["outcome"] != "push_failed" {
+		t.Errorf("outcome=%v, want push_failed", m["outcome"])
+	}
+}
+
+// TestAppendMetrics_Outcome_Denied is the regression test for the bug that
+// motivated this field: pushAndOpenPR only streams outcome=denied to the
+// live client, it never rewrites the audit log's result row (still the
+// agent's own pre-gate "success" line), so before this field existed a
+// denied task's audit trail was indistinguishable from a pushed one.
+func TestAppendMetrics_Outcome_Denied(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/tasks",
+		strings.NewReader(`{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`))
+	done := make(chan struct{})
+	go func() { b.HandleTask(rec, req); close(done) }()
+	id := waitForPending(t, b)
+	deny(t, b, id)
+	<-done
+
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	if m["outcome"] != "denied" {
+		t.Errorf("outcome=%v, want denied", m["outcome"])
+	}
+}
+
+// TestAppendMetrics_Outcome_Cancelled is the regression test for the other
+// half of the bug: a task killed mid-run writes a generic subtype:"error"
+// result row (appendBrokerResult doesn't know WHY the run ended), so before
+// this field existed a killed task showed "error" in `drydock tasks`
+// indistinguishably from a real agent failure.
+func TestAppendMetrics_Outcome_Cancelled(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "d"}
+	release := make(chan struct{})
+	run := func(ctx context.Context, _ []string, _, _ io.Writer) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+			return nil
+		}
+	}
+	b := testBroker(t, "anthropic", st, &fakeGrant{}, run)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/tasks",
+		strings.NewReader(`{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`))
+	done := make(chan struct{})
+	go func() { b.HandleTask(rec, req); close(done) }()
+
+	var id string
+	if !waitFor(500*time.Millisecond, func() bool {
+		b.pendingMu.Lock()
+		defer b.pendingMu.Unlock()
+		for k := range b.cancellers {
+			id = k
+			return true
+		}
+		return false
+	}) {
+		t.Fatal("task never registered")
+	}
+
+	killReq := httptest.NewRequest("POST", "/admin/kill/"+id, nil)
+	killReq.SetPathValue("id", id)
+	killRec := httptest.NewRecorder()
+	b.HandleKill(killRec, killReq)
+	if killRec.Code != http.StatusNoContent {
+		t.Fatalf("kill code=%d, want 204", killRec.Code)
+	}
+	<-done
+
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	if m["outcome"] != "cancelled" {
+		t.Errorf("outcome=%v, want cancelled", m["outcome"])
 	}
 }
