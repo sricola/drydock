@@ -271,6 +271,70 @@ func TestResumeAwaiting_CountsAsPendingApprovalNotRunning(t *testing.T) {
 	}
 }
 
+// TestResumePush_RegisteredStageNeverObservedRunning is change 4's regression
+// test: registerTask always stamps StageRunning, and resumePush used to
+// correct that to StagePending under a SECOND lock acquisition. Since the
+// HTTP admin listener is already serving during boot reconciliation, a reader
+// could win the race and observe the wrong stage in that window. registerTaskAt
+// closes the window by recording the correct stage in the same critical
+// section as registration, so the very first sighting of the resumed task in
+// b.tasks must already be StagePending, never StageRunning, even
+// momentarily.
+func TestResumePush_RegisteredStageNeverObservedRunning(t *testing.T) {
+	dir := t.TempDir()
+	stageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stageRoot, "rpid", "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "rpid.diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, "rpid", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, "rpid", "work")}
+	b := &Broker{AuditRoot: dir,
+		reopenStage: func(root string) (taskStage, error) { return fs, nil },
+		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
+
+	b.ResumeAwaiting(stageRoot)
+
+	deadline := time.Now().Add(2 * time.Second)
+	seen := false
+	for time.Now().Before(deadline) {
+		b.pendingMu.Lock()
+		ts, ok := b.tasks["rpid"]
+		var stage TaskStage
+		if ok {
+			stage = ts.Stage
+		}
+		b.pendingMu.Unlock()
+		if ok {
+			seen = true
+			if stage != StagePending {
+				t.Fatalf("first sighting of resumed task has stage=%v, want StagePending immediately", stage)
+			}
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !seen {
+		t.Fatal("resumed task never registered")
+	}
+
+	// Let the gate resolve so the goroutine and its deferred cleanup exit
+	// promptly instead of leaking past the test.
+	b.pendingMu.Lock()
+	ch := b.pending["rpid"]
+	b.pendingMu.Unlock()
+	if ch != nil {
+		ch <- true
+	}
+	waitFor(2*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, still := b.tasks["rpid"]
+		b.pendingMu.Unlock()
+		return !still
+	})
+}
+
 // TestResumePush_ShutdownKeepsStage verifies that when a resumed task's gate is
 // interrupted by brokerd shutdown (errShutdown cancels the context), the stage
 // is NOT cleaned and keepStage is true, so the next boot can resume again.

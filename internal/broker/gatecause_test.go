@@ -79,6 +79,40 @@ func TestGatePush_MarkerLifecycle(t *testing.T) {
 	}
 }
 
+// TestGateOutcome_Matrix pins the full cause x resumed mapping, including
+// the one intentional live/resumed asymmetry (gateTimeout) and change 2's
+// fix (gateShutdown -> empty outcome on both paths, not "cancelled").
+func TestGateOutcome_Matrix(t *testing.T) {
+	cases := []struct {
+		cause       gateCause
+		resumed     bool
+		wantOutcome string
+		wantSubtype string
+	}{
+		{gateDenied, false, "denied", "denied"},
+		{gateDenied, true, "denied", "denied"},
+		{gateKilled, false, "cancelled", "denied"},
+		{gateKilled, true, "cancelled", "denied"},
+		// The one intentional divergence: live has no on-disk "interrupted"
+		// analogue to fall back on, so the metrics outcome carries "denied";
+		// resumed writes its own result row with the sharper subtype and
+		// leaves the metrics outcome empty so it doesn't mask that subtype.
+		{gateTimeout, false, "denied", "denied"},
+		{gateTimeout, true, "", "interrupted"},
+		// gateShutdown: always empty on both paths (change 2); a
+		// shutdown-parked task is paused, not terminal.
+		{gateShutdown, false, "", ""},
+		{gateShutdown, true, "", ""},
+	}
+	for _, tc := range cases {
+		outcome, subtype := gateOutcome(tc.cause, tc.resumed)
+		if outcome != tc.wantOutcome || subtype != tc.wantSubtype {
+			t.Errorf("gateOutcome(%v, resumed=%v) = (%q, %q), want (%q, %q)",
+				tc.cause, tc.resumed, outcome, subtype, tc.wantOutcome, tc.wantSubtype)
+		}
+	}
+}
+
 func TestGatePush_ShutdownLeavesMarker(t *testing.T) {
 	dir := t.TempDir()
 	b := &Broker{AuditRoot: dir}

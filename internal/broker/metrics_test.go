@@ -253,6 +253,34 @@ func TestAppendMetrics_Outcome_Denied(t *testing.T) {
 	}
 }
 
+// TestAppendMetrics_Outcome_Shutdown is the regression test for change 2: a
+// task at the push gate when brokerd shuts down is only parked, not
+// cancelled, since it will resume alive at the next boot. Before this fix
+// the gateShutdown branch recorded outcome="cancelled", so `drydock tasks`
+// and the web UI History showed it as terminal for the whole time it sat
+// parked. The metrics row must omit outcome entirely, and classification
+// must fall back to the result row (the agent's own pre-gate "success"
+// line here), exactly as the resumed gateTimeout case already does.
+func TestAppendMetrics_Outcome_Shutdown(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/tasks",
+		strings.NewReader(`{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`))
+	done := make(chan struct{})
+	go func() { b.HandleTask(rec, req); close(done) }()
+	id := waitForPending(t, b)
+	b.CancelAll() // simulate a graceful brokerd shutdown while parked at the gate
+	<-done
+
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	if v, present := m["outcome"]; present {
+		t.Errorf("outcome=%v, want the field omitted entirely (shutdown-parked task is not terminal)", v)
+	}
+}
+
 // TestAppendMetrics_Outcome_Cancelled is the regression test for the other
 // half of the bug: a task killed mid-run writes a generic subtype:"error"
 // result row (appendBrokerResult doesn't know WHY the run ended), so before
