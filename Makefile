@@ -11,7 +11,7 @@ SRC := $(shell find . -name '*.go' -not -path './bin/*')
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build install uninstall test test-squid-live test-squid-e2e test-integration redteam redteam-report redteam-vm release-preflight tag-release check-release-args demo sbom docs verify-build vet lint image network init clean help
+.PHONY: all build install uninstall test test-squid-live test-squid-e2e test-integration redteam redteam-report redteam-vm release-preflight release-qa tag-release check-release-args demo sbom docs verify-build vet lint image network init clean help
 
 all: build
 
@@ -27,6 +27,7 @@ help:
 	@echo "  redteam-report  same as redteam but prints a per-claim GREEN/RED table"
 	@echo "  redteam-vm  run the VM-backed attacks (A1/A2/A7/A8); macOS + container runtime"
 	@echo "  release-preflight  full pre-release gate: unit + host (A3-A6) + VM (A1/A2/A7/A8)"
+	@echo "  release-qa         black-box QA of the INSTALLED release (see tests/release/qa.sh)"
 	@echo "  tag-release VERSION=vX.Y.Z  run the preflight, then tag + push the release"
 	@echo "  demo        run the narrated breach demo (real attacks; add VM=1 for A1/A2/A7)"
 	@echo "  sbom        write a CycloneDX SBOM to dist/drydock.cdx.json"
@@ -124,6 +125,16 @@ release-preflight: build image network
 	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
 	@echo ""
 	@echo "== release preflight GREEN: unit + host (A3-A6) + VM (A1/A2/A7/A8) all pass =="
+
+# release-qa is the post-install gate: a black-box pass over the INSTALLED
+# drydock/brokerd (brew binaries), covering the operator surface preflight
+# cannot see: CLI contract and exit codes, doctor, live red team, brokerd and
+# squid lifecycle, and the web UI auth boundary. Run it against the candidate
+# build after the brew bump; add LIVE=<disposable repo URL> for the paid
+# task-lifecycle phase (approve/deny/kill) and DAEMON=1 for the launchd round
+# trip. Manual browser checklist: site/docs/release-qa.md.
+release-qa:
+	tests/release/qa.sh $(if $(LIVE),--live $(LIVE),) $(if $(DAEMON),--daemon,)
 
 # tag-release is the blessed release path: it enforces release-preflight (so a
 # release can never ship without the VM containment tests behind its headline

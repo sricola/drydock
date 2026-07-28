@@ -97,6 +97,18 @@ locally instead. From a macOS 26 Apple-silicon machine with the runtime:
 3. Bump the Homebrew formula by hand: the `bump-tap` job self-skips unless
    `HOMEBREW_TAP_TOKEN` is set, so update `url`/`sha256`/`version` in
    `sricola/homebrew-drydock` against the published tarball's `.sha256`.
+4. QA the installed artifact: `brew upgrade drydock`, then run the
+   black-box release gate against the binaries operators actually get:
+
+   ```bash
+   make release-qa                                # no-spend gates (~6 min)
+   make release-qa LIVE=<disposable repo URL> DAEMON=1   # full pass
+   ```
+
+   It checks the CLI contract, doctor, the live red team, the brokerd and
+   squid lifecycle, and the web UI auth boundary; `LIVE=` adds real
+   approve/deny/kill task runs. Finish with the manual browser checklist
+   in `site/docs/release-qa.md` before announcing.
 
 ## Known gaps
 
