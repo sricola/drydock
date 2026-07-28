@@ -5,6 +5,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Added
+
+- **Push-credential preflight at submit.** Before the sandbox boots,
+  drydock proves write auth against the task's repo with a
+  `git push --dry-run` on the exact branch it would later push; a
+  failure ends the task at accept time with a classified reason
+  (`push preflight failed (auth): ...`) and an actionable hint, so a
+  missing credential can no longer cost a full agent run. There is no
+  opt-out: a task against a repo you cannot push to now fails at
+  submit. `drydock doctor` gains a generic push-credential check.
+
+### Changed
+
+- **Host-side git is now strictly non-interactive.** Every git
+  invocation (clone, diff, push, and the env handed to gh/glab) runs
+  with terminal prompts disabled and, unless `GIT_SSH_COMMAND` is set
+  by the operator, SSH in BatchMode; a credential gap fails in
+  milliseconds instead of prompting on stdin or wedging under launchd.
+
 ## v0.6.5 (2026-07-27)
 
 A feature release landing roadmap item 4.7 (observability): per-task run

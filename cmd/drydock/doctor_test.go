@@ -182,3 +182,50 @@ resolver #1
 		})
 	}
 }
+
+func TestFirstNonEmptyLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"single line", "credential.helper osxkeychain", "credential.helper osxkeychain"},
+		{
+			"url-scoped helper from get-regexp",
+			"credential.https://github.com.helper !/usr/bin/gh auth git-credential\n",
+			"credential.https://github.com.helper !/usr/bin/gh auth git-credential",
+		},
+		{"blank lines only", "\n\n", ""},
+		{"leading blank then value", "\ncredential.helper store\n", "credential.helper store"},
+	}
+	for _, c := range cases {
+		if got := firstNonEmptyLine(c.in); got != c.want {
+			t.Errorf("%s: firstNonEmptyLine(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+func TestPushCredsAvailable(t *testing.T) {
+	cases := []struct {
+		name       string
+		credHelper string
+		sshSock    string
+		sshKeys    []string
+		wantOK     bool
+	}{
+		{"https helper", "osxkeychain", "", nil, true},
+		{"ssh agent", "", "/tmp/agent.sock", nil, true},
+		{"ssh key on disk", "", "", []string{"/Users/x/.ssh/id_ed25519"}, true},
+		{"nothing", "", "", nil, false},
+	}
+	for _, c := range cases {
+		ok, detail := pushCredsAvailable(c.credHelper, c.sshSock, c.sshKeys)
+		if ok != c.wantOK {
+			t.Errorf("%s: ok=%v want %v (%s)", c.name, ok, c.wantOK, detail)
+		}
+		if detail == "" {
+			t.Errorf("%s: empty detail", c.name)
+		}
+	}
+}

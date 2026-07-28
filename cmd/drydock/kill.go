@@ -8,9 +8,11 @@ import (
 	"strings"
 )
 
-// runCmd is the exec seam for container CLI invocations in the drydock
-// client. The default calls exec.Command(name, args...).CombinedOutput() so
-// production behaviour is unchanged. Tests replace it with a fake.
+// runCmd is the exec seam for shell-outs in the drydock client: container CLI
+// invocations (kill, doctor's sandbox smoke checks) and, for doctor's push-
+// credential check, `git config`. The default calls
+// exec.Command(name, args...).CombinedOutput() so production behaviour is
+// unchanged. Tests replace it with a fake.
 var runCmd = func(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
 }

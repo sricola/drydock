@@ -471,6 +471,25 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}()
 	tr.st = st
 
+	// Write-auth preflight (see the 2026-07-27 push-preflight spec): prove
+	// push credentials against the actual remote NOW, before task files,
+	// credential mint, or any VM spend. Fail-closed with the same
+	// classification the real push uses. Optional capability so test fakes
+	// without it are unaffected (the BaseCommit idiom).
+	if pf, ok := tr.st.(interface{ PushPreflight(string) error }); ok {
+		if err := pf.PushPreflight("agent/" + taskID); err != nil {
+			class := classifyPushError(err.Error())
+			slog.Warn("task push preflight failed", "task_id", taskID, "class", string(class), "err", err)
+			hint := ""
+			if class == reasonAuth {
+				hint = "no working push credential for this remote; run `gh auth setup-git` (https) or check your SSH key/agent"
+			}
+			sw.emit(errorEvent(taskID,
+				"push preflight failed ("+string(class)+"): "+gitOutputFirstLine(err), hint))
+			return
+		}
+	}
+
 	if err := st.WriteTaskFiles(t.Instruction); err != nil {
 		slog.Warn("task stage failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "stage failed", ""))

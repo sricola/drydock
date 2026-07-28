@@ -85,6 +85,27 @@ func safeStr(s string) string {
 	return out
 }
 
+// gitOutputFirstLine extracts git's own combined output from a runGit-shaped
+// error and returns its first line, sanitized. runGit wraps failures as
+// "git %v: %w\n%s" (argv, then the wrapped exec error, then a newline,
+// then git's actual combined stdout+stderr). Taking firstLine of the whole
+// string (before this helper existed) surfaced the argv instead, which can
+// leak a host stage path and never shows the operator-actionable message
+// (e.g. "fatal: Authentication failed for '...'"). Falls back to the whole
+// text when there is no newline (not a runGit-shaped error, or git produced
+// no output), so a nil/malformed error still yields something rather than
+// an empty reason.
+func gitOutputFirstLine(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
+	}
+	return firstLine(safeStr(s))
+}
+
 // errorEvent builds a terminal error event. hint may be empty.
 func errorEvent(taskID, reason, hint string) map[string]any {
 	ev := map[string]any{"event": "error", "task_id": taskID, "reason": reason}

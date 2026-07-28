@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -51,6 +52,7 @@ func (s *Stage) WithContext(ctx context.Context) { s.ctx = ctx }
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = gitHardenedEnv(os.Environ())
 	cmd.WaitDelay = gitWaitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -181,6 +183,7 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 		"diff", "--cached",
 	)
 	cmd.Dir = s.WorkDir
+	cmd.Env = gitHardenedEnv(os.Environ())
 	cmd.WaitDelay = gitWaitDelay
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -274,6 +277,10 @@ var adapterAllowedEnv = []string{
 	"GITLAB_HOST",
 	// SSH auth path for git push over ssh (glab/gh push via git).
 	"SSH_AUTH_SOCK",
+	// Operator's custom SSH transport (e.g. a non-default key or port),
+	// forwarded so gh/glab's internal git uses it instead of silently
+	// falling back to the BatchMode default in gitHardenedEnv.
+	"GIT_SSH_COMMAND",
 }
 
 // Commit creates the branch and records all agent changes as one commit on the
@@ -299,6 +306,16 @@ func (s *Stage) PushBranch(localBranch, remoteBranch string) error {
 	return err
 }
 
+// PushPreflight proves write auth against the actual remote before any VM
+// work: a dry-run push authenticates and computes ref updates without
+// sending objects or moving refs. Uses the same refspec the real push
+// will, through the hardened non-interactive git wrapper, so a missing
+// credential fails here in milliseconds instead of after the agent ran.
+func (s *Stage) PushPreflight(branch string) error {
+	_, err := s.git("push", "--dry-run", "origin", "HEAD:refs/heads/"+branch)
+	return err
+}
+
 // PushEnv is the curated host env a PR/MR adapter must run with: the allowlisted
 // vars plus GIT_DIR and hook-neutralization that keep any vendor CLI on the
 // host-only git dir even if the work tree contains a planted .git. The broker
@@ -312,7 +329,7 @@ func (s *Stage) PushEnv() []string {
 		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
 		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
 	)
-	return env
+	return gitHardenedEnv(env)
 }
 
 func curatedEnv() []string {
@@ -323,6 +340,74 @@ func curatedEnv() []string {
 		}
 	}
 	return out
+}
+
+// gitHardenedEnv returns base plus the vars that make every host-side git
+// invocation non-interactive: a missing credential fails in milliseconds
+// with a classifiable error instead of prompting on stdin (foreground
+// start) or wedging under launchd (no TTY). The SSH BatchMode default is
+// applied only when the operator has no custom transport already in play,
+// where "custom transport" means EITHER a GIT_SSH_COMMAND entry carried by
+// base OR a non-empty core.sshCommand in git config; either is never
+// clobbered.
+//
+// The decision is keyed on base (not os.Getenv) so it does the right thing
+// for both callers: runGit/gitDiffCapped pass os.Environ() as base, so
+// behavior there is unchanged from an env-var read; PushEnv passes the
+// curated adapter env, which now carries the operator's GIT_SSH_COMMAND
+// when adapterAllowedEnv forwarded one, instead of silently losing it to
+// the BatchMode default.
+func gitHardenedEnv(base []string) []string {
+	env := append(append([]string{}, base...),
+		"GIT_TERMINAL_PROMPT=0",
+		"GCM_INTERACTIVE=never",
+	)
+	if !envHasNonEmptyKey(env, "GIT_SSH_COMMAND") && coreSSHCommand() == "" {
+		env = append(env, "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
+	}
+	return env
+}
+
+// envHasNonEmptyKey reports whether env carries a non-empty "key=value"
+// entry for key. An entry present but empty (key=) counts as unset, matching
+// the prior os.Getenv("...") == "" treatment of "empty counts as unset".
+func envHasNonEmptyKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, e := range env {
+		if v, ok := strings.CutPrefix(e, prefix); ok && v != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// coreSSHCommandOnce/coreSSHCommandCached memoize the `git config --get
+// core.sshCommand` lookup: it is a process-wide operator setting, not a
+// per-task one, so it is read at most once. coreSSHCommandOnce is a
+// *sync.Once (not a value) so the test seam can swap it for a fresh one
+// without copying a live lock (sync.Once must never be copied after use).
+// coreSSHCommandFunc performs the actual lookup and is itself overridable,
+// so tests can exercise the caching without a real git config.
+var (
+	coreSSHCommandOnce   = &sync.Once{}
+	coreSSHCommandCached string
+	coreSSHCommandFunc   = func() string {
+		out, err := exec.Command("git", "config", "--get", "core.sshCommand").Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+)
+
+// coreSSHCommand returns the operator's core.sshCommand (config), cached for
+// the life of the process. Both this and GIT_SSH_COMMAND (env) count as
+// "operator has a custom transport" for gitHardenedEnv's BatchMode decision.
+func coreSSHCommand() string {
+	coreSSHCommandOnce.Do(func() {
+		coreSSHCommandCached = coreSSHCommandFunc()
+	})
+	return coreSSHCommandCached
 }
 
 // Cleanup removes the entire host scratch dir (work tree + git dir).

@@ -18,6 +18,7 @@ VM boot, the egress pin) with no API spend. Then consult the table below.
 | VM reaches a host it shouldn't | Confirm `init-firewall.sh` ran inside the VM; overriding `--entrypoint` skips it |
 | `no usable agent credential` at start | No API key in env / `api-keys.env`, and no `*_auth: subscription` set; see [Authentication](authentication.html) |
 | Subscription task errors after spinning | A `task_max_requests` cap was hit (HTTP 429); the agent retries with backoff before exiting; see [Authentication](authentication.html) |
+| `push preflight failed (auth)` at submit | drydock proved it cannot push to the repo before the sandbox even booted, so nothing was spent. Two fixes: for HTTPS remotes, run `gh auth setup-git` to install a credential helper; for SSH remotes, load a key into your agent (or point `GIT_SSH_COMMAND` at one) so it's usable non-interactively. `drydock doctor` now surfaces this generically as the `git push credentials` check, though it's a heuristic (it doesn't know your task's target repo); the submit-time preflight is the real, per-repo gate. |
 
 ## Where to look
 
