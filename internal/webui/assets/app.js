@@ -47,7 +47,15 @@ function fmtAge(s) {
   return Math.floor(s / 86400) + "d";
 }
 function elapsed(startedAt) { return fmtAge((Date.now() - new Date(startedAt).getTime()) / 1000); }
-function fmtDurMs(ms) { return ms >= 1000 ? Math.round(ms / 1000) + "s" : ms + "ms"; }
+// fmtDurMs mirrors the CLI's shortDur (cmd/drydock/util.go): "39m12s", not "2352s".
+function fmtDurMs(ms) {
+  if (ms < 1000) return ms + "ms";
+  const s = ms / 1000;
+  if (s < 10) return s.toFixed(1) + "s";
+  if (s < 60) return Math.floor(s) + "s";
+  const m = Math.floor(s / 60), rem = Math.floor(s) % 60;
+  return m + "m" + String(rem).padStart(2, "0") + "s";
+}
 function shortId(id){ return (id||"").slice(0,12); }
 function toast(msg, kind){
   const t = el("div", { class: "toast" + (kind ? " " + kind : "") }, msg);
@@ -167,7 +175,7 @@ function paintBody(rec, t){
   if (t.stage === "awaiting_egress") rec.el.append(egressGate(t));
   else if (t.stage === "awaiting_approval") rec.el.append(pushGate(t));
   if (["running","pushing","awaiting_egress","awaiting_approval"].includes(t.stage))
-    rec.el.append(el("div", { class: "actions" }, dangerButton("Kill", () => act("kill", t.id))));
+    rec.el.append(el("div", { class: "actions" }, dangerButton("Kill", () => act("kill", t.id), t.id + ":kill")));
 }
 
 // boardEl is the persistent .board node; null until first mount / after an error
@@ -264,7 +272,12 @@ async function renderBoard(){
   // throttle live-progress fetches to every other poll; reuse last known on the off-poll
   const doProg = (progressTick++ % 2) === 0;
   if (doProg) await Promise.all(tasks.filter(t => t.stage === "running").map(async t => {
-    try { t._prog = parseProgress(await (await api("GET","/api/logs/"+t.id)).text()); } catch {}
+    // a 404 here is expected right after submit (the audit .jsonl doesn't
+    // exist yet): skip quietly rather than parsing an error body as progress.
+    try {
+      const res = await api("GET", "/api/logs/" + t.id);
+      if (res.ok) t._prog = parseProgress(await res.text());
+    } catch {}
   }));
   else for (const t of tasks){ const r = cardMap.get(t.id); if (r && r._prog) t._prog = r._prog; }
   const container = ensureBoardContainer();   // creates the .board div once; preserves it across polls
@@ -316,7 +329,7 @@ function egressGate(t) {
   }).catch(() => box.append(el("p", { class: "muted", text: "(host list unavailable)" })));
   box.append(el("div", { class: "actions" },
     el("button", { class: "ok", onclick: () => act("approve", t.id) }, "Approve egress"),
-    dangerButton("Deny", () => act("deny", t.id))));
+    dangerButton("Deny", () => act("deny", t.id), t.id + ":deny")));
   return box;
 }
 
@@ -330,7 +343,7 @@ function pushGate(t) {
   box.append(el("div", { class: "actions" },
     el("button", { onclick: () => { openReview(t.id); approveBtn.removeAttribute("disabled"); } }, "Review diff"),
     approveBtn,
-    dangerButton("Deny", () => act("deny", t.id)),
+    dangerButton("Deny", () => act("deny", t.id), t.id + ":deny"),
     el("span", { class: "kbd" }, "R review · A approve · D deny")));
   return box;
 }
@@ -361,17 +374,41 @@ async function act(verb, id) {
   renderBoard(); // immediate re-poll (don't wait the interval)
 }
 
+// armedGates: key -> expiry (ms epoch) for dangerButton's two-press confirm.
+// Module-level so the arm survives updateCard/paintBody rebuilding the button
+// on every poll (1.5s, 500ms while a gate is open): without this, a
+// deliberate second click can land on a freshly-rebuilt button that forgot it
+// was armed. Callers pass a task-id+action key so the same logical button
+// (across rebuilds) shares one entry; a bare local key (no caller key given)
+// still works, it just isn't shared with anything else.
+const armedGates = new Map();
+
 // dangerButton replaces a native confirm() with an inline two-step: the first
 // click arms the button (label -> "Confirm?", red .confirming style) and starts
 // a 3s disarm timer; a second click within that window runs fn(). Class is
 // "btn danger" so both the red .btn.danger and the .btn.confirming styles apply.
-function dangerButton(label, fn){
+// key (optional): task-id+action string identifying this logical button across
+// rebuilds; when a rebuild passes the same key while still armed, the new
+// button re-renders as "Confirm?" with the remaining window instead of
+// resetting to the plain label.
+function dangerButton(label, fn, key){
+  const gateKey = key != null ? key : Symbol("dangerButton"); // unshared fallback
   const b = el("button", { class: "btn danger" }, label);
-  let armed = false, timer = null;
+  let timer = null;
+  const arm = (msLeft) => {
+    b.textContent = "Confirm?"; b.classList.add("confirming");
+    timer = setTimeout(() => { armedGates.delete(gateKey); b.textContent = label; b.classList.remove("confirming"); }, msLeft);
+  };
+  const disarm = () => { if (timer) clearTimeout(timer); armedGates.delete(gateKey); b.textContent = label; b.classList.remove("confirming"); };
+  const expiry = armedGates.get(gateKey);
+  if (expiry != null){
+    const msLeft = expiry - Date.now();
+    if (msLeft > 0) arm(msLeft); else armedGates.delete(gateKey);
+  }
   b.onclick = () => {
-    if (armed){ clearTimeout(timer); fn(); return; }
-    armed = true; b.textContent = "Confirm?"; b.classList.add("confirming");
-    timer = setTimeout(() => { armed = false; b.textContent = label; b.classList.remove("confirming"); }, 3000);
+    if (armedGates.has(gateKey)){ disarm(); fn(); return; }
+    armedGates.set(gateKey, Date.now() + 3000);
+    arm(3000);
   };
   return b;
 }
@@ -400,7 +437,7 @@ async function openReview(id, readonly = false){
     el("div", { class: "tabs" }, diffTab, logsTab), diffBox, logsBox);
   if (!readonly) panel.append(el("div", { class: "actions" },
     el("button", { class: "btn ok", onclick: () => { act("approve", id); closeOverlay(); } }, "Approve push"),
-    dangerButton("Deny", () => { act("deny", id); closeOverlay(); }),
+    dangerButton("Deny", () => { act("deny", id); closeOverlay(); }, id + ":deny"),
     el("span", { class: "kbd" }, "A approve · D deny · Esc close")));
 
   // Esc is owned by the global keydown registry (via overlayState), not a
