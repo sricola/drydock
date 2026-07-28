@@ -923,6 +923,11 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 		if cause == gateKilled || cause == gateShutdown {
 			outcome = "cancelled"
 		}
+		// gateTimeout (approval_timeout auto-deny) falls through to "denied"
+		// here on the live path; resumePush's equivalent branch instead maps
+		// it to "interrupted" (an on-disk result-row subtype that predates
+		// this field). Intentionally not reconciled in this change; see the
+		// matching note in reconcile.go.
 		if cause == gateShutdown {
 			tr.keepStage = true
 		}

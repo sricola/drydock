@@ -178,6 +178,11 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		tr.outcome = "denied"
 		switch cause {
 		case gateTimeout:
+			// Resumed-and-timed-out maps to "interrupted" here, but the live
+			// pushAndOpenPR path maps the same approval_timeout auto-deny to
+			// "denied" (it has no equivalent on-disk "interrupted" subtype to
+			// fall back to). Intentionally not reconciled in this change; see
+			// the matching note in broker.go's pushAndOpenPR.
 			subtype = "interrupted"
 			tr.outcome = "" // already a distinct result-row subtype; no metrics override needed
 		case gateKilled:

@@ -227,15 +227,17 @@ async function renderFinishedStrip(container, liveIDs){
   for (const it of recent){
     // outcome_key is the stable machine classification (audit.OutcomeKeyWithMetrics):
     // "ok" covers both a real push and a no-diff run (unchanged operator
-    // muscle memory); "denied"/"cancelled" get a neutral glyph, not a
-    // false-positive checkmark or cross.
+    // muscle memory) and is the ONLY key that earns a checkmark. Everything
+    // else (denied, cancelled, interrupted, running, or any unexpected
+    // passthrough key) gets the neutral glyph by default: a green checkmark
+    // must never be the fallback for a key this code doesn't recognize.
     const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed";
-    const isNeutral = it.outcome_key === "denied" || it.outcome_key === "cancelled";
+    const isOk = it.outcome_key === "ok";
     const icon = isErr
       ? el("span", { style: "color:var(--red)", text: "✕" })
-      : isNeutral
-      ? el("span", { style: "color:var(--muted)", text: "∅" })
-      : el("span", { style: "color:var(--green)", text: "✓" });
+      : isOk
+      ? el("span", { style: "color:var(--green)", text: "✓" })
+      : el("span", { style: "color:var(--muted)", text: "∅" });
     const row = el("div", { class: "recent-row", onclick: () => openReview(it.id, true) },
       icon,
       el("code", { class: "tid", text: shortId(it.id) }),
