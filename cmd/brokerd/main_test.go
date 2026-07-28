@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -522,12 +521,15 @@ func TestExecCmd_Timeout(t *testing.T) {
 
 // TestArgvAction_DaemonDefault verifies that an empty argv returns "daemon" action.
 func TestArgvAction_DaemonDefault(t *testing.T) {
-	action, errMsg := argvAction([]string{})
+	action, errMsg, tokenFile := argvAction([]string{})
 	if action != "daemon" {
 		t.Errorf("argvAction([]) = %q, want daemon", action)
 	}
 	if errMsg != "" {
 		t.Errorf("argvAction([]) errMsg = %q, want empty", errMsg)
+	}
+	if tokenFile != "" {
+		t.Errorf("argvAction([]) tokenFile = %q, want empty", tokenFile)
 	}
 }
 
@@ -535,12 +537,15 @@ func TestArgvAction_DaemonDefault(t *testing.T) {
 func TestArgvAction_Version(t *testing.T) {
 	for _, flag := range []string{"--version", "-v"} {
 		t.Run(flag, func(t *testing.T) {
-			action, errMsg := argvAction([]string{flag})
+			action, errMsg, tokenFile := argvAction([]string{flag})
 			if action != "version" {
 				t.Errorf("argvAction(%q) = %q, want version", flag, action)
 			}
 			if errMsg != "" {
 				t.Errorf("argvAction(%q) errMsg = %q, want empty", flag, errMsg)
+			}
+			if tokenFile != "" {
+				t.Errorf("argvAction(%q) tokenFile = %q, want empty", flag, tokenFile)
 			}
 		})
 	}
@@ -550,12 +555,15 @@ func TestArgvAction_Version(t *testing.T) {
 func TestArgvAction_Help(t *testing.T) {
 	for _, flag := range []string{"--help", "-h"} {
 		t.Run(flag, func(t *testing.T) {
-			action, errMsg := argvAction([]string{flag})
+			action, errMsg, tokenFile := argvAction([]string{flag})
 			if action != "help" {
 				t.Errorf("argvAction(%q) = %q, want help", flag, action)
 			}
 			if errMsg != "" {
 				t.Errorf("argvAction(%q) errMsg = %q, want empty", flag, errMsg)
+			}
+			if tokenFile != "" {
+				t.Errorf("argvAction(%q) tokenFile = %q, want empty", flag, tokenFile)
 			}
 		})
 	}
@@ -564,7 +572,7 @@ func TestArgvAction_Help(t *testing.T) {
 // TestArgvAction_UnknownArg verifies that unknown arguments return "error" action
 // with an explanation.
 func TestArgvAction_UnknownArg(t *testing.T) {
-	action, errMsg := argvAction([]string{"--unknown"})
+	action, errMsg, tokenFile := argvAction([]string{"--unknown"})
 	if action != "error" {
 		t.Errorf("argvAction([--unknown]) = %q, want error", action)
 	}
@@ -574,30 +582,63 @@ func TestArgvAction_UnknownArg(t *testing.T) {
 	if !strings.Contains(errMsg, "--unknown") {
 		t.Errorf("errMsg = %q, want to contain '--unknown'", errMsg)
 	}
+	if tokenFile != "" {
+		t.Errorf("argvAction([--unknown]) tokenFile = %q, want empty", tokenFile)
+	}
 }
 
-// TestUsageBrokerd verifies the usage message is printed to stderr and
-// contains the expected flags and descriptions.
+// TestArgvAction_SquidAuthHelper verifies that __squid-authhelper with a
+// token file argument returns "squid-authhelper" action with the token file path.
+func TestArgvAction_SquidAuthHelper(t *testing.T) {
+	action, errMsg, tokenFile := argvAction([]string{"__squid-authhelper", "/path/to/token"})
+	if action != "squid-authhelper" {
+		t.Errorf("argvAction(__squid-authhelper /path/to/token) action = %q, want squid-authhelper", action)
+	}
+	if errMsg != "" {
+		t.Errorf("argvAction(__squid-authhelper /path/to/token) errMsg = %q, want empty", errMsg)
+	}
+	if tokenFile != "/path/to/token" {
+		t.Errorf("argvAction(__squid-authhelper /path/to/token) tokenFile = %q, want /path/to/token", tokenFile)
+	}
+}
+
+// TestArgvAction_SquidAuthHelper_MissingTokenFile verifies that __squid-authhelper
+// without a token file returns "error" action.
+func TestArgvAction_SquidAuthHelper_MissingTokenFile(t *testing.T) {
+	action, errMsg, tokenFile := argvAction([]string{"__squid-authhelper"})
+	if action != "error" {
+		t.Errorf("argvAction(__squid-authhelper) action = %q, want error", action)
+	}
+	if !strings.Contains(errMsg, "token file") {
+		t.Errorf("argvAction(__squid-authhelper) errMsg = %q, want to contain 'token file'", errMsg)
+	}
+	if tokenFile != "" {
+		t.Errorf("argvAction(__squid-authhelper) tokenFile = %q, want empty", tokenFile)
+	}
+}
+
+// TestArgvAction_SquidAuthHelper_NotShadowed verifies that __squid-authhelper
+// is checked before version/help flags, so it cannot be shadowed.
+func TestArgvAction_SquidAuthHelper_NotShadowed(t *testing.T) {
+	action, errMsg, tokenFile := argvAction([]string{"__squid-authhelper", "--version"})
+	if action != "squid-authhelper" {
+		t.Errorf("argvAction(__squid-authhelper --version): action = %q, want squid-authhelper (not shadowed by --version)", action)
+	}
+	if errMsg != "" {
+		t.Errorf("argvAction(__squid-authhelper --version): errMsg = %q, want empty (--version is the token file)", errMsg)
+	}
+	if tokenFile != "--version" {
+		t.Errorf("argvAction(__squid-authhelper --version): tokenFile = %q, want --version", tokenFile)
+	}
+}
+
+// TestUsageBrokerd verifies the usage message contains the expected content.
+// Uses writer injection rather than os.Pipe to match the codebase convention
+// (see chooseLogHandler).
 func TestUsageBrokerd(t *testing.T) {
-	oldStderr := os.Stderr
-	t.Cleanup(func() { os.Stderr = oldStderr })
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	os.Stderr = w
-
-	usageBrokerd()
-	w.Close()
-
-	// Read all output from the pipe.
-	output, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read stderr: %v", err)
-	}
-	usage := string(output)
+	var buf bytes.Buffer
+	usageBrokerd(&buf)
+	usage := buf.String()
 
 	if !strings.Contains(usage, "brokerd") {
 		t.Errorf("usage message missing 'brokerd': %s", usage)

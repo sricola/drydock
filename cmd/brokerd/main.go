@@ -159,29 +159,37 @@ func execCmd(name string, args ...string) ([]byte, error) {
 // execCmd (timeout-bounded).
 var runCmd = execCmd
 
-// argvAction analyzes os.Args and returns the intended action: "daemon" for
-// normal operation, "version" for --version/-v, "help" for --help/-h,
-// or "error" for unknown/invalid arguments. On error, errMsg is set to explain
-// why (for the caller to print to stderr); otherwise errMsg is empty.
-// The __squid-authhelper special case is NOT handled here; it is checked
-// by the caller before invoking argvAction.
-func argvAction(args []string) (action string, errMsg string) {
+// argvAction analyzes argv[1:] and returns the intended action:
+// "squid-authhelper" if invoked as __squid-authhelper <tokenfile>,
+// "version" for --version/-v, "help" for --help/-h, "daemon" for
+// normal operation, or "error" for unknown/invalid arguments.
+// On error, errMsg is set to explain why (for the caller to print
+// to stderr); otherwise errMsg is empty.
+func argvAction(args []string) (action string, errMsg string, authHelperTokenFile string) {
 	if len(args) == 0 {
-		return "daemon", ""
+		return "daemon", "", ""
+	}
+	// Check __squid-authhelper BEFORE version/help flags so the special
+	// case cannot be shadowed (load-bearing for squid proxy auth).
+	if args[0] == "__squid-authhelper" {
+		if len(args) < 2 {
+			return "error", "__squid-authhelper requires a token file argument", ""
+		}
+		return "squid-authhelper", "", args[1]
 	}
 	switch args[0] {
 	case "--version", "-v":
-		return "version", ""
+		return "version", "", ""
 	case "--help", "-h":
-		return "help", ""
+		return "help", "", ""
 	default:
-		return "error", "unknown argument " + args[0]
+		return "error", "unknown argument " + args[0], ""
 	}
 }
 
-// usageBrokerd prints the brokerd usage blurb to stderr.
-func usageBrokerd() {
-	fmt.Fprintf(os.Stderr, `brokerd - daemon for drydock sandboxed agents
+// usageBrokerd prints the brokerd usage blurb to the given writer.
+func usageBrokerd(w io.Writer) {
+	fmt.Fprintf(w, `brokerd - daemon for drydock sandboxed agents
 
 Usage:
   brokerd                   run the daemon (started by 'drydock start' or launchd)
@@ -192,28 +200,28 @@ Usage:
 }
 
 func main() {
-	// Hidden subcommand: squid invokes this same binary as its basic-auth
-	// helper (auth_param basic program <brokerd> __squid-authhelper <tokenfile>).
-	if len(os.Args) >= 3 && os.Args[1] == "__squid-authhelper" {
-		if err := runSquidAuthHelper(os.Args[2], os.Stdin, os.Stdout); err != nil {
+	// Dispatch based on argv. Check version/help/unknown args AFTER
+	// __squid-authhelper but in the same function, so tests can verify
+	// the ordering and ensure squid auth cannot be shadowed.
+	action, errMsg, authHelperTokenFile := argvAction(os.Args[1:])
+	switch action {
+	case "squid-authhelper":
+		// Hidden subcommand: squid invokes this same binary as its basic-auth
+		// helper (auth_param basic program <brokerd> __squid-authhelper <tokenfile>).
+		if err := runSquidAuthHelper(authHelperTokenFile, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "squid-authhelper:", err)
 			os.Exit(1)
 		}
 		return
-	}
-
-	// Handle command-line flags (--version, --help, unknown arguments).
-	action, errMsg := argvAction(os.Args[1:])
-	switch action {
 	case "version":
 		fmt.Println("brokerd", version)
 		os.Exit(0)
 	case "help":
-		usageBrokerd()
+		usageBrokerd(os.Stderr)
 		os.Exit(0)
 	case "error":
 		fmt.Fprintf(os.Stderr, "brokerd: %s\n\n", errMsg)
-		usageBrokerd()
+		usageBrokerd(os.Stderr)
 		os.Exit(2)
 	}
 
@@ -715,17 +723,17 @@ func checkContainerVersion(strict bool) {
 			"raw", strings.TrimSpace(string(out)))
 		return
 	}
-	version := fmt.Sprintf("%s.%s.%s", m[1], m[2], m[3])
+	containerVer := fmt.Sprintf("%s.%s.%s", m[1], m[2], m[3])
 	if m[1] != supportedContainerMajor {
 		if strict {
 			fatal("strict mode: container CLI version not supported",
-				"version", version, "tested", supportedContainerMajor+".x")
+				"version", containerVer, "tested", supportedContainerMajor+".x")
 		}
 		slog.Warn("container CLI version not in tested range — re-run README smoke test",
-			"version", version, "tested", supportedContainerMajor+".x")
+			"version", containerVer, "tested", supportedContainerMajor+".x")
 		return
 	}
-	slog.Info("container CLI", "version", version, "supported", true)
+	slog.Info("container CLI", "version", containerVer, "supported", true)
 }
 
 // findEgressConfig locates the egress allowlist YAML. ~/.drydock/egress.yaml is
