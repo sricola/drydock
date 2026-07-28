@@ -34,6 +34,9 @@ import (
 	"drydock/internal/stage"
 )
 
+// version is set at build time via -ldflags. Falls back to "dev" when unset.
+var version = "dev"
+
 // chooseLogHandler picks the slog handler. A TTY gets a terse text format
 // (no timestamps — the terminal already shows time context); non-TTY (file
 // redirect, launchd, SIEM tail) gets JSON so downstream tools can parse.
@@ -156,6 +159,38 @@ func execCmd(name string, args ...string) ([]byte, error) {
 // execCmd (timeout-bounded).
 var runCmd = execCmd
 
+// argvAction analyzes os.Args and returns the intended action: "daemon" for
+// normal operation, "version" for --version/-v, "help" for --help/-h,
+// or "error" for unknown/invalid arguments. On error, errMsg is set to explain
+// why (for the caller to print to stderr); otherwise errMsg is empty.
+// The __squid-authhelper special case is NOT handled here; it is checked
+// by the caller before invoking argvAction.
+func argvAction(args []string) (action string, errMsg string) {
+	if len(args) == 0 {
+		return "daemon", ""
+	}
+	switch args[0] {
+	case "--version", "-v":
+		return "version", ""
+	case "--help", "-h":
+		return "help", ""
+	default:
+		return "error", "unknown argument " + args[0]
+	}
+}
+
+// usageBrokerd prints the brokerd usage blurb to stderr.
+func usageBrokerd() {
+	fmt.Fprintf(os.Stderr, `brokerd - daemon for drydock sandboxed agents
+
+Usage:
+  brokerd                   run the daemon (started by 'drydock start' or launchd)
+  brokerd --version         print brokerd version
+  brokerd --help            print this help
+
+`)
+}
+
 func main() {
 	// Hidden subcommand: squid invokes this same binary as its basic-auth
 	// helper (auth_param basic program <brokerd> __squid-authhelper <tokenfile>).
@@ -165,6 +200,21 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+
+	// Handle command-line flags (--version, --help, unknown arguments).
+	action, errMsg := argvAction(os.Args[1:])
+	switch action {
+	case "version":
+		fmt.Println("brokerd", version)
+		os.Exit(0)
+	case "help":
+		usageBrokerd()
+		os.Exit(0)
+	case "error":
+		fmt.Fprintf(os.Stderr, "brokerd: %s\n\n", errMsg)
+		usageBrokerd()
+		os.Exit(2)
 	}
 
 	// Main config: ~/.drydock/config.yaml + env-var overrides. Missing file

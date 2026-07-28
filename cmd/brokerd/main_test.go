@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -516,5 +517,95 @@ func TestExecCmd_Timeout(t *testing.T) {
 	}
 	if d := time.Since(start); d > 15*time.Second {
 		t.Fatalf("execCmd did not stay bounded: took %v (want well under the 30s sleep)", d)
+	}
+}
+
+// TestArgvAction_DaemonDefault verifies that an empty argv returns "daemon" action.
+func TestArgvAction_DaemonDefault(t *testing.T) {
+	action, errMsg := argvAction([]string{})
+	if action != "daemon" {
+		t.Errorf("argvAction([]) = %q, want daemon", action)
+	}
+	if errMsg != "" {
+		t.Errorf("argvAction([]) errMsg = %q, want empty", errMsg)
+	}
+}
+
+// TestArgvAction_Version verifies that --version and -v return "version" action.
+func TestArgvAction_Version(t *testing.T) {
+	for _, flag := range []string{"--version", "-v"} {
+		t.Run(flag, func(t *testing.T) {
+			action, errMsg := argvAction([]string{flag})
+			if action != "version" {
+				t.Errorf("argvAction(%q) = %q, want version", flag, action)
+			}
+			if errMsg != "" {
+				t.Errorf("argvAction(%q) errMsg = %q, want empty", flag, errMsg)
+			}
+		})
+	}
+}
+
+// TestArgvAction_Help verifies that --help and -h return "help" action.
+func TestArgvAction_Help(t *testing.T) {
+	for _, flag := range []string{"--help", "-h"} {
+		t.Run(flag, func(t *testing.T) {
+			action, errMsg := argvAction([]string{flag})
+			if action != "help" {
+				t.Errorf("argvAction(%q) = %q, want help", flag, action)
+			}
+			if errMsg != "" {
+				t.Errorf("argvAction(%q) errMsg = %q, want empty", flag, errMsg)
+			}
+		})
+	}
+}
+
+// TestArgvAction_UnknownArg verifies that unknown arguments return "error" action
+// with an explanation.
+func TestArgvAction_UnknownArg(t *testing.T) {
+	action, errMsg := argvAction([]string{"--unknown"})
+	if action != "error" {
+		t.Errorf("argvAction([--unknown]) = %q, want error", action)
+	}
+	if !strings.Contains(errMsg, "unknown argument") {
+		t.Errorf("errMsg = %q, want to contain 'unknown argument'", errMsg)
+	}
+	if !strings.Contains(errMsg, "--unknown") {
+		t.Errorf("errMsg = %q, want to contain '--unknown'", errMsg)
+	}
+}
+
+// TestUsageBrokerd verifies the usage message is printed to stderr and
+// contains the expected flags and descriptions.
+func TestUsageBrokerd(t *testing.T) {
+	oldStderr := os.Stderr
+	t.Cleanup(func() { os.Stderr = oldStderr })
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	os.Stderr = w
+
+	usageBrokerd()
+	w.Close()
+
+	// Read all output from the pipe.
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	usage := string(output)
+
+	if !strings.Contains(usage, "brokerd") {
+		t.Errorf("usage message missing 'brokerd': %s", usage)
+	}
+	if !strings.Contains(usage, "--version") {
+		t.Errorf("usage message missing '--version': %s", usage)
+	}
+	if !strings.Contains(usage, "--help") {
+		t.Errorf("usage message missing '--help': %s", usage)
 	}
 }
