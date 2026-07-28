@@ -123,6 +123,13 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 	defer cancel(nil)
 	b.registerTask(id, m.RepoRef, m.Instruction, cancel)
 	defer b.unregisterTask(id)
+	// registerTask always stamps StageRunning; this resume is, by construction,
+	// a task that was sitting at the diff-approval gate when brokerd last died
+	// (only gate-marked tasks reach resumePush), so correct it immediately:
+	// otherwise healthz/`drydock status` counts it as "running" instead of
+	// "pending_approval" until the gate resolves. Mirrors pushAndOpenPR's own
+	// setStage(StagePending) before its live-path gate wait.
+	b.setStage(id, StagePending)
 
 	// Bind this resume's context to the reopened stage so a kill/shutdown aborts
 	// its git push (the stage was reopened at boot, before this context existed).
@@ -168,8 +175,20 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 	tr.diffBytes = int64(len(diff))
 	if !ok {
 		subtype := "denied"
-		if cause == gateTimeout {
+		tr.outcome = "denied"
+		switch cause {
+		case gateTimeout:
+			// Resumed-and-timed-out maps to "interrupted" here, but the live
+			// pushAndOpenPR path maps the same approval_timeout auto-deny to
+			// "denied" (it has no equivalent on-disk "interrupted" subtype to
+			// fall back to). Intentionally not reconciled in this change; see
+			// the matching note in broker.go's pushAndOpenPR.
 			subtype = "interrupted"
+			tr.outcome = "" // already a distinct result-row subtype; no metrics override needed
+		case gateKilled:
+			// subtype stays "denied" (unchanged on-disk shape); the metrics row
+			// carries the finer cancelled/denied split, same as the live path.
+			tr.outcome = "cancelled"
 		}
 		// Broker-authored (src:broker) and carrying the metered cost, so a resumed
 		// task's real spend still seeds the aggregate ledger.

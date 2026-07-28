@@ -245,6 +245,25 @@ func TestRunKillUsesBrokerBeforeContainerFallback(t *testing.T) {
 			t.Errorf("kill fallback output = %q", out)
 		}
 	})
+
+	// Regression test: an unknown task id (brokerd doesn't track it AND the
+	// container CLI reports no such container) used to fall off the end of
+	// runKill with an implicit exit 0, the same shape of failure that
+	// approve/deny (signal in client.go) already reports as exit 1.
+	t.Run("unknown-id-exits-1", func(t *testing.T) {
+		useBrokerServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		runCmd = func(string, ...string) ([]byte, error) {
+			return []byte("Error: no such container: task-does-not-exist"), errors.New("exit status 1")
+		}
+
+		var code int
+		captureStdout(t, func() { code = runKill("does-not-exist") })
+		if code != 1 {
+			t.Errorf("exit code = %d, want 1", code)
+		}
+	})
 }
 
 func TestPostSubmitSendsContractAndConsumesStream(t *testing.T) {

@@ -149,7 +149,7 @@ func buildSample(path, id string, mtime time.Time) (Sample, bool) {
 	s := Sample{
 		ID:          id,
 		MTime:       mtime,
-		Outcome:     audit.OutcomeKey(last, hasResult),
+		Outcome:     audit.OutcomeKeyWithMetrics(last, hasResult, m, hasMetrics),
 		DurationMs:  last.DurationMs,
 		HasDuration: audit.HasDuration(last, hasResult),
 		Metered:     !meta.Subscription,

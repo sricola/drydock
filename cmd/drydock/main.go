@@ -154,7 +154,7 @@ func main() {
 	case "kill", "cancel": // cancel is an alias — the verb users reach for first
 		consumeHelpFlag(cmd, subArgs)
 		mustArgs(2)
-		runKill(os.Args[2])
+		os.Exit(runKill(os.Args[2]))
 	case "prune":
 		// `prune` has its own flag.FlagSet which handles -h/--help.
 		runPrune(subArgs)

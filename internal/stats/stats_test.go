@@ -115,6 +115,49 @@ func TestOutcomeFor_DeniedPassthrough(t *testing.T) {
 	}
 }
 
+// cancelledFixture is a new-format audit file where the result row alone is
+// indistinguishable from a real agent error (subtype:"error"), but the
+// metrics row's outcome field records what actually happened: the task was
+// killed mid-run. This is the new-format fixture for the terminal outcome
+// taxonomy (#200).
+const cancelledFixture = `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"error","is_error":true,"duration_ms":5000,"total_cost_usd":0.01,"num_turns":1,"src":"broker"}
+{"type":"metrics","src":"broker","task_id":"ID","agent":"claude","vendor":"anthropic","auth":"api_key","repo":"github.com/o/r","outcome":"cancelled","stage_ms":{"preparing":1000,"running":4000,"pushing":0},"egress_gate_wait_ms":0,"approval_gate_wait_ms":0,"requests":1,"diff_files":0,"diff_bytes":0,"cost_usd":0.01,"widen_requested":0,"widen_outcome":"none"}
+`
+
+// TestOutcomeFor_MetricsOutcomeOverridesCancelled is the regression test for
+// the bug this field fixes: a task killed mid-run wrote a generic
+// subtype:"error" result row, so stats bucketed it under "error"; the
+// metrics row's outcome must win and bucket it under "cancelled" instead.
+func TestOutcomeFor_MetricsOutcomeOverridesCancelled(t *testing.T) {
+	dir := t.TempDir()
+	writeAudit(t, dir, "cancelled1", cancelledFixture, time.Now())
+	samples, _, _ := Collect(dir, time.Time{})
+	if len(samples) != 1 {
+		t.Fatalf("samples=%d, want 1", len(samples))
+	}
+	if samples[0].Outcome != "cancelled" {
+		t.Errorf("Outcome=%q, want %q (metrics row must override the result row's generic error subtype)",
+			samples[0].Outcome, "cancelled")
+	}
+}
+
+// TestOutcomeFor_PreOutcomeFieldFallsBackToResultRow is the old-format
+// fixture: newFormat's metrics row predates the outcome field entirely (no
+// "outcome" key), so classification must fall back to the result row exactly
+// as it did before this field existed: the fallback IS the unmodified key,
+// not a separate code path.
+func TestOutcomeFor_PreOutcomeFieldFallsBackToResultRow(t *testing.T) {
+	dir := t.TempDir()
+	writeAudit(t, dir, "old-metrics", newFormat, time.Now())
+	samples, _, _ := Collect(dir, time.Time{})
+	if len(samples) != 1 || samples[0].Outcome != "ok" {
+		t.Fatalf("Outcome=%q, want %q (pre-outcome-field metrics row must not affect classification)",
+			samples[0].Outcome, "ok")
+	}
+}
+
 func TestGroupBy_Dimensions(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()

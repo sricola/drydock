@@ -47,7 +47,15 @@ function fmtAge(s) {
   return Math.floor(s / 86400) + "d";
 }
 function elapsed(startedAt) { return fmtAge((Date.now() - new Date(startedAt).getTime()) / 1000); }
-function fmtDurMs(ms) { return ms >= 1000 ? Math.round(ms / 1000) + "s" : ms + "ms"; }
+// fmtDurMs mirrors the CLI's shortDur (cmd/drydock/util.go): "39m12s", not "2352s".
+function fmtDurMs(ms) {
+  if (ms < 1000) return ms + "ms";
+  const s = ms / 1000;
+  if (s < 10) return s.toFixed(1) + "s";
+  if (s < 60) return Math.floor(s) + "s";
+  const m = Math.floor(s / 60), rem = Math.floor(s) % 60;
+  return m + "m" + String(rem).padStart(2, "0") + "s";
+}
 function shortId(id){ return (id||"").slice(0,12); }
 function toast(msg, kind){
   const t = el("div", { class: "toast" + (kind ? " " + kind : "") }, msg);
@@ -167,7 +175,7 @@ function paintBody(rec, t){
   if (t.stage === "awaiting_egress") rec.el.append(egressGate(t));
   else if (t.stage === "awaiting_approval") rec.el.append(pushGate(t));
   if (["running","pushing","awaiting_egress","awaiting_approval"].includes(t.stage))
-    rec.el.append(el("div", { class: "actions" }, dangerButton("Kill", () => act("kill", t.id))));
+    rec.el.append(el("div", { class: "actions" }, dangerButton("Kill", () => act("kill", t.id), t.id + ":kill:card")));
 }
 
 // boardEl is the persistent .board node; null until first mount / after an error
@@ -225,10 +233,19 @@ async function renderFinishedStrip(container, liveIDs){
   if (!recent.length) return;
   const strip = el("div", { class: "recent" }, el("div", { class: "recent-title", text: "Just finished" }));
   for (const it of recent){
-    const isErr = it.outcome.startsWith("error");
+    // outcome_key is the stable machine classification (audit.OutcomeKeyWithMetrics):
+    // "ok" covers both a real push and a no-diff run (unchanged operator
+    // muscle memory) and is the ONLY key that earns a checkmark. Everything
+    // else (denied, cancelled, interrupted, running, or any unexpected
+    // passthrough key) gets the neutral glyph by default: a green checkmark
+    // must never be the fallback for a key this code doesn't recognize.
+    const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed";
+    const isOk = it.outcome_key === "ok";
     const icon = isErr
       ? el("span", { style: "color:var(--red)", text: "✕" })
-      : el("span", { style: "color:var(--green)", text: "✓" });
+      : isOk
+      ? el("span", { style: "color:var(--green)", text: "✓" })
+      : el("span", { style: "color:var(--muted)", text: "∅" });
     const row = el("div", { class: "recent-row", onclick: () => openReview(it.id, true) },
       icon,
       el("code", { class: "tid", text: shortId(it.id) }),
@@ -255,7 +272,12 @@ async function renderBoard(){
   // throttle live-progress fetches to every other poll; reuse last known on the off-poll
   const doProg = (progressTick++ % 2) === 0;
   if (doProg) await Promise.all(tasks.filter(t => t.stage === "running").map(async t => {
-    try { t._prog = parseProgress(await (await api("GET","/api/logs/"+t.id)).text()); } catch {}
+    // a 404 here is expected right after submit (the audit .jsonl doesn't
+    // exist yet): skip quietly rather than parsing an error body as progress.
+    try {
+      const res = await api("GET", "/api/logs/" + t.id);
+      if (res.ok) t._prog = parseProgress(await res.text());
+    } catch {}
   }));
   else for (const t of tasks){ const r = cardMap.get(t.id); if (r && r._prog) t._prog = r._prog; }
   const container = ensureBoardContainer();   // creates the .board div once; preserves it across polls
@@ -307,7 +329,7 @@ function egressGate(t) {
   }).catch(() => box.append(el("p", { class: "muted", text: "(host list unavailable)" })));
   box.append(el("div", { class: "actions" },
     el("button", { class: "ok", onclick: () => act("approve", t.id) }, "Approve egress"),
-    dangerButton("Deny", () => act("deny", t.id))));
+    dangerButton("Deny", () => act("deny", t.id), t.id + ":deny:card")));
   return box;
 }
 
@@ -321,7 +343,7 @@ function pushGate(t) {
   box.append(el("div", { class: "actions" },
     el("button", { onclick: () => { openReview(t.id); approveBtn.removeAttribute("disabled"); } }, "Review diff"),
     approveBtn,
-    dangerButton("Deny", () => act("deny", t.id)),
+    dangerButton("Deny", () => act("deny", t.id), t.id + ":deny:card"),
     el("span", { class: "kbd" }, "R review · A approve · D deny")));
   return box;
 }
@@ -352,17 +374,56 @@ async function act(verb, id) {
   renderBoard(); // immediate re-poll (don't wait the interval)
 }
 
+// armedGates: key -> { expiry (ms epoch), timer } for dangerButton's two-press
+// confirm. Module-level so the arm survives updateCard/paintBody rebuilding the
+// button on every poll (1.5s, 500ms while a gate is open): without this, a
+// deliberate second click can land on a freshly-rebuilt button that forgot it
+// was armed. Callers pass a task-id+action+surface key so the same logical
+// button (across rebuilds) shares one entry; a bare local key (no caller key
+// given) still works, it just isn't shared with anything else.
+//
+// scheduleDisarm always cancels any timer already stored for the key before
+// installing its own, so at most one disarm timer is ever pending per key:
+// a rebuilt button re-arming (or a fresh arm) never leaves a prior instance's
+// timer orphaned in the event loop. An orphaned timer would otherwise fire at
+// its original expiry and delete a later, still-legitimate arm out from under
+// a newer button (the button would keep reading "Confirm?" but the next click
+// would silently re-arm instead of firing).
+const armedGates = new Map();
+function scheduleDisarm(key, ms, onDisarm){
+  const prev = armedGates.get(key);
+  if (prev) clearTimeout(prev.timer);
+  const timer = setTimeout(() => { armedGates.delete(key); onDisarm(); }, ms);
+  armedGates.set(key, { expiry: Date.now() + ms, timer });
+}
+
 // dangerButton replaces a native confirm() with an inline two-step: the first
 // click arms the button (label -> "Confirm?", red .confirming style) and starts
 // a 3s disarm timer; a second click within that window runs fn(). Class is
 // "btn danger" so both the red .btn.danger and the .btn.confirming styles apply.
-function dangerButton(label, fn){
+// key (optional): task-id+action+surface string identifying this logical
+// button across rebuilds; when a rebuild passes the same key while still
+// armed, the new button re-renders as "Confirm?" with the remaining window
+// instead of resetting to the plain label. Two different surfaces for the
+// same task+action (e.g. the board card and the review overlay) MUST use
+// distinct keys: sharing one would let arming on one surface silently
+// pre-arm a single click to fire on the other.
+function dangerButton(label, fn, key){
+  const gateKey = key != null ? key : Symbol("dangerButton"); // unshared fallback
   const b = el("button", { class: "btn danger" }, label);
-  let armed = false, timer = null;
+  const show = () => { b.textContent = "Confirm?"; b.classList.add("confirming"); };
+  const reset = () => { b.textContent = label; b.classList.remove("confirming"); };
+  const existing = armedGates.get(gateKey);
+  if (existing){
+    const msLeft = existing.expiry - Date.now();
+    if (msLeft > 0){ show(); scheduleDisarm(gateKey, msLeft, reset); }
+    else { clearTimeout(existing.timer); armedGates.delete(gateKey); }
+  }
   b.onclick = () => {
-    if (armed){ clearTimeout(timer); fn(); return; }
-    armed = true; b.textContent = "Confirm?"; b.classList.add("confirming");
-    timer = setTimeout(() => { armed = false; b.textContent = label; b.classList.remove("confirming"); }, 3000);
+    const rec = armedGates.get(gateKey);
+    if (rec){ clearTimeout(rec.timer); armedGates.delete(gateKey); reset(); fn(); return; }
+    show();
+    scheduleDisarm(gateKey, 3000, reset);
   };
   return b;
 }
@@ -391,7 +452,7 @@ async function openReview(id, readonly = false){
     el("div", { class: "tabs" }, diffTab, logsTab), diffBox, logsBox);
   if (!readonly) panel.append(el("div", { class: "actions" },
     el("button", { class: "btn ok", onclick: () => { act("approve", id); closeOverlay(); } }, "Approve push"),
-    dangerButton("Deny", () => { act("deny", id); closeOverlay(); }),
+    dangerButton("Deny", () => { act("deny", id); closeOverlay(); }, id + ":deny:overlay"),
     el("span", { class: "kbd" }, "A approve · D deny · Esc close")));
 
   // Esc is owned by the global keydown registry (via overlayState), not a

@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -516,5 +518,210 @@ func TestExecCmd_Timeout(t *testing.T) {
 	}
 	if d := time.Since(start); d > 15*time.Second {
 		t.Fatalf("execCmd did not stay bounded: took %v (want well under the 30s sleep)", d)
+	}
+}
+
+// TestArgvAction_DaemonDefault verifies that an empty argv returns "daemon" action.
+func TestArgvAction_DaemonDefault(t *testing.T) {
+	action, errMsg, tokenFile := argvAction([]string{})
+	if action != "daemon" {
+		t.Errorf("argvAction([]) = %q, want daemon", action)
+	}
+	if errMsg != "" {
+		t.Errorf("argvAction([]) errMsg = %q, want empty", errMsg)
+	}
+	if tokenFile != "" {
+		t.Errorf("argvAction([]) tokenFile = %q, want empty", tokenFile)
+	}
+}
+
+// TestArgvAction_Version verifies that --version and -v return "version" action.
+func TestArgvAction_Version(t *testing.T) {
+	for _, flag := range []string{"--version", "-v"} {
+		t.Run(flag, func(t *testing.T) {
+			action, errMsg, tokenFile := argvAction([]string{flag})
+			if action != "version" {
+				t.Errorf("argvAction(%q) = %q, want version", flag, action)
+			}
+			if errMsg != "" {
+				t.Errorf("argvAction(%q) errMsg = %q, want empty", flag, errMsg)
+			}
+			if tokenFile != "" {
+				t.Errorf("argvAction(%q) tokenFile = %q, want empty", flag, tokenFile)
+			}
+		})
+	}
+}
+
+// TestArgvAction_Help verifies that --help and -h return "help" action.
+func TestArgvAction_Help(t *testing.T) {
+	for _, flag := range []string{"--help", "-h"} {
+		t.Run(flag, func(t *testing.T) {
+			action, errMsg, tokenFile := argvAction([]string{flag})
+			if action != "help" {
+				t.Errorf("argvAction(%q) = %q, want help", flag, action)
+			}
+			if errMsg != "" {
+				t.Errorf("argvAction(%q) errMsg = %q, want empty", flag, errMsg)
+			}
+			if tokenFile != "" {
+				t.Errorf("argvAction(%q) tokenFile = %q, want empty", flag, tokenFile)
+			}
+		})
+	}
+}
+
+// TestArgvAction_UnknownArg verifies that unknown arguments return "error" action
+// with an explanation.
+func TestArgvAction_UnknownArg(t *testing.T) {
+	action, errMsg, tokenFile := argvAction([]string{"--unknown"})
+	if action != "error" {
+		t.Errorf("argvAction([--unknown]) = %q, want error", action)
+	}
+	if !strings.Contains(errMsg, "unknown argument") {
+		t.Errorf("errMsg = %q, want to contain 'unknown argument'", errMsg)
+	}
+	if !strings.Contains(errMsg, "--unknown") {
+		t.Errorf("errMsg = %q, want to contain '--unknown'", errMsg)
+	}
+	if tokenFile != "" {
+		t.Errorf("argvAction([--unknown]) tokenFile = %q, want empty", tokenFile)
+	}
+}
+
+// TestArgvAction_SquidAuthHelper verifies that __squid-authhelper with a
+// token file argument returns "squid-authhelper" action with the token file path.
+func TestArgvAction_SquidAuthHelper(t *testing.T) {
+	action, errMsg, tokenFile := argvAction([]string{"__squid-authhelper", "/path/to/token"})
+	if action != "squid-authhelper" {
+		t.Errorf("argvAction(__squid-authhelper /path/to/token) action = %q, want squid-authhelper", action)
+	}
+	if errMsg != "" {
+		t.Errorf("argvAction(__squid-authhelper /path/to/token) errMsg = %q, want empty", errMsg)
+	}
+	if tokenFile != "/path/to/token" {
+		t.Errorf("argvAction(__squid-authhelper /path/to/token) tokenFile = %q, want /path/to/token", tokenFile)
+	}
+}
+
+// TestArgvAction_SquidAuthHelper_MissingTokenFile verifies that __squid-authhelper
+// without a token file returns "error" action.
+func TestArgvAction_SquidAuthHelper_MissingTokenFile(t *testing.T) {
+	action, errMsg, tokenFile := argvAction([]string{"__squid-authhelper"})
+	if action != "error" {
+		t.Errorf("argvAction(__squid-authhelper) action = %q, want error", action)
+	}
+	if !strings.Contains(errMsg, "token file") {
+		t.Errorf("argvAction(__squid-authhelper) errMsg = %q, want to contain 'token file'", errMsg)
+	}
+	if tokenFile != "" {
+		t.Errorf("argvAction(__squid-authhelper) tokenFile = %q, want empty", tokenFile)
+	}
+}
+
+// TestArgvAction_SquidAuthHelper_NotShadowed verifies that __squid-authhelper
+// is checked before version/help flags, so it cannot be shadowed.
+func TestArgvAction_SquidAuthHelper_NotShadowed(t *testing.T) {
+	action, errMsg, tokenFile := argvAction([]string{"__squid-authhelper", "--version"})
+	if action != "squid-authhelper" {
+		t.Errorf("argvAction(__squid-authhelper --version): action = %q, want squid-authhelper (not shadowed by --version)", action)
+	}
+	if errMsg != "" {
+		t.Errorf("argvAction(__squid-authhelper --version): errMsg = %q, want empty (--version is the token file)", errMsg)
+	}
+	if tokenFile != "--version" {
+		t.Errorf("argvAction(__squid-authhelper --version): tokenFile = %q, want --version", tokenFile)
+	}
+}
+
+// TestUsageBrokerd verifies the usage message contains the expected content.
+// Uses writer injection rather than os.Pipe to match the codebase convention
+// (see chooseLogHandler).
+func TestUsageBrokerd(t *testing.T) {
+	var buf bytes.Buffer
+	usageBrokerd(&buf)
+	usage := buf.String()
+
+	if !strings.Contains(usage, "brokerd") {
+		t.Errorf("usage message missing 'brokerd': %s", usage)
+	}
+	if !strings.Contains(usage, "--version") {
+		t.Errorf("usage message missing '--version': %s", usage)
+	}
+	if !strings.Contains(usage, "--help") {
+		t.Errorf("usage message missing '--help': %s", usage)
+	}
+}
+
+const brokerdHelperEnv = "DRYDOCK_TEST_BROKERD_HELPER"
+
+// TestBrokerdHelperProcess is re-executed by runBrokerdCLI so the tests below
+// can observe main's real os.Exit behavior in a subprocess, the same pattern
+// cmd/drydock's main_test.go uses for its own --help/exit-code assertions.
+func TestBrokerdHelperProcess(t *testing.T) {
+	if os.Getenv(brokerdHelperEnv) != "1" {
+		return
+	}
+	var args []string
+	if raw := os.Getenv(brokerdHelperEnv + "_ARGS"); raw != "" {
+		args = strings.Split(raw, "\x1f")
+	}
+	os.Args = append([]string{"brokerd"}, args...)
+	main()
+}
+
+// runBrokerdCLI execs the test binary as brokerd with the given args and
+// returns stdout/stderr separately (unlike CombinedOutput) so callers can
+// assert which stream a message landed on.
+func runBrokerdCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestBrokerdHelperProcess$")
+	cmd.Env = append(os.Environ(), brokerdHelperEnv+"=1", brokerdHelperEnv+"_ARGS="+strings.Join(args, "\x1f"))
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	if err == nil {
+		return outBuf.String(), errBuf.String(), 0
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("run brokerd: %v", err)
+	}
+	return outBuf.String(), errBuf.String(), exitErr.ExitCode()
+}
+
+// TestCLIHelp_GoesToStdout is the regression guard for the stream fix:
+// requested help (--help/-h) is normal output, not a diagnostic, so it must
+// land on stdout with exit 0, matching drydock's own per-subcommand help.
+func TestCLIHelp_GoesToStdout(t *testing.T) {
+	stdout, stderr, code := runBrokerdCLI(t, "--help")
+	if code != 0 {
+		t.Fatalf("--help exit=%d, want 0", code)
+	}
+	if !strings.Contains(stdout, "brokerd") {
+		t.Errorf("--help stdout = %q, want usage text", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("--help stderr = %q, want empty (usage must go to stdout)", stderr)
+	}
+}
+
+// TestCLIUnknownArg_StaysOnStderr guards the other half of the fix: an
+// unrecognized argument is a real diagnostic, so it keeps printing to stderr.
+func TestCLIUnknownArg_StaysOnStderr(t *testing.T) {
+	stdout, stderr, code := runBrokerdCLI(t, "--bogus")
+	if code != 2 {
+		t.Fatalf("--bogus exit=%d, want 2", code)
+	}
+	if !strings.Contains(stderr, "brokerd") {
+		t.Errorf("--bogus stderr = %q, want usage/error text", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("--bogus stdout = %q, want empty (error path stays on stderr)", stdout)
 	}
 }

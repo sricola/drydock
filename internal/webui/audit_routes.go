@@ -13,8 +13,13 @@ import (
 )
 
 type HistoryItem struct {
-	ID          string `json:"id"`
-	Outcome     string `json:"outcome"`
+	ID      string `json:"id"`
+	Outcome string `json:"outcome"`
+	// OutcomeKey is the stable machine classification (audit.OutcomeKeyWithMetrics):
+	// "ok", "error", "push_failed", "denied", "cancelled", "interrupted",
+	// or "running". The UI icon logic keys off this, not the display string
+	// in Outcome, which may carry a " · sensitive" suffix or turn count.
+	OutcomeKey  string `json:"outcome_key"`
 	Cost        string `json:"cost"`
 	DurationMs  int64  `json:"duration_ms"`
 	HasDuration bool   `json:"has_duration"`
@@ -81,10 +86,12 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		last, ok := audit.LastResultFile(f)
 		meta := audit.ReadMetaFile(f)
+		m, hasMetrics := audit.LastMetricsFile(f)
 		f.Close()
 		items = append(items, HistoryItem{
 			ID:          id,
-			Outcome:     audit.Outcome(last, ok, meta),
+			Outcome:     audit.OutcomeWithMetrics(last, ok, meta, m, hasMetrics),
+			OutcomeKey:  audit.OutcomeKeyWithMetrics(last, ok, m, hasMetrics),
 			Cost:        audit.Cost(meta, last, ok),
 			DurationMs:  last.DurationMs,
 			HasDuration: audit.HasDuration(last, ok),

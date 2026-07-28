@@ -74,7 +74,8 @@ func summarize(id, path string, info os.FileInfo) taskRow {
 	defer f.Close()
 	last, ok := audit.LastResultFile(f)
 	meta := audit.ReadMetaFile(f)
-	r.outcome = audit.Outcome(last, ok, meta)
+	m, hasMetrics := audit.LastMetricsFile(f)
+	r.outcome = audit.OutcomeWithMetrics(last, ok, meta, m, hasMetrics)
 	r.cost = audit.Cost(meta, last, ok)
 	if audit.HasDuration(last, ok) {
 		r.dur = shortDur(last.DurationMs)

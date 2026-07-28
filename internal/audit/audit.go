@@ -57,12 +57,17 @@ type StageMs struct {
 // one wins: the broker writes it after the agent's output ends, so a forged
 // in-VM row is always superseded.
 type Metrics struct {
-	Type               string  `json:"type"`
-	Src                string  `json:"src"`
-	TaskID             string  `json:"task_id"`
-	Agent              string  `json:"agent"`
-	Vendor             string  `json:"vendor"`
-	Auth               string  `json:"auth"`
+	Type   string `json:"type"`
+	Src    string `json:"src"`
+	TaskID string `json:"task_id"`
+	Agent  string `json:"agent"`
+	Vendor string `json:"vendor"`
+	Auth   string `json:"auth"`
+	// Outcome is the terminal path the broker actually took: "pushed",
+	// "denied", "cancelled", "push_failed", "error", or "no_diff" (auto-
+	// approved pushes fold into "pushed": the auto/gated distinction isn't
+	// surfaced separately). Empty on pre-v0.6.7 rows; see OutcomeKeyWithMetrics.
+	Outcome            string  `json:"outcome,omitempty"`
 	Repo               string  `json:"repo"`
 	Model              string  `json:"model,omitempty"`
 	StageMs            StageMs `json:"stage_ms"`
@@ -200,7 +205,58 @@ func OutcomeKey(r Result, ok bool) string {
 
 // Outcome derives the human outcome string from OutcomeKey.
 func Outcome(r Result, ok bool, m Meta) string {
+	return outcomeString(OutcomeKey(r, ok), r, m)
+}
+
+// OutcomeKeyWithMetrics is OutcomeKey, folding in the broker's terminal-path
+// outcome from the metrics row for the cases the result row cannot tell
+// apart on its own: a diff denied at the approval gate (the result row is
+// still the agent's own pre-gate "success" line: pushAndOpenPR streams
+// outcome=denied to the live client but never rewrites the audit log), a
+// mid-run kill (runSandbox's ctx-cancelled branch reuses appendBrokerResult's
+// generic subtype:"error"), and a fail-closed diff-capture failure (V-01:
+// HandleTask's CaptureDiff error branch sets tr.outcome = "error" on the
+// metrics row but, like the denied case, appends no broker result row, so
+// the result row is still the agent's own pre-failure "success" line). The
+// last of these is why the override also fires when m.Outcome == "error"
+// even though OutcomeKey already has its own "error" case: that case only
+// triggers off the result row's own IsError/subtype, which a fail-closed
+// capture failure never touches. Every other outcome is already correctly
+// classified by OutcomeKey alone, so a pre-outcome-field metrics row
+// (m.Outcome == "", true for every audit file written before this field
+// existed) leaves key unchanged: the fallback IS the unmodified key, not a
+// separate code path.
+func OutcomeKeyWithMetrics(r Result, ok bool, m Metrics, hasMetrics bool) string {
 	key := OutcomeKey(r, ok)
+	if !hasMetrics {
+		return key
+	}
+	switch m.Outcome {
+	case "denied", "cancelled":
+		return m.Outcome
+	case "error":
+		// Only a result row that currently reads "ok" needs the override: an
+		// already-"error" key is correctly classified by OutcomeKey alone, and
+		// overriding it unconditionally would let a stray metrics-row error
+		// mask a more specific result-row key (e.g. "push_failed").
+		if key == "ok" {
+			return "error"
+		}
+	}
+	return key
+}
+
+// OutcomeWithMetrics is Outcome, classified through OutcomeKeyWithMetrics
+// instead of OutcomeKey: the display-string counterpart to
+// OutcomeKeyWithMetrics for readers (`drydock tasks`, the web UI) that need
+// the human string, not just the machine key.
+func OutcomeWithMetrics(r Result, ok bool, meta Meta, m Metrics, hasMetrics bool) string {
+	return outcomeString(OutcomeKeyWithMetrics(r, ok, m, hasMetrics), r, meta)
+}
+
+// outcomeString renders the human display string for an already-classified
+// key, shared by Outcome and OutcomeWithMetrics so the two can never drift.
+func outcomeString(key string, r Result, m Meta) string {
 	if key == "running" {
 		return "running?"
 	}

@@ -75,6 +75,21 @@ func TestServesIndex(t *testing.T) {
 	}
 }
 
+// TestServesStaticAssets checks the other embedded assets (app.js, style.css)
+// are reachable the same unauthenticated way index.html is.
+func TestServesStaticAssets(t *testing.T) {
+	s := testServer()
+	for _, path := range []string{"/app.js", "/style.css"} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Host = "127.0.0.1:7878"
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, rec.Code)
+		}
+	}
+}
+
 func TestEmptyHostRejected(t *testing.T) {
 	s := testServer()
 	// An empty/missing Host must not be treated as loopback.
@@ -104,6 +119,27 @@ func TestConstantTimeTokenCompare(t *testing.T) {
 	// Prefix-only token must be rejected.
 	if rec := do(t, s, "GET", "/api/tasks", "127.0.0.1:7878", "Bearer secret"); rec.Code != http.StatusForbidden {
 		t.Errorf("prefix-only token accepted — must reject")
+	}
+}
+
+// TestServesFavicon checks the embedded favicon is reachable at the path
+// index.html's <link rel="icon"> points at, with an image content type, and
+// that it is served the same way as index.html/app.js: no bearer token
+// required (GET / is not wrapped in s.authed(), unlike /api/*).
+func TestServesFavicon(t *testing.T) {
+	s := testServer()
+	req := httptest.NewRequest("GET", "/favicon-32.png", nil)
+	req.Host = "127.0.0.1:7878"
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /favicon-32.png = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", ct)
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("favicon body is empty")
 	}
 }
 

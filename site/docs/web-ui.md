@@ -31,7 +31,12 @@ the fragment and sends it as a bearer token on every API call.
   `gemini` / `opencode`), and an optional model. The repo URL is validated as you type and
   recent repos are remembered.
 - **History**: past runs from the audit dir: outcome, cost, and duration, each
-  with its diff and logs.
+  with its diff and logs. Outcome is `ok (N turns)` for a pushed or no-diff
+  run, or a distinct `denied`/`cancelled`/`push failed`/`error` line
+  otherwise, see [Push outcomes](submitting-tasks.html#push-outcomes). The
+  board's "Just finished" rail marks the same split with an icon: ✓ for
+  pushed/ok/no-diff, ✕ for error/push failed, and a neutral `∅` for
+  denied/cancelled (neither succeeded nor failed: the task just didn't run).
 
 On the board, when exactly one task is at a gate: `R` review · `A` approve · `D`
 deny. `⌘/Ctrl+Enter` submits the form; `?` lists the shortcuts.

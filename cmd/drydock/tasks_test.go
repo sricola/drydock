@@ -86,6 +86,69 @@ func TestSummarize_SubscriptionTaskShowsSubscription(t *testing.T) {
 	}
 }
 
+// A denied task's on-disk result row is the AGENT's own pre-gate success
+// line (broker.pushAndOpenPR streams outcome=denied to the live client but
+// never rewrites the audit log's result row), so before the metrics row
+// gained an outcome field a denied task showed "ok (N turns)" here. The
+// metrics row is the only place "denied" survives to a later `drydock tasks`
+// read.
+func TestSummarize_DeniedTaskUsesMetricsOutcomeNotResultRow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-denied.jsonl")
+	body := `{"type":"drydock_meta","subscription":false}` + "\n" +
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"total_cost_usd":0.05,"num_turns":3}` + "\n" +
+		`{"type":"metrics","src":"broker","task_id":"task-denied","outcome":"denied"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	got := summarize("task-denied", path, info)
+	if got.outcome != "denied" {
+		t.Errorf("outcome = %q, want %q", got.outcome, "denied")
+	}
+}
+
+// A fail-closed diff-capture failure (V-01: an oversized or unreadable
+// staged diff) also leaves the on-disk result row as the AGENT's own
+// pre-failure success line: HandleTask's CaptureDiff error branch sets
+// tr.outcome = "error" on the metrics row but, like the denied case, appends
+// no broker result row. Before OutcomeKeyWithMetrics honored outcome=error
+// against an "ok" result-row key, this task showed "ok (N turns)" here
+// despite the broker recording the run as failed closed.
+func TestSummarize_FailClosedDiffCaptureErrorUsesMetricsOutcomeNotResultRow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-diffcap-error.jsonl")
+	body := `{"type":"drydock_meta","subscription":false}` + "\n" +
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"total_cost_usd":0.05,"num_turns":3}` + "\n" +
+		`{"type":"metrics","src":"broker","task_id":"task-diffcap-error","outcome":"error"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	got := summarize("task-diffcap-error", path, info)
+	if got.outcome != "error" {
+		t.Errorf("outcome = %q, want %q", got.outcome, "error")
+	}
+}
+
+// A pre-upgrade metrics row (no outcome field) must not change today's
+// classification: "ok (N turns)" stays the fallback for a plain success row.
+func TestSummarize_PreOutcomeFieldMetricsRowUnaffected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-old-metrics.jsonl")
+	body := `{"type":"drydock_meta","subscription":false}` + "\n" +
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"total_cost_usd":0.05,"num_turns":3}` + "\n" +
+		`{"type":"metrics","src":"broker","task_id":"task-old-metrics"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	got := summarize("task-old-metrics", path, info)
+	if got.outcome != "ok (3 turns)" {
+		t.Errorf("outcome = %q, want %q", got.outcome, "ok (3 turns)")
+	}
+}
+
 // A brokerd crash leaves the boot reconciler's synthetic interrupted line.
 // It must read as a distinct "interrupted" outcome (not "error"), and DUR
 // must stay "-" (unknown) rather than the synthetic 0ms.

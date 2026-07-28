@@ -66,9 +66,10 @@ leaves history to look at):
 - [ ] The review modal renders the diff hunks and the Logs tab shows a
       readable narration of the run.
 - [ ] Deny and Kill use a two-press confirm: first press turns the
-      button into `Confirm?`; press it again promptly. Note the board
-      re-render can reset an armed button after a poll tick, so confirm
-      without dawdling (tracked as a known issue).
+      button into `Confirm?`; press it again to fire. Confirm the armed
+      state survives a board poll tick (1.5s, 500ms while a gate is
+      open): wait a couple of poll cycles between the two presses and
+      the button should still read `Confirm?`, not have reset.
 - [ ] Keyboard path works: R opens review, A approves, D twice denies.
 - [ ] Approving from the modal pushes; the card moves to `pushing` and
       then lands in "Just finished".

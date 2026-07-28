@@ -304,6 +304,12 @@ type taskRun struct {
 	widenOutcome     string        // "" (none) | "approved"; denied dies pre-audit
 	diffFiles        int
 	diffBytes        int64
+	// outcome is the terminal path taken, written into the metrics row's
+	// Outcome field: "pushed"|"denied"|"cancelled"|"push_failed"|"error"|
+	// "no_diff". Set at each terminal return; "" (never reached a terminal
+	// return with the audit log open, e.g. resumePush's shutdown re-defer)
+	// leaves the metrics row's Outcome empty, same as a pre-outcome-field row.
+	outcome string
 
 	// keepStage, when true, suppresses the deferred stage Cleanup so the stage
 	// directory survives a brokerd shutdown and can be resumed at next boot.
@@ -588,10 +594,12 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, stage.ErrDiffTooLarge) {
 			reason = fmt.Sprintf("task failed closed: staged diff exceeds the %d MiB review cap, so it cannot be fully reviewed (V-01)", stage.MaxDiffBytes>>20)
 		}
+		tr.outcome = "error"
 		sw.emit(errorEvent(taskID, reason, ""))
 		return
 	}
 	if diff == "" {
+		tr.outcome = "no_diff"
 		sw.emit(map[string]any{"event": "result", "outcome": "no_diff",
 			"task_id": taskID, "duration_ms": time.Since(tr.taskStart).Milliseconds(),
 			"cost_usd": audit.TotalCost(tr.auditPath)})
@@ -746,12 +754,14 @@ func (tr *taskRun) runSandbox(args []string) error {
 		if tr.ctx.Err() != nil {
 			// Operator killed it, or the client went away. Be explicit.
 			tr.appendBrokerResult(true)
+			tr.outcome = "cancelled"
 			tr.sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": tr.id})
 			return errTaskTerminated
 		}
 		if outCap.exceeded() {
 			// We cancelled the task ourselves: its output crossed the host cap.
 			tr.appendBrokerResult(true)
+			tr.outcome = "error"
 			tr.sw.emit(map[string]any{"event": "error", "task_id": tr.id,
 				"audit":       tr.auditPath,
 				"duration_ms": time.Since(tr.taskStart).Milliseconds(),
@@ -762,6 +772,7 @@ func (tr *taskRun) runSandbox(args []string) error {
 			// We cancelled the task ourselves: its /work grew past the host disk
 			// cap, or host free space dropped below the floor.
 			tr.appendBrokerResult(true)
+			tr.outcome = "error"
 			tr.sw.emit(map[string]any{"event": "error", "task_id": tr.id,
 				"audit":       tr.auditPath,
 				"duration_ms": time.Since(tr.taskStart).Milliseconds(),
@@ -773,6 +784,7 @@ func (tr *taskRun) runSandbox(args []string) error {
 		// task as `running?` forever. Append a synthetic terminal event so
 		// the audit log is self-describing.
 		tr.appendBrokerResult(true)
+		tr.outcome = "error"
 		reason := "task failed: " + safeErr(err)
 		ev := map[string]any{"event": "error", "task_id": tr.id,
 			"audit": tr.auditPath, "duration_ms": time.Since(tr.taskStart).Milliseconds()}
@@ -911,9 +923,15 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 		if cause == gateKilled || cause == gateShutdown {
 			outcome = "cancelled"
 		}
+		// gateTimeout (approval_timeout auto-deny) falls through to "denied"
+		// here on the live path; resumePush's equivalent branch instead maps
+		// it to "interrupted" (an on-disk result-row subtype that predates
+		// this field). Intentionally not reconciled in this change; see the
+		// matching note in reconcile.go.
 		if cause == gateShutdown {
 			tr.keepStage = true
 		}
+		tr.outcome = outcome
 		tr.sw.emit(map[string]any{"event": "result", "outcome": outcome,
 			"task_id": tr.id, "diff_bytes": len(diff)})
 		return
@@ -949,6 +967,7 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		fmt.Fprintf(tr.logf,
 			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 			time.Since(tr.taskStart).Milliseconds(), cost)
+		tr.outcome = "push_failed"
 		tr.sw.emit(map[string]any{"event": "result", "outcome": "push_failed",
 			"task_id": tr.id, "reason": string(reason), "push_attempts": attempts,
 			"branch": base, "error": safeErr(err),
@@ -964,6 +983,7 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		WorkDir: tr.st.WorkDir(), Branch: branch, Env: tr.st.PushEnv(),
 		Title: title, Body: body, Draft: tr.draft,
 	})
+	tr.outcome = "pushed"
 	ev := map[string]any{"event": "result", "outcome": "pushed",
 		"task_id": tr.id, "branch": branch, "platform": adapter.Name(),
 		"pr_opened": prErr == nil, "push_attempts": attempts,
