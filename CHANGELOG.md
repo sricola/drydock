@@ -26,6 +26,16 @@ longer runs), and SSH runs in BatchMode unless you have your own
   opt-out: a task against a repo you cannot push to now fails at
   submit. `drydock doctor` gains a generic push-credential check.
 
+- **Release QA gate for the installed artifact.** `make release-qa`
+  (`tests/release/qa.sh`) runs a black-box pass over the installed
+  `drydock`/`brokerd` as an operator would drive them: CLI contract and
+  exit codes, doctor, the live red team, brokerd and squid lifecycle,
+  and the web UI auth boundary, with opt-in `LIVE=`/`DAEMON=1` phases
+  for real approve/deny/kill task runs and the launchd round trip. It
+  complements `make release-preflight` (which proves the source tree)
+  and slots in after the brew bump; docs at `site/docs/release-qa.md`
+  include the manual browser checklist.
+
 ### Changed
 
 - **Host-side git is now strictly non-interactive.** Every git

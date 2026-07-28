@@ -13,4 +13,5 @@
   <url><loc>https://sricola.github.io/drydock/docs/security-defaults.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
   <url><loc>https://sricola.github.io/drydock/docs/troubleshooting.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
   <url><loc>https://sricola.github.io/drydock/docs/threat-model.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://sricola.github.io/drydock/docs/release-qa.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
 </urlset>

@@ -19,6 +19,7 @@ about a minute.
 - **[Egress & widening](egress.html)**: the default allowlist, how enforcement works, and per-task widening.
 - **[Configuration](configuration.html)**: `config.yaml` reference and env overrides.
 - **[Troubleshooting](troubleshooting.html)**: `drydock doctor` and common failures.
+- **[Release QA](release-qa.html)**: the black-box gate run against each installed release, plus the manual browser checklist.
 - **[Threat model](threat-model.html)**: what drydock defends, and what it doesn't.
 
 ## Requirements
