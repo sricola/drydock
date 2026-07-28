@@ -220,24 +220,33 @@ func Outcome(r Result, ok bool, m Meta) string {
 // the result row is still the agent's own pre-failure "success" line).
 //
 // The one rule, applied uniformly regardless of which metrics outcome fired:
-// the metrics outcome may only override an AMBIGUOUS result-row key, "ok" or
-// "error", never a more specific one. "ok" is ambiguous because it's the
-// agent's own pre-gate/pre-failure success line and the broker's real
-// terminal path (denied/cancelled/error) never rewrote it. "error" is
-// ambiguous because appendBrokerResult's mid-run-kill branch reuses the same
-// generic subtype for every abort reason, so the metrics row is the only
-// place that says WHICH abort it was (the kill path in particular relies on
-// an "error" key becoming "cancelled" here). A key that is already specific
-// (push_failed, interrupted, or a raw agent subtype) is never overridden:
-// letting a stray or stale metrics-row outcome mask it would erase real
-// information the result row already carries correctly. A pre-outcome-field
-// metrics row (m.Outcome == "", true for every audit file written before
-// this field existed, and for a shutdown-parked gate: see gateOutcome)
-// matches no case below and leaves key unchanged, so the fallback IS the
-// unmodified key, not a separate code path.
+// a non-empty broker metrics outcome (denied, cancelled, error) REFINES any
+// coarse result-row key. "ok" is coarse because it's the agent's own
+// pre-gate/pre-failure success line and the broker's real terminal path
+// (denied/cancelled/error) never rewrote it. "error" is coarse because
+// appendBrokerResult's mid-run-kill branch reuses the same generic subtype
+// for every abort reason, so the metrics row is the only place that says
+// WHICH abort it was (the live-kill path relies on an "error" key becoming
+// "cancelled" here). "denied" is likewise coarse for a RESUMED task: gateOutcome
+// gives a killed resume the on-disk subtype "denied" (the resumed path's
+// vocabulary has no "killed" subtype of its own) while the metrics row
+// carries the finer "cancelled" (resume-kill relies on that refinement
+// landing here too). The one key that is NOT coarse is "push_failed": it
+// carries strictly more specific push-time information than any gate-cause
+// outcome could, so it is the sole key the override never touches (a
+// metrics-row "error" refining it would be a regression, not a refinement).
+// interrupted and any raw agent subtype are refined the same as the others;
+// in practice no code path pairs a non-empty metrics outcome with either
+// today (the "interrupted" result rows TerminateStuckAudits and the resumed
+// gateTimeout branch write both go with hasMetrics == false / m.Outcome ==
+// ""), so this is future-proofing, not a currently-observed override. A
+// pre-outcome-field metrics row (m.Outcome == "", true for every audit file
+// written before this field existed, and for a shutdown-parked gate: see
+// gateOutcome) matches no case below and leaves key unchanged, so the
+// fallback IS the unmodified key, not a separate code path.
 func OutcomeKeyWithMetrics(r Result, ok bool, m Metrics, hasMetrics bool) string {
 	key := OutcomeKey(r, ok)
-	if !hasMetrics || (key != "ok" && key != "error") {
+	if !hasMetrics || key == "push_failed" {
 		return key
 	}
 	switch m.Outcome {
