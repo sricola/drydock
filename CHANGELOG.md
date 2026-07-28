@@ -5,6 +5,45 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.6.7 (2026-07-28)
+
+A patch release closing the findings from the v0.6.5 release QA pass. Three
+command-line and UI fixes to argument handling, terminal outcome taxonomy for
+denied and cancelled tasks, and web UI render stability and polish. One
+operator-visible change on upgrade: `drydock tasks`, `drydock stats`, and the
+web UI history now show denied and cancelled tasks with their real outcome
+instead of rendering them as successes or generic errors.
+
+### Fixed
+
+- **brokerd now handles --version, --help, and unknown arguments (#199).**
+  `brokerd --version` and `brokerd --help` print their usual text and exit 0;
+  unknown arguments print an error with usage and exit 2, instead of silently
+  booting the daemon. `__squid-authhelper` is preserved as a special case to
+  avoid breaking the squid helper invocation. Added argvAction function for
+  testable argv dispatch with unit coverage.
+
+- **Denied and cancelled tasks now show their real outcome in the UI and CLI
+  (#200).** The broker-authored terminal metrics row now carries an outcome
+  field (pushed, denied, cancelled, push_failed, error, no_diff), so `drydock
+  tasks`, `drydock stats`, and the web UI history correctly classify tasks
+  denied at the approval gate or killed mid-run (previously both rendered as
+  "ok" or "error" indistinguishably). Also fixes the "Just finished" icon
+  defaulting to a checkmark for unrecognized outcomes (interrupted, a broker
+  crash recovery line, rendered as a success). `healthz` now counts a resumed
+  awaiting-approval task as pending_approval instead of running. `drydock kill`
+  on an unknown task id exits 1 instead of 0.
+
+- **The web UI confirm button armature now survives board repaints (#201).**
+  The Deny/Kill button's two-press confirm state persists through polling
+  rebuilds for its full 3-second window by keying the armed state on task id
+  and action in a module-level map with expiry and separate timers. The card
+  and review overlay buttons now use distinct keys, so opening Review while the
+  card's Deny is armed no longer defeats the two-press confirm on the overlay.
+  Also included: the UI serves a favicon at /favicon-32.png; board log polling
+  no longer console-errors on expected 404s after submit; the history DUR column
+  humanizes durations like the CLI (39m12s, not 2352s).
+
 ## v0.6.6 (2026-07-28)
 
 An operator-hardening release: push credentials are now proven at submit
