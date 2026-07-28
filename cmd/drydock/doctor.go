@@ -80,6 +80,33 @@ func runDoctor() {
 		step("sandbox boot", true, claudeVersionLine(string(out)))
 	}
 
+	// 2a. The dropped agent user must end up with a writable HOME. Claude
+	// Code creates ~/.claude/session-env/<id> on every Bash tool call, so a
+	// HOME leaked from root (=/root, unwritable after the setpriv drop)
+	// breaks every shell command inside the sandbox while trivial
+	// read/edit tasks still pass (issue #198). Two assertions in one boot:
+	// the entrypoint's claude exec sets HOME=/home/agent (staleness, like
+	// the DRYDOCK_GW_IP check above), and that home is actually writable
+	// through the real setpriv drop, so the check fails exactly when
+	// tasks would.
+	out, err = runCmd("container", "run", "--rm", "--entrypoint", "/bin/sh",
+		cfg.SandboxImage, "-c",
+		`grep -q 'env HOME=/home/agent claude' /usr/local/bin/entrypoint.sh || { echo stale-entrypoint-no-agent-home; exit 1; }; `+
+			`/usr/local/bin/drop-agent env HOME=/home/agent /bin/sh -c 'mkdir -p "$HOME/.claude/session-env/doctor-probe" && echo agent-home-writable'`)
+	switch {
+	case strings.Contains(string(out), "stale-entrypoint-no-agent-home"):
+		step("agent HOME writable", false, "stale entrypoint — claude runs with root's HOME; run `drydock init` to rebuild")
+		failed = true
+	case err != nil:
+		step("agent HOME writable", false, "probe failed: "+strings.TrimSpace(string(out)))
+		failed = true
+	case !strings.Contains(string(out), "agent-home-writable"):
+		step("agent HOME writable", false, strings.TrimSpace(lastLine(string(out))))
+		failed = true
+	default:
+		step("agent HOME writable", true, "agent can create ~/.claude/session-env")
+	}
+
 	// 2b. Codex CLI must also be installed (the image hosts both agents). A
 	// "not found" here almost always means cfg.SandboxImage predates the v0.1.5
 	// rename (claude-sandbox -> drydock-sandbox, which added Codex), so point
