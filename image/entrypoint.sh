@@ -25,7 +25,7 @@ case "$AGENT" in
     if [ -n "${DRYDOCK_MODEL:-}" ]; then
         MODEL_ARGS=(--model "${DRYDOCK_MODEL}")
     fi
-    exec /usr/local/bin/drop-agent env "CODEX_HOME=$CODEX_HOME" codex exec \
+    exec /usr/local/bin/drop-agent env "HOME=/home/agent" "CODEX_HOME=$CODEX_HOME" codex exec \
         --dangerously-bypass-approvals-and-sandbox \
         "${MODEL_ARGS[@]}" \
         "${PROMPT}"
@@ -35,7 +35,10 @@ case "$AGENT" in
     if [ -n "${DRYDOCK_MODEL:-}" ]; then
         MODEL_ARGS=(--model "${DRYDOCK_MODEL}")
     fi
-    exec /usr/local/bin/drop-agent claude --bare -p "${PROMPT}" \
+    # HOME must be the agent user's, not root's leaked /root: Claude Code
+    # creates ~/.claude/session-env/<id> at Bash-tool time, and with an
+    # unwritable HOME every shell command fails with EACCES (issue #198).
+    exec /usr/local/bin/drop-agent env HOME=/home/agent claude --bare -p "${PROMPT}" \
         "${MODEL_ARGS[@]}" \
         --dangerously-skip-permissions \
         --output-format stream-json --verbose --include-partial-messages

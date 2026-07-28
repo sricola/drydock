@@ -34,6 +34,20 @@ longer runs), and SSH runs in BatchMode unless you have your own
   by the operator, SSH in BatchMode; a credential gap fails in
   milliseconds instead of prompting on stdin or wedging under launchd.
 
+### Fixed
+
+- **Claude Code's Bash tool works inside the sandbox again (#198).**
+  The claude and codex entrypoint branches leaked root's `HOME=/root`
+  through the setpriv privilege drop, so Claude Code's per-session
+  `~/.claude/session-env` mkdir failed with EACCES on every shell
+  command; the agent limped along on read/edit tools while builds,
+  tests, and installs silently broke. Both branches now run with
+  `HOME=/home/agent` (as gemini and opencode already did), and
+  `drydock doctor` gains an "agent HOME writable" check that probes
+  through the real privilege drop, so a regression fails doctor
+  instead of degrading tasks. Run `drydock init` after upgrading to
+  rebuild the image.
+
 ## v0.6.5 (2026-07-27)
 
 A feature release landing roadmap item 4.7 (observability): per-task run
