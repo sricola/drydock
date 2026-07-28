@@ -52,13 +52,15 @@ instead of rendering them as successes or generic errors.
   an audit file's result row and its metrics row. Both now do a single tail
   read and scan once for both rows.
 
-- **Terminal-outcome and confirm-key hardening.** The metrics row's outcome
-  now overrides a result row's classification only for the two genuinely
-  ambiguous keys ("ok", "error"), never a more specific one (a push_failed
-  result row now always stays push_failed). The web UI's egress-deny and
-  push-deny buttons on the board card use distinct confirm keys, so arming
-  one no longer shares state with the other. Documented that `brokerd
-  --version` / `--help` print and exit rather than booting the daemon.
+- **Terminal-outcome and confirm-key hardening.** A non-empty broker
+  metrics-row outcome (denied, cancelled, error) now consistently refines a
+  result row's coarse classification, but never overrides "push_failed",
+  the one key that already carries more specific push-time information (a
+  push_failed result row now always stays push_failed). The web UI's
+  egress-deny and push-deny buttons on the board card use distinct confirm
+  keys, so arming one no longer shares state with the other. Documented that
+  `brokerd --version` / `--help` print and exit rather than booting the
+  daemon.
 
 - **brokerd now handles --version, --help, and unknown arguments (#199).**
   `brokerd --version` and `brokerd --help` print their usual text and exit 0;
