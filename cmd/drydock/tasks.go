@@ -65,16 +65,17 @@ func runTasks() {
 
 func summarize(id, path string, info os.FileInfo) taskRow {
 	r := taskRow{id: id, mtime: info.ModTime(), age: relAge(info.ModTime()), dur: "-", cost: "-", outcome: "running?"}
-	// Open the audit file once (O_NOFOLLOW) and read both the tail result and the
-	// head meta from the same fd, rather than opening it twice.
+	// Open the audit file once (O_NOFOLLOW) and read the tail result+metrics
+	// rows in a single pass (LastResultAndMetricsFile) plus the head meta,
+	// all from the same fd, rather than opening it twice or tail-scanning it
+	// twice.
 	f, err := audit.OpenRead(path)
 	if err != nil {
 		return r // unreadable or a symlink — leave as "running?"
 	}
 	defer f.Close()
-	last, ok := audit.LastResultFile(f)
+	last, ok, m, hasMetrics := audit.LastResultAndMetricsFile(f)
 	meta := audit.ReadMetaFile(f)
-	m, hasMetrics := audit.LastMetricsFile(f)
 	r.outcome = audit.OutcomeWithMetrics(last, ok, meta, m, hasMetrics)
 	r.cost = audit.Cost(meta, last, ok)
 	if audit.HasDuration(last, ok) {

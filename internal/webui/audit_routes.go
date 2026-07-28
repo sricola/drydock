@@ -84,9 +84,8 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		if f == nil {
 			continue // missing or symlink — skip silently
 		}
-		last, ok := audit.LastResultFile(f)
+		last, ok, m, hasMetrics := audit.LastResultAndMetricsFile(f)
 		meta := audit.ReadMetaFile(f)
-		m, hasMetrics := audit.LastMetricsFile(f)
 		f.Close()
 		items = append(items, HistoryItem{
 			ID:          id,

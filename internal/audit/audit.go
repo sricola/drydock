@@ -217,31 +217,32 @@ func Outcome(r Result, ok bool, m Meta) string {
 // generic subtype:"error"), and a fail-closed diff-capture failure (V-01:
 // HandleTask's CaptureDiff error branch sets tr.outcome = "error" on the
 // metrics row but, like the denied case, appends no broker result row, so
-// the result row is still the agent's own pre-failure "success" line). The
-// last of these is why the override also fires when m.Outcome == "error"
-// even though OutcomeKey already has its own "error" case: that case only
-// triggers off the result row's own IsError/subtype, which a fail-closed
-// capture failure never touches. Every other outcome is already correctly
-// classified by OutcomeKey alone, so a pre-outcome-field metrics row
-// (m.Outcome == "", true for every audit file written before this field
-// existed) leaves key unchanged: the fallback IS the unmodified key, not a
-// separate code path.
+// the result row is still the agent's own pre-failure "success" line).
+//
+// The one rule, applied uniformly regardless of which metrics outcome fired:
+// the metrics outcome may only override an AMBIGUOUS result-row key, "ok" or
+// "error", never a more specific one. "ok" is ambiguous because it's the
+// agent's own pre-gate/pre-failure success line and the broker's real
+// terminal path (denied/cancelled/error) never rewrote it. "error" is
+// ambiguous because appendBrokerResult's mid-run-kill branch reuses the same
+// generic subtype for every abort reason, so the metrics row is the only
+// place that says WHICH abort it was (the kill path in particular relies on
+// an "error" key becoming "cancelled" here). A key that is already specific
+// (push_failed, interrupted, or a raw agent subtype) is never overridden:
+// letting a stray or stale metrics-row outcome mask it would erase real
+// information the result row already carries correctly. A pre-outcome-field
+// metrics row (m.Outcome == "", true for every audit file written before
+// this field existed, and for a shutdown-parked gate: see gateOutcome)
+// matches no case below and leaves key unchanged, so the fallback IS the
+// unmodified key, not a separate code path.
 func OutcomeKeyWithMetrics(r Result, ok bool, m Metrics, hasMetrics bool) string {
 	key := OutcomeKey(r, ok)
-	if !hasMetrics {
+	if !hasMetrics || (key != "ok" && key != "error") {
 		return key
 	}
 	switch m.Outcome {
-	case "denied", "cancelled":
+	case "denied", "cancelled", "error":
 		return m.Outcome
-	case "error":
-		// Only a result row that currently reads "ok" needs the override: an
-		// already-"error" key is correctly classified by OutcomeKey alone, and
-		// overriding it unconditionally would let a stray metrics-row error
-		// mask a more specific result-row key (e.g. "push_failed").
-		if key == "ok" {
-			return "error"
-		}
 	}
 	return key
 }
@@ -442,4 +443,45 @@ func LastMetricsFile(f *os.File) (Metrics, bool) {
 		}
 	}
 	return Metrics{}, false
+}
+
+// LastResultAndMetricsFile finds the final {"type":"result",...} row AND the
+// final broker-authored {"type":"metrics",...} row in a single tail read of
+// f, instead of the two independent Stat+Seek+16KB reads LastResultFile and
+// LastMetricsFile each perform. Same tail window and last-wins semantics as
+// each of those; callers that want both rows (handleHistory, tasks.go
+// summarize) should prefer this over calling both single-row functions. The
+// existing single-row functions stay for callers that only need one.
+func LastResultAndMetricsFile(f *os.File) (Result, bool, Metrics, bool) {
+	info, err := f.Stat()
+	if err != nil {
+		return Result{}, false, Metrics{}, false
+	}
+	lines, err := tailLines(f, info.Size())
+	if err != nil {
+		return Result{}, false, Metrics{}, false
+	}
+	var (
+		res   Result
+		resOK bool
+		m     Metrics
+		mOK   bool
+	)
+	for i := len(lines) - 1; i >= 0 && (!resOK || !mOK); i-- {
+		line := lines[i]
+		if !resOK {
+			var x Result
+			if json.Unmarshal(line, &x) == nil && x.Type == "result" {
+				res, resOK = x, true
+				continue
+			}
+		}
+		if !mOK {
+			var x Metrics
+			if json.Unmarshal(line, &x) == nil && x.Type == "metrics" && x.Src == "broker" {
+				m, mOK = x, true
+			}
+		}
+	}
+	return res, resOK, m, mOK
 }
