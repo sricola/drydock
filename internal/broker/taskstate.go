@@ -121,8 +121,21 @@ func (b *Broker) releaseSlot() {
 }
 
 // registerTask records a task in the live-tasks map under StageRunning,
-// and stashes its cancel hook so POST /admin/kill/{id} can abort it.
+// and stashes its cancel hook so POST /admin/kill/{id} can abort it. Callers
+// that are not starting a task fresh (a resumed gate task, which by
+// construction is already sitting at the diff-approval gate) should use
+// registerTaskAt instead, so the stage lands correctly in the same critical
+// section instead of a later, separately-locked correction.
 func (b *Broker) registerTask(id, repo, instruction string, cancel context.CancelCauseFunc) {
+	b.registerTaskAt(id, repo, instruction, cancel, StageRunning)
+}
+
+// registerTaskAt is registerTask with an explicit initial stage. It exists so
+// resumePush can register a resumed task as StagePending atomically: the
+// HTTP admin listener is already serving during boot reconciliation, so a
+// register-as-running-then-correct-to-pending sequence (two lock
+// acquisitions) would let a reader observe the wrong stage in between.
+func (b *Broker) registerTaskAt(id, repo, instruction string, cancel context.CancelCauseFunc, stage TaskStage) {
 	b.pendingMu.Lock()
 	defer b.pendingMu.Unlock()
 	if b.tasks == nil {
@@ -138,7 +151,7 @@ func (b *Broker) registerTask(id, repo, instruction string, cancel context.Cance
 		ID:          id,
 		Repo:        repo,
 		Instruction: instruction,
-		Stage:       StageRunning,
+		Stage:       stage,
 		StartedAt:   time.Now(),
 	}
 	if cancel != nil {

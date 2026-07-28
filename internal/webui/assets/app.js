@@ -329,7 +329,7 @@ function egressGate(t) {
   }).catch(() => box.append(el("p", { class: "muted", text: "(host list unavailable)" })));
   box.append(el("div", { class: "actions" },
     el("button", { class: "ok", onclick: () => act("approve", t.id) }, "Approve egress"),
-    dangerButton("Deny", () => act("deny", t.id), t.id + ":deny:card")));
+    dangerButton("Deny", () => act("deny", t.id), t.id + ":deny-egress:card")));
   return box;
 }
 
@@ -343,7 +343,7 @@ function pushGate(t) {
   box.append(el("div", { class: "actions" },
     el("button", { onclick: () => { openReview(t.id); approveBtn.removeAttribute("disabled"); } }, "Review diff"),
     approveBtn,
-    dangerButton("Deny", () => act("deny", t.id), t.id + ":deny:card"),
+    dangerButton("Deny", () => act("deny", t.id), t.id + ":deny-push:card"),
     el("span", { class: "kbd" }, "R review · A approve · D deny")));
   return box;
 }
@@ -404,10 +404,16 @@ function scheduleDisarm(key, ms, onDisarm){
 // key (optional): task-id+action+surface string identifying this logical
 // button across rebuilds; when a rebuild passes the same key while still
 // armed, the new button re-renders as "Confirm?" with the remaining window
-// instead of resetting to the plain label. Two different surfaces for the
-// same task+action (e.g. the board card and the review overlay) MUST use
-// distinct keys: sharing one would let arming on one surface silently
-// pre-arm a single click to fire on the other.
+// instead of resetting to the plain label. Keys must be unique per (task,
+// action, surface): two different actions on the same task+surface (e.g.
+// the egress gate's Deny and the push gate's Deny, both on the "card"
+// surface) MUST use distinct action segments, and two different surfaces
+// for the same task+action (e.g. the board card and the review overlay)
+// MUST use distinct surface segments: sharing a key across either axis
+// would let arming one button silently pre-arm a single click to fire the
+// other. An omitted key falls back to an unshared Symbol, which still works
+// but loses cross-rebuild persistence: a rebuild always gets a fresh
+// unarmed button.
 function dangerButton(label, fn, key){
   const gateKey = key != null ? key : Symbol("dangerButton"); // unshared fallback
   const b = el("button", { class: "btn danger" }, label);
@@ -452,7 +458,7 @@ async function openReview(id, readonly = false){
     el("div", { class: "tabs" }, diffTab, logsTab), diffBox, logsBox);
   if (!readonly) panel.append(el("div", { class: "actions" },
     el("button", { class: "btn ok", onclick: () => { act("approve", id); closeOverlay(); } }, "Approve push"),
-    dangerButton("Deny", () => { act("deny", id); closeOverlay(); }, id + ":deny:overlay"),
+    dangerButton("Deny", () => { act("deny", id); closeOverlay(); }, id + ":deny-push:overlay"),
     el("span", { class: "kbd" }, "A approve · D deny · Esc close")));
 
   // Esc is owned by the global keydown registry (via overlayState), not a

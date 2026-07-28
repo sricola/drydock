@@ -14,7 +14,53 @@ operator-visible change on upgrade: `drydock tasks`, `drydock stats`, and the
 web UI history now show denied and cancelled tasks with their real outcome
 instead of rendering them as successes or generic errors.
 
+### Security
+
+- **argv[0] is now provably constant in the PR/MR shell-out.** `runCLI`
+  (internal/remote) took the vendor CLI name inside the same variadic argv
+  slice as user-influenced values (PR title/body), so static analysis could
+  not prove the executable path was never attacker-influenced. The CLI name
+  is now a separate parameter that every adapter (github.go, gitlab.go,
+  gitea.go) passes as a compile-time literal ("gh"/"glab"/"tea"); every
+  user-influenced value still only ever appears as the value following a
+  flag, never as a bare positional. Closes the CodeQL go/command-injection
+  alert on this shell-out. No behavior change.
+
 ### Fixed
+
+- **Shutdown-parked tasks no longer read as cancelled while awaiting approval
+  after a restart.** A task at the diff-approval gate when brokerd shuts down
+  is only paused, not cancelled: it resumes alive at the next boot. The
+  gateShutdown branch previously recorded outcome=cancelled on the metrics
+  row, so `drydock tasks` and the web UI History showed it as terminal for
+  the whole time it sat parked. It now records no outcome at all, so readers
+  fall back to the result row, matching how a resumed approval-timeout is
+  already handled. The gate-cause-to-outcome mapping that used to be
+  duplicated (and disagree) between the live push path and the resume path
+  is now a single shared, unit-tested helper.
+
+- **Resumed gate tasks never flash as running.** Boot reconciliation used to
+  register a resumed awaiting-approval task as StageRunning, then correct it
+  to StagePending under a second lock acquisition, and the HTTP admin
+  listener is already serving during reconciliation. A reader could observe
+  the wrong stage in between. Registration now records the correct initial
+  stage in one critical section, so a resumed task is never observable as
+  running.
+
+- **The history endpoint halves its audit tail I/O.** `drydock tasks`
+  (summarize) and the web UI's `/api/history` each independently tail-read
+  an audit file's result row and its metrics row. Both now do a single tail
+  read and scan once for both rows.
+
+- **Terminal-outcome and confirm-key hardening.** A non-empty broker
+  metrics-row outcome (denied, cancelled, error) now consistently refines a
+  result row's coarse classification, but never overrides "push_failed",
+  the one key that already carries more specific push-time information (a
+  push_failed result row now always stays push_failed). The web UI's
+  egress-deny and push-deny buttons on the board card use distinct confirm
+  keys, so arming one no longer shares state with the other. Documented that
+  `brokerd --version` / `--help` print and exit rather than booting the
+  daemon.
 
 - **brokerd now handles --version, --help, and unknown arguments (#199).**
   `brokerd --version` and `brokerd --help` print their usual text and exit 0;

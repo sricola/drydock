@@ -234,14 +234,19 @@ func TestOutcome_DeniedAndPushed(t *testing.T) {
 	}
 }
 
-// TestOutcomeKeyWithMetrics_OverridesOnlyDeniedAndCancelled is the direct
-// unit test for the fold-in rule: the metrics row's outcome wins for
-// "denied"/"cancelled" (the two the result row alone cannot express) and for
-// "error" when the result row currently reads "ok" (a fail-closed error,
-// V-01, whose result row is still the agent's own pre-failure success line);
-// every other outcome value, and a pre-outcome-field row (hasMetrics but
-// Outcome == ""), must leave the result-row-derived key untouched.
-func TestOutcomeKeyWithMetrics_OverridesOnlyDeniedAndCancelled(t *testing.T) {
+// TestOutcomeKeyWithMetrics_RefinesAnyKeyExceptPushFailed is the direct unit
+// test for the fold-in rule (change 6, hardening pass, corrected after
+// review): a non-empty broker metrics outcome (denied/cancelled/error)
+// REFINES any coarse result-row key; the sole key it never touches is
+// "push_failed", since that carries strictly more specific push-time
+// information than any gate-cause outcome could. An earlier version of this
+// rule restricted the override to "ok"/"error" result-row keys only, which
+// broke resume-kill classification: gateOutcome gives a killed RESUMED task
+// the on-disk subtype "denied" while the metrics row carries the finer
+// "cancelled", and that combination needs the same refinement live-kill
+// already relied on (cancelled overriding "error"). The cases below cover
+// both.
+func TestOutcomeKeyWithMetrics_RefinesAnyKeyExceptPushFailed(t *testing.T) {
 	successResult := Result{Type: "result", Subtype: "success", NumTurns: 2}
 	cases := []struct {
 		name       string
@@ -252,8 +257,10 @@ func TestOutcomeKeyWithMetrics_OverridesOnlyDeniedAndCancelled(t *testing.T) {
 		want       string
 	}{
 		{"denied overrides a success result row", successResult, true, Metrics{Outcome: "denied"}, true, "denied"},
-		{"cancelled overrides an error result row",
+		{"cancelled overrides an error result row (the live-kill path relies on this)",
 			Result{Type: "result", Subtype: "error", IsError: true}, true, Metrics{Outcome: "cancelled"}, true, "cancelled"},
+		{"cancelled overrides a denied result row (the resume-kill path relies on this; regression case)",
+			Result{Type: "result", Subtype: "denied"}, true, Metrics{Outcome: "cancelled"}, true, "cancelled"},
 		{"fail-closed error (V-01) overrides a success result row",
 			successResult, true, Metrics{Outcome: "error"}, true, "error"},
 		{"error metrics row does not override an already-error result row (stays error either way)",
@@ -262,6 +269,14 @@ func TestOutcomeKeyWithMetrics_OverridesOnlyDeniedAndCancelled(t *testing.T) {
 		{"no_diff does not override (already ok)", successResult, true, Metrics{Outcome: "no_diff"}, true, "ok"},
 		{"pre-outcome-field metrics row falls back to the result row", successResult, true, Metrics{}, true, "ok"},
 		{"no metrics row at all falls back to the result row", successResult, true, Metrics{Outcome: "denied"}, false, "ok"},
+		// The one key that is never refined: push_failed carries more specific
+		// push-time information than any gate-cause outcome could express.
+		{"denied metrics does not override a push_failed result row",
+			Result{Type: "result", Subtype: "push_failed"}, true, Metrics{Outcome: "denied"}, true, "push_failed"},
+		{"cancelled metrics does not override a push_failed result row",
+			Result{Type: "result", Subtype: "push_failed"}, true, Metrics{Outcome: "cancelled"}, true, "push_failed"},
+		{"error metrics does not override a push_failed result row",
+			Result{Type: "result", Subtype: "push_failed"}, true, Metrics{Outcome: "error"}, true, "push_failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

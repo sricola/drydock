@@ -26,12 +26,12 @@ func (GiteaAdapter) OpenRequest(r Request) error {
 	if r.Draft {
 		title = "WIP: " + title // Gitea's draft convention; empty title -> "WIP: "
 	}
-	args := []string{"tea", "pr", "create", "--head", r.Branch}
+	args := []string{"pr", "create", "--head", r.Branch}
 	if title != "" {
 		args = append(args, "--title", title)
 	}
 	if r.Body != "" {
 		args = append(args, "--description", r.Body)
 	}
-	return runCLI(r.WorkDir, r.Env, args...)
+	return runCLI(r.WorkDir, r.Env, "tea", args...)
 }

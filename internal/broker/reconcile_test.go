@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"drydock/internal/audit"
 	"drydock/internal/remote"
 )
 
@@ -268,6 +270,139 @@ func TestResumeAwaiting_CountsAsPendingApprovalNotRunning(t *testing.T) {
 	}
 	if body.Running != 0 || body.PendingApproval != 1 {
 		t.Errorf("breakdown = %+v, want running=0 pending_approval=1", body)
+	}
+}
+
+// TestResumePush_RegisteredStageNeverObservedRunning is change 4's regression
+// test: registerTask always stamps StageRunning, and resumePush used to
+// correct that to StagePending under a SECOND lock acquisition. Since the
+// HTTP admin listener is already serving during boot reconciliation, a reader
+// could win the race and observe the wrong stage in that window. registerTaskAt
+// closes the window by recording the correct stage in the same critical
+// section as registration, so the very first sighting of the resumed task in
+// b.tasks must already be StagePending, never StageRunning, even
+// momentarily.
+func TestResumePush_RegisteredStageNeverObservedRunning(t *testing.T) {
+	dir := t.TempDir()
+	stageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stageRoot, "rpid", "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "rpid.diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, "rpid", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, "rpid", "work")}
+	b := &Broker{AuditRoot: dir,
+		reopenStage: func(root string) (taskStage, error) { return fs, nil },
+		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
+
+	b.ResumeAwaiting(stageRoot)
+
+	deadline := time.Now().Add(2 * time.Second)
+	seen := false
+	for time.Now().Before(deadline) {
+		b.pendingMu.Lock()
+		ts, ok := b.tasks["rpid"]
+		var stage TaskStage
+		if ok {
+			stage = ts.Stage
+		}
+		b.pendingMu.Unlock()
+		if ok {
+			seen = true
+			if stage != StagePending {
+				t.Fatalf("first sighting of resumed task has stage=%v, want StagePending immediately", stage)
+			}
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !seen {
+		t.Fatal("resumed task never registered")
+	}
+
+	// Let the gate resolve so the goroutine and its deferred cleanup exit
+	// promptly instead of leaking past the test.
+	b.pendingMu.Lock()
+	ch := b.pending["rpid"]
+	b.pendingMu.Unlock()
+	if ch != nil {
+		ch <- true
+	}
+	waitFor(2*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, still := b.tasks["rpid"]
+		b.pendingMu.Unlock()
+		return !still
+	})
+}
+
+// TestResumePush_KilledClassifiesAsCancelled is the end-to-end regression
+// test for the change-3/change-6 interaction the review flagged: a task
+// parked at the diff gate resumes after a restart, the operator kills it
+// (not a shutdown), and resumePush writes an on-disk result row with the
+// coarse subtype "denied" (gateOutcome's resumed vocabulary has no
+// "killed"/"cancelled" subtype of its own) while the metrics row carries the
+// finer outcome "cancelled". OutcomeKeyWithMetrics must still refine that
+// "denied" result-row key to "cancelled" (audit.OutcomeKeyWithMetrics's
+// override rule applies to any key except "push_failed", not just "ok"/
+// "error"), so `drydock tasks` and the web UI History classify the task the
+// same way a live kill would, not as a plain "denied".
+func TestResumePush_KilledClassifiesAsCancelled(t *testing.T) {
+	dir := t.TempDir()
+	stageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stageRoot, "killid", "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "killid.diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, "killid", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, "killid", "work")}
+	b := &Broker{AuditRoot: dir,
+		reopenStage: func(root string) (taskStage, error) { return fs, nil },
+		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
+
+	b.ResumeAwaiting(stageRoot)
+	if !waitFor(2*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending["killid"]
+		b.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("resumed task never reached the approval gate")
+	}
+
+	killReq := httptest.NewRequest("POST", "/admin/kill/killid", nil)
+	killReq.SetPathValue("id", "killid")
+	killRec := httptest.NewRecorder()
+	b.HandleKill(killRec, killReq)
+	if killRec.Code != http.StatusNoContent {
+		t.Fatalf("kill code=%d, want 204", killRec.Code)
+	}
+
+	if !waitFor(2*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, still := b.tasks["killid"]
+		b.pendingMu.Unlock()
+		return !still
+	}) {
+		t.Fatal("resumed task never unregistered after kill")
+	}
+
+	f, err := audit.OpenRead(filepath.Join(dir, "killid.jsonl"))
+	if err != nil {
+		t.Fatalf("open audit: %v", err)
+	}
+	defer f.Close()
+	last, ok, m, hasMetrics := audit.LastResultAndMetricsFile(f)
+	if !ok || last.Subtype != "denied" {
+		t.Fatalf("result row = %+v ok=%v, want subtype=denied", last, ok)
+	}
+	if !hasMetrics || m.Outcome != "cancelled" {
+		t.Fatalf("metrics row = %+v hasMetrics=%v, want outcome=cancelled", m, hasMetrics)
+	}
+	if key := audit.OutcomeKeyWithMetrics(last, ok, m, hasMetrics); key != "cancelled" {
+		t.Errorf("OutcomeKeyWithMetrics = %q, want cancelled (a resume-kill must classify the same as a live kill)", key)
 	}
 }
 

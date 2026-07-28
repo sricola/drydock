@@ -70,8 +70,8 @@ func TestAdapterArgv(t *testing.T) {
 	var gotWorkDir string
 	var gotEnv []string
 	var gotArgs []string
-	runCLI = func(workDir string, env []string, args ...string) error {
-		gotWorkDir, gotEnv, gotArgs = workDir, env, args
+	runCLI = func(workDir string, env []string, name string, args ...string) error {
+		gotWorkDir, gotEnv, gotArgs = workDir, env, append([]string{name}, args...)
 		return nil
 	}
 
@@ -138,7 +138,7 @@ func TestAdapterArgv(t *testing.T) {
 func TestAdapter_PropagatesError(t *testing.T) {
 	orig := runCLI
 	t.Cleanup(func() { runCLI = orig })
-	runCLI = func(string, []string, ...string) error { return errSentinel }
+	runCLI = func(string, []string, string, ...string) error { return errSentinel }
 
 	if err := (GitHubAdapter{}).OpenRequest(Request{WorkDir: "/work", Branch: "agent/x"}); err != errSentinel {
 		t.Errorf("OpenRequest err = %v, want sentinel propagated", err)

@@ -126,6 +126,48 @@ func (b *Broker) gatePushMarked(ctx context.Context, tr *taskRun, diff string) (
 	return ok, cause
 }
 
+// gateOutcome maps a gate cause to the outcome recorded on the metrics row
+// and, for a headless resume, the on-disk result subtype the caller appends
+// directly to the audit log. It is the single place encoding how the live
+// path (pushAndOpenPR, resumed=false) and the resume path (resumePush,
+// resumed=true) agree, and the one place they intentionally disagree.
+//
+// Every cause maps identically on both paths except gateTimeout: the live
+// path has no on-disk "interrupted" result row to fall back on (the agent's
+// own "success" row is still the last result line, so the metrics-row
+// outcome IS the only record of the auto-deny), so it reads as "denied".
+// A resumed task, however, writes its own result row directly, so it uses
+// the more precise "interrupted" subtype and leaves the metrics outcome
+// empty (OutcomeKeyWithMetrics then classifies purely from that subtype,
+// exactly as a pre-outcome-field metrics row would).
+//
+// gateShutdown always yields an empty outcome on both paths: a shutdown-
+// parked task is only paused, not cancelled or denied, and its resume is
+// (by construction) still alive. Recording any terminal outcome for it
+// would make `drydock tasks` / the web UI History show a false terminal
+// state for the whole time it sits parked awaiting the next boot; leaving
+// it empty means readers fall back to the (not-yet-written) result row, the
+// same rule the resumed gateTimeout case already relies on.
+func gateOutcome(cause gateCause, resumed bool) (outcome, subtype string) {
+	switch cause {
+	case gateDenied:
+		return "denied", "denied"
+	case gateKilled:
+		// subtype stays "denied" (unchanged on-disk shape); the metrics row
+		// carries the finer cancelled/denied split.
+		return "cancelled", "denied"
+	case gateTimeout:
+		if resumed {
+			return "", "interrupted"
+		}
+		return "denied", "denied"
+	case gateShutdown:
+		return "", ""
+	default:
+		return "denied", "denied"
+	}
+}
+
 // gateEgressWiden blocks until POST /admin/approve/{id} or /admin/deny/{id}
 // (or the HTTP client disconnects / the task is killed). Returning false
 // aborts the task before any allowlist compilation — the requested hosts

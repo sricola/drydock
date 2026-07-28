@@ -67,3 +67,66 @@ func TestLastResultFile_AbsentResultReturnsFalse(t *testing.T) {
 		t.Errorf("ReadMetaFile = %+v, want sensitive meta", m)
 	}
 }
+
+// TestLastResultAndMetricsFile_MatchesTheSingleRowFunctions mirrors the
+// existing LastResultFile/LastMetricsFile coverage: the combined single-read
+// function (change 5, hardening pass) must agree with calling both
+// single-row functions independently, including on an old-format file that
+// predates the metrics row.
+func TestLastResultAndMetricsFile_MatchesTheSingleRowFunctions(t *testing.T) {
+	t.Run("both rows present", func(t *testing.T) {
+		f := writeAudit(t, `{"type":"drydock_meta","subscription":true,"sensitive":false}
+{"type":"assistant","text":"working"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1234,"total_cost_usd":0.05,"num_turns":3,"src":"broker"}
+{"type":"metrics","src":"broker","task_id":"abc","agent":"claude","vendor":"anthropic","auth":"api_key","repo":"github.com/o/r","stage_ms":{"preparing":100,"running":1200,"pushing":50},"egress_gate_wait_ms":0,"approval_gate_wait_ms":900,"requests":3,"diff_files":2,"diff_bytes":512,"cost_usd":0.05,"widen_requested":0,"widen_outcome":"none"}
+`)
+		res, resOK, m, mOK := LastResultAndMetricsFile(f)
+		wantRes, wantResOK := LastResultFile(f)
+		wantM, wantMOK := LastMetricsFile(f)
+		if resOK != wantResOK || res != wantRes {
+			t.Errorf("result = %+v ok=%v, want %+v ok=%v", res, resOK, wantRes, wantResOK)
+		}
+		if mOK != wantMOK || m != wantM {
+			t.Errorf("metrics = %+v ok=%v, want %+v ok=%v", m, mOK, wantM, wantMOK)
+		}
+		if !resOK || res.Subtype != "success" || res.NumTurns != 3 {
+			t.Errorf("result = %+v, want the success result", res)
+		}
+		if !mOK || m.Agent != "claude" || m.Requests != 3 {
+			t.Errorf("metrics = %+v, want the broker metrics row", m)
+		}
+	})
+
+	t.Run("old-format file: result present, no metrics row", func(t *testing.T) {
+		f := writeAudit(t, `{"type":"drydock_meta","subscription":true,"sensitive":false}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"total_cost_usd":0,"num_turns":0,"src":"broker"}
+`)
+		res, resOK, m, mOK := LastResultAndMetricsFile(f)
+		if !resOK || res.Subtype != "success" {
+			t.Errorf("result = %+v ok=%v, want the success result", res, resOK)
+		}
+		if mOK {
+			t.Errorf("metrics ok=true on a pre-metrics file: %+v", m)
+		}
+	})
+
+	t.Run("neither row present (task still running)", func(t *testing.T) {
+		f := writeAudit(t, `{"type":"drydock_meta","subscription":false,"sensitive":true}
+{"type":"assistant","text":"still working"}
+`)
+		res, resOK, m, mOK := LastResultAndMetricsFile(f)
+		if resOK || mOK {
+			t.Errorf("result ok=%v metrics ok=%v, want both false; result=%+v metrics=%+v", resOK, mOK, res, m)
+		}
+	})
+
+	t.Run("forged metrics row superseded by the real broker row (last-wins)", func(t *testing.T) {
+		f := writeAudit(t, `{"type":"metrics","src":"broker","task_id":"abc","cost_usd":0.000001,"agent":"forged"}
+{"type":"metrics","src":"broker","task_id":"abc","agent":"claude","cost_usd":0.05}
+`)
+		_, _, m, mOK := LastResultAndMetricsFile(f)
+		if !mOK || m.Agent != "claude" {
+			t.Fatalf("last-wins violated: %+v ok=%v", m, mOK)
+		}
+	})
+}

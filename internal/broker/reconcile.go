@@ -121,15 +121,17 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 	defer func() { _ = logf.Sync(); _ = logf.Close() }()
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
-	b.registerTask(id, m.RepoRef, m.Instruction, cancel)
+	// This resume is, by construction, a task that was sitting at the
+	// diff-approval gate when brokerd last died (only gate-marked tasks reach
+	// resumePush), so register it as StagePending directly: registerTaskAt
+	// records it in the same critical section instead of a plain registerTask
+	// (always StageRunning) followed by a later setStage correction, which
+	// would let a reader observe "running" instead of "pending_approval" in
+	// between (the HTTP admin listener is already serving during boot
+	// reconciliation). Mirrors pushAndOpenPR's own setStage(StagePending)
+	// before its live-path gate wait.
+	b.registerTaskAt(id, m.RepoRef, m.Instruction, cancel, StagePending)
 	defer b.unregisterTask(id)
-	// registerTask always stamps StageRunning; this resume is, by construction,
-	// a task that was sitting at the diff-approval gate when brokerd last died
-	// (only gate-marked tasks reach resumePush), so correct it immediately:
-	// otherwise healthz/`drydock status` counts it as "running" instead of
-	// "pending_approval" until the gate resolves. Mirrors pushAndOpenPR's own
-	// setStage(StagePending) before its live-path gate wait.
-	b.setStage(id, StagePending)
 
 	// Bind this resume's context to the reopened stage so a kill/shutdown aborts
 	// its git push (the stage was reopened at boot, before this context existed).
@@ -174,22 +176,10 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 	tr.diffFiles = files
 	tr.diffBytes = int64(len(diff))
 	if !ok {
-		subtype := "denied"
-		tr.outcome = "denied"
-		switch cause {
-		case gateTimeout:
-			// Resumed-and-timed-out maps to "interrupted" here, but the live
-			// pushAndOpenPR path maps the same approval_timeout auto-deny to
-			// "denied" (it has no equivalent on-disk "interrupted" subtype to
-			// fall back to). Intentionally not reconciled in this change; see
-			// the matching note in broker.go's pushAndOpenPR.
-			subtype = "interrupted"
-			tr.outcome = "" // already a distinct result-row subtype; no metrics override needed
-		case gateKilled:
-			// subtype stays "denied" (unchanged on-disk shape); the metrics row
-			// carries the finer cancelled/denied split, same as the live path.
-			tr.outcome = "cancelled"
-		}
+		// See gateOutcome's doc comment for how this maps and where this
+		// resumed path intentionally diverges from the live pushAndOpenPR path.
+		outcome, subtype := gateOutcome(cause, true)
+		tr.outcome = outcome
 		// Broker-authored (src:broker) and carrying the metered cost, so a resumed
 		// task's real spend still seeds the aggregate ledger.
 		fmt.Fprintf(logf,

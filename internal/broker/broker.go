@@ -919,15 +919,9 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 		tr.approvalGateWait = time.Since(gateStart)
 	}
 	if !approved {
-		outcome := "denied"
-		if cause == gateKilled || cause == gateShutdown {
-			outcome = "cancelled"
-		}
-		// gateTimeout (approval_timeout auto-deny) falls through to "denied"
-		// here on the live path; resumePush's equivalent branch instead maps
-		// it to "interrupted" (an on-disk result-row subtype that predates
-		// this field). Intentionally not reconciled in this change; see the
-		// matching note in reconcile.go.
+		// See gateOutcome's doc comment for how this maps and where the live
+		// and resumed (reconcile.go's resumePush) paths intentionally diverge.
+		outcome, _ := gateOutcome(cause, false)
 		if cause == gateShutdown {
 			tr.keepStage = true
 		}

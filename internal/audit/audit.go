@@ -217,31 +217,41 @@ func Outcome(r Result, ok bool, m Meta) string {
 // generic subtype:"error"), and a fail-closed diff-capture failure (V-01:
 // HandleTask's CaptureDiff error branch sets tr.outcome = "error" on the
 // metrics row but, like the denied case, appends no broker result row, so
-// the result row is still the agent's own pre-failure "success" line). The
-// last of these is why the override also fires when m.Outcome == "error"
-// even though OutcomeKey already has its own "error" case: that case only
-// triggers off the result row's own IsError/subtype, which a fail-closed
-// capture failure never touches. Every other outcome is already correctly
-// classified by OutcomeKey alone, so a pre-outcome-field metrics row
-// (m.Outcome == "", true for every audit file written before this field
-// existed) leaves key unchanged: the fallback IS the unmodified key, not a
-// separate code path.
+// the result row is still the agent's own pre-failure "success" line).
+//
+// The one rule, applied uniformly regardless of which metrics outcome fired:
+// a non-empty broker metrics outcome (denied, cancelled, error) REFINES any
+// coarse result-row key. "ok" is coarse because it's the agent's own
+// pre-gate/pre-failure success line and the broker's real terminal path
+// (denied/cancelled/error) never rewrote it. "error" is coarse because
+// appendBrokerResult's mid-run-kill branch reuses the same generic subtype
+// for every abort reason, so the metrics row is the only place that says
+// WHICH abort it was (the live-kill path relies on an "error" key becoming
+// "cancelled" here). "denied" is likewise coarse for a RESUMED task: gateOutcome
+// gives a killed resume the on-disk subtype "denied" (the resumed path's
+// vocabulary has no "killed" subtype of its own) while the metrics row
+// carries the finer "cancelled" (resume-kill relies on that refinement
+// landing here too). The one key that is NOT coarse is "push_failed": it
+// carries strictly more specific push-time information than any gate-cause
+// outcome could, so it is the sole key the override never touches (a
+// metrics-row "error" refining it would be a regression, not a refinement).
+// interrupted and any raw agent subtype are refined the same as the others;
+// in practice no code path pairs a non-empty metrics outcome with either
+// today (the "interrupted" result rows TerminateStuckAudits and the resumed
+// gateTimeout branch write both go with hasMetrics == false / m.Outcome ==
+// ""), so this is future-proofing, not a currently-observed override. A
+// pre-outcome-field metrics row (m.Outcome == "", true for every audit file
+// written before this field existed, and for a shutdown-parked gate: see
+// gateOutcome) matches no case below and leaves key unchanged, so the
+// fallback IS the unmodified key, not a separate code path.
 func OutcomeKeyWithMetrics(r Result, ok bool, m Metrics, hasMetrics bool) string {
 	key := OutcomeKey(r, ok)
-	if !hasMetrics {
+	if !hasMetrics || key == "push_failed" {
 		return key
 	}
 	switch m.Outcome {
-	case "denied", "cancelled":
+	case "denied", "cancelled", "error":
 		return m.Outcome
-	case "error":
-		// Only a result row that currently reads "ok" needs the override: an
-		// already-"error" key is correctly classified by OutcomeKey alone, and
-		// overriding it unconditionally would let a stray metrics-row error
-		// mask a more specific result-row key (e.g. "push_failed").
-		if key == "ok" {
-			return "error"
-		}
 	}
 	return key
 }
@@ -442,4 +452,45 @@ func LastMetricsFile(f *os.File) (Metrics, bool) {
 		}
 	}
 	return Metrics{}, false
+}
+
+// LastResultAndMetricsFile finds the final {"type":"result",...} row AND the
+// final broker-authored {"type":"metrics",...} row in a single tail read of
+// f, instead of the two independent Stat+Seek+16KB reads LastResultFile and
+// LastMetricsFile each perform. Same tail window and last-wins semantics as
+// each of those; callers that want both rows (handleHistory, tasks.go
+// summarize) should prefer this over calling both single-row functions. The
+// existing single-row functions stay for callers that only need one.
+func LastResultAndMetricsFile(f *os.File) (Result, bool, Metrics, bool) {
+	info, err := f.Stat()
+	if err != nil {
+		return Result{}, false, Metrics{}, false
+	}
+	lines, err := tailLines(f, info.Size())
+	if err != nil {
+		return Result{}, false, Metrics{}, false
+	}
+	var (
+		res   Result
+		resOK bool
+		m     Metrics
+		mOK   bool
+	)
+	for i := len(lines) - 1; i >= 0 && (!resOK || !mOK); i-- {
+		line := lines[i]
+		if !resOK {
+			var x Result
+			if json.Unmarshal(line, &x) == nil && x.Type == "result" {
+				res, resOK = x, true
+				continue
+			}
+		}
+		if !mOK {
+			var x Metrics
+			if json.Unmarshal(line, &x) == nil && x.Type == "metrics" && x.Src == "broker" {
+				m, mOK = x, true
+			}
+		}
+	}
+	return res, resOK, m, mOK
 }

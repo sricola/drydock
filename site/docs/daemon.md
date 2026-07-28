@@ -81,6 +81,20 @@ A task blocked at the diff-approval gate survives a brokerd restart:
 - If brokerd shuts down again while a resumed task is still waiting at the
   gate, the marker is preserved for the next boot (idempotent).
 
+## Running brokerd directly
+
+brokerd is normally driven indirectly, via `drydock start` (foreground) or
+`drydock daemon install` (launchd); you shouldn't need to invoke the
+`brokerd` binary yourself. If you do:
+
+- `brokerd --version` prints the version and exits 0.
+- `brokerd --help` prints usage and exits 0.
+- Any other argument is unknown and exits 2 with an error and the usage
+  text, rather than silently booting the daemon.
+
+Running `brokerd` with no arguments boots the daemon in the foreground,
+which is what `drydock start` and the launchd job both do under the hood.
+
 ## Status / uninstall
 
 ```bash
