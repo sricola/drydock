@@ -108,6 +108,29 @@ func TestSummarize_DeniedTaskUsesMetricsOutcomeNotResultRow(t *testing.T) {
 	}
 }
 
+// A fail-closed diff-capture failure (V-01: an oversized or unreadable
+// staged diff) also leaves the on-disk result row as the AGENT's own
+// pre-failure success line: HandleTask's CaptureDiff error branch sets
+// tr.outcome = "error" on the metrics row but, like the denied case, appends
+// no broker result row. Before OutcomeKeyWithMetrics honored outcome=error
+// against an "ok" result-row key, this task showed "ok (N turns)" here
+// despite the broker recording the run as failed closed.
+func TestSummarize_FailClosedDiffCaptureErrorUsesMetricsOutcomeNotResultRow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-diffcap-error.jsonl")
+	body := `{"type":"drydock_meta","subscription":false}` + "\n" +
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"total_cost_usd":0.05,"num_turns":3}` + "\n" +
+		`{"type":"metrics","src":"broker","task_id":"task-diffcap-error","outcome":"error"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	got := summarize("task-diffcap-error", path, info)
+	if got.outcome != "error" {
+		t.Errorf("outcome = %q, want %q", got.outcome, "error")
+	}
+}
+
 // A pre-upgrade metrics row (no outcome field) must not change today's
 // classification: "ok (N turns)" stays the fallback for a plain success row.
 func TestSummarize_PreOutcomeFieldMetricsRowUnaffected(t *testing.T) {

@@ -217,7 +217,10 @@ func main() {
 		fmt.Println("brokerd", version)
 		os.Exit(0)
 	case "help":
-		usageBrokerd(os.Stderr)
+		// Requested help (--help/-h) is normal output, not a diagnostic: print
+		// to stdout, matching drydock's own per-subcommand help. The
+		// unknown-argument path below stays on stderr since that's a real error.
+		usageBrokerd(os.Stdout)
 		os.Exit(0)
 	case "error":
 		fmt.Fprintf(os.Stderr, "brokerd: %s\n\n", errMsg)

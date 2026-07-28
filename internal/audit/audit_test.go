@@ -235,10 +235,12 @@ func TestOutcome_DeniedAndPushed(t *testing.T) {
 }
 
 // TestOutcomeKeyWithMetrics_OverridesOnlyDeniedAndCancelled is the direct
-// unit test for the fold-in rule: the metrics row's outcome wins only for
-// "denied"/"cancelled" (the two the result row alone cannot express); every
-// other outcome value, and a pre-outcome-field row (hasMetrics but Outcome
-// == ""), must leave the result-row-derived key untouched.
+// unit test for the fold-in rule: the metrics row's outcome wins for
+// "denied"/"cancelled" (the two the result row alone cannot express) and for
+// "error" when the result row currently reads "ok" (a fail-closed error,
+// V-01, whose result row is still the agent's own pre-failure success line);
+// every other outcome value, and a pre-outcome-field row (hasMetrics but
+// Outcome == ""), must leave the result-row-derived key untouched.
 func TestOutcomeKeyWithMetrics_OverridesOnlyDeniedAndCancelled(t *testing.T) {
 	successResult := Result{Type: "result", Subtype: "success", NumTurns: 2}
 	cases := []struct {
@@ -252,6 +254,10 @@ func TestOutcomeKeyWithMetrics_OverridesOnlyDeniedAndCancelled(t *testing.T) {
 		{"denied overrides a success result row", successResult, true, Metrics{Outcome: "denied"}, true, "denied"},
 		{"cancelled overrides an error result row",
 			Result{Type: "result", Subtype: "error", IsError: true}, true, Metrics{Outcome: "cancelled"}, true, "cancelled"},
+		{"fail-closed error (V-01) overrides a success result row",
+			successResult, true, Metrics{Outcome: "error"}, true, "error"},
+		{"error metrics row does not override an already-error result row (stays error either way)",
+			Result{Type: "result", Subtype: "error", IsError: true}, true, Metrics{Outcome: "error"}, true, "error"},
 		{"pushed does not override (already ok)", successResult, true, Metrics{Outcome: "pushed"}, true, "ok"},
 		{"no_diff does not override (already ok)", successResult, true, Metrics{Outcome: "no_diff"}, true, "ok"},
 		{"pre-outcome-field metrics row falls back to the result row", successResult, true, Metrics{}, true, "ok"},

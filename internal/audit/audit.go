@@ -209,20 +209,39 @@ func Outcome(r Result, ok bool, m Meta) string {
 }
 
 // OutcomeKeyWithMetrics is OutcomeKey, folding in the broker's terminal-path
-// outcome from the metrics row for the two cases the result row cannot tell
+// outcome from the metrics row for the cases the result row cannot tell
 // apart on its own: a diff denied at the approval gate (the result row is
 // still the agent's own pre-gate "success" line: pushAndOpenPR streams
-// outcome=denied to the live client but never rewrites the audit log) and a
+// outcome=denied to the live client but never rewrites the audit log), a
 // mid-run kill (runSandbox's ctx-cancelled branch reuses appendBrokerResult's
-// generic subtype:"error"). Every other outcome is already correctly
+// generic subtype:"error"), and a fail-closed diff-capture failure (V-01:
+// HandleTask's CaptureDiff error branch sets tr.outcome = "error" on the
+// metrics row but, like the denied case, appends no broker result row, so
+// the result row is still the agent's own pre-failure "success" line). The
+// last of these is why the override also fires when m.Outcome == "error"
+// even though OutcomeKey already has its own "error" case: that case only
+// triggers off the result row's own IsError/subtype, which a fail-closed
+// capture failure never touches. Every other outcome is already correctly
 // classified by OutcomeKey alone, so a pre-outcome-field metrics row
 // (m.Outcome == "", true for every audit file written before this field
 // existed) leaves key unchanged: the fallback IS the unmodified key, not a
 // separate code path.
 func OutcomeKeyWithMetrics(r Result, ok bool, m Metrics, hasMetrics bool) string {
 	key := OutcomeKey(r, ok)
-	if hasMetrics && (m.Outcome == "denied" || m.Outcome == "cancelled") {
+	if !hasMetrics {
+		return key
+	}
+	switch m.Outcome {
+	case "denied", "cancelled":
 		return m.Outcome
+	case "error":
+		// Only a result row that currently reads "ok" needs the override: an
+		// already-"error" key is correctly classified by OutcomeKey alone, and
+		// overriding it unconditionally would let a stray metrics-row error
+		// mask a more specific result-row key (e.g. "push_failed").
+		if key == "ok" {
+			return "error"
+		}
 	}
 	return key
 }

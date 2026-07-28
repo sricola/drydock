@@ -83,6 +83,13 @@ the classified reason (`transient`, `auth`, `protected`, `non_fast_forward`, or
 id (a new `agent/<newid>` branch), so a retry never collides with the failed
 attempt.
 
+Not every task reaches a push attempt. A diff denied at the approval gate
+reports `outcome=denied` and never pushes; a task killed mid-run reports
+`outcome=cancelled`; a run that produces no diff reports `outcome=no_diff`
+and still displays as `ok` (a clean no-op isn't a failure). `drydock tasks`,
+`drydock stats`, and the web UI all show these outcomes distinctly from
+`pushed` and `push_failed`.
+
 ## Operator surface
 
 ```bash
@@ -119,14 +126,16 @@ toward outcomes, durations, and cost, but report their gate-wait and
 request-count fields as absent rather than zero.
 
 The audit result row alone cannot tell a diff denied at the approval gate
-apart from a normal success, or a mid-run kill apart from a plain agent
-error: the terminal metrics row's `outcome` field carries the distinction
-(`denied`, `cancelled`, alongside `pushed`, `push_failed`, `error`, and
-`no_diff`), and `drydock tasks`, `drydock stats`, and the web UI all read it.
-`no_diff` still displays as `ok` (unchanged operator muscle memory: a clean
-no-op run isn't a failure). Audit files from before the `outcome` field
-shipped keep recording denied/cancelled as ok/error respectively, same as
-today.
+apart from a normal success, a mid-run kill apart from a plain agent error,
+or a fail-closed diff-capture failure (an oversized or unreadable staged
+diff) apart from a normal success: the terminal metrics row's `outcome`
+field carries the distinction (`denied`, `cancelled`, alongside `pushed`,
+`push_failed`, `error`, and `no_diff`), and `drydock tasks`, `drydock
+stats`, and the web UI all read it. `no_diff` still displays as `ok`
+(unchanged operator muscle memory: a clean no-op run isn't a failure).
+Audit files from before the `outcome` field shipped fall back to the result
+row alone: denied and fail-closed diff-capture failures read as `ok`,
+cancelled reads as `error`, same as today.
 
 ## Audit stream format
 

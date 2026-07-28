@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -648,5 +650,78 @@ func TestUsageBrokerd(t *testing.T) {
 	}
 	if !strings.Contains(usage, "--help") {
 		t.Errorf("usage message missing '--help': %s", usage)
+	}
+}
+
+const brokerdHelperEnv = "DRYDOCK_TEST_BROKERD_HELPER"
+
+// TestBrokerdHelperProcess is re-executed by runBrokerdCLI so the tests below
+// can observe main's real os.Exit behavior in a subprocess, the same pattern
+// cmd/drydock's main_test.go uses for its own --help/exit-code assertions.
+func TestBrokerdHelperProcess(t *testing.T) {
+	if os.Getenv(brokerdHelperEnv) != "1" {
+		return
+	}
+	var args []string
+	if raw := os.Getenv(brokerdHelperEnv + "_ARGS"); raw != "" {
+		args = strings.Split(raw, "\x1f")
+	}
+	os.Args = append([]string{"brokerd"}, args...)
+	main()
+}
+
+// runBrokerdCLI execs the test binary as brokerd with the given args and
+// returns stdout/stderr separately (unlike CombinedOutput) so callers can
+// assert which stream a message landed on.
+func runBrokerdCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestBrokerdHelperProcess$")
+	cmd.Env = append(os.Environ(), brokerdHelperEnv+"=1", brokerdHelperEnv+"_ARGS="+strings.Join(args, "\x1f"))
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	if err == nil {
+		return outBuf.String(), errBuf.String(), 0
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("run brokerd: %v", err)
+	}
+	return outBuf.String(), errBuf.String(), exitErr.ExitCode()
+}
+
+// TestCLIHelp_GoesToStdout is the regression guard for the stream fix:
+// requested help (--help/-h) is normal output, not a diagnostic, so it must
+// land on stdout with exit 0, matching drydock's own per-subcommand help.
+func TestCLIHelp_GoesToStdout(t *testing.T) {
+	stdout, stderr, code := runBrokerdCLI(t, "--help")
+	if code != 0 {
+		t.Fatalf("--help exit=%d, want 0", code)
+	}
+	if !strings.Contains(stdout, "brokerd") {
+		t.Errorf("--help stdout = %q, want usage text", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("--help stderr = %q, want empty (usage must go to stdout)", stderr)
+	}
+}
+
+// TestCLIUnknownArg_StaysOnStderr guards the other half of the fix: an
+// unrecognized argument is a real diagnostic, so it keeps printing to stderr.
+func TestCLIUnknownArg_StaysOnStderr(t *testing.T) {
+	stdout, stderr, code := runBrokerdCLI(t, "--bogus")
+	if code != 2 {
+		t.Fatalf("--bogus exit=%d, want 2", code)
+	}
+	if !strings.Contains(stderr, "brokerd") {
+		t.Errorf("--bogus stderr = %q, want usage/error text", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("--bogus stdout = %q, want empty (error path stays on stderr)", stdout)
 	}
 }
