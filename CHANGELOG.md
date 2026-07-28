@@ -5,7 +5,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.6.6 (2026-07-28)
+
+An operator-hardening release: push credentials are now proven at submit
+time instead of discovered at end-of-task push time, and host-side git can
+never prompt or hang. Two operator-visible changes on upgrade: a task
+against a repo you cannot push to fails at submit (deliberately, with no
+opt-out; the diff-without-push workflow against read-only remotes no
+longer runs), and SSH runs in BatchMode unless you have your own
+`GIT_SSH_COMMAND` or `core.sshCommand` transport, which is respected.
 
 ### Added
 
