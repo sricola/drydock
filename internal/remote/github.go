@@ -19,7 +19,7 @@ func (GitHubAdapter) Available() error {
 }
 
 func (GitHubAdapter) OpenRequest(r Request) error {
-	args := []string{"gh", "pr", "create", "--head", r.Branch}
+	args := []string{"pr", "create", "--head", r.Branch}
 	if r.Title != "" {
 		args = append(args, "--title", r.Title, "--body", r.Body)
 	} else {
@@ -28,5 +28,5 @@ func (GitHubAdapter) OpenRequest(r Request) error {
 	if r.Draft {
 		args = append(args, "--draft")
 	}
-	return runCLI(r.WorkDir, r.Env, args...)
+	return runCLI(r.WorkDir, r.Env, "gh", args...)
 }

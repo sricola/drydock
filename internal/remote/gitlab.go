@@ -21,7 +21,7 @@ func (GitLabAdapter) Available() error {
 }
 
 func (GitLabAdapter) OpenRequest(r Request) error {
-	args := []string{"glab", "mr", "create", "--source-branch", r.Branch, "--yes"}
+	args := []string{"mr", "create", "--source-branch", r.Branch, "--yes"}
 	if r.Title != "" {
 		args = append(args, "--title", r.Title, "--description", r.Body)
 	} else {
@@ -30,5 +30,5 @@ func (GitLabAdapter) OpenRequest(r Request) error {
 	if r.Draft {
 		args = append(args, "--draft")
 	}
-	return runCLI(r.WorkDir, r.Env, args...)
+	return runCLI(r.WorkDir, r.Env, "glab", args...)
 }

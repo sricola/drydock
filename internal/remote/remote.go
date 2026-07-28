@@ -103,16 +103,27 @@ var stderr io.Writer = os.Stderr
 // runCLI is the shared shell-out shape. Adapters only differ by argv. It is a
 // package var (not a plain func) so tests can swap it to capture the argv each
 // adapter builds without invoking the real vendor CLI.
-var runCLI = func(workDir string, env []string, args ...string) error {
+//
+// name is split out of the variadic args (rather than args[0]) so CodeQL's
+// go/command-injection can prove argv[0] is never tainted: every call site
+// passes a compile-time string literal ("gh"/"glab"/"tea"), never a value
+// derived from the Request (title/body/branch). The two invariants that make
+// this safe: (1) name is always a literal at the call site, and (2) every
+// user-influenced value (branch, title, body) in args only ever appears as
+// the VALUE following a flag (e.g. "--head", branch), never as a bare
+// positional: pflag/urfave-style CLIs consume flag values verbatim even
+// when they start with a dash, so a title like "--evil" can't be
+// reinterpreted as a flag of the vendor CLI.
+var runCLI = func(workDir string, env []string, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteCLITimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = workDir
 	cmd.Env = env
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s: %w\n%s", args[0], err, out)
+		return fmt.Errorf("%s: %w\n%s", name, err, out)
 	}
 	return nil
 }
