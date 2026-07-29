@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"drydock/internal/egress"
 )
@@ -86,6 +87,29 @@ func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg st
 	}
 }
 
+// persistDiff writes the captured review diff to <AuditRoot>/<id>.diff with
+// the same defenses as every other audit artifact (0600, O_NOFOLLOW — a
+// planted symlink fails instead of redirecting the write). Best effort: a
+// failure warns rather than failing the task, matching writeBrief. Returns
+// the path for logging. Called at diff-capture time in HandleTask (so
+// verify_failed and mid-verify cancels leave the evidence too) and again from
+// gatePushMarked's onReady (harmless rewrite of the same bytes; the resume
+// path reads the file this leaves behind).
+func (b *Broker) persistDiff(id, diff string) string {
+	path := filepath.Join(b.AuditRoot, id+".diff")
+	f, err := os.OpenFile(path,
+		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		slog.Warn("could not persist diff for review", "task_id", id, "err", err)
+		return path
+	}
+	defer f.Close()
+	if _, err := f.WriteString(diff); err != nil {
+		slog.Warn("could not persist diff for review", "task_id", id, "err", err)
+	}
+	return path
+}
+
 // gatePushMarked blocks at the diff-approval gate with a durable resume marker.
 // It persists the diff and a gate marker, blocks for approval, then removes the
 // marker UNLESS the gate was interrupted by shutdown (left for boot resume).
@@ -100,10 +124,7 @@ func (b *Broker) gatePushMarked(ctx context.Context, tr *taskRun, diff string) (
 		"task auto-denied at approval gate (approval_timeout reached)",
 		"task killed or broker shutting down before approval; aborting",
 		func() {
-			diffPath := filepath.Join(b.AuditRoot, tr.id+".diff")
-			if werr := os.WriteFile(diffPath, []byte(diff), 0o600); werr != nil {
-				slog.Warn("could not persist diff for review", "task_id", tr.id, "err", werr)
-			}
+			diffPath := b.persistDiff(tr.id, diff)
 			if werr := writeGateMarker(b.AuditRoot, tr.id, gateMarker{
 				RepoRef: tr.repoRef, Instruction: tr.instruction, Platform: tr.platform,
 				Agent: tr.agentName, Draft: tr.draft,

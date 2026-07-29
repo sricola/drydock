@@ -2,6 +2,7 @@ package runner
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -48,4 +49,38 @@ func containsPair(args []string, flag, val string) bool {
 		}
 	}
 	return false
+}
+
+func TestBuildVerifyArgs_ShapeAndContainment(t *testing.T) {
+	args := BuildVerifyArgs(VerifySpec{
+		TaskID: "0123456789abcdef0123456789abcdef", Network: "drydock-egress",
+		ImageRef: "drydock-sandbox:latest", VerifyDir: "/stage/verify",
+		Argv: []string{"go", "test", "./..."}, MemoryGB: 4, CPUs: 4,
+	})
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--name verify-0123456789abcdef0123456789abcdef",
+		"--cap-add CAP_NET_ADMIN", // root installs the deny-all pin, then drops
+		"--mount type=bind,source=/stage/verify,target=/work",
+		"policy drop",               // the inline nft pin
+		"/usr/local/bin/drop-agent", // privilege drop before repo code
+		"HOME=/home/agent",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("verify argv missing %q:\n%s", want, joined)
+		}
+	}
+	// The command argv must arrive as positional args after the sh -c script
+	// (never interpolated into the script string — shell-injection surface).
+	// Exact tail shape: ..., "-c", <script>, "sh", "go", "test", "./..."
+	n := len(args)
+	if n < 4 || args[n-4] != "sh" || args[n-3] != "go" || args[n-2] != "test" || args[n-1] != "./..." {
+		t.Errorf("argv tail = %v, want [... sh go test ./...]", args[max(0, n-4):])
+	}
+	for _, a := range args {
+		if strings.Contains(a, "tok_") || strings.Contains(a, "PROXY") ||
+			strings.Contains(a, "AUTH_TOKEN") || strings.Contains(a, "API_KEY") {
+			t.Errorf("verify argv leaks credential/proxy material: %q", a)
+		}
+	}
 }

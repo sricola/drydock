@@ -115,6 +115,98 @@ func TestRunInspect_RendersBudgetUnbounded(t *testing.T) {
 	}
 }
 
+// The verification block renders every broker-observed fact a reviewer
+// triages: overall status, the VM's capability posture (network denied, no
+// credentials), the sealed tree hash, per-command argv → exit (duration)
+// lines, and the display-only log path.
+func TestRunInspect_RendersVerification(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	b := writeTestBrief(t, dir, id)
+	b.Verification = trustbrief.Verification{
+		Status:      trustbrief.VerificationFailed,
+		Network:     "denied",
+		Credentials: "none",
+		TreeSHA:     "aabbccddeeff00112233445566778899aabbccdd",
+		LogSHA256:   "0000000000000000000000000000000000000000000000000000000000000000",
+		Commands: []trustbrief.VerifyCommand{
+			{Argv: []string{"go", "build", "./..."}, Status: trustbrief.VerifyCmdPassed, DurationMs: 3100},
+			{Argv: []string{"go", "test", "./..."}, Status: trustbrief.VerifyCmdFailed, ExitCode: 2, DurationMs: 42000},
+			{Argv: []string{"go", "vet", "./..."}, Status: trustbrief.VerifyCmdSkipped},
+		},
+	}
+	b.MissingEvidence = nil
+	if err := trustbrief.Write(dir, id, b); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	for _, want := range []string{
+		"verify   failed",
+		"network denied",
+		"no credentials",
+		"tree aabbccddeeff", // truncated tree hash prefix
+		"go build ./... → exit 0 (3.1s)",
+		"go test ./... → exit 2 (42s)",
+		"go vet ./... → skipped",
+		id + ".verify.log",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("inspect output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A timed-out or errored command has no meaningful exit code: render its
+// status word, never a fabricated "exit 0".
+func TestRunInspect_RendersVerificationTimedOut(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	b := writeTestBrief(t, dir, id)
+	b.Verification = trustbrief.Verification{
+		Status: trustbrief.VerificationInconclusive, Network: "denied", Credentials: "none",
+		TreeSHA: "aabbccddeeff00112233445566778899aabbccdd",
+		Commands: []trustbrief.VerifyCommand{
+			{Argv: []string{"go", "test", "./..."}, Status: trustbrief.VerifyCmdTimedOut, DurationMs: 600000},
+		},
+	}
+	if err := trustbrief.Write(dir, id, b); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if !strings.Contains(out, "go test ./... → timed_out (10m00s)") {
+		t.Errorf("inspect output missing the timed_out command line:\n%s", out)
+	}
+	if strings.Contains(out, "exit 0") {
+		t.Errorf("a timed-out command must not render a fabricated exit code:\n%s", out)
+	}
+}
+
+// A not_configured brief must render exactly as it does today: the plain
+// status plus the gap line — no capability posture, no log-path hint, no
+// command lines (there were none).
+func TestRunInspect_NotConfiguredRendersNoVerificationSection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	writeTestBrief(t, dir, id) // Verification: not_configured
+
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if !strings.Contains(out, "verify   not_configured") {
+		t.Errorf("inspect output missing the plain not_configured status:\n%s", out)
+	}
+	if !strings.Contains(out, "verification not configured") {
+		t.Errorf("inspect output missing the gap line:\n%s", out)
+	}
+	for _, forbid := range []string{"network denied", "no credentials", ".verify.log", "→ exit"} {
+		if strings.Contains(out, forbid) {
+			t.Errorf("not_configured brief rendered a verification section (%q):\n%s", forbid, out)
+		}
+	}
+}
+
 func TestSafeCell_StripsControlAndCaps(t *testing.T) {
 	in := "evil\x1b[31mred\x1b[0m\npath" + strings.Repeat("A", 500)
 	got := safeCell(in)

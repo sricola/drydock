@@ -52,6 +52,7 @@ func (tr *taskRun) appendMetrics() {
 	if !tr.taskStart.IsZero() && !tr.runEnd.IsZero() {
 		m.StageMs.Running = tr.runEnd.Sub(tr.taskStart).Milliseconds()
 	}
+	m.StageMs.Verifying = tr.verifyDur.Milliseconds()
 	m.StageMs.Pushing = tr.pushDur.Milliseconds()
 	if rc, ok := tr.grant.(interface{ Requests() int }); ok {
 		m.Requests = rc.Requests()

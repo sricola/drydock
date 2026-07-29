@@ -14,6 +14,7 @@ import (
 	"drydock/internal/gateway"
 	"drydock/internal/gwcreds"
 	"drydock/internal/provider"
+	"drydock/internal/runner"
 	"drydock/internal/stage"
 )
 
@@ -351,5 +352,94 @@ func TestRedteam_A8_WorkQuotaHardBound(t *testing.T) {
 	}
 	if fi.Size() > quota+(64<<20) {
 		t.Errorf("A8 BREACH: backing image grew to %d MiB, want <= quota (256 MiB) + 64 MiB slack", fi.Size()>>20)
+	}
+}
+
+// V1 — the verifier VM's containment is strictly tighter than the agent VM's.
+// runner.BuildVerifyArgs never injects credential or proxy env (unlike the
+// agent VM, which carries a per-task bearer token) and installs a loopback-only
+// deny-all nft pin — no gateway, no squid, nothing the agent allowlist permits.
+// We build the EXACT argv the broker uses for a verification command (see
+// internal/broker/verify.go) and run a probe script through it that checks,
+// as the privilege-dropped agent user: (a) /proc/self/environ carries no
+// credential/proxy material, (b) HTTPS to a public host, raw DNS, and even a
+// direct connect to the network gateway all fail, (c) nft flush ruleset is
+// denied (privilege drop holds), and (d) $HOME is writable. Each check prints
+// a distinct "LABEL: verdict" token the assertions grep for.
+//
+// The gateway check needs care: during make redteam-vm nothing listens on
+// the gateway IP, so a bare curl-fails-so-it's-blocked check would be
+// vacuous (it can't tell "the pin dropped the packet" from "nobody was
+// there to answer") on the exact property this test exists to prove. The
+// probe instead distinguishes curl's timeout exit (28, no response at all —
+// the pin's output policy dropped the SYN) from a fast connection-refused
+// exit (7, a host actively answered — the pin was not what stopped us),
+// and only accepts the former as "blocked". See the probe script for the
+// details.
+func TestRedteam_V1_VerifierVMHasNoNetworkAndNoCredentials(t *testing.T) {
+	requireContainer(t)
+
+	const probe = `
+echo "WHOAMI: $(id -un)"
+echo "HOME-WRITABLE: $(test -w "$HOME" && echo yes || echo no)"
+leak=$(tr '\0' '\n' < /proc/self/environ | grep -Ei 'tok_|sk-|PROXY|AUTH_TOKEN|API_KEY' || true)
+if [ -z "$leak" ]; then echo "ENVIRON: clean"; else echo "ENVIRON: LEAK:$leak"; fi
+echo "HTTPS: $(curl -sS -m 4 https://example.com/ -o /dev/null 2>/dev/null && echo reachable || echo blocked)"
+echo "DNS: $(timeout 5 nslookup evil.example.com 1.1.1.1 >/dev/null 2>&1 && echo resolved || echo blocked)"
+curl -sS -m 4 http://192.168.66.1:8088/ -o /dev/null 2>/dev/null
+gw_rc=$?
+# A plain "curl ... && reachable || blocked" is vacuous here: during
+# make redteam-vm nothing actually listens on the gateway IP, so the
+# connection fails (curl exit 7, connection refused -- fast) whether or
+# not the verify_pin nft table's default-drop output policy is even
+# loaded. It cannot tell "the pin dropped our packet" apart from "nobody
+# was listening", which is exactly the property this test exists to
+# prove. Those two failures have different curl exit codes: rc=28 is
+# curl's own -m timeout, reached only when the kernel never got a
+# response at all -- output policy drop discards the SYN before it
+# leaves the box, so connect() just hangs until curl gives up. rc=7 is a
+# fast, active refusal, which proves some host answered -- i.e. the pin
+# was NOT what stopped us. Only rc=28 is non-vacuous evidence that
+# verify_pin's output policy (drop, with no accept rule for the gateway
+# at all -- see the verifyScript literal in internal/runner/runner.go)
+# is what blocked the gateway; if the pin is removed, curl reaches a
+# real TCP RST/refusal in well under 4s and this assertion fails.
+case "$gw_rc" in
+  28) echo "GATEWAY: blocked(timeout)" ;;
+  0)  echo "GATEWAY: reachable" ;;
+  *)  echo "GATEWAY: blocked(rc=$gw_rc)" ;;
+esac
+echo "FLUSH: $(nft flush ruleset >/dev/null 2>&1 && echo succeeded || echo denied)"
+`
+
+	args := runner.BuildVerifyArgs(runner.VerifySpec{
+		TaskID:    "redteam-v1",
+		Network:   "drydock-egress",
+		ImageRef:  sandboxImage(),
+		VerifyDir: t.TempDir(),
+		Argv:      []string{"bash", "-c", probe},
+		MemoryGB:  4,
+		CPUs:      4,
+	})
+
+	out := containerRun(t, args...)
+
+	if !strings.Contains(out, "WHOAMI: agent") {
+		t.Fatalf("expected the probe to run as the dropped agent user:\n%s", out)
+	}
+	if strings.Contains(out, "LEAK:") {
+		t.Fatalf("V1 BREACH: credential/proxy material present in the verifier VM's environment:\n%s", out)
+	}
+	for _, want := range []string{
+		"ENVIRON: clean",
+		"HTTPS: blocked",
+		"DNS: blocked",
+		"GATEWAY: blocked(timeout)",
+		"FLUSH: denied",
+		"HOME-WRITABLE: yes",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("V1 BREACH: expected %q in probe output:\n%s", want, out)
+		}
 	}
 }

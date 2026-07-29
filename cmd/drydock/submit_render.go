@@ -79,6 +79,18 @@ func (r *renderer) stage(ev map[string]any) {
 		r.progress("preparing · cloning repo")
 	case "running":
 		r.progress("running · " + str(ev["agent"]) + " working")
+	case "verifying":
+		// A verify can run for minutes; without its own line a long verify
+		// shows a stale "running" spinner.
+		if n := num(ev["commands"]); n > 0 {
+			checks := "checks"
+			if n == 1 {
+				checks = "check"
+			}
+			r.progress(fmt.Sprintf("verifying · %d %s in a fresh VM", n, checks))
+		} else {
+			r.progress("verifying · repo checks in a fresh VM")
+		}
 	case "awaiting_approval":
 		r.persist(fmt.Sprintf("⏸ awaiting approval · %s diff (%d files)", humanBytes(int64(num(ev["diff_bytes"]))), num(ev["files"])))
 		if rv := str(ev["review"]); rv != "" {
@@ -108,6 +120,11 @@ func (r *renderer) summary(ev map[string]any) {
 		r.persist(fmt.Sprintf("task %s: diff denied — not pushed", id))
 	case "cancelled":
 		r.persist(fmt.Sprintf("task %s: cancelled", id))
+	case "verify_failed":
+		r.persist(fmt.Sprintf("✗ task %s: verification failed — not pushed", id))
+		if h := str(ev["hint"]); h != "" {
+			r.persist("   → " + h)
+		}
 	default:
 		r.persist(fmt.Sprintf("task %s: %v", id, ev["outcome"]))
 	}

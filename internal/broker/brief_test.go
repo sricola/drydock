@@ -1,7 +1,6 @@
 package broker
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -193,8 +192,5 @@ func TestHandleTask_WritesBriefAtGate(t *testing.T) {
 	}
 	if !got.Task.AutoApprove {
 		t.Error("auto_approve not recorded in brief")
-	}
-	if filepath.Join(b.AuditRoot, id+trustbrief.Suffix) == "" {
-		t.Fatal("unreachable")
 	}
 }

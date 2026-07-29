@@ -553,3 +553,44 @@ func TestStageQuotaGB_DefaultEnvValidate(t *testing.T) {
 		t.Error("validate accepted stage_quota_gb: -1, want error")
 	}
 }
+
+func TestVerifyConfig_LoadsAndValidates(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	yaml := "network: x\ngateway_ip: 1.2.3.4\n" +
+		"verify:\n  repos:\n    \"github.com/o/r\":\n" +
+		"      commands:\n        - [\"go\", \"test\", \"./...\"]\n" +
+		"      timeout: 5m\n      required: true\n"
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	vr, ok := c.Verify.Repos["github.com/o/r"]
+	if !ok || !vr.Required || vr.Timeout != 5*time.Minute ||
+		len(vr.Commands) != 1 || strings.Join(vr.Commands[0], " ") != "go test ./..." {
+		t.Errorf("verify repo = %+v ok=%v", vr, ok)
+	}
+}
+
+func TestVerifyConfig_Rejects(t *testing.T) {
+	base := "network: x\ngateway_ip: 1.2.3.4\nverify:\n  repos:\n"
+	cases := map[string]string{
+		// Non-canonical key would silently never match a task — fail loudly at load.
+		base + "    \"https://github.com/o/r.git\":\n      commands: [[\"go\", \"test\"]]\n": "verify",
+		base + "    \"github.com/o/r\":\n      commands: []\n":                               "verify",
+		base + "    \"github.com/o/r\":\n      commands: [[]]\n":                             "verify",
+		base + "    \"github.com/o/r\":\n      commands: [[\"go\"]]\n      timeout: -1s\n":   "verify",
+	}
+	for yaml, wantSubstr := range cases {
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), wantSubstr) {
+			t.Errorf("Load(%q) err = %v, want %q", yaml, err, wantSubstr)
+		}
+	}
+}

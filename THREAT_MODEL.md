@@ -159,8 +159,21 @@ change
 The diff-push gate (default-deny, `auto_approve` opt-in only) requires an
 operator to inspect the diff before it reaches origin. The persisted
 `AUDIT_ROOT/<task>.diff` plus the full `stream-json` trace in
-`<task>.jsonl` give the reviewer everything needed. Once approved, the
-host commits with hooks disabled and pushes; the agent cannot intercept.
+`<task>.jsonl` give the reviewer everything needed. When the repo has a
+`verify.repos` entry, the reviewer additionally gets broker-observed
+verification results in the trust brief (`drydock inspect <id>`):
+host-approved commands run against a sealed export of the staged tree,
+each in a fresh VM with no credentials and a deny-all nft pin (loopback
+only — strictly tighter than the agent's allowlist) that root installs
+before the same setpriv privilege drop A2 relies on, so repo code cannot
+flush it. Verdicts are the exit codes the broker observes; nothing the
+verify VM prints can alter a status, and at push time the staged tree is
+re-hashed and must equal the verified tree or the push fails closed.
+`required: true` blocks the push on any status but `passed`. These
+verifier properties are enforced by host-side unit tests today; they are
+deliberately not a lettered claim until the VM-backed adversarial test
+covers them. Once approved, the host commits with hooks disabled and
+pushes; the agent cannot intercept.
 
 **Implementation:** `internal/broker/broker.go::gatePush` plus
 `cmd/drydock` (the operator CLI). `Task.AutoApprove` must be true on the

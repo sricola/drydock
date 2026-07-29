@@ -293,6 +293,25 @@ func TestAnalyze_RenameOut_OfFlaggedPath_QuotedNonASCII(t *testing.T) {
 	}
 }
 
+func TestAnalyze_SubmoduleGitlinkFlagged(t *testing.T) {
+	cases := map[string]string{
+		"new-gitlink": "diff --git a/vendor/dep b/vendor/dep\n" +
+			"new file mode 160000\nindex 0000000..1111111\n" +
+			"--- /dev/null\n+++ b/vendor/dep\n@@ -0,0 +1 @@\n+Subproject commit 1111111\n",
+		"retargeted-gitlink": "diff --git a/vendor/dep b/vendor/dep\n" +
+			"index 1111111..2222222 160000\n" +
+			"--- a/vendor/dep\n+++ b/vendor/dep\n@@ -1 +1 @@\n-Subproject commit 1111111\n+Subproject commit 2222222\n",
+	}
+	for name, diff := range cases {
+		t.Run(name, func(t *testing.T) {
+			paths := flagPaths(Analyze(diff), FlagSubmodule)
+			if len(paths) != 1 || paths[0] != "vendor/dep" {
+				t.Errorf("submodule flag paths = %v, want [vendor/dep]", paths)
+			}
+		})
+	}
+}
+
 func FuzzAnalyze(f *testing.F) {
 	f.Add("diff --git a/x b/x\nnew file mode 120000\n+++ b/x\n+target\n")
 	f.Add("Binary files a and b differ\n")

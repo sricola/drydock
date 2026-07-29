@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode"
 
@@ -101,9 +102,55 @@ func printBrief(b trustbrief.Brief) {
 		}
 		fmt.Printf("FLAG     %s: %s\n", safeCell(fl.Kind), strings.Join(paths, ", "))
 	}
-	fmt.Printf("verify   %s\n", safeCell(b.Verification.Status))
+	printVerification(b)
 	for _, m := range b.MissingEvidence {
 		fmt.Printf("gap      %s\n", safeCell(m))
+	}
+}
+
+// printVerification renders the independent-verifier evidence block. A
+// not_configured brief renders exactly as before this stage existed: the
+// plain status line (the gap list explains it). A populated block gets the
+// capability posture, the sealed-tree hash, one line per command with the
+// broker-observed verdict, and the display-only log path.
+//
+// Argv elements are operator config, not VM output, but they still pass
+// through safeCell (strip + cap) like every other rendered string; the log
+// path is host-constructed from auditDir and the validated task id.
+func printVerification(b trustbrief.Brief) {
+	v := b.Verification
+	if v.Status == trustbrief.VerificationNotConfigured {
+		fmt.Printf("verify   %s\n", safeCell(v.Status))
+		return
+	}
+	line := safeCell(v.Status)
+	if v.Network != "" {
+		line += " · network " + safeCell(v.Network)
+	}
+	switch v.Credentials {
+	case "":
+	case "none":
+		line += " · no credentials"
+	default:
+		line += " · credentials " + safeCell(v.Credentials)
+	}
+	if v.TreeSHA != "" {
+		line += fmt.Sprintf(" · tree %.12s", safeCell(v.TreeSHA))
+	}
+	fmt.Printf("verify   %s\n", line)
+	for _, c := range v.Commands {
+		argv := safeCell(strings.Join(c.Argv, " "))
+		switch c.Status {
+		case trustbrief.VerifyCmdPassed, trustbrief.VerifyCmdFailed:
+			fmt.Printf("         %s → exit %d (%s)\n", argv, c.ExitCode, shortDur(c.DurationMs))
+		case trustbrief.VerifyCmdSkipped:
+			fmt.Printf("         %s → skipped\n", argv)
+		default: // timed_out, error: no meaningful exit code
+			fmt.Printf("         %s → %s (%s)\n", argv, safeCell(c.Status), shortDur(c.DurationMs))
+		}
+	}
+	if len(v.Commands) > 0 {
+		fmt.Printf("         log %s\n", filepath.Join(auditDir(), b.TaskID+".verify.log"))
 	}
 }
 

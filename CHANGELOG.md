@@ -5,6 +5,39 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Added
+
+- **Independent verification stage.** A new opt-in `verify.repos` config
+  block runs host-approved commands (build, tests, lint) against a sealed
+  export of the agent's staged tree before the approval gate — each command
+  in a fresh VM with no credentials and a deny-all firewall pin (loopback
+  only, installed by root before the privilege drop, so repo code cannot
+  remove it). Verdicts are the exit codes the broker observes; nothing the
+  verify VM prints can influence a status, and at push time the staged tree
+  is re-hashed and must still equal the verified tree or the push fails
+  closed. `required: false` (default) is advisory; `required: true` blocks
+  the push on any status but `passed` — a timeout or infra error reads
+  `inconclusive`, never passed, and blocks too (outcome `verify_failed`).
+  Each command is bounded by a per-command timeout (default 10m); verifier
+  output is capped at the same limit as the per-task host output cap, from
+  its own separate budget. A `verify_failed` task persists the same trust
+  brief and audit `.diff` evidence a gated task would, so the `drydock
+  inspect` hint always has something to show.
+
+- **Verification surfaced to operators.** The trust brief gains a populated
+  verification block, and `drydock inspect` renders it: overall status, the
+  VM's capability posture (network denied, no credentials), the verified
+  tree hash, per-command `argv → exit N (duration)` lines, and the
+  display-only `<id>.verify.log` path. The submit stream, `drydock status`,
+  and the web UI board all show the new `verifying` stage (with Kill
+  available), the CLI reports `verify_failed` terminals with an inspect
+  hint, and the audit metrics row records `stage_ms.verifying`. Operator
+  docs cover the config block, the advisory/required semantics, and restart
+  behavior (no mid-verify resume; re-verify only via `drydock retry`); the
+  security-defaults page gains the verify-timeout row.
+
 ## v0.6.7 (2026-07-28)
 
 A patch release closing the findings from the v0.6.5 release QA pass. Three

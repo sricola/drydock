@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // makeOriginRepo creates a bare repo with one commit and returns its path.
@@ -327,8 +328,10 @@ func TestReopen_ErrorsWhenGitDirMissing(t *testing.T) {
 	}
 }
 
-func TestBaseCommit_ReturnsCloneHead(t *testing.T) {
-	// Build a source repo with one commit.
+// newLocalSourceRepo creates a local (non-bare) repo with one empty commit
+// and returns its path, suitable as the repoRef Prepare clones from.
+func newLocalSourceRepo(t *testing.T) string {
+	t.Helper()
 	src := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "-q"}, {"config", "user.email", "t@t"}, {"config", "user.name", "t"},
@@ -340,6 +343,11 @@ func TestBaseCommit_ReturnsCloneHead(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
+	return src
+}
+
+func TestBaseCommit_ReturnsCloneHead(t *testing.T) {
+	src := newLocalSourceRepo(t)
 	want, err := exec.Command("git", "-C", src, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -377,5 +385,172 @@ func TestReapOrphans_SkipsKeepSet(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "reapme")); !os.IsNotExist(err) {
 		t.Error("reapme should have been removed")
+	}
+}
+
+func TestExportStaged_MatchesStagedContentAndExcludesTaskDir(t *testing.T) {
+	src := newLocalSourceRepo(t)
+	st, err := Prepare(context.Background(), t.TempDir(), src)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	// Simulate agent output: a tracked change, plus .task noise that must
+	// never reach the verified tree (A4 parity).
+	if err := os.WriteFile(filepath.Join(st.WorkDir, "new.txt"), []byte("agent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(st.WorkDir, ".task"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(st.WorkDir, ".task", "prompt.txt"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h1, err := st.StagedTreeHash()
+	if err != nil {
+		t.Fatalf("StagedTreeHash: %v", err)
+	}
+	if len(h1) != 40 {
+		t.Errorf("tree hash = %q, want 40 hex", h1)
+	}
+	// Idempotent: same content, same hash.
+	if h2, _ := st.StagedTreeHash(); h2 != h1 {
+		t.Errorf("hash not stable: %q vs %q", h2, h1)
+	}
+
+	dst := filepath.Join(st.Root, "verify")
+	exportedTree, err := st.ExportStaged(dst)
+	if err != nil {
+		t.Fatalf("ExportStaged: %v", err)
+	}
+	// The seal is atomic: the hash ExportStaged returns IS the tree it
+	// archived — the same identity a separate StagedTreeHash reports for
+	// unchanged content — so callers record exactly what was exported.
+	if exportedTree != h1 {
+		t.Errorf("ExportStaged returned tree %q, want %q (the staged tree it archived)", exportedTree, h1)
+	}
+	if data, err := os.ReadFile(filepath.Join(dst, "new.txt")); err != nil || string(data) != "agent" {
+		t.Errorf("exported new.txt = %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".task")); !os.IsNotExist(err) {
+		t.Error(".task leaked into the exported verify tree")
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".git")); !os.IsNotExist(err) {
+		t.Error(".git leaked into the exported verify tree")
+	}
+}
+
+// A hostile staged repo may include a symlink pointing outside the tree
+// (e.g. at /etc/passwd). git archive must emit it as a symlink entry, never
+// dereferencing it to read the target's content into the archive, and the
+// exported copy must preserve it as a symlink rather than a followed copy.
+func TestExportStaged_SymlinkArchivedNotFollowed(t *testing.T) {
+	src := newLocalSourceRepo(t)
+	st, err := Prepare(context.Background(), t.TempDir(), src)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if err := os.Symlink("/etc/passwd", filepath.Join(st.WorkDir, "evil")); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(st.Root, "verify")
+	if _, err := st.ExportStaged(dst); err != nil {
+		t.Fatalf("ExportStaged: %v", err)
+	}
+
+	fi, err := os.Lstat(filepath.Join(dst, "evil"))
+	if err != nil {
+		t.Fatalf("Lstat exported symlink: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("exported \"evil\" is not a symlink (mode=%v): archive dereferenced it", fi.Mode())
+	}
+	// If tar had followed the link and copied /etc/passwd's bytes, the
+	// exported entry would be a regular file instead of a symlink; the mode
+	// check above already catches this, but assert the target string too so
+	// a switch to a symlink-following extractor is caught even if some
+	// future flag makes tar report a non-symlink mode.
+	target, err := os.Readlink(filepath.Join(dst, "evil"))
+	if err != nil {
+		t.Fatalf("Readlink: %v", err)
+	}
+	if target != "/etc/passwd" {
+		t.Errorf("exported symlink target = %q, want /etc/passwd", target)
+	}
+}
+
+// exportDst must refuse a dst that aliases the stage's own work tree or
+// host-only git dir: both live under Root (so they'd otherwise pass the
+// under-root check), and ExportStaged's RemoveAll(dst) would delete either
+// out from under this same Stage.
+func TestExportDst_RefusesAliasingStageDirs(t *testing.T) {
+	root := t.TempDir()
+	s := &Stage{
+		Root:    root,
+		WorkDir: filepath.Join(root, "work"),
+		gitDir:  filepath.Join(root, "git"),
+	}
+	cases := []struct {
+		name string
+		dst  string
+	}{
+		{"stage's own work dir", s.WorkDir},
+		{"stage's own host-only git dir", s.gitDir},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.exportDst(tc.dst); err == nil {
+				t.Errorf("exportDst(%q) = nil error, want refusal (aliases %s)", tc.dst, tc.name)
+			}
+		})
+	}
+}
+
+// Regression test for a hang found in review: if untar.Start() fails (e.g.
+// its binary is missing), `git archive` is already running and may be
+// blocked mid-write into the pipe nobody is now going to read. The fix must
+// unblock it (close the pipe / kill the process) BEFORE calling arch.Wait(),
+// or ExportStaged hangs forever (execCtx() here is context.Background(), so
+// there is no deadline to save it). tarBinary is swapped to a nonexistent
+// path to force the startup failure deterministically, and the staged repo
+// carries a >1MiB tracked file so `git archive`'s tar stream exceeds the OS
+// pipe buffer and genuinely blocks on write() without the fix — a small
+// archive would fit in the buffer and the bug would not reproduce.
+func TestExportStaged_UntarStartFailureDoesNotHang(t *testing.T) {
+	src := newLocalSourceRepo(t)
+	big := make([]byte, 2<<20) // 2 MiB, well over any OS pipe buffer size
+	if err := os.WriteFile(filepath.Join(src, "big.bin"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, src, "add", "-A")
+	gitRun(t, src, "commit", "-q", "-m", "add big file")
+
+	st, err := Prepare(context.Background(), t.TempDir(), src)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	orig := tarBinary
+	tarBinary = filepath.Join(t.TempDir(), "no-such-tar-binary")
+	t.Cleanup(func() { tarBinary = orig })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.ExportStaged(filepath.Join(st.Root, "verify"))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("ExportStaged: want error from missing tar binary, got nil")
+		}
+		if !strings.Contains(err.Error(), "no such file or directory") &&
+			!strings.Contains(err.Error(), "executable file not found") {
+			t.Errorf("ExportStaged error = %v, want it to mention the missing-binary cause", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExportStaged hung: git archive was left blocked writing into the unread pipe after untar.Start() failed")
 	}
 }

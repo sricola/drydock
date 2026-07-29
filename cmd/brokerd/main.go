@@ -107,12 +107,36 @@ func isUnmeteredVendor(cfg *config.Config, b gateway.Backend) bool {
 	return false
 }
 
+// verifyRepos maps the operator's verify.repos config (keys already
+// canonicalized/validated by config.Validate) onto the broker's own mirror
+// type. A repo entry with Timeout 0 gets broker.DefaultVerifyTimeout applied
+// per command at run time; nothing to default here.
+func verifyRepos(repos map[string]config.VerifyRepo) map[string]broker.VerifyRepo {
+	if len(repos) == 0 {
+		return nil
+	}
+	out := make(map[string]broker.VerifyRepo, len(repos))
+	for key, vr := range repos {
+		out[key] = broker.VerifyRepo{
+			Commands: vr.Commands,
+			Timeout:  vr.Timeout,
+			Required: vr.Required,
+		}
+	}
+	return out
+}
+
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
 
 // taskContainerRE matches a drydock task VM name exactly (task- + a 32-hex
 // newID). Anchored so the orphan reaper's `container delete --force` can never
 // fire on an unrelated container that merely has "task-" somewhere in its JSON.
 var taskContainerRE = regexp.MustCompile(`^task-[0-9a-f]{32}$`)
+
+// verifyContainerRE matches a drydock verifier VM name (verify- + the same
+// 32-hex task id; see runner.VerifyContainerName). Reaped by the same boot
+// orphan sweep as task VMs: a brokerd crash mid-verification can leave one up.
+var verifyContainerRE = regexp.MustCompile(`^verify-[0-9a-f]{32}$`)
 
 // resolveAPIKey returns the effective key for env-var name. A non-empty
 // exported value wins (so CI `export …` is unchanged); otherwise the value from
@@ -485,6 +509,7 @@ func main() {
 		PushRetryBackoff:     cfg.PushRetryBackoff,
 		PushFreshBranchTries: cfg.PushFreshBranchTries,
 		UnmeteredVendors:     unmeteredVendors,
+		Verify:               verifyRepos(cfg.Verify.Repos),
 	}
 	if squidCtl != nil {
 		b.Squid = squidCtl
@@ -790,13 +815,14 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 	if err != nil {
 		slog.Warn("orphan prune: container ls failed", "err", err, "stderr", string(out))
 	} else {
-		// Names look like "task-<32hex>"; we don't parse the JSON shape (it moves
-		// across container CLI versions), but we match each whitespace token
-		// against the EXACT task-name grammar so a "task-" substring in an image
-		// tag or label value can't get an unrelated container force-deleted.
+		// Names look like "task-<32hex>" or "verify-<32hex>"; we don't parse the
+		// JSON shape (it moves across container CLI versions), but we match each
+		// whitespace token against the EXACT name grammars so a "task-" substring
+		// in an image tag or label value can't get an unrelated container
+		// force-deleted.
 		for _, line := range strings.Split(string(out), "\n") {
 			for _, token := range strings.Fields(strings.ReplaceAll(line, `"`, " ")) {
-				if taskContainerRE.MatchString(token) {
+				if taskContainerRE.MatchString(token) || verifyContainerRE.MatchString(token) {
 					_, _ = runCmd("container", "delete", "--force", token)
 					slog.Info("orphan prune: removed container", "name", token)
 				}

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"drydock/internal/provider"
+	"drydock/internal/repokey"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,6 +45,16 @@ type OpenAICompatConfig struct {
 	APIKeyEnv string                       `yaml:"api_key_env"`
 	Model     string                       `yaml:"model"`
 	Prices    map[string]OpenAICompatPrice `yaml:"prices"`
+}
+
+// VerifyRepo is one repository's verification recipe. Timeout 0 uses the
+// built-in default (broker.DefaultVerifyTimeout). Required=true blocks the
+// push unless verification status is exactly "passed" (fail-closed —
+// inconclusive evidence blocks too).
+type VerifyRepo struct {
+	Commands [][]string    `yaml:"commands"`
+	Timeout  time.Duration `yaml:"timeout"`
+	Required bool          `yaml:"required"`
 }
 
 // Config is the operator surface. yaml tags match what's written to
@@ -131,6 +142,15 @@ type Config struct {
 	// stored here. Prices (USD per 1M tokens) enable USD metering; omit to fall
 	// back to the task_max_requests cap.
 	OpenAICompat OpenAICompatConfig `yaml:"openai_compat"`
+
+	// Verify configures the independent post-run verifier: host-approved
+	// commands run against the agent's staged tree in a fresh, credential-
+	// free, network-denied VM before the approval gate. Keys are canonical
+	// "host/owner/repo" (repokey.Normalize); non-canonical keys are a config
+	// error rather than a silent never-match. Empty map = verifier off.
+	Verify struct {
+		Repos map[string]VerifyRepo `yaml:"repos"`
+	} `yaml:"verify"`
 
 	// Where state lives
 	StageRoot   string `yaml:"stage_root"`
@@ -459,6 +479,22 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	for key, vr := range c.Verify.Repos {
+		if canon := repokey.Normalize(key); canon != key {
+			return fmt.Errorf("config: verify.repos key %q is not canonical; use %q", key, canon)
+		}
+		if len(vr.Commands) == 0 {
+			return fmt.Errorf("config: verify.repos[%q] needs at least one command", key)
+		}
+		for i, argv := range vr.Commands {
+			if len(argv) == 0 || argv[0] == "" {
+				return fmt.Errorf("config: verify.repos[%q].commands[%d] is empty", key, i)
+			}
+		}
+		if vr.Timeout < 0 {
+			return fmt.Errorf("config: verify.repos[%q].timeout must be >= 0", key)
+		}
+	}
 	if c.AggregateBudgetUSD < 0 {
 		return fmt.Errorf("config: aggregate_budget_usd must be >= 0, got %v", c.AggregateBudgetUSD)
 	}
@@ -522,6 +558,18 @@ openai_compat:
   model:       ""        # model id passed to the agent, e.g. gemini-2.5-pro
   # prices:              # USD/1M-token rates for budget metering (optional)
   #   gemini-2.5-pro: {input: 1.25, output: 10.00}
+
+# verify: independent post-run verification. Commands run against the agent's
+# exact staged tree in a fresh VM with no credentials and no network; exit
+# codes are recorded in the task's trust brief. required: true blocks the
+# push unless every command passes. Keys are canonical host/owner/repo.
+# verify:
+#   repos:
+#     "github.com/you/yourrepo":
+#       commands:
+#         - ["go", "test", "./..."]
+#       timeout: 10m      # 0 = default (10m)
+#       required: false   # true = failure/inconclusive blocks push
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

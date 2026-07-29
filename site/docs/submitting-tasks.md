@@ -55,6 +55,59 @@ If the branch pushes but the PR can't be opened (e.g. `gh` isn't authenticated),
 drydock reports it as **pushed** with a hint to open the PR manually; it never
 loses your work to a failed PR step.
 
+## Verification (optional, per repo)
+
+drydock can run your own checks — build, tests, lint — against the agent's
+work before the diff reaches the approval gate. Configure them per repository
+in `~/.drydock/config.yaml`; keys must be the canonical `host/owner/repo`
+form (a non-canonical key is a config error, not a silent never-match):
+
+```yaml
+verify:
+  repos:
+    "github.com/you/yourrepo":
+      commands:
+        - ["go", "build", "./..."]
+        - ["go", "test", "./..."]
+      timeout: 10m      # per command; 0 = the default (10m)
+      required: false   # true = anything but "passed" blocks the push
+```
+
+Each command gets exactly this, no more:
+
+- **A fresh VM per command** (`--rm`), separate from the agent's VM.
+- **A sealed export of the staged tree** mounted at `/work`: the same tree
+  whose diff you review. Commands may write to their copy; nothing they do
+  changes what would be pushed, and at push time drydock re-hashes the
+  staged tree and refuses to push unless it still equals the verified tree.
+- **No network**: root installs a deny-all firewall pin (loopback only —
+  strictly tighter than the agent's allowlist; not even the egress proxy is
+  reachable) before dropping to the unprivileged agent user via the same
+  mechanism the agent VM uses, so repo code cannot remove the pin.
+- **No credentials**: no gateway lease, no API keys, no push credentials.
+
+Verdicts are the process exit codes the broker observes from each VM —
+nothing a command prints can change a status. Commands run in order and stop
+at the first non-pass (later ones record `skipped`). The overall status is
+`passed` only when every command passed; a timeout or infrastructure error
+makes it `inconclusive`, which is never treated as a pass.
+
+- `required: false` (the default): verification is **advisory**. Results
+  land in the trust brief for your review, and the diff still reaches the
+  approval gate whatever the status.
+- `required: true`: **fail closed**. Any status but `passed` (including
+  `inconclusive`) ends the task with outcome `verify_failed` before the
+  approval gate, and nothing is pushed. The evidence survives: the trust
+  brief (`drydock inspect <id>`), the captured diff (`<id>.diff`), and — when
+  any verify VM actually ran — the verification log are all still persisted.
+
+While it runs, the task shows a `verifying` stage — between `running` and
+`awaiting_approval` — in the submit stream, `drydock status`, and the web
+UI. Review the evidence with `drydock inspect <id>`: overall status, the
+VM's capability posture, per-command exit codes and durations, and the
+verified tree hash. The commands' combined output is kept (display-only,
+size-capped, never parsed) at `~/.drydock/audit/<id>.verify.log`.
+
 ## Push outcomes
 
 After you approve a diff, drydock pushes the single commit to a new remote
@@ -62,7 +115,8 @@ branch (`agent/<id>`) and optionally opens a PR. A single-ref `git push` is
 atomic: the remote branch either receives the whole commit or is left unchanged.
 `push_failed` therefore guarantees nothing landed on the remote for that task,
 and the captured diff is always preserved in the audit `.diff` file for every
-outcome.
+outcome that produced a diff — `verify_failed` included; only tasks that never
+captured one (`no_diff`, or a failure before diff capture) have no `.diff`.
 
 drydock classifies push failures and recovers from the recoverable ones:
 
@@ -86,14 +140,16 @@ attempt.
 Not every task reaches a push attempt. A diff denied at the approval gate
 reports `outcome=denied` and never pushes; a task killed mid-run reports
 `outcome=cancelled`; a run that produces no diff reports `outcome=no_diff`
-and still displays as `ok` (a clean no-op isn't a failure). `drydock tasks`,
-`drydock stats`, and the web UI all show these outcomes distinctly from
-`pushed` and `push_failed`.
+and still displays as `ok` (a clean no-op isn't a failure); a task whose
+**required** verification does not pass reports `outcome=verify_failed` and
+never reaches the approval gate. `drydock tasks`, `drydock stats`, and the
+web UI all show these outcomes distinctly from `pushed` and `push_failed`.
 
 ## Operator surface
 
 ```bash
-drydock status             # brokerd up?, breakdown (running · egress · diff · pushing)
+drydock status             # brokerd up?, breakdown (running · verifying · egress · diff · pushing)
+drydock inspect <id>       # trust brief: broker-observed evidence incl. verification
 drydock tasks              # recent runs: id, age, duration, cost, outcome
 drydock logs <id> [-f]     # stream-json audit (use -f to follow)
 drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
@@ -145,9 +201,11 @@ JSON: one event per line, in the order they happened. Separately, the live
 with a `ts` field (RFC 3339); that timestamp is on the submit stream only,
 not persisted into the audit file. The audit file ends with a
 broker-authored row, `{"type":"metrics","src":"broker"}`, holding stage
-durations, egress/approval gate waits, the admitted request count, spend,
-the terminal `outcome` (`pushed`, `denied`, `cancelled`, `push_failed`,
-`error`, or `no_diff`), and the egress-widen outcome; if brokerd ever
+durations (`stage_ms.preparing`, `.running`, `.verifying` — omitted when the
+task never verified — and `.pushing`), egress/approval gate waits, the
+admitted request count, spend, the terminal `outcome` (`pushed`, `denied`,
+`cancelled`, `push_failed`, `verify_failed`, `error`, or `no_diff`), and the
+egress-widen outcome; if brokerd ever
 appends more than one (e.g. after a resumed task), the last such row wins,
 so readers should take the last `metrics` line, not the first.
 
