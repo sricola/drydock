@@ -419,8 +419,15 @@ func TestExportStaged_MatchesStagedContentAndExcludesTaskDir(t *testing.T) {
 	}
 
 	dst := filepath.Join(st.Root, "verify")
-	if err := st.ExportStaged(dst); err != nil {
+	exportedTree, err := st.ExportStaged(dst)
+	if err != nil {
 		t.Fatalf("ExportStaged: %v", err)
+	}
+	// The seal is atomic: the hash ExportStaged returns IS the tree it
+	// archived — the same identity a separate StagedTreeHash reports for
+	// unchanged content — so callers record exactly what was exported.
+	if exportedTree != h1 {
+		t.Errorf("ExportStaged returned tree %q, want %q (the staged tree it archived)", exportedTree, h1)
 	}
 	if data, err := os.ReadFile(filepath.Join(dst, "new.txt")); err != nil || string(data) != "agent" {
 		t.Errorf("exported new.txt = %q, %v", data, err)
@@ -448,7 +455,7 @@ func TestExportStaged_SymlinkArchivedNotFollowed(t *testing.T) {
 	}
 
 	dst := filepath.Join(st.Root, "verify")
-	if err := st.ExportStaged(dst); err != nil {
+	if _, err := st.ExportStaged(dst); err != nil {
 		t.Fatalf("ExportStaged: %v", err)
 	}
 
@@ -530,7 +537,8 @@ func TestExportStaged_UntarStartFailureDoesNotHang(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- st.ExportStaged(filepath.Join(st.Root, "verify"))
+		_, err := st.ExportStaged(filepath.Join(st.Root, "verify"))
+		done <- err
 	}()
 
 	select {

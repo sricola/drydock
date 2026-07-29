@@ -211,8 +211,8 @@ func (r realStage) BaseCommit() (string, error)           { return r.s.BaseCommi
 
 // StagedTreeHash/ExportStaged surface the stage's sealed-export capability
 // (the verifier's stagedExporter optional interface) on the production stage.
-func (r realStage) StagedTreeHash() (string, error) { return r.s.StagedTreeHash() }
-func (r realStage) ExportStaged(dst string) error   { return r.s.ExportStaged(dst) }
+func (r realStage) StagedTreeHash() (string, error)         { return r.s.StagedTreeHash() }
+func (r realStage) ExportStaged(dst string) (string, error) { return r.s.ExportStaged(dst) }
 
 // WithContext binds the task context to the stage's git subprocesses. Used on
 // the resume path (the stage is reopened before the per-task context exists).
@@ -638,7 +638,13 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !tr.runVerify() {
+	// Persist the review diff as soon as it exists — before verification and
+	// the approval gate — so every outcome from here on (verify_failed and a
+	// mid-verify cancel included) leaves the `.diff` evidence beside the audit
+	// log, even when the task never reaches the gate.
+	b.persistDiff(taskID, diff)
+
+	if !tr.runVerify(diff) {
 		return // runVerify emitted the terminal event
 	}
 	tr.pushAndOpenPR(diff)

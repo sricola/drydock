@@ -1,17 +1,20 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,7 +43,11 @@ type verifyStage struct {
 	exportDst atomic.Value // string
 }
 
-func (v *verifyStage) StagedTreeHash() (string, error) {
+// nextTree yields successive hashes from trees (the last repeats), shared by
+// StagedTreeHash and ExportStaged so a test's trees list still describes the
+// sequence of write-tree observations in call order — mirroring production,
+// where ExportStaged runs write-tree internally and returns its hash.
+func (v *verifyStage) nextTree() (string, error) {
 	if v.treeErr != nil {
 		return "", v.treeErr
 	}
@@ -51,13 +58,19 @@ func (v *verifyStage) StagedTreeHash() (string, error) {
 	return v.trees[n], nil
 }
 
-func (v *verifyStage) ExportStaged(dst string) error {
+func (v *verifyStage) StagedTreeHash() (string, error) { return v.nextTree() }
+
+func (v *verifyStage) ExportStaged(dst string) (string, error) {
 	if v.exportErr != nil {
-		return v.exportErr
+		return "", v.exportErr
+	}
+	tree, err := v.nextTree()
+	if err != nil {
+		return "", err
 	}
 	v.exported.Store(true)
 	v.exportDst.Store(dst)
-	return nil
+	return tree, nil
 }
 
 // isVerifyArgs reports whether a runAgent argv is a verifier-VM run (named
@@ -142,6 +155,65 @@ func TestRunVerify_NotConfigured_PassesThrough(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(b.AuditRoot, id+".verify.log")); !os.IsNotExist(err) {
 		t.Error("no verify log should exist for an unconfigured repo")
+	}
+}
+
+// lockedBuffer is a goroutine-safe bytes.Buffer for capturing slog output:
+// leftover broker goroutines from earlier tests may still log while the
+// default logger is swapped.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+// A verify.repos key that differs from the task's repo only in case must NOT
+// silently match — owner/repo matching stays case-sensitive — but the miss
+// must be loud: a required-verify config skipped over key casing would
+// otherwise silently disable verification. The broker warns, naming both
+// keys, and treats the repo as not_configured.
+func TestRunVerify_CaseMismatchedKeyWarnsButStaysNotConfigured(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	b.Verify = map[string]VerifyRepo{
+		"github.com/Owner/Repo": {Commands: [][]string{{"go", "test"}}, Required: true},
+	}
+
+	var logBuf lockedBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(prev)
+
+	rec, events, term := submit(b, `{"repo_ref":"https://github.com/owner/repo.git","instruction":"x","agent":"claude","auto_approve":true}`)
+
+	// Not matched: not_configured, so even Required=true does not block.
+	if term["outcome"] != "pushed" {
+		t.Fatalf("outcome=%v, want pushed (a case-insensitive near-miss must NOT auto-match); body=%s",
+			term["outcome"], rec.Body)
+	}
+	id := taskID(t, events)
+	br := readBrief(t, b, id)
+	if br.Verification.Status != trustbrief.VerificationNotConfigured {
+		t.Errorf("brief verification status=%q, want not_configured", br.Verification.Status)
+	}
+	// ...but the skip is observable: a warning naming both spellings.
+	logs := logBuf.String()
+	if !strings.Contains(logs, "case-insensitively") ||
+		!strings.Contains(logs, "github.com/Owner/Repo") ||
+		!strings.Contains(logs, "github.com/owner/repo") {
+		t.Errorf("want a loud near-miss warning naming both keys; logs:\n%s", logs)
 	}
 }
 
@@ -345,6 +417,36 @@ func TestRunVerify_RequiredBlocksOnFailure(t *testing.T) {
 	if m["outcome"] != "verify_failed" {
 		t.Errorf("metrics outcome=%v, want verify_failed", m["outcome"])
 	}
+
+	// The emitted hint points at `drydock inspect` and the audit artifacts, so
+	// a verify_failed task must leave the same evidence a gated task would:
+	// the trust brief (with the full Verification block) and the .diff.
+	br := readBrief(t, b, id)
+	if br.Verification.Status != trustbrief.VerificationFailed {
+		t.Errorf("brief verification status=%q, want failed", br.Verification.Status)
+	}
+	if len(br.Verification.Commands) != 1 ||
+		br.Verification.Commands[0].Status != trustbrief.VerifyCmdFailed {
+		t.Errorf("brief commands=%+v, want [failed]", br.Verification.Commands)
+	}
+	diffData, err := os.ReadFile(filepath.Join(b.AuditRoot, id+".diff"))
+	if err != nil {
+		t.Fatalf(".diff not persisted for verify_failed: %v", err)
+	}
+	if string(diffData) != st.diff {
+		t.Errorf(".diff=%q, want the captured diff %q", diffData, st.diff)
+	}
+	// A verify VM ran here, so the log exists and the hint may point at it.
+	hint, _ := term["hint"].(string)
+	if !strings.Contains(hint, "drydock inspect "+id) {
+		t.Errorf("hint=%q, want a drydock inspect pointer", hint)
+	}
+	if !strings.Contains(hint, "verification log:") {
+		t.Errorf("hint=%q, want the verification-log pointer (a verify VM ran, so the log exists)", hint)
+	}
+	if _, err := os.Stat(filepath.Join(b.AuditRoot, id+".verify.log")); err != nil {
+		t.Errorf("verify log missing though the hint points at it: %v", err)
+	}
 }
 
 func TestRunVerify_RequiredBlocksOnInconclusive(t *testing.T) {
@@ -359,7 +461,7 @@ func TestRunVerify_RequiredBlocksOnInconclusive(t *testing.T) {
 			"github.com/o/r": {Commands: [][]string{{"go", "test"}}, Required: true},
 		}
 		b.ApprovalTimeout = 200 * time.Millisecond
-		rec, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`)
+		rec, events, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude"}`)
 		if term["outcome"] != "verify_failed" {
 			t.Fatalf("outcome=%v, want verify_failed (inconclusive must fail closed when required); body=%s",
 				term["outcome"], rec.Body)
@@ -369,6 +471,33 @@ func TestRunVerify_RequiredBlocksOnInconclusive(t *testing.T) {
 		}
 		if st.pushed.Load() {
 			t.Error("nothing may be pushed when required verification is inconclusive")
+		}
+		// Evidence persists even though verification never ran: the brief
+		// (inconclusive, no posture claim for VMs that never launched) and the
+		// captured diff.
+		id := taskID(t, events)
+		br := readBrief(t, b, id)
+		if br.Verification.Status != trustbrief.VerificationInconclusive {
+			t.Errorf("brief verification status=%q, want inconclusive", br.Verification.Status)
+		}
+		if br.Verification.Network != "" || br.Verification.Credentials != "" {
+			t.Errorf("posture=%q/%q, want empty (no verify VM ever launched)",
+				br.Verification.Network, br.Verification.Credentials)
+		}
+		if _, err := os.Stat(filepath.Join(b.AuditRoot, id+".diff")); err != nil {
+			t.Errorf(".diff not persisted for verify_failed: %v", err)
+		}
+		// No verify VM launched, so no log exists — the hint must not point at
+		// a nonexistent file.
+		hint, _ := term["hint"].(string)
+		if !strings.Contains(hint, "drydock inspect "+id) {
+			t.Errorf("hint=%q, want a drydock inspect pointer", hint)
+		}
+		if strings.Contains(hint, "verification log:") {
+			t.Errorf("hint=%q must not point at a verification log that was never created", hint)
+		}
+		if _, err := os.Stat(filepath.Join(b.AuditRoot, id+".verify.log")); !os.IsNotExist(err) {
+			t.Errorf("no verify log should exist when no verify VM ran (stat err=%v)", err)
 		}
 	})
 	t.Run("required=false proceeds", func(t *testing.T) {
@@ -503,6 +632,10 @@ func TestRunVerify_EmptyCommandsIsInconclusive(t *testing.T) {
 	}
 	if len(v.Commands) != 0 {
 		t.Errorf("commands=%v, want empty list (no commands were configured to run)", v.Commands)
+	}
+	if v.Network != "" || v.Credentials != "" {
+		t.Errorf("posture=%q/%q, want empty — the brief must not assert a posture for verify VMs that never launched",
+			v.Network, v.Credentials)
 	}
 }
 

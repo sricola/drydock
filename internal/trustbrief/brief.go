@@ -17,9 +17,10 @@ import (
 // the existing .jsonl/.diff/.widen.json per-task artifacts.
 const Suffix = ".brief.json"
 
-// VerificationNotConfigured is the v1 status: no verifier stage exists yet.
-// The field is present from schema v1 so adding the verifier is a data
-// change, not a schema migration.
+// VerificationNotConfigured means no verify.repos entry matched this task's
+// repository, so the broker ran no verifier stage for it. The field has been
+// present since schema v1 (predating the verifier), so adding the verifier
+// was a data change, not a schema migration.
 const VerificationNotConfigured = "not_configured"
 
 // Overall verification statuses. "inconclusive" covers timeouts and infra

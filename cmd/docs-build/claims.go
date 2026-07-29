@@ -44,7 +44,7 @@ func securityClaims() []claim {
 			"Wall-clock bound per task: on expiry the run context is cancelled and the task terminates without pushing (VM force-delete is best effort). Hard.",
 			"TestHandleTask_TimeoutTerminatesAndDoesNotPush"},
 		{"verify.repos.*.timeout", fmt.Sprintf("%s per command when the repo's config leaves it unset", broker.DefaultVerifyTimeout),
-			"Wall-clock bound per verification command; on expiry the verify VM is force-removed and the command records timed_out, so the overall verdict reads inconclusive — never passed. Verifier output is display-only (log + host-side digest) and shares the per-task host output cap. Hard.",
+			"Wall-clock bound per verification command; on expiry the verify VM is force-removed and the command records timed_out, so the overall verdict reads inconclusive — never passed. Verifier output is display-only (log + host-side digest), bounded by the same per-task host output cap limit as the agent run, from a separate budget. Hard.",
 			"TestRunVerify_TimeoutIsInconclusiveNeverPassed"},
 		{"stage_quota_gb", fmt.Sprintf("%d", d.StageQuotaGB),
 			"Per-task disk bound: the stage dir is an APFS sparse image of this size (macOS). Hard (filesystem ENOSPC).",

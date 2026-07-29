@@ -260,10 +260,14 @@ func (s *Stage) StagedTreeHash() (string, error) {
 }
 
 // ExportStaged materializes the staged tree (see StagedTreeHash) into dst,
-// created fresh. This sealed copy — never the live work tree — is what gets
-// mounted into the verifier VM: verification cannot mutate what will be
-// pushed, and further work-tree edits after export cannot change what was
-// verified.
+// created fresh, and returns the hash of the tree it actually archived. This
+// sealed copy — never the live work tree — is what gets mounted into the
+// verifier VM: verification cannot mutate what will be pushed, and further
+// work-tree edits after export cannot change what was verified.
+//
+// Returning the hash makes the seal atomic: the caller records the identity
+// of exactly the tree that was exported, with no second write-tree run whose
+// result could differ if the work tree moved between the two calls.
 //
 // dst must live under the stage root (mirroring Cleanup's root-shape guard);
 // any existing dst is removed first so the export is always a clean tree.
@@ -284,20 +288,20 @@ func (s *Stage) StagedTreeHash() (string, error) {
 // defenses (e.g. bsdtar's default refusal to extract through a
 // previously-extracted symlink or via ".." components); this function does
 // not independently re-verify that guarantee across tar versions.
-func (s *Stage) ExportStaged(dst string) error {
+func (s *Stage) ExportStaged(dst string) (string, error) {
 	tree, err := s.StagedTreeHash()
 	if err != nil {
-		return err
+		return "", err
 	}
 	clean, err := s.exportDst(dst)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := os.RemoveAll(clean); err != nil {
-		return fmt.Errorf("stage: clear export dst: %w", err)
+		return "", fmt.Errorf("stage: clear export dst: %w", err)
 	}
 	if err := os.MkdirAll(clean, 0o700); err != nil {
-		return err
+		return "", err
 	}
 
 	ctx := s.execCtx()
@@ -316,12 +320,12 @@ func (s *Stage) ExportStaged(dst string) error {
 
 	pipe, err := arch.StdoutPipe()
 	if err != nil {
-		return err
+		return "", err
 	}
 	untar.Stdin = pipe
 
 	if err := arch.Start(); err != nil {
-		return err
+		return "", err
 	}
 	if err := untar.Start(); err != nil {
 		// untar failed to launch (e.g. its binary is missing). arch is already
@@ -337,17 +341,17 @@ func (s *Stage) ExportStaged(dst string) error {
 			_ = arch.Process.Kill()
 		}
 		_ = arch.Wait()
-		return fmt.Errorf("stage: start untar export: %w", err)
+		return "", fmt.Errorf("stage: start untar export: %w", err)
 	}
 	archErr := arch.Wait()
 	untarErr := untar.Wait()
 	if archErr != nil {
-		return fmt.Errorf("stage: git archive: %w\n%s", archErr, archStderr.String())
+		return "", fmt.Errorf("stage: git archive: %w\n%s", archErr, archStderr.String())
 	}
 	if untarErr != nil {
-		return fmt.Errorf("stage: untar export: %w\n%s", untarErr, untarStderr.String())
+		return "", fmt.Errorf("stage: untar export: %w\n%s", untarErr, untarStderr.String())
 	}
-	return nil
+	return tree, nil
 }
 
 // exportDst cleans dst and asserts it falls under the stage root, applying

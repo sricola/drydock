@@ -20,8 +20,11 @@ entry below corresponds to a Git tag of the same name.
   closed. `required: false` (default) is advisory; `required: true` blocks
   the push on any status but `passed` — a timeout or infra error reads
   `inconclusive`, never passed, and blocks too (outcome `verify_failed`).
-  Each command is bounded by a per-command timeout (default 10m) and the
-  existing per-task host output cap.
+  Each command is bounded by a per-command timeout (default 10m); verifier
+  output is capped at the same limit as the per-task host output cap, from
+  its own separate budget. A `verify_failed` task persists the same trust
+  brief and audit `.diff` evidence a gated task would, so the `drydock
+  inspect` hint always has something to show.
 
 - **Verification surfaced to operators.** The trust brief gains a populated
   verification block, and `drydock inspect` renders it: overall status, the

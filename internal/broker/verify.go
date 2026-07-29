@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -37,14 +38,16 @@ type VerifyRepo struct {
 // Brief claims table cite the same constant the broker actually enforces.
 const DefaultVerifyTimeout = 10 * time.Minute
 
-// stagedExporter is the optional stage capability the verifier needs: the
-// identity hash of the staged tree, and a sealed export of it. Production
+// stagedExporter is the optional stage capability the verifier needs: a
+// sealed export of the staged tree (ExportStaged returns the hash of the
+// tree it actually archived, so recording the identity and materializing the
+// copy is one atomic act), plus a re-hash for the push-time guard. Production
 // realStage has it (via *stage.Stage); test fakes may not — absence makes
 // verification inconclusive, never silently passed (same optional-capability
 // idiom as BaseCommit/PushPreflight).
 type stagedExporter interface {
 	StagedTreeHash() (string, error)
-	ExportStaged(string) error
+	ExportStaged(string) (string, error)
 }
 
 // runVerify is the verifying stage: it runs the repo's host-approved
@@ -57,12 +60,29 @@ type stagedExporter interface {
 // status, exit code, or metric (F-07). The VM's output goes only to the
 // display-only <id>.verify.log, capped, with its digest computed host-side.
 //
+// diff is the captured review diff, threaded through so a required-verify
+// failure can still persist the trust brief before its terminal event.
+//
 // Returns false only when it already emitted the task's terminal event:
 // required-and-not-passed (outcome "verify_failed") or task cancellation.
-func (tr *taskRun) runVerify() bool {
+func (tr *taskRun) runVerify(diff string) bool {
 	b := tr.b
-	cfg, ok := b.Verify[repokey.Normalize(tr.repoRef)]
+	key := repokey.Normalize(tr.repoRef)
+	cfg, ok := b.Verify[key]
 	if !ok {
+		// Matching is deliberately case-sensitive on the owner/repo path (the
+		// host is lowercased by repokey.Normalize). A near-miss that differs
+		// only in case would otherwise SILENTLY skip a required verification,
+		// so warn loudly — but never auto-match: the operator wrote the key,
+		// the operator fixes the key.
+		for k := range b.Verify {
+			if strings.EqualFold(k, key) {
+				slog.Warn("verify: repo matches a verify.repos key only case-insensitively; "+
+					"verification was SKIPPED (not_configured) — fix the config key casing",
+					"task_repo", key, "config_key", k)
+				break
+			}
+		}
 		tr.verify = &trustbrief.Verification{Status: trustbrief.VerificationNotConfigured}
 		return true
 	}
@@ -84,6 +104,12 @@ func (tr *taskRun) runVerify() bool {
 	if cfg.Required && v.Status != trustbrief.VerificationPassed {
 		// Fail closed: required verification that is anything but "passed"
 		// (failed, inconclusive) blocks the push before any gate is entered.
+		// The trust brief is persisted BEFORE the terminal event: the hint
+		// below points the operator at `drydock inspect`, which reads the
+		// brief, so a verify_failed task must leave the same evidence (brief
+		// with the full Verification block; the .diff was already written at
+		// capture time) a gated task would.
+		b.writeBrief(tr, diff)
 		// Synthetic audit result row mirrors finishPush's push_failed pattern
 		// (last-wins over the agent's own success row, carrying metered cost).
 		cost := audit.TotalCost(tr.auditPath)
@@ -91,10 +117,18 @@ func (tr *taskRun) runVerify() bool {
 			`{"type":"result","subtype":"verify_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 			time.Since(tr.taskStart).Milliseconds(), cost)
 		tr.outcome = "verify_failed"
+		// Point at the verification log only when one was actually created —
+		// the inconclusive paths that never launched a VM (no export
+		// capability, export failure, empty commands) have no log file, and a
+		// hint at a nonexistent path would send the operator chasing nothing.
+		hint := "drydock inspect " + tr.id
+		if _, lerr := os.Lstat(tr.verifyLogPath()); lerr == nil {
+			hint += " · verification log: " + tr.verifyLogPath()
+		}
 		tr.sw.emit(map[string]any{"event": "result", "outcome": "verify_failed",
 			"task_id": tr.id, "verify_status": v.Status,
 			"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": cost,
-			"hint": "drydock inspect " + tr.id + " · verification log: " + tr.verifyLogPath()})
+			"hint": hint})
 		return false
 	}
 	return true
@@ -105,7 +139,11 @@ func (tr *taskRun) runVerify() bool {
 // shutdown) — the caller emits the standard cancelled terminal.
 func (tr *taskRun) execVerify(cfg VerifyRepo) (v *trustbrief.Verification, cancelled bool) {
 	b := tr.b
-	v = &trustbrief.Verification{Network: "denied", Credentials: "none"}
+	// The Network/Credentials posture is asserted only once a verifier VM is
+	// actually about to launch (below, after the capability/export/log checks
+	// all succeed): the inconclusive paths that never ran a VM must not carry
+	// a posture claim for VMs that never existed.
+	v = &trustbrief.Verification{}
 
 	if len(cfg.Commands) == 0 {
 		// config.Validate forbids an empty command list, but Broker.Verify can
@@ -122,16 +160,16 @@ func (tr *taskRun) execVerify(cfg VerifyRepo) (v *trustbrief.Verification, cance
 		v.Status = trustbrief.VerificationInconclusive
 		return v, false
 	}
-	tree, err := es.StagedTreeHash()
-	var verifyDir string
-	if err == nil {
-		// The export must sit inside the stage (same quota image, reaped by the
-		// same Cleanup), but taskStage only exposes WorkDir(). stage.Prepare
-		// lays out <root>/work and <root>/git, so the stage root is WorkDir's
-		// parent and the sealed export goes at <root>/verify beside them.
-		verifyDir = filepath.Join(filepath.Dir(tr.st.WorkDir()), "verify")
-		err = es.ExportStaged(verifyDir)
-	}
+	// The export must sit inside the stage (same quota image, reaped by the
+	// same Cleanup), but taskStage only exposes WorkDir(). stage.Prepare
+	// lays out <root>/work and <root>/git, so the stage root is WorkDir's
+	// parent and the sealed export goes at <root>/verify beside them.
+	// ExportStaged returns the hash of the tree it actually archived — the
+	// recorded TreeSHA and the sealed copy come from ONE write-tree run, so
+	// there is no window in which a work-tree edit could make the recorded
+	// identity differ from what the verifier ran against.
+	verifyDir := filepath.Join(filepath.Dir(tr.st.WorkDir()), "verify")
+	tree, err := es.ExportStaged(verifyDir)
 	if err != nil {
 		slog.Warn("verify: staged-tree export failed; verification inconclusive",
 			"task_id", tr.id, "err", err)
@@ -154,6 +192,10 @@ func (tr *taskRun) execVerify(cfg VerifyRepo) (v *trustbrief.Verification, cance
 	// Double Close (explicit close before hashing below, then this defer on
 	// early returns) is harmless on *os.File.
 	defer logf.Close()
+
+	// Every never-ran path is behind us: from here at least one verifier VM
+	// launches, so record the capability posture those VMs actually run with.
+	v.Network, v.Credentials = "denied", "none"
 
 	// One shared output budget across all commands (same bound as the agent
 	// run). onExceed cancels whichever command is in flight so a log flood

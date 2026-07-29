@@ -97,7 +97,9 @@ makes it `inconclusive`, which is never treated as a pass.
   approval gate whatever the status.
 - `required: true`: **fail closed**. Any status but `passed` (including
   `inconclusive`) ends the task with outcome `verify_failed` before the
-  approval gate, and nothing is pushed.
+  approval gate, and nothing is pushed. The evidence survives: the trust
+  brief (`drydock inspect <id>`), the captured diff (`<id>.diff`), and — when
+  any verify VM actually ran — the verification log are all still persisted.
 
 While it runs, the task shows a `verifying` stage — between `running` and
 `awaiting_approval` — in the submit stream, `drydock status`, and the web
@@ -113,7 +115,8 @@ branch (`agent/<id>`) and optionally opens a PR. A single-ref `git push` is
 atomic: the remote branch either receives the whole commit or is left unchanged.
 `push_failed` therefore guarantees nothing landed on the remote for that task,
 and the captured diff is always preserved in the audit `.diff` file for every
-outcome.
+outcome that produced a diff — `verify_failed` included; only tasks that never
+captured one (`no_diff`, or a failure before diff capture) have no `.diff`.
 
 drydock classifies push failures and recovers from the recoverable ones:
 
