@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"drydock/internal/audit"
+	"drydock/internal/config"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
 	"drydock/internal/provider"
@@ -135,6 +136,14 @@ type Broker struct {
 	PushMaxRetries       int
 	PushRetryBackoff     time.Duration
 	PushFreshBranchTries int
+
+	// PolicyFields/PolicyHash are the daemon's effective policy as resolved by
+	// config.Explain at boot, stashed here so GET /admin/policy can report what
+	// brokerd actually loaded — read-only, no recomputation on request. Set
+	// once by cmd/brokerd after cfg is resolved; nil/empty on a Broker built
+	// directly by tests that don't care about the policy endpoint.
+	PolicyFields []config.Field
+	PolicyHash   string
 
 	// AggregateExceeded, when set, is consulted at task submission: if it
 	// returns true for the task's vendor, the submission is rejected (402)

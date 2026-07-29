@@ -483,6 +483,18 @@ func main() {
 		slog.Warn(msg, "config", "openai_compat")
 	}
 
+	// Resolve the effective-policy provenance table once at boot for GET
+	// /admin/policy. Explain re-attributes each field's source (env/yaml/
+	// default) and is called fresh here rather than threading cfg through,
+	// since cfg alone has already lost that provenance. Log-and-continue on
+	// error: a policy-reporting endpoint failing to populate must not stop
+	// brokerd from serving tasks.
+	policyFields, _, err := config.Explain(config.DefaultPath())
+	if err != nil {
+		slog.Warn("policy explain failed; GET /admin/policy will report no fields", "err", err)
+	}
+	policyHash := config.EffectiveHash(policyFields)
+
 	b := &broker.Broker{
 		Cfg:                  egCfg,
 		Providers:            providers,
@@ -510,6 +522,8 @@ func main() {
 		PushFreshBranchTries: cfg.PushFreshBranchTries,
 		UnmeteredVendors:     unmeteredVendors,
 		Verify:               verifyRepos(cfg.Verify.Repos),
+		PolicyFields:         policyFields,
+		PolicyHash:           policyHash,
 	}
 	if squidCtl != nil {
 		b.Squid = squidCtl
@@ -538,6 +552,7 @@ func main() {
 	mux.HandleFunc("POST /admin/kill/{id}", b.HandleKill)
 	mux.HandleFunc("GET /admin/pending", b.HandlePending)
 	mux.HandleFunc("GET /admin/tasks", b.HandleTasks)
+	mux.HandleFunc("GET /admin/policy", b.HandlePolicy)
 	mux.HandleFunc("GET /healthz", b.HandleHealth)
 
 	srv = hardenedServer(brokerHandler(cfg, mux))

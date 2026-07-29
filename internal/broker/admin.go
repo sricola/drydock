@@ -81,6 +81,20 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandlePolicy returns the daemon's effective policy exactly as resolved at
+// boot by config.Explain: the per-field provenance table plus the divergence
+// hash. It is read-only and does no recomputation — brokerd stashes
+// PolicyFields/PolicyHash once at startup, and this handler just reports them,
+// so `drydock` (or an operator) can diff the running daemon's live policy
+// against the on-disk config.yaml to catch file-vs-live drift after an edit
+// that hasn't been picked up by a restart.
+func (b *Broker) HandlePolicy(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{
+		"fields": b.PolicyFields,
+		"hash":   b.PolicyHash,
+	})
+}
+
 // HandleKill cancels the per-task context, which aborts the container run
 // (if still in flight) and the push-gate wait (if at the approval gate).
 // Returns 204 on success, 404 if no such live task. The corresponding

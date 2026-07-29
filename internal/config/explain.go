@@ -29,11 +29,11 @@ const (
 // Field is one config field's provenance: its effective (resolved) value and
 // which layer supplied it. EnvVar is empty for yaml-only fields.
 type Field struct {
-	Name    string
-	YAMLKey string
-	EnvVar  string
-	Value   string
-	Source  Source
+	Name    string `json:"name"`
+	YAMLKey string `json:"yaml_key"`
+	EnvVar  string `json:"env_var"`
+	Value   string `json:"value"`
+	Source  Source `json:"source"`
 }
 
 // fieldDesc describes one config field for the provenance table. guardedEnv
