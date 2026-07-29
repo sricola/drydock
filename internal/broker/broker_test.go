@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"drydock/internal/config"
 	"drydock/internal/egress"
 )
 
@@ -660,6 +661,63 @@ func TestHandleHealth_BreakdownByStage(t *testing.T) {
 	}
 	if body.Running != 1 || body.PendingApproval != 1 || body.Pushing != 1 {
 		t.Errorf("breakdown = %+v, want running=1 pending=1 pushing=1", body)
+	}
+}
+
+func TestHandlePolicy_ReturnsFieldsAndHash(t *testing.T) {
+	b := &Broker{
+		PolicyFields: []config.Field{
+			{Name: "Network", Value: "x", Source: config.SourceYAML},
+		},
+		PolicyHash: "abc",
+	}
+
+	req := httptest.NewRequest("GET", "/admin/policy", nil)
+	rr := httptest.NewRecorder()
+	b.HandlePolicy(rr, req)
+
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q, want application/json", ct)
+	}
+
+	var body struct {
+		Fields []config.Field `json:"fields"`
+		Hash   string         `json:"hash"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Fields) != 1 || body.Fields[0].Name != "Network" || body.Fields[0].Value != "x" {
+		t.Errorf("fields = %+v, want the single Network field round-tripped", body.Fields)
+	}
+	if body.Hash != "abc" {
+		t.Errorf("hash = %q, want %q", body.Hash, "abc")
+	}
+}
+
+func TestHandlePolicy_NilFieldsMarshalsEmptyArray(t *testing.T) {
+	// When PolicyFields is nil (boot-time config.Explain errored), HandlePolicy
+	// must marshal "fields":[] not "fields":null to match the empty-array
+	// convention HandlePending/HandleTasks use.
+	b := &Broker{
+		PolicyFields: nil,
+		PolicyHash:   "def",
+	}
+
+	req := httptest.NewRequest("GET", "/admin/policy", nil)
+	rr := httptest.NewRecorder()
+	b.HandlePolicy(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("status = %d", rr.Code)
+	}
+
+	body := strings.TrimSpace(rr.Body.String())
+	if strings.Contains(body, `"fields":null`) {
+		t.Errorf("response contains null fields: %q", body)
+	}
+	if !strings.Contains(body, `"fields":[]`) {
+		t.Errorf("response does not contain empty array fields; got: %q", body)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+
+	"drydock/internal/config"
 )
 
 // HandleApprove signals the pending task's channel with true. Wire as
@@ -78,6 +80,24 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"verifying":        verifying,
 		"pending_approval": pendingApproval,
 		"pushing":          pushing,
+	})
+}
+
+// HandlePolicy returns the daemon's effective policy exactly as resolved at
+// boot by config.Explain: the per-field provenance table plus the divergence
+// hash. It is read-only and does no recomputation — brokerd stashes
+// PolicyFields/PolicyHash once at startup, and this handler just reports them,
+// so `drydock` (or an operator) can diff the running daemon's live policy
+// against the on-disk config.yaml to catch file-vs-live drift after an edit
+// that hasn't been picked up by a restart.
+func (b *Broker) HandlePolicy(w http.ResponseWriter, r *http.Request) {
+	fields := b.PolicyFields
+	if fields == nil {
+		fields = make([]config.Field, 0)
+	}
+	writeJSON(w, map[string]any{
+		"fields": fields,
+		"hash":   b.PolicyHash,
 	})
 }
 

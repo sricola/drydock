@@ -19,7 +19,7 @@ import (
 var dispatchedCommands = []string{
 	"setup", "init", "start", "daemon", "submit", "status", "tasks", "stats",
 	"logs", "retry", "review", "inspect", "kill", "cancel", "prune", "pending",
-	"approve", "deny", "doctor", "redteam", "auth", "ui", "version",
+	"approve", "deny", "doctor", "redteam", "auth", "ui", "policy", "version",
 }
 
 // Every command the top-level usage advertises must have an entry in subHelp.
