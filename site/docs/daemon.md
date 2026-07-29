@@ -80,6 +80,13 @@ A task blocked at the diff-approval gate survives a brokerd restart:
   works. A false `ok` is never written for a task that did not push.
 - If brokerd shuts down again while a resumed task is still waiting at the
   gate, the marker is preserved for the next boot (idempotent).
+- A restart never resumes a task mid-verify. The `verifying` stage has no
+  gate marker, so a task caught there ends like a task caught mid-run: a
+  graceful stop cancels it (`cancelled`), and after a crash boot
+  reconciliation appends an `interrupted` terminal line. Verification runs
+  again only as part of a full re-run via `drydock retry <id>`; approving a
+  resumed awaiting-approval task pushes the surviving branch without
+  re-running verification.
 
 ## Running brokerd directly
 

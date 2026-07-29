@@ -174,7 +174,7 @@ function paintBody(rec, t){
   } else { rec.liveEl.textContent = ""; }
   if (t.stage === "awaiting_egress") rec.el.append(egressGate(t));
   else if (t.stage === "awaiting_approval") rec.el.append(pushGate(t));
-  if (["running","pushing","awaiting_egress","awaiting_approval"].includes(t.stage))
+  if (["running","verifying","pushing","awaiting_egress","awaiting_approval"].includes(t.stage))
     rec.el.append(el("div", { class: "actions" }, dangerButton("Kill", () => act("kill", t.id), t.id + ":kill:card")));
 }
 
@@ -314,7 +314,7 @@ setInterval(() => {
 }, 1000);
 
 function stageBadge(stage) {
-  const label = { awaiting_egress: "egress?", running: "running", awaiting_approval: "review?", pushing: "pushing" }[stage] || stage;
+  const label = { awaiting_egress: "egress?", running: "running", verifying: "verifying", awaiting_approval: "review?", pushing: "pushing" }[stage] || stage;
   return el("span", { class: "badge stage-" + stage, text: label });
 }
 

@@ -122,6 +122,27 @@ func TestConsume_NonPushOutcomes(t *testing.T) {
 	}
 }
 
+// A long verify must show its own progress line, not a stale "running"
+// spinner; a verify_failed terminal must say plainly that nothing was pushed
+// and point at the evidence.
+func TestConsume_VerifyingStageAndVerifyFailed(t *testing.T) {
+	stream := `{"event":"accepted","task_id":"7f3a0000"}` + "\n" +
+		`{"event":"stage","stage":"verifying","commands":2}` + "\n" +
+		`{"event":"result","outcome":"verify_failed","verify_status":"failed","hint":"drydock inspect 7f3a0000"}` + "\n"
+
+	var out strings.Builder
+	exit := consume(strings.NewReader(stream), &out, modePiped)
+	if exit != 0 {
+		t.Errorf("exit=%d, want 0 (a completed task with a terminal outcome, like denied)", exit)
+	}
+	got := out.String()
+	for _, want := range []string{"verifying", "2 checks", "verification failed", "not pushed", "drydock inspect 7f3a0000"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // --json must key its exit code on the terminal event, not the HTTP status: a
 // streamed *failure* is HTTP 200 + an `error` event, and the raw NDJSON must
 // still pass through untouched.
