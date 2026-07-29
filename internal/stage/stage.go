@@ -233,6 +233,122 @@ func capCopy(r io.Reader, max int64) (string, bool, error) {
 	}
 }
 
+// StagedTreeHash stages the work tree (same exclusions as CaptureDiff — the
+// .task control dir and any nested .git) and returns the git tree hash of the
+// staged index. This is the identity of what the reviewer sees in the diff,
+// what the verifier runs against (via ExportStaged), and what the push-time
+// guard re-checks before pushing — one hash, three uses, so none of them can
+// silently drift from what was actually reviewed.
+func (s *Stage) StagedTreeHash() (string, error) {
+	if err := s.stageAll(); err != nil {
+		return "", err
+	}
+	// write-tree reads the index, not the work tree, so it needs no
+	// --work-tree; s.git supplies one harmlessly (write-tree ignores it).
+	out, err := s.git("write-tree")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ExportStaged materializes the staged tree (see StagedTreeHash) into dst,
+// created fresh. This sealed copy — never the live work tree — is what gets
+// mounted into the verifier VM: verification cannot mutate what will be
+// pushed, and further work-tree edits after export cannot change what was
+// verified.
+//
+// dst must live under the stage root (mirroring Cleanup's root-shape guard);
+// any existing dst is removed first so the export is always a clean tree.
+//
+// Implemented as `git archive --format=tar <tree> | tar -x -C dst` rather
+// than through s.git/runGit: those combine stdout and stderr into one
+// buffer, which would corrupt a tar byte stream. git archive reads the
+// tree object straight from the (host-only) git dir — no work tree is
+// consulted — so arch.Dir only needs to be a valid directory, not the work
+// tree itself.
+//
+// Hostile-repo note: git archive emits symlinks in the staged tree as
+// symlink entries — it never dereferences them to read link-target content
+// into the archive — so a staged symlink to e.g. /etc/passwd is exported as
+// a symlink, not a copy of the target's bytes. Protection against a
+// malicious archive using a symlink to redirect a LATER entry's write
+// outside dst is provided by the tar implementation's own path-traversal
+// defenses (e.g. bsdtar's default refusal to extract through a
+// previously-extracted symlink or via ".." components); this function does
+// not independently re-verify that guarantee across tar versions.
+func (s *Stage) ExportStaged(dst string) error {
+	tree, err := s.StagedTreeHash()
+	if err != nil {
+		return err
+	}
+	clean, err := s.exportDst(dst)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(clean); err != nil {
+		return fmt.Errorf("stage: clear export dst: %w", err)
+	}
+	if err := os.MkdirAll(clean, 0o700); err != nil {
+		return err
+	}
+
+	ctx := s.execCtx()
+	arch := exec.CommandContext(ctx, "git",
+		"--git-dir="+s.gitDir, "archive", "--format=tar", tree)
+	arch.Dir = s.WorkDir
+	arch.Env = gitHardenedEnv(os.Environ())
+	arch.WaitDelay = gitWaitDelay
+	archStderr := &cappedBuffer{max: 64 << 10}
+	arch.Stderr = archStderr
+
+	untar := exec.CommandContext(ctx, "tar", "-x", "-C", clean)
+	untar.WaitDelay = gitWaitDelay
+	untarStderr := &cappedBuffer{max: 64 << 10}
+	untar.Stderr = untarStderr
+
+	pipe, err := arch.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	untar.Stdin = pipe
+
+	if err := arch.Start(); err != nil {
+		return err
+	}
+	if err := untar.Start(); err != nil {
+		_ = arch.Wait()
+		return err
+	}
+	archErr := arch.Wait()
+	untarErr := untar.Wait()
+	if archErr != nil {
+		return fmt.Errorf("stage: git archive: %w\n%s", archErr, archStderr.String())
+	}
+	if untarErr != nil {
+		return fmt.Errorf("stage: untar export: %w\n%s", untarErr, untarStderr.String())
+	}
+	return nil
+}
+
+// exportDst cleans dst and asserts it falls under the stage root, applying
+// the same defense-in-depth as Cleanup's root-shape guard: ExportStaged is
+// about to RemoveAll+recreate dst, so a misresolved path must never be
+// allowed to widen that blast radius outside the stage. dst equal to the
+// root itself is also refused — it would let a RemoveAll of dst delete the
+// work tree and host-only git dir out from under this same Stage.
+func (s *Stage) exportDst(dst string) (string, error) {
+	root := filepath.Clean(s.Root)
+	if root == "" || root == "/" || root == "." || !filepath.IsAbs(root) {
+		return "", fmt.Errorf("stage: refusing to export under unsafe stage root %q", s.Root)
+	}
+	clean := filepath.Clean(dst)
+	if clean == root || !strings.HasPrefix(clean, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("stage: export dst %q is not under stage root %q", dst, s.Root)
+	}
+	return clean, nil
+}
+
 // cappedBuffer collects up to max bytes and silently drops the rest, while
 // reporting every write as fully consumed so the writer (git's stderr) is never
 // blocked. Keeps a diagnostic stream bounded.

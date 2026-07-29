@@ -327,8 +327,10 @@ func TestReopen_ErrorsWhenGitDirMissing(t *testing.T) {
 	}
 }
 
-func TestBaseCommit_ReturnsCloneHead(t *testing.T) {
-	// Build a source repo with one commit.
+// newLocalSourceRepo creates a local (non-bare) repo with one empty commit
+// and returns its path, suitable as the repoRef Prepare clones from.
+func newLocalSourceRepo(t *testing.T) string {
+	t.Helper()
 	src := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "-q"}, {"config", "user.email", "t@t"}, {"config", "user.name", "t"},
@@ -340,6 +342,11 @@ func TestBaseCommit_ReturnsCloneHead(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
+	return src
+}
+
+func TestBaseCommit_ReturnsCloneHead(t *testing.T) {
+	src := newLocalSourceRepo(t)
 	want, err := exec.Command("git", "-C", src, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -377,5 +384,90 @@ func TestReapOrphans_SkipsKeepSet(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "reapme")); !os.IsNotExist(err) {
 		t.Error("reapme should have been removed")
+	}
+}
+
+func TestExportStaged_MatchesStagedContentAndExcludesTaskDir(t *testing.T) {
+	src := newLocalSourceRepo(t)
+	st, err := Prepare(context.Background(), t.TempDir(), src)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	// Simulate agent output: a tracked change, plus .task noise that must
+	// never reach the verified tree (A4 parity).
+	if err := os.WriteFile(filepath.Join(st.WorkDir, "new.txt"), []byte("agent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(st.WorkDir, ".task"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(st.WorkDir, ".task", "prompt.txt"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h1, err := st.StagedTreeHash()
+	if err != nil {
+		t.Fatalf("StagedTreeHash: %v", err)
+	}
+	if len(h1) != 40 {
+		t.Errorf("tree hash = %q, want 40 hex", h1)
+	}
+	// Idempotent: same content, same hash.
+	if h2, _ := st.StagedTreeHash(); h2 != h1 {
+		t.Errorf("hash not stable: %q vs %q", h2, h1)
+	}
+
+	dst := filepath.Join(st.Root, "verify")
+	if err := st.ExportStaged(dst); err != nil {
+		t.Fatalf("ExportStaged: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dst, "new.txt")); err != nil || string(data) != "agent" {
+		t.Errorf("exported new.txt = %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".task")); !os.IsNotExist(err) {
+		t.Error(".task leaked into the exported verify tree")
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".git")); !os.IsNotExist(err) {
+		t.Error(".git leaked into the exported verify tree")
+	}
+}
+
+// A hostile staged repo may include a symlink pointing outside the tree
+// (e.g. at /etc/passwd). git archive must emit it as a symlink entry, never
+// dereferencing it to read the target's content into the archive, and the
+// exported copy must preserve it as a symlink rather than a followed copy.
+func TestExportStaged_SymlinkArchivedNotFollowed(t *testing.T) {
+	src := newLocalSourceRepo(t)
+	st, err := Prepare(context.Background(), t.TempDir(), src)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if err := os.Symlink("/etc/passwd", filepath.Join(st.WorkDir, "evil")); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(st.Root, "verify")
+	if err := st.ExportStaged(dst); err != nil {
+		t.Fatalf("ExportStaged: %v", err)
+	}
+
+	fi, err := os.Lstat(filepath.Join(dst, "evil"))
+	if err != nil {
+		t.Fatalf("Lstat exported symlink: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("exported \"evil\" is not a symlink (mode=%v): archive dereferenced it", fi.Mode())
+	}
+	// If tar had followed the link and copied /etc/passwd's bytes, the
+	// exported entry would be a regular file instead of a symlink; the mode
+	// check above already catches this, but assert the target string too so
+	// a switch to a symlink-following extractor is caught even if some
+	// future flag makes tar report a non-symlink mode.
+	target, err := os.Readlink(filepath.Join(dst, "evil"))
+	if err != nil {
+		t.Fatalf("Readlink: %v", err)
+	}
+	if target != "/etc/passwd" {
+		t.Errorf("exported symlink target = %q, want /etc/passwd", target)
 	}
 }
