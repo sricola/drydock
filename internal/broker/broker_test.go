@@ -695,6 +695,32 @@ func TestHandlePolicy_ReturnsFieldsAndHash(t *testing.T) {
 	}
 }
 
+func TestHandlePolicy_NilFieldsMarshalsEmptyArray(t *testing.T) {
+	// When PolicyFields is nil (boot-time config.Explain errored), HandlePolicy
+	// must marshal "fields":[] not "fields":null to match the empty-array
+	// convention HandlePending/HandleTasks use.
+	b := &Broker{
+		PolicyFields: nil,
+		PolicyHash:   "def",
+	}
+
+	req := httptest.NewRequest("GET", "/admin/policy", nil)
+	rr := httptest.NewRecorder()
+	b.HandlePolicy(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("status = %d", rr.Code)
+	}
+
+	body := strings.TrimSpace(rr.Body.String())
+	if strings.Contains(body, `"fields":null`) {
+		t.Errorf("response contains null fields: %q", body)
+	}
+	if !strings.Contains(body, `"fields":[]`) {
+		t.Errorf("response does not contain empty array fields; got: %q", body)
+	}
+}
+
 func TestTaskModelFor(t *testing.T) {
 	cases := []struct {
 		taskModel, ocModel, vendor, want string

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+
+	"drydock/internal/config"
 )
 
 // HandleApprove signals the pending task's channel with true. Wire as
@@ -89,8 +91,12 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 // against the on-disk config.yaml to catch file-vs-live drift after an edit
 // that hasn't been picked up by a restart.
 func (b *Broker) HandlePolicy(w http.ResponseWriter, r *http.Request) {
+	fields := b.PolicyFields
+	if fields == nil {
+		fields = make([]config.Field, 0)
+	}
 	writeJSON(w, map[string]any{
-		"fields": b.PolicyFields,
+		"fields": fields,
 		"hash":   b.PolicyHash,
 	})
 }
