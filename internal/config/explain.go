@@ -393,11 +393,12 @@ func PolicyComparisonFields(all []Field) []Field {
 // canonical "Name=Value\n" lines sorted by Name. Two loads agree iff every
 // field's effective value agrees, regardless of field ordering. Callers
 // comparing local-vs-daemon policy hash PolicyComparisonFields(fields), not
-// the full set.
+// the full set. Each value is quoted to make it unambiguous (newlines in a
+// Value cannot collide with field boundaries).
 func EffectiveHash(fields []Field) string {
 	lines := make([]string, 0, len(fields))
 	for _, f := range fields {
-		lines = append(lines, f.Name+"="+f.Value+"\n")
+		lines = append(lines, f.Name+"="+strconv.Quote(f.Value)+"\n")
 	}
 	sort.Strings(lines)
 	h := sha256.Sum256([]byte(strings.Join(lines, "")))

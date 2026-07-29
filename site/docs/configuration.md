@@ -149,7 +149,7 @@ daemon's:
 
 `--json` emits the machine-readable form: `{"local": {fields, hash}, "live":
 {fields, hash} | null, "in_sync": bool | null}` (`live`/`in_sync` are `null`
-when the daemon could not be asked).
+when the daemon could not be asked). Both `hash` values cover only the divergence-comparison subset (connection fields `broker.socket` / `broker.addr` are excluded), so clients should compare the two `hash` values to each other or check `in_sync` rather than recomputing a hash over the full `fields` list.
 
 Two semantics worth knowing:
 
