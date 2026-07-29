@@ -32,8 +32,10 @@ var (
 	bpTruncated     = []byte("... [diff truncated at ")
 	bsDiffer        = []byte(" differ")
 	bsSymlinkMode   = []byte(" 120000")
+	bsGitlinkMode   = []byte(" 160000")
 	bGitBinaryPatch = []byte("GIT binary patch")
 	bModeSymlink    = []byte("120000")
+	bModeGitlink    = []byte("160000")
 	bModeExec       = []byte("100755")
 )
 
@@ -61,6 +63,7 @@ const (
 	FlagLockfile   = "lockfile"
 	FlagCIWorkflow = "ci-workflow"
 	FlagGitMeta    = "git-metadata"
+	FlagSubmodule  = "submodule-gitlink"
 )
 
 // DiffFacts is the broker-computed structural summary of the review diff.
@@ -136,6 +139,9 @@ func Analyze(diff string) DiffFacts {
 			if bytes.HasPrefix(mode, bModeSymlink) {
 				addFlag(FlagSymlink, curPath)
 			}
+			if bytes.HasPrefix(mode, bModeGitlink) {
+				addFlag(FlagSubmodule, curPath)
+			}
 			if bytes.HasPrefix(mode, bModeExec) {
 				addFlag(FlagExecBit, curPath)
 			}
@@ -150,6 +156,9 @@ func Analyze(diff string) DiffFacts {
 			// the bit was ADDED, which "new mode "/"new file mode " already catch).
 			if bytes.HasSuffix(line, bsSymlinkMode) {
 				addFlag(FlagSymlink, curPath)
+			}
+			if bytes.HasSuffix(line, bsGitlinkMode) {
+				addFlag(FlagSubmodule, curPath)
 			}
 		case !inHunk && bytes.HasPrefix(line, bpRenameFrom):
 			// A pure rename (`similarity index 100%` / rename from / rename to,

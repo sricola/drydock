@@ -134,7 +134,8 @@ func TestRedactRepoRef(t *testing.T) {
 
 // The Brief must be credential-free by construction. Two tripwires: no field
 // in the struct tree may be named like a secret carrier, and a marshaled
-// sample must not contain secret-shaped strings.
+// sample must not contain secret-shaped strings. Verification.Credentials is
+// exempt: it stores capability posture ("denied"/"none"), not credentials.
 func TestBrief_NoSecretShapedFields(t *testing.T) {
 	var check func(t *testing.T, typ reflect.Type, path string)
 	check = func(t *testing.T, typ reflect.Type, path string) {
@@ -143,6 +144,11 @@ func TestBrief_NoSecretShapedFields(t *testing.T) {
 			for i := 0; i < typ.NumField(); i++ {
 				f := typ.Field(i)
 				lower := strings.ToLower(f.Name)
+				// Verification.Credentials stores capability posture, not secrets
+				if path == "Brief.Verification" && f.Name == "Credentials" {
+					check(t, f.Type, path+"."+f.Name)
+					continue
+				}
 				for _, bad := range []string{"token", "secret", "password", "credential", "apikey"} {
 					if strings.Contains(lower, bad) {
 						t.Errorf("field %s.%s is secret-shaped; the Brief must stay credential-free", path, f.Name)
@@ -164,5 +170,33 @@ func TestBrief_NoSecretShapedFields(t *testing.T) {
 		if strings.Contains(string(out), pat) {
 			t.Errorf("marshaled brief contains secret-shaped string %q", pat)
 		}
+	}
+}
+
+func TestVerification_RoundTripAndOmitEmpty(t *testing.T) {
+	dir := t.TempDir()
+	b := sampleBrief()
+	b.Verification = Verification{
+		Status: VerificationFailed, Network: "denied", Credentials: "none",
+		TreeSHA: "abc123", LogSHA256: HashInstruction("log"),
+		Commands: []VerifyCommand{
+			{Argv: []string{"go", "test", "./..."}, Status: VerifyCmdFailed, ExitCode: 1, DurationMs: 1200},
+			{Argv: []string{"go", "vet", "./..."}, Status: VerifyCmdSkipped},
+		},
+	}
+	if err := Write(dir, b.TaskID, b); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(dir, b.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Verification, b.Verification) {
+		t.Errorf("verification round-trip:\n got %+v\nwant %+v", got.Verification, b.Verification)
+	}
+	// A not_configured brief must keep its minimal v1 shape on the wire.
+	minimal, _ := json.Marshal(Verification{Status: VerificationNotConfigured})
+	if string(minimal) != `{"status":"not_configured"}` {
+		t.Errorf("minimal verification = %s, want status-only object", minimal)
 	}
 }

@@ -22,6 +22,46 @@ const Suffix = ".brief.json"
 // change, not a schema migration.
 const VerificationNotConfigured = "not_configured"
 
+// Overall verification statuses. "inconclusive" covers timeouts and infra
+// errors — evidence is absent, which must never read as passing.
+const (
+	VerificationPassed       = "passed"
+	VerificationFailed       = "failed"
+	VerificationInconclusive = "inconclusive"
+)
+
+// Per-command statuses.
+const (
+	VerifyCmdPassed   = "passed"
+	VerifyCmdFailed   = "failed"
+	VerifyCmdTimedOut = "timed_out"
+	VerifyCmdError    = "error"
+	VerifyCmdSkipped  = "skipped"
+)
+
+// VerifyCommand is one verification command's broker-observed result. The
+// exit code is read from the container process by the broker; nothing in
+// the verifier VM's output can influence these fields.
+type VerifyCommand struct {
+	Argv       []string `json:"argv"`
+	Status     string   `json:"status"`
+	ExitCode   int      `json:"exit_code"`
+	DurationMs int64    `json:"duration_ms"`
+}
+
+// Verification is the independent-verifier evidence block. Network and
+// Credentials record the verifier VM's capability posture ("denied"/"none");
+// TreeSHA is the staged tree the commands ran against — the same tree the
+// push-time guard re-checks so pushed tree == verified tree.
+type Verification struct {
+	Status      string          `json:"status"`
+	Network     string          `json:"network,omitempty"`
+	Credentials string          `json:"credentials,omitempty"`
+	TreeSHA     string          `json:"tree_sha,omitempty"`
+	LogSHA256   string          `json:"log_sha256,omitempty"`
+	Commands    []VerifyCommand `json:"commands,omitempty"`
+}
+
 // Brief is the broker-observed evidence report for one task, generated at
 // the diff-approval gate. Every field is computed host-side; by design the
 // schema has nowhere to put an agent claim.
@@ -75,10 +115,6 @@ type PolicyFacts struct {
 type SpendFacts struct {
 	USDBrokerMetered float64 `json:"usd_broker_metered"`
 	DurationMs       int64   `json:"duration_ms"`
-}
-
-type Verification struct {
-	Status string `json:"status"`
 }
 
 // HashInstruction returns the sha256 of the task instruction. The Brief
