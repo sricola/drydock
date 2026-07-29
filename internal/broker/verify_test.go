@@ -480,6 +480,32 @@ func TestRunVerify_ForgedPassOutputCannotFlipVerdict(t *testing.T) {
 	}
 }
 
+func TestRunVerify_EmptyCommandsIsInconclusive(t *testing.T) {
+	st := &verifyStage{
+		fakeStage: &fakeStage{workDir: filepath.Join(t.TempDir(), "work"), diff: "diff --git a/x b/x\n+y\n"},
+		trees:     []string{"tree-sha-1"},
+	}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	b.Verify = map[string]VerifyRepo{
+		"github.com/o/r": {Commands: [][]string{}, Required: false},
+	}
+	rec, events, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+
+	if term["outcome"] != "pushed" {
+		t.Fatalf("outcome=%v, want pushed (advisory empty verification should proceed); body=%s", term["outcome"], rec.Body)
+	}
+	id := taskID(t, events)
+	br := readBrief(t, b, id)
+	v := br.Verification
+	if v.Status != trustbrief.VerificationInconclusive {
+		t.Fatalf("verification status=%q, want inconclusive (empty commands must not pass)", v.Status)
+	}
+	if len(v.Commands) != 0 {
+		t.Errorf("commands=%v, want empty list (no commands were configured to run)", v.Commands)
+	}
+}
+
 func TestFinishPush_TreeMismatchFailsClosed(t *testing.T) {
 	st := &verifyStage{
 		fakeStage: &fakeStage{workDir: filepath.Join(t.TempDir(), "work"), diff: "diff --git a/x b/x\n+y\n"},
