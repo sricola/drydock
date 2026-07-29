@@ -418,6 +418,51 @@ func TestTaskContainerRE(t *testing.T) {
 	}
 }
 
+func TestVerifyContainerRE(t *testing.T) {
+	if !verifyContainerRE.MatchString("verify-6240b146d4a66db701f643b562048d41") {
+		t.Error("real verify-<32hex> name should match")
+	}
+	for _, bad := range []string{"verify-", "verify-short", "my-verify-6240b146d4a66db701f643b562048d41", "verify-6240b146d4a66db701f643b562048d41x", "task-6240b146d4a66db701f643b562048d41"} {
+		if verifyContainerRE.MatchString(bad) {
+			t.Errorf("%q should NOT match the anchored verify-name grammar", bad)
+		}
+	}
+}
+
+// The boot orphan reaper must force-delete leftover verify-<id> VMs the same
+// way it reaps task-<id> ones, and must never touch unrelated containers.
+func TestPruneOrphanTasks_ReapsTaskAndVerifyContainers(t *testing.T) {
+	orig := runCmd
+	t.Cleanup(func() { runCmd = orig })
+	var deleted []string
+	runCmd = func(name string, args ...string) ([]byte, error) {
+		if name == "container" && len(args) > 0 && args[0] == "ls" {
+			return []byte(`[{"name":"task-6240b146d4a66db701f643b562048d41"},` +
+				`{"name":"verify-6240b146d4a66db701f643b562048d41"},` +
+				`{"name":"drydock-anchor"}]`), nil
+		}
+		if name == "container" && len(args) >= 3 && args[0] == "delete" {
+			deleted = append(deleted, args[2])
+		}
+		return nil, nil
+	}
+
+	pruneOrphanTasks(t.TempDir(), t.TempDir())
+
+	want := map[string]bool{
+		"task-6240b146d4a66db701f643b562048d41":   true,
+		"verify-6240b146d4a66db701f643b562048d41": true,
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("deleted %v, want exactly the task and verify VMs", deleted)
+	}
+	for _, name := range deleted {
+		if !want[name] {
+			t.Errorf("unexpected delete of %q", name)
+		}
+	}
+}
+
 func TestPruneOrphanTasks_KeepsGatedStages(t *testing.T) {
 	stageRoot := t.TempDir()
 	auditRoot := t.TempDir()

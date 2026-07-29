@@ -18,6 +18,7 @@ type TaskStage string
 const (
 	StageAwaitingEgress TaskStage = "awaiting_egress"
 	StageRunning        TaskStage = "running"
+	StageVerifying      TaskStage = "verifying"
 	StagePending        TaskStage = "awaiting_approval"
 	StagePushing        TaskStage = "pushing"
 )

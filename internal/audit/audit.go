@@ -45,10 +45,13 @@ type Meta struct {
 	Sensitive    bool   `json:"sensitive"`
 }
 
-// StageMs is the per-stage wall-clock breakdown of a metrics row.
+// StageMs is the per-stage wall-clock breakdown of a metrics row. Verifying
+// is omitempty so rows written before the verifier stage existed (and tasks
+// that never verify) keep their exact prior shape.
 type StageMs struct {
 	Preparing int64 `json:"preparing"`
 	Running   int64 `json:"running"`
+	Verifying int64 `json:"verifying,omitempty"`
 	Pushing   int64 `json:"pushing"`
 }
 

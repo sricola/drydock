@@ -119,6 +119,12 @@ type Broker struct {
 	AnthropicAuth     string // "api_key" | "subscription"; recorded per task for `drydock tasks`
 	OpenAIAuth        string // "api_key" | "subscription"; recorded per task for `drydock tasks`
 
+	// Verify maps canonical "host/owner/repo" repo keys (repokey.Normalize)
+	// to that repository's verification recipe (config verify.repos, mirrored
+	// by cmd/brokerd). nil/empty = verifier off; a task whose repo has no
+	// entry records verification status "not_configured" and pushes as before.
+	Verify map[string]VerifyRepo
+
 	// UnmeteredVendors names vendors whose lane carries NO USD metering at all
 	// (subscription auth lanes; a priceless openai-compat lane) — the same
 	// conditions cmd/brokerd used to mint a math.MaxFloat64 lease budget for
@@ -156,6 +162,10 @@ type Broker struct {
 	// falls back to defaultReopenStage (wraps stage.Reopen). Tests inject a fake
 	// to drive ResumeAwaiting without a real git directory on disk.
 	reopenStage func(root string) (taskStage, error)
+	// deleteContainer seams the bounded best-effort force-delete of a task's
+	// VM (task-<id> or verify-<id>). nil in production -> forceDeleteContainer.
+	// Tests inject a fake to observe which containers get deleted.
+	deleteContainer func(name string) error
 
 	// MaxConcurrent caps how many tasks may be in any non-terminal state at
 	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
@@ -198,6 +208,11 @@ func (r realStage) PushBranch(local, remote string) error { return r.s.PushBranc
 func (r realStage) PushEnv() []string                     { return r.s.PushEnv() }
 func (r realStage) Cleanup() error                        { return r.s.Cleanup() }
 func (r realStage) BaseCommit() (string, error)           { return r.s.BaseCommit() }
+
+// StagedTreeHash/ExportStaged surface the stage's sealed-export capability
+// (the verifier's stagedExporter optional interface) on the production stage.
+func (r realStage) StagedTreeHash() (string, error) { return r.s.StagedTreeHash() }
+func (r realStage) ExportStaged(dst string) error   { return r.s.ExportStaged(dst) }
 
 // WithContext binds the task context to the stage's git subprocesses. Used on
 // the resume path (the stage is reopened before the per-task context exists).
@@ -245,12 +260,22 @@ func runContainer(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // A VM that outlives this is reaped at the next brokerd boot anyway.
 const vmDeleteTimeout = 30 * time.Second
 
-func forceDeleteVM(id string) error {
+func forceDeleteContainer(name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), vmDeleteTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "container", "delete", "--force", "task-"+id)
+	cmd := exec.CommandContext(ctx, "container", "delete", "--force", name)
 	cmd.WaitDelay = 5 * time.Second
 	return cmd.Run()
+}
+
+// forceDelete routes through the deleteContainer seam (tests) or the real
+// bounded force-delete. Shared by the agent-run (task-<id>) and verifier
+// (verify-<id>) teardown paths.
+func (b *Broker) forceDelete(name string) error {
+	if b.deleteContainer != nil {
+		return b.deleteContainer(name)
+	}
+	return forceDeleteContainer(name)
 }
 
 // MaxTaskBodyBytes caps the size of POST /tasks bodies. Generous enough for
@@ -293,6 +318,13 @@ type taskRun struct {
 	auditPath  string      // path to the audit .jsonl
 	taskStart  time.Time   // set by runSandbox when the agent starts
 
+	// verify is the broker-observed verification evidence, set by runVerify on
+	// every live path that produced a diff (status "not_configured" when the
+	// repo has no verify config). nil before runVerify and on the resume path,
+	// where verification did not run in this process.
+	verify    *trustbrief.Verification
+	verifyDur time.Duration // wall-clock of the verifying stage (metrics)
+
 	// Metrics capture (observability 4.7): filled as the lifecycle advances,
 	// written once by the deferred appendMetrics.
 	prepStart        time.Time     // set at the "preparing" stage emit
@@ -306,7 +338,7 @@ type taskRun struct {
 	diffBytes        int64
 	// outcome is the terminal path taken, written into the metrics row's
 	// Outcome field: "pushed"|"denied"|"cancelled"|"push_failed"|"error"|
-	// "no_diff". Set at each terminal return; "" (never reached a terminal
+	// "no_diff"|"verify_failed". Set at each terminal return; "" (never reached a terminal
 	// return with the audit log open, e.g. resumePush's shutdown re-defer)
 	// leaves the metrics row's Outcome empty, same as a pre-outcome-field row.
 	outcome string
@@ -606,6 +638,9 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !tr.runVerify() {
+		return // runVerify emitted the terminal event
+	}
 	tr.pushAndOpenPR(diff)
 }
 
@@ -747,7 +782,7 @@ func (tr *taskRun) runSandbox(args []string) error {
 	if err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
-		if derr := forceDeleteVM(tr.id); derr != nil {
+		if derr := b.forceDelete("task-" + tr.id); derr != nil {
 			slog.Warn("force-delete of task VM failed; reaped at next brokerd boot",
 				"task_id", tr.id, "err", derr)
 		}
@@ -835,6 +870,23 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) {
 	}
 	policy.SnapshotSHA256 = policy.Fingerprint()
 
+	// Verification evidence comes straight from runVerify's broker-observed
+	// block. tr.verify is nil only on paths that never ran the verifier in
+	// this process (direct writeBrief unit calls; the resume path) — those
+	// honestly read as not_configured.
+	verification := trustbrief.Verification{Status: trustbrief.VerificationNotConfigured}
+	if tr.verify != nil {
+		verification = *tr.verify
+	}
+	var missing []string
+	switch verification.Status {
+	case trustbrief.VerificationNotConfigured:
+		missing = append(missing, "verification not configured for this repository (no verify.repos entry)")
+	case trustbrief.VerificationInconclusive:
+		missing = append(missing, "verification inconclusive — treat as unverified")
+	}
+	missing = append(missing, "agent summary not captured (broker records no agent claims in v1)")
+
 	brief := trustbrief.Brief{
 		SchemaVersion: 1,
 		TaskID:        tr.id,
@@ -853,12 +905,9 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) {
 			USDBrokerMetered: tr.grant.Spent(),
 			DurationMs:       time.Since(tr.taskStart).Milliseconds(),
 		},
-		Diff:         trustbrief.Analyze(diff),
-		Verification: trustbrief.Verification{Status: trustbrief.VerificationNotConfigured},
-		MissingEvidence: []string{
-			"verification not configured (no verifier stage in this version)",
-			"agent summary not captured (broker records no agent claims in v1)",
-		},
+		Diff:            trustbrief.Analyze(diff),
+		Verification:    verification,
+		MissingEvidence: missing,
 	}
 	// Optional capability: the production stage knows its clone commit; test
 	// fakes may not. Absence is recorded, never silently dropped.
@@ -907,11 +956,17 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	// wait on. Auto-approve pushes immediately, so an "awaiting_approval"
 	// stage would be a misleading blip in the stream.
 	if !tr.autoApprove {
-		tr.sw.emit(map[string]any{"event": "stage", "stage": "awaiting_approval",
+		gateEv := map[string]any{"event": "stage", "stage": "awaiting_approval",
 			"task_id": tr.id, "diff_bytes": len(diff), "files": files,
 			"approve": "drydock approve " + tr.id,
 			"deny":    "drydock deny " + tr.id,
-			"review":  "drydock review " + tr.id})
+			"review":  "drydock review " + tr.id}
+		// Surface the verifier's broker-observed verdict to the reviewer at
+		// the gate (advisory verification's whole value lives here).
+		if tr.verify != nil && tr.verify.Status != trustbrief.VerificationNotConfigured {
+			gateEv["verify"] = tr.verify.Status
+		}
+		tr.sw.emit(gateEv)
 	}
 	gateStart := time.Now()
 	approved, cause := b.gatePushMarked(tr.ctx, tr, diff)
@@ -940,6 +995,11 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 func (tr *taskRun) finishPush(files, insertions, deletions int) {
 	pushStart := time.Now()
 	defer func() { tr.pushDur = time.Since(pushStart) }()
+	// Pushed tree == verified tree is ENFORCED, not asserted: re-hash the
+	// staged tree and fail the push closed if it drifted since verification.
+	if !tr.verifiedTreeGuard() {
+		return
+	}
 	b := tr.b
 	b.setStage(tr.id, StagePushing)
 	base := "agent/" + tr.id

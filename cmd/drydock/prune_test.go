@@ -41,6 +41,7 @@ func TestTaskIDFromFile(t *testing.T) {
 		"2d66a317c7c77f92.jsonl":      "2d66a317c7c77f92",
 		"2d66a317c7c77f92.diff":       "2d66a317c7c77f92",
 		"2d66a317c7c77f92.widen.json": "2d66a317c7c77f92",
+		"2d66a317c7c77f92.verify.log": "2d66a317c7c77f92",
 	}
 	for name, wantID := range ok {
 		if id, got := taskIDFromFile(name); !got || id != wantID {
@@ -96,6 +97,7 @@ func TestScanAuditTasks_GroupsAndIgnoresNonTaskFiles(t *testing.T) {
 	write(oldID+".jsonl", "trace", 40*24*time.Hour)
 	write(oldID+".diff", "diffbody", 40*24*time.Hour)
 	write(oldID+".brief.json", "briefbody", 40*24*time.Hour)
+	write(oldID+".verify.log", "verifybody", 40*24*time.Hour)
 	write(newID+".jsonl", "recent", time.Hour)
 	write("config.yaml", "secret", 100*24*time.Hour)                              // wrong suffix — must be ignored
 	write("a.jsonl", "shorthex", 100*24*time.Hour)                                // too-short id — must be ignored
@@ -111,11 +113,12 @@ func TestScanAuditTasks_GroupsAndIgnoresNonTaskFiles(t *testing.T) {
 	}
 	for _, ta := range tasks {
 		if ta.id == oldID {
-			if len(ta.files) != 3 {
-				t.Errorf("old task grouped %d files, want 3", len(ta.files))
+			if len(ta.files) != 4 {
+				t.Errorf("old task grouped %d files, want 4", len(ta.files))
 			}
-			if ta.bytes != int64(len("trace")+len("diffbody")+len("briefbody")) {
-				t.Errorf("old task bytes = %d, want %d", ta.bytes, len("trace")+len("diffbody")+len("briefbody"))
+			wantBytes := len("trace") + len("diffbody") + len("briefbody") + len("verifybody")
+			if ta.bytes != int64(wantBytes) {
+				t.Errorf("old task bytes = %d, want %d", ta.bytes, wantBytes)
 			}
 		}
 	}
@@ -132,6 +135,10 @@ func TestScanAuditTasks_GroupsAndIgnoresNonTaskFiles(t *testing.T) {
 	// The brief fixture must be removed along with the rest of the task's files.
 	if _, err := os.Stat(filepath.Join(dir, oldID+".brief.json")); !os.IsNotExist(err) {
 		t.Error("old task's .brief.json was not removed by prune")
+	}
+	// So must the verify log.
+	if _, err := os.Stat(filepath.Join(dir, oldID+".verify.log")); !os.IsNotExist(err) {
+		t.Error("old task's .verify.log was not removed by prune")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); err != nil {
 		t.Error("config.yaml must never be touched by prune")
