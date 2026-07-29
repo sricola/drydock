@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // makeOriginRepo creates a bare repo with one commit and returns its path.
@@ -469,5 +470,79 @@ func TestExportStaged_SymlinkArchivedNotFollowed(t *testing.T) {
 	}
 	if target != "/etc/passwd" {
 		t.Errorf("exported symlink target = %q, want /etc/passwd", target)
+	}
+}
+
+// exportDst must refuse a dst that aliases the stage's own work tree or
+// host-only git dir: both live under Root (so they'd otherwise pass the
+// under-root check), and ExportStaged's RemoveAll(dst) would delete either
+// out from under this same Stage.
+func TestExportDst_RefusesAliasingStageDirs(t *testing.T) {
+	root := t.TempDir()
+	s := &Stage{
+		Root:    root,
+		WorkDir: filepath.Join(root, "work"),
+		gitDir:  filepath.Join(root, "git"),
+	}
+	cases := []struct {
+		name string
+		dst  string
+	}{
+		{"stage's own work dir", s.WorkDir},
+		{"stage's own host-only git dir", s.gitDir},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.exportDst(tc.dst); err == nil {
+				t.Errorf("exportDst(%q) = nil error, want refusal (aliases %s)", tc.dst, tc.name)
+			}
+		})
+	}
+}
+
+// Regression test for a hang found in review: if untar.Start() fails (e.g.
+// its binary is missing), `git archive` is already running and may be
+// blocked mid-write into the pipe nobody is now going to read. The fix must
+// unblock it (close the pipe / kill the process) BEFORE calling arch.Wait(),
+// or ExportStaged hangs forever (execCtx() here is context.Background(), so
+// there is no deadline to save it). tarBinary is swapped to a nonexistent
+// path to force the startup failure deterministically, and the staged repo
+// carries a >1MiB tracked file so `git archive`'s tar stream exceeds the OS
+// pipe buffer and genuinely blocks on write() without the fix — a small
+// archive would fit in the buffer and the bug would not reproduce.
+func TestExportStaged_UntarStartFailureDoesNotHang(t *testing.T) {
+	src := newLocalSourceRepo(t)
+	big := make([]byte, 2<<20) // 2 MiB, well over any OS pipe buffer size
+	if err := os.WriteFile(filepath.Join(src, "big.bin"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, src, "add", "-A")
+	gitRun(t, src, "commit", "-q", "-m", "add big file")
+
+	st, err := Prepare(context.Background(), t.TempDir(), src)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	orig := tarBinary
+	tarBinary = filepath.Join(t.TempDir(), "no-such-tar-binary")
+	t.Cleanup(func() { tarBinary = orig })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- st.ExportStaged(filepath.Join(st.Root, "verify"))
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("ExportStaged: want error from missing tar binary, got nil")
+		}
+		if !strings.Contains(err.Error(), "no such file or directory") &&
+			!strings.Contains(err.Error(), "executable file not found") {
+			t.Errorf("ExportStaged error = %v, want it to mention the missing-binary cause", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExportStaged hung: git archive was left blocked writing into the unread pipe after untar.Start() failed")
 	}
 }

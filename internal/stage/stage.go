@@ -233,6 +233,13 @@ func capCopy(r io.Reader, max int64) (string, bool, error) {
 	}
 }
 
+// tarBinary is the executable used to extract git archive's tar stream in
+// ExportStaged. A package-level var (rather than a "tar" literal) purely as a
+// test seam: it lets a test force untar's startup to fail deterministically
+// (point it at a nonexistent path) without depending on a broken PATH, to
+// exercise the pipe-unblocking behavior on that failure path.
+var tarBinary = "tar"
+
 // StagedTreeHash stages the work tree (same exclusions as CaptureDiff — the
 // .task control dir and any nested .git) and returns the git tree hash of the
 // staged index. This is the identity of what the reviewer sees in the diff,
@@ -302,7 +309,7 @@ func (s *Stage) ExportStaged(dst string) error {
 	archStderr := &cappedBuffer{max: 64 << 10}
 	arch.Stderr = archStderr
 
-	untar := exec.CommandContext(ctx, "tar", "-x", "-C", clean)
+	untar := exec.CommandContext(ctx, tarBinary, "-x", "-C", clean)
 	untar.WaitDelay = gitWaitDelay
 	untarStderr := &cappedBuffer{max: 64 << 10}
 	untar.Stderr = untarStderr
@@ -317,8 +324,20 @@ func (s *Stage) ExportStaged(dst string) error {
 		return err
 	}
 	if err := untar.Start(); err != nil {
+		// untar failed to launch (e.g. its binary is missing). arch is already
+		// running and may be blocked mid-write into the pipe: nobody reads
+		// from it now, and the write only unblocks once the OS pipe buffer
+		// fills — Waiting on arch first would then hang, unbounded when ctx
+		// is context.Background(). Unblock arch BEFORE waiting: close the
+		// pipe's read end so arch's next write fails with EPIPE (typically
+		// terminating it via SIGPIPE), and kill the process as a
+		// belt-and-suspenders measure in case it isn't blocked on that write.
+		_ = pipe.Close()
+		if arch.Process != nil {
+			_ = arch.Process.Kill()
+		}
 		_ = arch.Wait()
-		return err
+		return fmt.Errorf("stage: start untar export: %w", err)
 	}
 	archErr := arch.Wait()
 	untarErr := untar.Wait()
@@ -345,6 +364,14 @@ func (s *Stage) exportDst(dst string) (string, error) {
 	clean := filepath.Clean(dst)
 	if clean == root || !strings.HasPrefix(clean, root+string(filepath.Separator)) {
 		return "", fmt.Errorf("stage: export dst %q is not under stage root %q", dst, s.Root)
+	}
+	// dst must also not alias the stage's own work tree or host-only git dir:
+	// both live under root, so they'd otherwise pass the check above, and
+	// ExportStaged's RemoveAll(dst) would delete the very tree StagedTreeHash
+	// just staged (WorkDir) or the host-only git dir (gitDir) out from under
+	// this same Stage.
+	if clean == filepath.Clean(s.WorkDir) || clean == filepath.Clean(s.gitDir) {
+		return "", fmt.Errorf("stage: export dst %q must not alias the stage's own work/git dir", dst)
 	}
 	return clean, nil
 }
