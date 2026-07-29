@@ -53,14 +53,14 @@ func BuildRunArgs(s Spec) []string {
 const verifyScript = `set -e
 nft -f - <<'EOF'
 table inet verify_pin {
-  chain input   { type filter hook input   priority 0; policy drop; iif "lo" accept; }
+  chain input   { type filter hook input   priority 0; policy drop; iifname "lo" accept; }
   chain forward { type filter hook forward priority 0; policy drop; }
-  chain output  { type filter hook output  priority 0; policy drop; oif "lo" accept; }
+  chain output  { type filter hook output  priority 0; policy drop; oifname "lo" accept; }
 }
 EOF
 export HOME=/home/agent
 cd /work
-exec /usr/local/bin/drop-agent.sh "$@"
+exec /usr/local/bin/drop-agent "$@"
 `
 
 // VerifySpec describes one verification command's VM run.

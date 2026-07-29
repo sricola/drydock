@@ -62,8 +62,8 @@ func TestBuildVerifyArgs_ShapeAndContainment(t *testing.T) {
 		"--name verify-0123456789abcdef0123456789abcdef",
 		"--cap-add CAP_NET_ADMIN", // root installs the deny-all pin, then drops
 		"--mount type=bind,source=/stage/verify,target=/work",
-		"policy drop",                  // the inline nft pin
-		"/usr/local/bin/drop-agent.sh", // privilege drop before repo code
+		"policy drop",               // the inline nft pin
+		"/usr/local/bin/drop-agent", // privilege drop before repo code
 		"HOME=/home/agent",
 	} {
 		if !strings.Contains(joined, want) {
