@@ -26,7 +26,9 @@ func servePolicyFromLocal(t *testing.T, mutate func(fields []config.Field, hash 
 		if err != nil {
 			t.Errorf("in-handler Explain: %v", err)
 		}
-		hash := config.EffectiveHash(fields)
+		// Mirror cmd/brokerd: full fields served, hash over the comparison
+		// subset (connection fields excluded).
+		hash := config.EffectiveHash(config.PolicyComparisonFields(fields))
 		if mutate != nil {
 			fields, hash = mutate(fields, hash)
 		}
@@ -95,7 +97,7 @@ func TestPolicyExplain_DivergentWhenHashDiffers(t *testing.T) {
 				live[i].Value = "stale-live-net"
 			}
 		}
-		return live, config.EffectiveHash(live)
+		return live, config.EffectiveHash(config.PolicyComparisonFields(live))
 	})
 
 	out := captureStdout(t, func() { runPolicy([]string{"explain"}) })
@@ -108,6 +110,44 @@ func TestPolicyExplain_DivergentWhenHashDiffers(t *testing.T) {
 	}
 	if !strings.Contains(out, "local=") || !strings.Contains(out, "live=") {
 		t.Errorf("divergence rows should show local= and live= values:\n%s", out)
+	}
+}
+
+// Connection fields (BROKER_SOCKET/BROKER_ADDR) say how the CLI reaches the
+// daemon, not policy the daemon enforces. An operator dialing a specific
+// daemon via BROKER_ADDR (which useBrokerServer sets, and which the daemon
+// itself never had) must NOT be told the policy is DIVERGENT.
+func TestPolicyExplain_ConnectionFieldsExcludedFromDivergence(t *testing.T) {
+	servePolicyFromLocal(t, func(fields []config.Field, _ string) ([]config.Field, string) {
+		// Simulate a daemon that booted without the client's connection env:
+		// its Broker.Addr/Broker.Socket resolve differently from the local
+		// shell's, but every enforced-policy field agrees.
+		live := make([]config.Field, len(fields))
+		copy(live, fields)
+		for i := range live {
+			switch live[i].Name {
+			case "Broker.Addr":
+				live[i].Value = ""
+				live[i].Source = config.SourceDefault
+			case "Broker.Socket":
+				live[i].Value = "/somewhere/else/brokerd.sock"
+			}
+		}
+		return live, config.EffectiveHash(config.PolicyComparisonFields(live))
+	})
+
+	out := captureStdout(t, func() { runPolicy([]string{"explain"}) })
+
+	if !strings.Contains(out, "daemon: in sync") {
+		t.Errorf("connection-only differences should still report in sync:\n%s", out)
+	}
+	if strings.Contains(out, "DIVERGENT") {
+		t.Errorf("BROKER_ADDR/BROKER_SOCKET differences must not report DIVERGENT:\n%s", out)
+	}
+	// The connection fields are still SHOWN in the local table (with the env
+	// source naming the variable) — excluded from the verdict, not hidden.
+	if !strings.Contains(out, "Broker.Addr") || !strings.Contains(out, "env:BROKER_ADDR") {
+		t.Errorf("Broker.Addr should still render in the table sourced env:BROKER_ADDR:\n%s", out)
 	}
 }
 

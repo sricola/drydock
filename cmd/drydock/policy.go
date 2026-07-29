@@ -37,7 +37,12 @@ func runPolicy(args []string) {
 	if err != nil {
 		die("policy explain: %v", err)
 	}
-	localHash := config.EffectiveHash(fields)
+	// The divergence verdict compares only enforced policy: the broker
+	// connection fields (BROKER_SOCKET/BROKER_ADDR) are how this CLI reaches
+	// the daemon, so they are excluded from the hash and the per-field diff
+	// (config.PolicyComparisonFields) while still shown in the table below.
+	cmpFields := config.PolicyComparisonFields(fields)
+	localHash := config.EffectiveHash(cmpFields)
 
 	live, liveErr := fetchLivePolicy()
 	if liveErr != nil && !brokerdDown(liveErr) {
@@ -59,7 +64,7 @@ func runPolicy(args []string) {
 			fmt.Println("daemon: in sync — the running brokerd resolved this same policy")
 		} else {
 			fmt.Println("daemon: DIVERGENT — the running brokerd resolved a different policy (restart brokerd to pick up changes)")
-			for _, d := range diffPolicyFields(fields, live.Fields) {
+			for _, d := range diffPolicyFields(cmpFields, config.PolicyComparisonFields(live.Fields)) {
 				fmt.Printf("  %s: local=%s live=%s\n", safeCell(d.name), safeCell(d.local), safeCell(d.live))
 			}
 		}
@@ -155,7 +160,9 @@ type policyDiff struct{ name, local, live string }
 // diffPolicyFields joins local and live fields by Name and returns the ones
 // whose values differ. Fields present on only one side (version skew between
 // CLI and daemon) surface as "(absent)" rather than being silently dropped —
-// a missing field is itself divergence evidence.
+// a missing field is itself divergence evidence. Callers pass both sides
+// through config.PolicyComparisonFields first, so connection fields never
+// appear as diff rows.
 func diffPolicyFields(local, live []config.Field) []policyDiff {
 	liveVal := make(map[string]string, len(live))
 	for _, f := range live {
@@ -184,7 +191,9 @@ func diffPolicyFields(local, live []config.Field) []policyDiff {
 // printPolicyJSON emits the machine-readable shape:
 // {"local":{fields,hash}, "live":{fields,hash}|null, "in_sync":bool|null}.
 // live/in_sync are null when the daemon could not be asked — absence of a
-// verdict, distinct from either sync state.
+// verdict, distinct from either sync state. On both sides, fields is the
+// FULL provenance table while hash covers only the comparison subset
+// (config.PolicyComparisonFields) — the same convention brokerd uses.
 func printPolicyJSON(fields []config.Field, localHash string, live livePolicy, liveErr error) {
 	type side struct {
 		Fields []config.Field `json:"fields"`

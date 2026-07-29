@@ -9,6 +9,24 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **`drydock policy explain` — where did this setting come from, and is the
+  daemon running it?** A new read-only subcommand prints every config field's
+  effective value with the layer that supplied it (`default`, `config.yaml`,
+  or `env:VAR`, resolved per field with the exact guards the loader uses, so
+  a set-but-invalid env var is correctly attributed to the layer beneath it).
+  When brokerd is reachable, the CLI compares its resolution against the
+  policy the daemon resolved at boot (served by a new read-only
+  `GET /admin/policy`): `in sync`, or `DIVERGENT` with the differing fields
+  listed — the "I edited config.yaml but the daemon never restarted" failure
+  made visible. With brokerd down, a `LIVE POLICY UNVERIFIED` banner replaces
+  the verdict rather than implying one. `--json` emits the machine-readable
+  form. The connection settings (`broker.socket`/`broker.addr`) are shown in
+  the table but excluded from the divergence verdict: they describe how the
+  CLI reaches the daemon, not policy the daemon enforces, so dialing a remote
+  daemon via `BROKER_ADDR` doesn't read as drift. Field values are
+  rendered as summaries (never raw secrets), and the endpoint recomputes
+  nothing at request time.
+
 - **Independent verification stage.** A new opt-in `verify.repos` config
   block runs host-approved commands (build, tests, lint) against a sealed
   export of the agent's staged tree before the approval gate — each command

@@ -87,6 +87,52 @@ func TestExplain_CoversEveryEnvOverride(t *testing.T) {
 	}
 }
 
+// PolicyComparisonFields must drop exactly the two broker connection fields
+// (how you reach the daemon, not policy it enforces) and keep everything else
+// in order — otherwise a client dialing a remote daemon via BROKER_ADDR would
+// see a spurious DIVERGENT verdict.
+func TestPolicyComparisonFields_ExcludesOnlyConnectionFields(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	all, _, err := Explain(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmp := PolicyComparisonFields(all)
+	if len(cmp) != len(all)-2 {
+		t.Fatalf("comparison set has %d fields, want %d (all minus the 2 connection fields)", len(cmp), len(all)-2)
+	}
+	for _, name := range []string{"Broker.Socket", "Broker.Addr"} {
+		if _, ok := fieldByName(all, name); !ok {
+			t.Fatalf("field %q missing from full Explain output — exclusion list is stale", name)
+		}
+		if _, ok := fieldByName(cmp, name); ok {
+			t.Errorf("connection field %q must be excluded from the comparison set", name)
+		}
+	}
+	// Every non-connection field survives, in the same relative order.
+	i := 0
+	for _, f := range all {
+		if f.Name == "Broker.Socket" || f.Name == "Broker.Addr" {
+			continue
+		}
+		if cmp[i].Name != f.Name {
+			t.Fatalf("comparison field %d = %q, want %q (order/content must be preserved)", i, cmp[i].Name, f.Name)
+		}
+		i++
+	}
+	// Divergence in a connection field alone must not change the hash.
+	varied := make([]Field, len(all))
+	copy(varied, all)
+	for i := range varied {
+		if varied[i].Name == "Broker.Addr" {
+			varied[i].Value = "somewhere-else:9999"
+		}
+	}
+	if EffectiveHash(PolicyComparisonFields(all)) != EffectiveHash(PolicyComparisonFields(varied)) {
+		t.Error("comparison hash changed when only Broker.Addr differed")
+	}
+}
+
 func TestEffectiveHash_StableAndSensitive(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	f1, _, _ := Explain(filepath.Join(t.TempDir(), "m.yaml"))

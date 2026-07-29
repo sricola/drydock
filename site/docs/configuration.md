@@ -109,3 +109,57 @@ with `--model gemini-2.5-flash`.
 
 Gateway port `8088` and squid port `3128` are hard-coded in
 `cmd/brokerd/main.go` and `image/entrypoint.sh`; change both together.
+
+## Inspecting the effective policy
+
+With env vars layered over `config.yaml` layered over built-in defaults, it is
+easy to lose track of which value actually won. `drydock policy explain`
+resolves the config exactly like `drydock start` does and prints every setting
+with the layer that supplied it:
+
+```text
+SETTING          VALUE             SOURCE
+Network          drydock-egress    default
+GatewayIP        192.168.66.1      default
+TaskBudgetUSD    5                 config.yaml
+MaxConcurrent    4                 env:DRYDOCK_MAX_CONCURRENT_TASKS
+...
+
+daemon: in sync — the running brokerd resolved this same policy
+```
+
+The `SOURCE` column is one of three values, resolved per field (env >
+`config.yaml` > default):
+
+- `default` — the built-in default is in effect.
+- `config.yaml` — the file set this field to a non-default value.
+- `env:VAR` — the named env var overrode it (the row tells you exactly what
+  to unset).
+
+**The daemon verdict.** brokerd resolves its policy once, at boot. When it is
+reachable, `policy explain` compares your shell's resolution against the
+daemon's:
+
+- `in sync` — the running daemon resolved this same policy.
+- `DIVERGENT` — the daemon is running an older resolution (you edited
+  `config.yaml` or changed env since it started); the differing fields are
+  listed as `local=... live=...`. Restart brokerd to pick up the changes.
+- `LIVE POLICY UNVERIFIED` — brokerd isn't reachable; only the local table is
+  shown, and no sync claim is made.
+
+`--json` emits the machine-readable form: `{"local": {fields, hash}, "live":
+{fields, hash} | null, "in_sync": bool | null}` (`live`/`in_sync` are `null`
+when the daemon could not be asked).
+
+Two semantics worth knowing:
+
+- **Source attribution is value-based.** A `config.yaml` line that sets a
+  field to its built-in default shows as source `default` — the layers agree,
+  so the lowest one is credited. Only a non-default file value reads
+  `config.yaml`.
+- **Connection settings don't count as divergence.** `broker.socket` /
+  `broker.addr` (`BROKER_SOCKET` / `BROKER_ADDR`) describe how the CLI
+  *reaches* the daemon, not policy the daemon enforces. They appear in the
+  table like any other field but are excluded from the in-sync/DIVERGENT
+  verdict, so dialing a specific daemon via `BROKER_ADDR` doesn't trip a
+  spurious divergence.

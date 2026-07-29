@@ -370,9 +370,30 @@ func yamlDiffers(d fieldDesc, yamlCfg, def *Config) bool {
 	return d.value(yamlCfg) != d.value(def)
 }
 
+// PolicyComparisonFields returns fields minus the broker connection fields
+// (Broker.Socket / Broker.Addr). Those two say how a client REACHES the
+// daemon, not policy the daemon enforces — an operator dialing a remote
+// daemon via BROKER_ADDR would otherwise trip a spurious DIVERGENT verdict.
+// Both sides of the divergence comparison (the CLI's local hash and the
+// daemon's boot-time PolicyHash) must route through this so the two hashes
+// cover the identical field set. The full field list is still what
+// /admin/policy serves and what the CLI table renders.
+func PolicyComparisonFields(all []Field) []Field {
+	out := make([]Field, 0, len(all))
+	for _, f := range all {
+		if f.Name == "Broker.Socket" || f.Name == "Broker.Addr" {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // EffectiveHash is the divergence-comparison unit: sha256 (hex) over the
 // canonical "Name=Value\n" lines sorted by Name. Two loads agree iff every
-// field's effective value agrees, regardless of field ordering.
+// field's effective value agrees, regardless of field ordering. Callers
+// comparing local-vs-daemon policy hash PolicyComparisonFields(fields), not
+// the full set.
 func EffectiveHash(fields []Field) string {
 	lines := make([]string, 0, len(fields))
 	for _, f := range fields {

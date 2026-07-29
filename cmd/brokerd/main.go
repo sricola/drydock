@@ -493,7 +493,11 @@ func main() {
 	if err != nil {
 		slog.Warn("policy explain failed; GET /admin/policy will report no fields", "err", err)
 	}
-	policyHash := config.EffectiveHash(policyFields)
+	// The hash covers only the comparison subset (connection fields excluded)
+	// so it is comparable against the CLI's local hash even when the client
+	// dials the daemon via a BROKER_ADDR/BROKER_SOCKET the daemon never saw.
+	// The full field list is still served.
+	policyHash := config.EffectiveHash(config.PolicyComparisonFields(policyFields))
 
 	b := &broker.Broker{
 		Cfg:                  egCfg,

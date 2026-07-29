@@ -142,6 +142,9 @@ type Broker struct {
 	// brokerd actually loaded — read-only, no recomputation on request. Set
 	// once by cmd/brokerd after cfg is resolved; nil/empty on a Broker built
 	// directly by tests that don't care about the policy endpoint.
+	// PolicyFields is the full provenance table; PolicyHash is computed over
+	// config.PolicyComparisonFields(PolicyFields) — connection fields excluded
+	// — so it lines up with the hash `drydock policy explain` computes locally.
 	PolicyFields []config.Field
 	PolicyHash   string
 
