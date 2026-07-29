@@ -39,6 +39,7 @@ Approvals:
   drydock deny    <id>           deny the pending push (diff returned but not pushed)
 
 Other:
+  drydock policy explain [--json]   effective policy: each value + its source (env/config.yaml/default), daemon sync
   drydock version                print drydock version
   drydock help                   this message
 
@@ -83,6 +84,7 @@ var subHelp = map[string]string{
 	"auth":    "auth claude|codex [--status] — bootstrap Claude or ChatGPT/Codex subscription creds into ~/.drydock/.",
 	"submit":  "POST a new task; see `drydock submit -h` for the full flag list.",
 	"ui":      "--port N --open --no-token — run the loopback web UI (token-gated, 127.0.0.1 only).",
+	"policy":  "explain — show the resolved effective policy with each value's source; flags daemon divergence.",
 	"version": "print drydock version.",
 }
 
@@ -181,6 +183,9 @@ func main() {
 	case "ui":
 		consumeHelpFlag(cmd, subArgs)
 		runUI(subArgs)
+	case "policy":
+		consumeHelpFlag(cmd, subArgs)
+		runPolicy(subArgs)
 	case "version", "--version", "-v":
 		fmt.Println("drydock", version)
 	case "-h", "--help", "help":
