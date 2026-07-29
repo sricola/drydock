@@ -38,6 +38,18 @@ openai_compat:
   # prices:              # USD/1M-token rates for budget metering (optional)
   #   gemini-2.5-pro: {input: 1.25, output: 10.00}
 
+# verify: independent post-run verification. Commands run against the agent's
+# exact staged tree in a fresh VM with no credentials and no network; exit
+# codes are recorded in the task's trust brief. required: true blocks the
+# push unless every command passes. Keys are canonical host/owner/repo.
+# verify:
+#   repos:
+#     "github.com/you/yourrepo":
+#       commands:
+#         - ["go", "test", "./..."]
+#       timeout: 10m      # 0 = default (10m)
+#       required: false   # true = failure/inconclusive blocks push
+
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)
 audit_root:    ~/.drydock/audit        # per-task <id>.jsonl + .diff
