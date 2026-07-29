@@ -83,7 +83,7 @@ outside drydock:
 
 Each claim below is backed by a test that runs the attack and asserts it
 fails. **Reproduce:** `make redteam` executes the host-side attacks (A3–A6) and
-watches them fail; the VM-backed claims (A1, A2, A7, A8) run via
+watches them fail; the VM-backed claims (A1, A2, A7, A8, A9) run via
 `make redteam-vm` on macOS / Apple silicon. With an installed build,
 `drydock redteam` runs the VM-backed attacks (A1, A2, A7) live against your
 own sandbox, no source checkout, no API spend. See
@@ -169,11 +169,10 @@ before the same setpriv privilege drop A2 relies on, so repo code cannot
 flush it. Verdicts are the exit codes the broker observes; nothing the
 verify VM prints can alter a status, and at push time the staged tree is
 re-hashed and must equal the verified tree or the push fails closed.
-`required: true` blocks the push on any status but `passed`. These
-verifier properties are enforced by host-side unit tests today; they are
-deliberately not a lettered claim until the VM-backed adversarial test
-covers them. Once approved, the host commits with hooks disabled and
-pushes; the agent cannot intercept.
+`required: true` blocks the push on any status but `passed`. The verifier
+VM's containment is claimed and tested separately as A9. Once approved,
+the host commits with hooks disabled and pushes; the agent cannot
+intercept.
 
 **Implementation:** `internal/broker/broker.go::gatePush` plus
 `cmd/drydock` (the operator CLI). `Task.AutoApprove` must be true on the
@@ -225,6 +224,26 @@ the 200k-file cap before it hits the byte quota.
 **Verified by** `TestRedteam_A8_WorkQuotaHardBound` (an in-VM `dd` flood
 hits "No space left on device" and the backing image stays within slack of
 the quota) plus `TestQuota_HardBoundENOSPC`.
+
+### A9. Verifier VM exfiltrates credentials or reaches the network
+
+The post-run verifier (A5) runs repo-controlled commands, so its VM is
+held to a posture strictly tighter than the agent's: it receives no
+gateway bearer, no proxy env, and no credentials of any kind
+(`runner.VerifySpec` carries no env beyond `HOME`); root installs a
+deny-all nft pin (loopback only — no gateway, no squid) before the same
+setpriv privilege drop A2 relies on, so repo code runs unprivileged and
+cannot flush it. Verdicts are the exit codes the broker observes; the
+`.verify.log` is display-only. The verify VM is `--rm` (A7 holds) and its
+`/work` is the sealed tree export inside the per-task quota image (A8
+holds).
+
+**Implementation:** `internal/runner/runner.go::BuildVerifyArgs` (the
+deny-all pin + privilege drop) plus `internal/broker/verify.go` (no
+credential env, broker-observed exit codes). **Verified by**
+`TestRedteam_V1_VerifierVMHasNoNetworkAndNoCredentials` (as the dropped
+agent user: no credential material in the environment, HTTPS/DNS/gateway
+all blocked, `nft flush` denied, `$HOME` writable).
 
 ## Attacks drydock does NOT defend against
 
