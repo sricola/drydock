@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -199,12 +200,59 @@ func TestExplain_DiffPolicyProvenance(t *testing.T) {
 	if f.Source != SourceYAML {
 		t.Errorf("DiffPolicy source = %q, want %q when yaml sets it", f.Source, SourceYAML)
 	}
-	if want := "50 files / 2000 lines / 2 blocked / 1 second-look"; f.Value != want {
+	want := fmt.Sprintf("50 files / 2000 lines / 2 blocked (%s) / 1 second-look (%s)",
+		globsHash([]string{"**/*.pem", ".github/workflows/**"}),
+		globsHash([]string{"**/Dockerfile"}))
+	if f.Value != want {
 		t.Errorf("DiffPolicy value = %q, want %q", f.Value, want)
 	}
 
 	// It is enforced policy — it must survive PolicyComparisonFields.
 	if _, ok := fieldByName(PolicyComparisonFields(fields), "DiffPolicy"); !ok {
 		t.Error("DiffPolicy must stay in the policy-comparison field set")
+	}
+}
+
+// The rendered DiffPolicy value feeds EffectiveHash, which is the divergence
+// comparison unit for `drydock policy explain`. If the glob lists collapsed to
+// bare counts, editing a blocked glob (security enforcement) without changing
+// the count would falsely report "in sync". Pin the two properties that
+// prevent that: different glob CONTENT with equal counts → different value
+// (and hash); same globs in a different ORDER → identical value.
+func TestExplain_DiffPolicyValueIsGlobContentSensitive(t *testing.T) {
+	base := DiffPolicy{
+		MaxFilesChanged: 50,
+		MaxLinesChanged: 2000,
+		BlockedPaths:    []string{"**/*.pem", ".github/workflows/**"},
+		SecondLookPaths: []string{"**/Dockerfile"},
+	}
+
+	// Same counts, different blocked_paths content → values must differ.
+	edited := base
+	edited.BlockedPaths = []string{"**/*.pem", "secrets/**"}
+	vBase, vEdited := renderDiffPolicy(base), renderDiffPolicy(edited)
+	if vBase == vEdited {
+		t.Errorf("equal-count configs with different blocked_paths rendered identically: %q", vBase)
+	}
+	fBase := []Field{{Name: "DiffPolicy", Value: vBase}}
+	fEdited := []Field{{Name: "DiffPolicy", Value: vEdited}}
+	if EffectiveHash(fBase) == EffectiveHash(fEdited) {
+		t.Error("EffectiveHash unchanged after a blocked_paths glob edit — divergence would go undetected")
+	}
+
+	// Same globs, different order → semantically identical, values must match.
+	reordered := base
+	reordered.BlockedPaths = []string{".github/workflows/**", "**/*.pem"}
+	if vReordered := renderDiffPolicy(reordered); vReordered != vBase {
+		t.Errorf("reordered globs rendered differently: %q vs %q — spurious divergence", vReordered, vBase)
+	}
+	// And the sort must not have mutated the caller's slice.
+	if reordered.BlockedPaths[0] != ".github/workflows/**" {
+		t.Error("renderDiffPolicy mutated the caller's BlockedPaths slice")
+	}
+
+	// The fully-zero block still renders exactly "disabled".
+	if got := renderDiffPolicy(DiffPolicy{}); got != "disabled" {
+		t.Errorf("zero DiffPolicy = %q, want disabled", got)
 	}
 }

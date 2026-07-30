@@ -159,12 +159,44 @@ func renderVerifyRepos(repos map[string]VerifyRepo) string {
 }
 
 // renderDiffPolicy is a compact one-line summary of the diff_policy block.
+// The glob lists render as count + content hash rather than count alone:
+// EffectiveHash and the policy-explain divergence diff both consume this
+// rendered value, so two configs whose blocked/second-look globs differ in
+// CONTENT but not count must not render identically — a bare count would make
+// `drydock policy explain` falsely report "in sync" while the daemon enforces
+// different blocked-path globs.
 func renderDiffPolicy(dp DiffPolicy) string {
 	if !diffPolicySet(dp) {
 		return "disabled"
 	}
-	return fmt.Sprintf("%d files / %d lines / %d blocked / %d second-look",
-		dp.MaxFilesChanged, dp.MaxLinesChanged, len(dp.BlockedPaths), len(dp.SecondLookPaths))
+	return fmt.Sprintf("%d files / %d lines / %s / %s",
+		dp.MaxFilesChanged, dp.MaxLinesChanged,
+		globsSummary(dp.BlockedPaths, "blocked"),
+		globsSummary(dp.SecondLookPaths, "second-look"))
+}
+
+// globsSummary renders one glob list as `N label (hash)`, omitting the parens
+// entirely when the list is empty.
+func globsSummary(globs []string, label string) string {
+	if len(globs) == 0 {
+		return "0 " + label
+	}
+	return fmt.Sprintf("%d %s (%s)", len(globs), label, globsHash(globs))
+}
+
+// globsHash is the first 8 hex chars of sha256 over the SORTED glob list
+// joined with "\n", or "" for an empty list. Sorting makes the hash
+// order-insensitive — reordering semantically identical globs in config must
+// not report divergence — and operates on a copy so the caller's slice is
+// never mutated.
+func globsHash(globs []string) string {
+	if len(globs) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), globs...)
+	sort.Strings(sorted)
+	h := sha256.Sum256([]byte(strings.Join(sorted, "\n")))
+	return hex.EncodeToString(h[:])[:8]
 }
 
 // diffPolicySet reports whether any diff_policy field is non-zero (the zero
