@@ -63,15 +63,18 @@ cd /work
 exec /usr/local/bin/drop-agent "$@"
 `
 
-// setupScript is the in-VM bootstrap for a pre-agent setup command. Unlike
-// verifyScript's deny-all pin, root installs the SAME gateway+squid egress
-// pin the agent VM uses (init-firewall.sh: allow host gateway :8088 and
-// squid :3128, drop everything else) — setup needs egress to fetch
-// dependencies through the proxy. It then execs the command through
-// drop-agent so repo code runs unprivileged and cannot flush the pin.
-// HOME must be the agent user's writable home (v0.6.6 #198).
+// setupScript is the in-VM bootstrap for a pre-agent setup command. Root
+// installs an egress pin that allows ONLY squid (:3128) — setup fetches
+// dependencies through the proxy but has no business reaching the model
+// credential gateway (:8088), so unlike the agent VM's pin we drop it.
+// Defense in depth: setup carries no bearer, but with :8088 closed a leaked
+// bearer still could not reach the gateway from a setup command (npm
+// postinstall, pip setup.py, arbitrary build hooks run here pre-review). It
+// then execs the command through drop-agent so repo code runs unprivileged
+// and cannot flush the pin. HOME must be the agent user's writable home
+// (v0.6.6 #198).
 const setupScript = `set -e
-/usr/local/bin/init-firewall.sh "$DRYDOCK_GW_IP" 8088 3128
+/usr/local/bin/init-firewall.sh "$DRYDOCK_GW_IP" 3128
 export HOME=/home/agent
 cd /work
 exec /usr/local/bin/drop-agent "$@"

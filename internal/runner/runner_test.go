@@ -67,7 +67,7 @@ func TestBuildSetupArgs_ShapeAndContainment(t *testing.T) {
 		"--name setup-0123456789abcdef0123456789abcdef",
 		"--cap-add CAP_NET_ADMIN",                             // root installs the egress pin, then drops
 		"--mount type=bind,source=/stage/abc123,target=/work", // live stage, rw
-		`init-firewall.sh "$DRYDOCK_GW_IP" 8088 3128`,         // AGENT egress pin
+		`init-firewall.sh "$DRYDOCK_GW_IP" 3128`,              // squid-only egress pin
 		"/usr/local/bin/drop-agent",                           // privilege drop before repo code
 		"HOME=/home/agent",
 		"--env HTTPS_PROXY=http://192.168.64.1:3128", // egress must work
@@ -76,10 +76,14 @@ func TestBuildSetupArgs_ShapeAndContainment(t *testing.T) {
 			t.Errorf("setup argv missing %q:\n%s", want, joined)
 		}
 	}
-	// Setup gets AGENT egress (gateway+squid allowlist), NOT the verifier's
-	// deny-all pin.
+	// Setup gets squid-only egress, NOT the verifier's deny-all pin.
 	if strings.Contains(joined, "policy drop") {
 		t.Errorf("setup argv contains the verifier's deny-all pin:\n%s", joined)
+	}
+	// Setup must NOT be able to reach the model credential gateway (:8088):
+	// it has no bearer and no LLM business; :8088 is dropped as a backstop.
+	if strings.Contains(joined, "8088") {
+		t.Errorf("setup argv allows the model gateway port 8088; want squid-only:\n%s", joined)
 	}
 	// The command argv must arrive as positional args after the sh -c script
 	// (never interpolated into the script string — shell-injection surface).
