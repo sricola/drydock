@@ -50,6 +50,22 @@ openai_compat:
 #       timeout: 10m      # 0 = default (10m)
 #       required: false   # true = failure/inconclusive blocks push
 
+# profiles: host-side execution profiles. Setup commands run inside the task
+# VM against the staged tree BEFORE the agent starts; readiness commands then
+# gate the run. Any failure fails the task closed before any model spend.
+# Commands live in this host config only — the sandboxed agent cannot edit
+# them. Each command is a self-contained argv: shell state (cd, exports) does
+# not carry between commands. No persistent cache yet — setup runs from
+# scratch on every task. Keys are canonical host/owner/repo.
+# profiles:
+#   repos:
+#     "github.com/you/yourrepo":
+#       setup:
+#         - ["npm", "ci"]
+#       readiness:
+#         - ["node", "--version"]
+#       timeout: 10m      # 0 = default
+
 # diff_policy: host-side caps on the diff a task may propose. A diff that
 # exceeds a cap or touches a blocked path fails the task closed as
 # policy_blocked BEFORE it reaches review; second-look paths still reach

@@ -58,6 +58,18 @@ type VerifyRepo struct {
 	Required bool          `yaml:"required"`
 }
 
+// SetupProfile is one repository's execution profile: host-approved setup
+// commands run in the task VM against the staged tree before the agent
+// starts, then readiness commands gate the run — any failure fails the task
+// closed before any model spend. Commands are self-contained argv vectors:
+// shell state (cd, exports) does not carry between commands. Timeout 0 uses
+// the built-in default.
+type SetupProfile struct {
+	Setup     [][]string    `yaml:"setup"`
+	Readiness [][]string    `yaml:"readiness"`
+	Timeout   time.Duration `yaml:"timeout"`
+}
+
 // DiffPolicy is the host-side policy applied to the diff a task proposes.
 // Caps and blocked paths fail the task closed as policy_blocked before it
 // reaches review; second-look paths still reach review but the approver must
@@ -173,6 +185,15 @@ type Config struct {
 	Verify struct {
 		Repos map[string]VerifyRepo `yaml:"repos"`
 	} `yaml:"verify"`
+
+	// Profiles configures host-side execution profiles: per-repo setup and
+	// readiness commands run in the task VM before the agent starts. Host
+	// config only — the sandboxed agent cannot edit them. Keys are canonical
+	// "host/owner/repo" (repokey.Normalize); non-canonical keys are a config
+	// error rather than a silent never-match. Empty map = disabled.
+	Profiles struct {
+		Repos map[string]SetupProfile `yaml:"repos"`
+	} `yaml:"profiles"`
 
 	// DiffPolicy caps the size and shape of the diff a task may propose.
 	// Zero value = disabled (no caps, no blocked/second-look paths).
@@ -521,6 +542,28 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: verify.repos[%q].timeout must be >= 0", key)
 		}
 	}
+	for key, sp := range c.Profiles.Repos {
+		if canon := repokey.Normalize(key); canon != key {
+			return fmt.Errorf("config: profiles.repos key %q is not canonical; use %q", key, canon)
+		}
+		// A profile with no setup commands is pointless — reject loudly.
+		if len(sp.Setup) == 0 {
+			return fmt.Errorf("config: profiles.repos[%q] needs at least one setup command", key)
+		}
+		for i, argv := range sp.Setup {
+			if len(argv) == 0 || argv[0] == "" {
+				return fmt.Errorf("config: profiles.repos[%q].setup[%d] is empty", key, i)
+			}
+		}
+		for i, argv := range sp.Readiness {
+			if len(argv) == 0 || argv[0] == "" {
+				return fmt.Errorf("config: profiles.repos[%q].readiness[%d] is empty", key, i)
+			}
+		}
+		if sp.Timeout < 0 {
+			return fmt.Errorf("config: profiles.repos[%q].timeout must be >= 0", key)
+		}
+	}
 	if c.DiffPolicy.MaxFilesChanged < 0 {
 		return fmt.Errorf("config: diff_policy.max_files_changed must be >= 0, got %d", c.DiffPolicy.MaxFilesChanged)
 	}
@@ -622,6 +665,22 @@ openai_compat:
 #         - ["go", "test", "./..."]
 #       timeout: 10m      # 0 = default (10m)
 #       required: false   # true = failure/inconclusive blocks push
+
+# profiles: host-side execution profiles. Setup commands run inside the task
+# VM against the staged tree BEFORE the agent starts; readiness commands then
+# gate the run. Any failure fails the task closed before any model spend.
+# Commands live in this host config only — the sandboxed agent cannot edit
+# them. Each command is a self-contained argv: shell state (cd, exports) does
+# not carry between commands. No persistent cache yet — setup runs from
+# scratch on every task. Keys are canonical host/owner/repo.
+# profiles:
+#   repos:
+#     "github.com/you/yourrepo":
+#       setup:
+#         - ["npm", "ci"]
+#       readiness:
+#         - ["node", "--version"]
+#       timeout: 10m      # 0 = default
 
 # diff_policy: host-side caps on the diff a task may propose. A diff that
 # exceeds a cap or touches a blocked path fails the task closed as

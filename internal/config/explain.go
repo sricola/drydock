@@ -158,6 +158,19 @@ func renderVerifyRepos(repos map[string]VerifyRepo) string {
 	return fmt.Sprintf("%d repos: %s", len(keys), strings.Join(keys, ", "))
 }
 
+// renderProfiles is a compact one-line count summary of profiles.repos.
+func renderProfiles(repos map[string]SetupProfile) string {
+	if len(repos) == 0 {
+		return "disabled"
+	}
+	setup, readiness := 0, 0
+	for _, sp := range repos {
+		setup += len(sp.Setup)
+		readiness += len(sp.Readiness)
+	}
+	return fmt.Sprintf("%d setup / %d readiness cmds across %d repos", setup, readiness, len(repos))
+}
+
 // renderDiffPolicy is a compact one-line summary of the diff_policy block.
 // The glob lists render as count + content hash rather than count alone:
 // EffectiveHash and the policy-explain divergence diff both consume this
@@ -285,6 +298,12 @@ func provenanceTable() []fieldDesc {
 			// Non-empty map = yaml-set (defaults have no repos).
 			differs: func(yamlCfg, def *Config) bool {
 				return len(yamlCfg.Verify.Repos) != len(def.Verify.Repos)
+			}},
+		{name: "Profiles", yamlKey: "profiles",
+			value: func(c *Config) string { return renderProfiles(c.Profiles.Repos) },
+			// Any repo configured = yaml-set (defaults have no repos).
+			differs: func(yamlCfg, def *Config) bool {
+				return len(yamlCfg.Profiles.Repos) != len(def.Profiles.Repos)
 			}},
 		{name: "DiffPolicy", yamlKey: "diff_policy",
 			value: func(c *Config) string { return renderDiffPolicy(c.DiffPolicy) },

@@ -213,6 +213,66 @@ func TestExplain_DiffPolicyProvenance(t *testing.T) {
 	}
 }
 
+// Profiles is enforced pre-agent policy: it must appear in the provenance
+// table as a yaml-only field (no env override), attribute to config.yaml
+// exactly when the yaml configures any repo, and stay in the
+// policy-comparison set.
+func TestExplain_ProfilesProvenance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Absent from yaml → default, rendered "disabled".
+	fields, _, err := Explain(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := fieldByName(fields, "Profiles")
+	if !ok {
+		t.Fatal("Profiles missing from Explain provenance")
+	}
+	if f.EnvVar != "" {
+		t.Errorf("Profiles must be yaml-only, got env var %q", f.EnvVar)
+	}
+	if f.YAMLKey != "profiles" {
+		t.Errorf("Profiles yaml key = %q, want profiles", f.YAMLKey)
+	}
+	if f.Source != SourceDefault {
+		t.Errorf("Profiles source = %q, want %q when absent", f.Source, SourceDefault)
+	}
+	if f.Value != "disabled" {
+		t.Errorf("Profiles value = %q, want disabled", f.Value)
+	}
+
+	// Set in yaml → config.yaml, compact summary.
+	yaml := "network: x\ngateway_ip: 1.2.3.4\n" +
+		"profiles:\n  repos:\n    \"github.com/o/r\":\n" +
+		"      setup:\n        - [\"npm\", \"ci\"]\n        - [\"npm\", \"run\", \"build\"]\n" +
+		"      readiness:\n        - [\"curl\", \"-fsS\", \"localhost:3000\"]\n" +
+		"      timeout: 10m\n"
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fields, _, err = Explain(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok = fieldByName(fields, "Profiles")
+	if !ok {
+		t.Fatal("Profiles missing from Explain provenance")
+	}
+	if f.Source != SourceYAML {
+		t.Errorf("Profiles source = %q, want %q when yaml sets it", f.Source, SourceYAML)
+	}
+	if want := "2 setup / 1 readiness cmds across 1 repos"; f.Value != want {
+		t.Errorf("Profiles value = %q, want %q", f.Value, want)
+	}
+
+	// It shapes what runs pre-agent — it must survive PolicyComparisonFields.
+	if _, ok := fieldByName(PolicyComparisonFields(fields), "Profiles"); !ok {
+		t.Error("Profiles must stay in the policy-comparison field set")
+	}
+}
+
 // The rendered DiffPolicy value feeds EffectiveHash, which is the divergence
 // comparison unit for `drydock policy explain`. If the glob lists collapsed to
 // bare counts, editing a blocked glob (security enforcement) without changing
