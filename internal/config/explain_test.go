@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func fieldByName(fs []Field, name string) (Field, bool) {
@@ -268,6 +269,7 @@ func TestExplain_ProfilesProvenance(t *testing.T) {
 			"github.com/o/r": {
 				Setup:     [][]string{{"npm", "ci"}, {"npm", "run", "build"}},
 				Readiness: [][]string{{"curl", "-fsS", "localhost:3000"}},
+				Timeout:   10 * time.Minute,
 			},
 		}))
 	if f.Value != want {
@@ -387,6 +389,39 @@ func TestExplain_ProfilesValueIsCommandContentSensitive(t *testing.T) {
 	}
 	if v := renderProfiles(cmdReordered); v == vBase {
 		t.Errorf("reordering commands within a repo rendered identically (%q) — execution-order change would go undetected", v)
+	}
+
+	// Same commands, timeout-only edit → the timeout is a documented hard
+	// bound on setup execution, so a daemon-vs-config timeout drift is real
+	// divergence and MUST flip the value/hash.
+	timeoutEdited := map[string]SetupProfile{
+		"github.com/o/r": {
+			Setup:     base["github.com/o/r"].Setup,
+			Readiness: base["github.com/o/r"].Readiness,
+			Timeout:   10 * time.Minute,
+		},
+		"github.com/o/s": base["github.com/o/s"],
+	}
+	vTimeout := renderProfiles(timeoutEdited)
+	if vTimeout == vBase {
+		t.Errorf("timeout-only edit rendered identically (%q) — timeout divergence would go undetected", vTimeout)
+	}
+	if EffectiveHash([]Field{{Name: "Profiles", Value: vTimeout}}) == EffectiveHash(fBase) {
+		t.Error("EffectiveHash unchanged after a timeout-only edit — divergence would go undetected")
+	}
+
+	// Same characters, different argv element boundaries → a space-join would
+	// render ["sh","-c","a b"] and ["sh","-c","a","b"] identically; the
+	// quoted encoding must keep them distinct.
+	oneArg := map[string]SetupProfile{
+		"github.com/o/r": {Setup: [][]string{{"sh", "-c", "a b"}}},
+	}
+	twoArgs := map[string]SetupProfile{
+		"github.com/o/r": {Setup: [][]string{{"sh", "-c", "a", "b"}}},
+	}
+	vOne, vTwo := renderProfiles(oneArg), renderProfiles(twoArgs)
+	if vOne == vTwo {
+		t.Errorf("argv-boundary edit rendered identically: %q — [\"sh\",\"-c\",\"a b\"] and [\"sh\",\"-c\",\"a\",\"b\"] collide", vOne)
 	}
 
 	// Rendering must not have mutated the caller's config.

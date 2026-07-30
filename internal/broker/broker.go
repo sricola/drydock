@@ -582,12 +582,6 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := st.WriteTaskFiles(t.Instruction); err != nil {
-		slog.Warn("task stage failed", "task_id", taskID, "err", err)
-		sw.emit(errorEvent(taskID, "stage failed", ""))
-		return
-	}
-
 	agentName, prov, err := b.resolveAgent(t.Agent)
 	if err != nil {
 		sw.emit(errorEvent(taskID, err.Error(), ""))
@@ -668,6 +662,24 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// a broken workspace costs $0 in API spend. The deferred grant.Revoke
 	// registered at mint time still fires on this return.
 	if !tr.runSetup() {
+		return
+	}
+
+	// Write the operator's prompt AFTER setup, immediately before the agent VM
+	// boots. Setup VMs run untrusted host-config-invoked code (npm postinstall,
+	// pip setup.py, build hooks) with the live /work mounted rw — writing the
+	// prompt earlier would let a malicious dependency rewrite
+	// /work/.task/prompt.txt during setup while the trust brief's
+	// InstructionSHA256 (computed host-side from the original instruction)
+	// still attested the untampered text, masking the swap. Writing last means
+	// the operator's prompt always wins: WriteTaskFiles O_TRUNC-overwrites any
+	// regular prompt.txt a setup command pre-created, and refuses (fail-closed
+	// here, as stage failed) if setup replaced .task or prompt.txt with a
+	// symlink.
+	if err := tr.st.WriteTaskFiles(t.Instruction); err != nil {
+		slog.Warn("task stage failed", "task_id", taskID, "err", err)
+		tr.outcome = "error"
+		sw.emit(errorEvent(taskID, "stage failed", ""))
 		return
 	}
 
