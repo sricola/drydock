@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -80,9 +81,15 @@ func appendLine(path, s string) error {
 }
 
 // ResumeAwaiting reconciles awaiting-approval push gates left by a prior
-// brokerd life. For each gate marker: if the stage survived, re-register the
-// task as pending and resume the gate+push headlessly; otherwise append an
-// honest interrupted line and drop the marker (never leave a false ok).
+// brokerd life. For each gate marker: if the persisted diff and the stage both
+// survived, re-register the task as pending and resume the gate+push
+// headlessly; otherwise append an honest interrupted line and drop the marker
+// (never leave a false ok). The diff check FAILS SAFE by design: the resumed
+// gate recomputes its second-look acknowledgment requirement from the
+// persisted diff, and a no-diff task can never legitimately reach the gate
+// (it terminates before pushing), so a missing/unreadable/empty <id>.diff
+// means the gate cannot be honestly re-posed — resuming it approvable would
+// let a bare approve push a branch whose original gate required acks.
 // Each marker is handled in its own goroutine so one slow reopen cannot
 // block the others, and the function itself returns immediately.
 func (b *Broker) ResumeAwaiting(stageRoot string) {
@@ -93,6 +100,15 @@ func (b *Broker) ResumeAwaiting(stageRoot string) {
 	for id, m := range ListGateMarkers(b.AuditRoot) {
 		id, m := id, m // capture loop vars for goroutine
 		auditPath := filepath.Join(b.AuditRoot, id+".jsonl")
+		// Read the diff BEFORE reopening the stage: bailing after a reopen
+		// would leave a quota-backed stage's image reattached with no owner.
+		diff, derr := readDiffNoFollow(filepath.Join(b.AuditRoot, id+".diff"))
+		if derr != nil || diff == "" {
+			slog.Warn("resume: persisted diff missing or empty, marking interrupted", "task_id", id, "err", derr)
+			_ = appendLine(auditPath, interruptedResultLine)
+			_ = removeGateMarker(b.AuditRoot, id)
+			continue
+		}
 		st, err := reopen(filepath.Join(stageRoot, id))
 		if err != nil {
 			slog.Warn("resume: stage gone, marking interrupted", "task_id", id, "err", err)
@@ -100,15 +116,30 @@ func (b *Broker) ResumeAwaiting(stageRoot string) {
 			_ = removeGateMarker(b.AuditRoot, id)
 			continue
 		}
-		diff, _ := os.ReadFile(filepath.Join(b.AuditRoot, id+".diff"))
 		logf, err := os.OpenFile(auditPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			slog.Warn("resume: cannot open audit for append", "task_id", id, "err", err)
 			continue
 		}
 		slog.Info("resuming awaiting-approval task", "task_id", id)
-		go b.resumePush(id, m, st, string(diff), logf)
+		go b.resumePush(id, m, st, diff, logf)
 	}
+}
+
+// readDiffNoFollow reads the persisted review diff, refusing symlinks —
+// O_NOFOLLOW parity with persistDiff's write side, so a planted
+// <id>.diff -> elsewhere can't feed the resumed gate substituted bytes.
+func readDiffNoFollow(path string) (string, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 // resumePush re-registers a resumed task as pending and drives the gate+push
