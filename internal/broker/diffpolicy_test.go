@@ -139,6 +139,118 @@ func TestDiffCaps_BlockedPathBlocks(t *testing.T) {
 	assertNeverPending(t, b)
 }
 
+// The three blocked_paths bypass regressions: containment matching must run
+// against the complete uncapped path set from the raw diff
+// (trustbrief.ChangedPathsForPolicy), not the display-capped DiffFacts paths.
+
+func TestDiffCaps_BlockedPathAtLongPathBlocks(t *testing.T) {
+	// A .pem parked at a >512-byte path. trustbrief's stored FileChange.Path
+	// is truncated to its display cap and no longer ends in ".pem", so a
+	// facts-based match let this escape "**/*.pem" (with FilesOmitted still 0,
+	// the omission guard never fired). The policy path set is uncapped.
+	longPath := strings.Repeat("d/", 300) + "key.pem" // 607 bytes, no spaces so the header is unquoted
+	diff := "diff --git a/" + longPath + " b/" + longPath + "\n" +
+		"@@ -0,0 +1 @@\n" +
+		"+SECRET\n"
+	st := &fakeStage{workDir: t.TempDir(), diff: diff}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	b.DiffPolicy = config.DiffPolicy{BlockedPaths: []string{"**/*.pem"}}
+
+	_, _, term := submitTerminates(t, b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+
+	if term["event"] != "result" || term["outcome"] != "policy_blocked" {
+		t.Fatalf("terminal=%v, want result/policy_blocked: a >512-byte path must not escape blocked_paths via display truncation", term)
+	}
+	reason, _ := term["reason"].(string)
+	if !strings.Contains(reason, "key.pem") || !strings.Contains(reason, "**/*.pem") {
+		t.Errorf("reason=%q, want it to name the full blocked path and the **/*.pem pattern", reason)
+	}
+	if st.pushed.Load() {
+		t.Error("stage.Push must not be called when the diff is policy-blocked")
+	}
+	assertNeverPending(t, b)
+}
+
+func TestDiffCaps_PureRenameOutOfBlockedPathBlocks(t *testing.T) {
+	// `git mv .github/workflows/ci.yml ci.yml.disabled` at 100% similarity:
+	// no +++/--- lines, and the diff --git b-path is the (unblocked)
+	// destination. Matching only recorded destination paths let this disable
+	// CI under a ".github/workflows/**" block; the rename SOURCE must match.
+	diff := "diff --git a/.github/workflows/ci.yml b/ci.yml.disabled\n" +
+		"similarity index 100%\n" +
+		"rename from .github/workflows/ci.yml\n" +
+		"rename to ci.yml.disabled\n"
+	st := &fakeStage{workDir: t.TempDir(), diff: diff}
+	grant := &fakeGrant{}
+	b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+	b.DiffPolicy = config.DiffPolicy{BlockedPaths: []string{".github/workflows/**"}}
+
+	_, _, term := submitTerminates(t, b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+
+	if term["event"] != "result" || term["outcome"] != "policy_blocked" {
+		t.Fatalf("terminal=%v, want result/policy_blocked: renaming a file OUT of a blocked path must be blocked", term)
+	}
+	reason, _ := term["reason"].(string)
+	if !strings.Contains(reason, ".github/workflows/ci.yml") || !strings.Contains(reason, ".github/workflows/**") {
+		t.Errorf("reason=%q, want it to name the rename source path and the pattern", reason)
+	}
+	if st.pushed.Load() {
+		t.Error("stage.Push must not be called when the diff is policy-blocked")
+	}
+	assertNeverPending(t, b)
+}
+
+func TestDiffCaps_UnevaluablePathsFailClosed(t *testing.T) {
+	// Headers whose path cannot be fully recovered: an over-length header
+	// (boundedLine truncates it, so the path may be cut mid-way) and a
+	// malformed one (no b-path at all — Analyze stored Path="", which matched
+	// NO glob and sailed through). With blocked_paths configured, both must
+	// fail closed rather than approve a diff the policy cannot evaluate.
+	cases := map[string]string{
+		"over-length-header": "diff --git a/" + strings.Repeat("x", 5000) + " b/y\n" +
+			"@@ -0,0 +1 @@\n+z\n",
+		"unparseable-header": "diff --git nonsense-without-b-path\n" +
+			"@@ -0,0 +1 @@\n+z\n",
+	}
+	for name, diff := range cases {
+		t.Run(name, func(t *testing.T) {
+			st := &fakeStage{workDir: t.TempDir(), diff: diff}
+			grant := &fakeGrant{}
+			b := testBroker(t, "anthropic", st, grant, writesResult(`{"type":"result","subtype":"success"}`))
+			b.DiffPolicy = config.DiffPolicy{BlockedPaths: []string{"**/*.pem"}}
+
+			_, _, term := submitTerminates(t, b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+
+			if term["event"] != "result" || term["outcome"] != "policy_blocked" {
+				t.Fatalf("terminal=%v, want result/policy_blocked: unevaluable paths must fail closed when blocked_paths is set", term)
+			}
+			reason, _ := term["reason"].(string)
+			if !strings.Contains(reason, "too long or malformed") {
+				t.Errorf("reason=%q, want the fail-closed unevaluable-paths reason", reason)
+			}
+			if st.pushed.Load() {
+				t.Error("stage.Push must not be called when the diff is policy-blocked")
+			}
+			assertNeverPending(t, b)
+		})
+	}
+}
+
+func TestDiffCaps_RenameNotMatchingProceedsUnblocked(t *testing.T) {
+	// No false-positive regression: a rename whose source and destination
+	// both miss the blocked patterns must not block.
+	tr := capsRun(config.DiffPolicy{BlockedPaths: []string{"secrets/**"}})
+	diff := "diff --git a/docs/old.md b/docs/new.md\n" +
+		"similarity index 100%\n" +
+		"rename from docs/old.md\n" +
+		"rename to docs/new.md\n"
+	facts := trustbrief.Analyze(diff)
+	if blocked, reason := tr.checkDiffCaps(facts, diff); blocked {
+		t.Fatalf("non-matching rename must not block, got reason %q", reason)
+	}
+}
+
 func TestDiffCaps_UnderCapsProceedsToGate(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: twoFileDiff}
 	grant := &fakeGrant{}
@@ -208,7 +320,7 @@ func TestDiffCaps_OmittedFilesFailClosedForBlockedPaths(t *testing.T) {
 		Files:        []trustbrief.FileChange{{Path: "a.go", Adds: 1}},
 		FilesOmitted: 904, // e.g. secrets/key.pem is file #5000, untracked
 	}
-	blocked, reason := tr.checkDiffCaps(facts)
+	blocked, reason := tr.checkDiffCaps(facts, "")
 	if !blocked {
 		t.Fatal("blocked_paths set with FilesOmitted>0 must fail closed: an omitted file could match a blocked pattern")
 	}
@@ -223,7 +335,7 @@ func TestDiffCaps_OmittedFilesFailClosedForMaxLines(t *testing.T) {
 		Files:        []trustbrief.FileChange{{Path: "a.go", Adds: 1}}, // tracked lines well under cap
 		FilesOmitted: 3,
 	}
-	blocked, reason := tr.checkDiffCaps(facts)
+	blocked, reason := tr.checkDiffCaps(facts, "")
 	if !blocked {
 		t.Fatal("max_lines_changed set with FilesOmitted>0 must fail closed: omitted files carry no line counts")
 	}
@@ -240,7 +352,7 @@ func TestDiffCaps_OmittedFilesMaxFilesReasonWins(t *testing.T) {
 		Files:        []trustbrief.FileChange{{Path: "a.go", Adds: 1}, {Path: "b.go", Adds: 1}},
 		FilesOmitted: 20,
 	}
-	blocked, reason := tr.checkDiffCaps(facts)
+	blocked, reason := tr.checkDiffCaps(facts, "")
 	if !blocked {
 		t.Fatal("22 files against a max_files_changed cap of 10 must block")
 	}
@@ -259,7 +371,7 @@ func TestDiffCaps_OmittedFilesNoPolicyProceeds(t *testing.T) {
 		Files:        []trustbrief.FileChange{{Path: "a.go", Adds: 1}},
 		FilesOmitted: 500,
 	}
-	if blocked, reason := tr.checkDiffCaps(facts); blocked {
+	if blocked, reason := tr.checkDiffCaps(facts, ""); blocked {
 		t.Fatalf("zero DiffPolicy must not block, got blocked with reason %q", reason)
 	}
 }

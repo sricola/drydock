@@ -58,17 +58,27 @@ func requiredAcks(facts trustbrief.DiffFacts, dp config.DiffPolicy) []string {
 // which blocked_paths pattern. A zero-value policy blocks nothing.
 //
 // The facts come from the same trustbrief.Analyze pass writeBrief persisted,
-// so what the caps enforce is exactly what the Brief reports. FilesOmitted
-// counts toward the file cap: files past Analyze's tracking bound are still
-// changed files, and an attacker must not escape the cap by exceeding the
-// parser's retention limit. Omitted files carry no per-file line counts or
-// paths, so the line and blocked-path checks can only see the tracked files —
-// when any file was omitted and a content-based policy (blocked_paths or
-// max_lines_changed) is configured, the diff cannot be fully evaluated and
-// the task fails closed rather than letting an untracked file slip past the
-// policy. The max_files_changed check runs first so an over-cap diff reports
-// the clearer count-based reason.
-func (tr *taskRun) checkDiffCaps(facts trustbrief.DiffFacts) (blocked bool, reason string) {
+// so the count-based caps enforce exactly what the Brief reports.
+// FilesOmitted counts toward the file cap: files past Analyze's tracking
+// bound are still changed files, and an attacker must not escape the cap by
+// exceeding the parser's retention limit. Omitted files carry no per-file
+// line counts, so when any file was omitted and a content-based policy
+// (blocked_paths or max_lines_changed) is configured, the diff cannot be
+// fully evaluated and the task fails closed rather than letting an untracked
+// file slip past the policy. The max_files_changed check runs first so an
+// over-cap diff reports the clearer count-based reason.
+//
+// blocked_paths deliberately does NOT match against facts.Files: those paths
+// are display-capped ADVISORY evidence (truncated to trustbrief's stored
+// path bound, "" for an over-long header) and a containment decision matched
+// against them is bypassable — a blocked file at a path longer than the cap
+// no longer matches its glob, and a 100%-similarity rename records only the
+// destination so a rename OUT of a blocked directory escapes. The check
+// instead re-derives the complete, uncapped path set from the raw diff via
+// trustbrief.ChangedPathsForPolicy (which also includes rename sources) and
+// fails closed whenever that scan reports the set may be incomplete. The
+// FilesOmitted guard above is kept as defense in depth.
+func (tr *taskRun) checkDiffCaps(facts trustbrief.DiffFacts, diff string) (blocked bool, reason string) {
 	p := tr.b.DiffPolicy
 	if files := len(facts.Files) + facts.FilesOmitted; p.MaxFilesChanged > 0 && files > p.MaxFilesChanged {
 		return true, fmt.Sprintf("diff changes %d files, over the diff_policy.max_files_changed cap of %d",
@@ -88,11 +98,17 @@ func (tr *taskRun) checkDiffCaps(facts trustbrief.DiffFacts) (blocked bool, reas
 				lines, p.MaxLinesChanged)
 		}
 	}
-	for _, f := range facts.Files {
-		for _, pat := range p.BlockedPaths {
-			if globmatch.Match(pat, f.Path) {
-				return true, fmt.Sprintf("diff touches blocked path %s (matches diff_policy.blocked_paths pattern %q)",
-					f.Path, pat)
+	if len(p.BlockedPaths) > 0 {
+		paths, complete := trustbrief.ChangedPathsForPolicy(diff)
+		if !complete {
+			return true, "diff contains paths too long or malformed to fully evaluate against blocked_paths policy"
+		}
+		for _, fp := range paths {
+			for _, pat := range p.BlockedPaths {
+				if globmatch.Match(pat, fp) {
+					return true, fmt.Sprintf("diff touches blocked path %s (matches diff_policy.blocked_paths pattern %q)",
+						fp, pat)
+				}
 			}
 		}
 	}

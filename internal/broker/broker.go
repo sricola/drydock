@@ -1000,7 +1000,7 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	// shows the operator exactly what was blocked. The synthetic audit result
 	// row mirrors runVerify's verify_failed pattern (last-wins over the
 	// agent's own success row, carrying metered cost).
-	if blocked, reason := tr.checkDiffCaps(facts); blocked {
+	if blocked, reason := tr.checkDiffCaps(facts, diff); blocked {
 		cost := audit.TotalCost(tr.auditPath)
 		fmt.Fprintf(tr.logf,
 			`{"type":"result","subtype":"policy_blocked","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
