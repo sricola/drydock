@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode"
 
+	"drydock/internal/audit"
+	"drydock/internal/stage"
 	"drydock/internal/trustbrief"
 )
 
@@ -68,6 +71,9 @@ func printBrief(b trustbrief.Brief) {
 		repoLine += " @ " + base
 	}
 	fmt.Printf("repo     %s\n", repoLine)
+	if b.Task.IssueURL != "" {
+		fmt.Printf("issue    %s\n", safeCell(b.Task.IssueURL))
+	}
 	fmt.Printf("runtime  agent=%s vendor=%s model=%s image=%s\n",
 		safeCell(b.Runtime.Agent), safeCell(b.Runtime.Vendor),
 		orDash(safeCell(b.Runtime.Model)), safeCell(b.Runtime.ImageRef))
@@ -104,8 +110,37 @@ func printBrief(b trustbrief.Brief) {
 	}
 	printSetup(b)
 	printVerification(b)
+	printPlan(b)
 	for _, m := range b.MissingEvidence {
 		fmt.Printf("gap      %s\n", safeCell(m))
+	}
+}
+
+// printPlan renders the plan-mode block for a PlanOnly brief: the "planned"
+// indicator with the artifact path, then the captured plan inline. The plan
+// is untrusted agent output, so the read mirrors the other audit-artifact
+// defenses — O_NOFOLLOW (audit.OpenRead refuses a planted symlink), capped
+// at the same bound the broker enforced when persisting (stage.MaxPlanBytes)
+// — and every line passes through safeCell (control-strip + cap) before
+// reaching the terminal. A missing artifact leaves the indicator line alone:
+// the run was still planned, the agent just wrote no plan (has_plan:false).
+func printPlan(b trustbrief.Brief) {
+	if !b.Task.PlanOnly {
+		return
+	}
+	path := filepath.Join(auditDir(), b.TaskID+".plan.md")
+	fmt.Printf("plan     planned — review %s\n", path)
+	f, err := audit.OpenRead(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, stage.MaxPlanBytes))
+	if err != nil || len(data) == 0 {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		fmt.Printf("         %s\n", safeCell(line))
 	}
 }
 

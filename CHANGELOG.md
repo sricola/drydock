@@ -9,6 +9,31 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **GitHub issue ingestion + a plan-mode scope gate.** `drydock submit
+  --issue <url>` turns a GitHub issue into the task instruction: the issue
+  is fetched **host-side** via your authenticated `gh` (curated environment,
+  never a full env copy; strict URL parse, so a hostile URL is rejected
+  before any argv is built), `--repo` is derived from the URL when omitted,
+  and only the issue *text* — title, labels, and a rune-safe size-capped
+  body — enters the prompt; your GitHub credentials never reach the sandbox.
+  Adding `--plan` (or the sugar `drydock plan <issue-url>`) makes it a
+  **plan-only run**: the sandbox gets `DRYDOCK_MODE=plan` and the image
+  entrypoint prepends a plan preamble steering the agent to write
+  `/work/.task/plan.md` instead of code, while the broker enforces the hard
+  guarantee — a plan run terminates with the new outcome `planned` *before*
+  the verify/push logic, so nothing can be pushed regardless of what the
+  agent left in the tree. The plan is captured (symlink-refusing,
+  size-capped) as `~/.drydock/audit/<id>.plan.md`; `drydock inspect` renders
+  the issue provenance, the planned indicator, and the plan inline;
+  `drydock tasks`/`stats` count `planned` as a first-class outcome; and the
+  persisted invocation carries `plan_only`/`issue_url`, so `drydock retry`
+  of a plan run re-plans instead of silently escalating to an implementing
+  run. Issue text is untrusted input (anyone who can file an issue is
+  writing prompt text — see the threat model's N2); the human plan+diff
+  gates remain the boundary. The workflow: `--issue … --plan` → review →
+  `--issue …` to implement (see
+  [Submitting tasks](https://sricola.github.io/drydock/docs/submitting-tasks.html)).
+
 - **Execution profiles — a host-configured setup phase that fails closed
   before any model spend.** A new optional `profiles.repos` block in
   `config.yaml` gives a repository `setup` commands (dependency install,

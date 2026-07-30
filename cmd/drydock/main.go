@@ -25,6 +25,7 @@ Setup:
 
 Tasks:
   drydock submit <flags>         POST a new task; blocks until approval/completion
+  drydock plan <issue-url>       plan-only run from a GitHub issue (= submit --issue <url> --plan)
   drydock tasks                  list recent runs (id, age, duration, cost, outcome)
   drydock stats   <flags>        aggregate run metrics (--since DUR [--by DIM] [--json])
   drydock logs    <id> [-f]      print (or follow) the task's stream-json audit log
@@ -84,6 +85,7 @@ var subHelp = map[string]string{
 	"redteam": "run live containment attacks (A1 key-exfil, A2 egress, A7 ephemerality) against your sandbox. No API spend.",
 	"auth":    "auth claude|codex [--status] — bootstrap Claude or ChatGPT/Codex subscription creds into ~/.drydock/.",
 	"submit":  "POST a new task; see `drydock submit -h` for the full flag list.",
+	"plan":    "<issue-url> [submit flags] — plan-only run from a GitHub issue: sugar for `drydock submit --issue <url> --plan`. Review the plan, then re-run without --plan to implement.",
 	"ui":      "--port N --open --no-token — run the loopback web UI (token-gated, 127.0.0.1 only).",
 	"policy":  "explain — show the resolved effective policy with each value's source; flags daemon divergence.",
 	"version": "print drydock version.",
@@ -124,6 +126,9 @@ func main() {
 	case "submit":
 		// `submit` has its own flag.FlagSet which handles -h/--help.
 		runSubmit(subArgs)
+	case "plan":
+		consumeHelpFlag(cmd, subArgs)
+		runPlan(subArgs)
 	case "status":
 		consumeHelpFlag(cmd, subArgs)
 		runStatus()

@@ -30,10 +30,12 @@ func readInvocation(r io.Reader) (taskRequest, bool) {
 
 // runRetry re-submits a prior task from the invocation the broker persisted in
 // its trace (a {"type":"drydock_task",...} line: repo, instruction, agent,
-// model, platform, egress, draft, sensitive). It saves the operator
-// reconstructing the whole `drydock submit` invocation by hand. auto_approve is
-// never carried over — a retry re-enters the approval gate unless the operator
-// opts back in.
+// model, platform, egress, draft, sensitive, plan_only, issue_url). It saves
+// the operator reconstructing the whole `drydock submit` invocation by hand.
+// plan_only and issue_url ride along untouched, so retrying a plan run
+// re-plans (it never silently escalates to an implementing run) and the new
+// task keeps the issue provenance. auto_approve is never carried over — a
+// retry re-enters the approval gate unless the operator opts back in.
 func runRetry(id string) {
 	f, err := os.Open(auditPath(id))
 	if err != nil {

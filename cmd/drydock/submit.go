@@ -14,9 +14,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"drydock/internal/brokerclient"
 	"drydock/internal/remote"
+	"drydock/internal/stage"
 )
 
 // taskRequest mirrors the broker.Task JSON shape. We don't import broker
@@ -32,6 +34,8 @@ type taskRequest struct {
 	Model       string   `json:"model,omitempty"`
 	Agent       string   `json:"agent,omitempty"`
 	Draft       bool     `json:"draft,omitempty"`
+	PlanOnly    bool     `json:"plan_only,omitempty"`
+	IssueURL    string   `json:"issue_url,omitempty"`
 }
 
 // repeatedFlag is a string flag that can be passed more than once.
@@ -46,6 +50,8 @@ func runSubmit(args []string) {
 		repo        = fs.String("repo", "", "repo ref (https/git/ssh URL; required)")
 		instruction = fs.String("instruction", "", "what the agent should do (use - or omit to read stdin)")
 		instrFile   = fs.String("instruction-file", "", "path to a file holding the instruction")
+		issueURL    = fs.String("issue", "", "GitHub issue URL to ingest as the instruction (https://github.com/{owner}/{repo}/issues/{n}); derives --repo when omitted")
+		plan        = fs.Bool("plan", false, "plan-only run: the agent produces an implementation plan instead of a diff")
 		autoApprove = fs.Bool("auto-approve", false, "skip the diff-push gate (use only for trusted batch runs)")
 		platform    = fs.String("platform", "", "github | gitlab | gitea | none (default: autodetect)")
 		model       = fs.String("model", "", "model passthrough for the chosen agent (e.g. claude-opus-4-7, gpt-5-codex, gemini-2.5-flash); empty = broker default")
@@ -71,6 +77,8 @@ Examples:
   drydock submit --repo git@github.com:o/r --instruction "fix the test"
   drydock submit --repo git@github.com:o/r --instruction-file ./task.md
   echo "do thing" | drydock submit --repo git@github.com:o/r -
+  drydock submit --issue https://github.com/o/r/issues/42
+  drydock submit --issue https://github.com/o/r/issues/42 --plan
   drydock submit --repo git@gitlab.mycorp.com:g/p --platform gitlab \
                  --egress-extra internal.example.com:443 --auto-approve
 
@@ -81,15 +89,28 @@ sockpath.Default().`)
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
-	if *repo == "" {
-		fmt.Fprintln(os.Stderr, "drydock submit: --repo is required")
-		fs.Usage()
-		os.Exit(2)
-	}
 
-	instr, err := readInstruction(*instruction, *instrFile, fs.Args())
-	if err != nil {
-		die("%v", err)
+	var instr string
+	if *issueURL != "" {
+		if err := issueFlagConflict(*instruction, *instrFile, fs.Args()); err != nil {
+			die("%v", err)
+		}
+		got, repoRef, err := resolveIssue(*issueURL, *repo, *plan, hostFetchIssue)
+		if err != nil {
+			die("%v", err)
+		}
+		instr, *repo = got, repoRef
+	} else {
+		if *repo == "" {
+			fmt.Fprintln(os.Stderr, "drydock submit: --repo is required (or pass --issue to derive it)")
+			fs.Usage()
+			os.Exit(2)
+		}
+		var err error
+		instr, err = readInstruction(*instruction, *instrFile, fs.Args())
+		if err != nil {
+			die("%v", err)
+		}
 	}
 	if instr == "" {
 		die("instruction is empty")
@@ -110,6 +131,8 @@ sockpath.Default().`)
 		Model:       *model,
 		Agent:       *agent,
 		Draft:       *draft,
+		PlanOnly:    *plan,
+		IssueURL:    *issueURL,
 	}
 	if os.Getenv("BROKER_ADDR") == "" {
 		adapter := remote.AdapterFor(*repo, *platform)
@@ -123,6 +146,18 @@ sockpath.Default().`)
 	if err := postSubmit(req, *jsonOut, *quiet); err != nil {
 		die("%v", err)
 	}
+}
+
+// runPlan is `drydock plan <issue-url> [submit flags…]`: thin sugar for
+// `drydock submit --issue <url> --plan`. It delegates everything — flag
+// parsing, issue fetch, plan plumbing — to runSubmit; the only grammar here
+// is that the first argument must be the issue URL (not a flag), so a typo'd
+// invocation dies with usage instead of half-parsing.
+func runPlan(args []string) {
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		die("usage: drydock plan <issue-url> [submit flags]")
+	}
+	runSubmit(append([]string{"--issue", args[0], "--plan"}, args[1:]...))
 }
 
 // readInstruction resolves the instruction text from flags / file / stdin /
@@ -156,6 +191,104 @@ func readInstruction(inline, file string, positional []string) (string, error) {
 		return strings.TrimRight(string(b), "\n"), nil
 	}
 	return "", errors.New("no instruction (use --instruction, --instruction-file, or pipe to stdin)")
+}
+
+// issueBodyCap bounds how much of an issue body is folded into the
+// instruction: 24 KiB is far beyond any reasonable issue, and keeps a
+// hostile/megabyte body from bloating the prompt (and the audit trail).
+const issueBodyCap = 24 * 1024
+
+// issueTruncationMarker is appended when the body was cut at issueBodyCap.
+// Derived from the cap so the stated size can never drift from the enforced
+// one.
+var issueTruncationMarker = fmt.Sprintf("\n\n[issue body truncated at %d KiB]", issueBodyCap/1024)
+
+// issueFlagConflict rejects --issue combined with any other instruction
+// source: --instruction (including "-"), --instruction-file, or an explicit
+// "-" stdin positional. The issue IS the instruction; a second source would
+// be silently ignored otherwise.
+func issueFlagConflict(inline, file string, positional []string) error {
+	if inline != "" {
+		return errors.New("--issue and --instruction are mutually exclusive (the issue is the instruction)")
+	}
+	if file != "" {
+		return errors.New("--issue and --instruction-file are mutually exclusive (the issue is the instruction)")
+	}
+	if len(positional) > 0 && positional[0] == "-" {
+		return errors.New("--issue and stdin (-) are mutually exclusive (the issue is the instruction)")
+	}
+	return nil
+}
+
+// hostFetchIssue is the gh-backed issue fetch used by runSubmit. It runs with
+// the curated adapter env (stage.CuratedEnv) — never the full os.Environ() —
+// so gh sees only PATH/HOME/its own tokens. A package var so tests swap in a
+// fake without shelling out.
+var hostFetchIssue = func(env []string, owner, repo string, number int) (remote.Issue, error) {
+	return remote.FetchIssue(env, owner, repo, number)
+}
+
+// resolveIssue ingests --issue: strict-parse the URL, derive the repo ref
+// (https://github.com/{owner}/{repo}) when --repo was omitted, fetch the
+// issue host-side, and render the bounded instruction. repoRef is returned
+// unchanged when the caller supplied one. fetchFn is the seam (hostFetchIssue
+// in production).
+func resolveIssue(issueURL, repoRef string, plan bool,
+	fetchFn func(env []string, owner, repo string, number int) (remote.Issue, error),
+) (instr, repo string, err error) {
+	owner, repoName, number, err := remote.ParseIssueURL(issueURL)
+	if err != nil {
+		return "", "", err
+	}
+	if repoRef == "" {
+		repoRef = "https://github.com/" + owner + "/" + repoName
+	}
+	iss, err := fetchFn(stage.CuratedEnv(), owner, repoName, number)
+	if err != nil {
+		return "", "", err
+	}
+	return issueInstruction(iss, plan), repoRef, nil
+}
+
+// issueInstruction renders the fetched issue as the task instruction:
+//
+//	# Issue #N: <title>
+//
+//	Labels: a, b        (omitted when the issue has no labels)
+//
+//	<body>              (byte-capped at issueBodyCap, marker appended if cut)
+//
+// plan=true appends a plan-only directive. The issue text is untrusted input
+// exactly like any operator-typed instruction — bounded here, reviewed at the
+// diff gate like everything else.
+func issueInstruction(iss remote.Issue, plan bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Issue #%d: %s", iss.Number, iss.Title)
+	if len(iss.Labels) > 0 {
+		b.WriteString("\n\nLabels: " + strings.Join(iss.Labels, ", "))
+	}
+	body := iss.Body
+	truncated := len(body) > issueBodyCap
+	if truncated {
+		// Cut on a rune boundary: a multibyte character split at the cap
+		// would surface as U+FFFD in the rendered prompt. Backing off at
+		// most 3 bytes (utf8.UTFMax-1) drops the partial rune entirely.
+		cut := issueBodyCap
+		for cut > 0 && !utf8.RuneStart(body[cut]) {
+			cut--
+		}
+		body = body[:cut]
+	}
+	if body != "" {
+		b.WriteString("\n\n" + body)
+	}
+	if truncated {
+		b.WriteString(issueTruncationMarker)
+	}
+	if plan {
+		b.WriteString("\n\nPlan-only run: produce a detailed implementation plan for this issue; do not modify the repository.")
+	}
+	return b.String()
 }
 
 // parseEgressExtras parses N strings of form "host:port[,port,port]" into

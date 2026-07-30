@@ -95,7 +95,7 @@ func renderStats(w io.Writer, rep stats.Report) {
 // broker-authored "denied" passthrough subtype), sorted for determinism.
 // Rates are rounded to the nearest percent.
 func renderOutcomes(w io.Writer, s stats.Summary) {
-	fixed := []string{"ok", "error", "setup_failed", "push_failed", "policy_blocked", "interrupted", "running"}
+	fixed := []string{"ok", "planned", "error", "setup_failed", "push_failed", "policy_blocked", "interrupted", "running"}
 	seen := make(map[string]bool, len(fixed))
 	printOne := func(outcome string) {
 		n, ok := s.Outcomes[outcome]

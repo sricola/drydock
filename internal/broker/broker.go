@@ -76,6 +76,14 @@ type Task struct {
 	// Draft opens the PR/MR as a draft (gh/glab --draft; Gitea via a WIP:
 	// title prefix). Default false.
 	Draft bool `json:"draft"`
+	// PlanOnly marks a plan-only run: the agent VM gets DRYDOCK_MODE=plan in
+	// its env (the entrypoint keys off it) and is expected to produce a plan,
+	// not a diff. Default false = normal implement-and-diff run.
+	PlanOnly bool `json:"plan_only,omitempty"`
+	// IssueURL records the issue the instruction was ingested from (CLI
+	// --issue). Provenance only — the broker treats the instruction text as
+	// the single source of truth either way.
+	IssueURL string `json:"issue_url,omitempty"`
 }
 
 // SquidControl registers/deregisters per-task egress widening with squid.
@@ -224,6 +232,7 @@ type taskStage interface {
 	WorkDir() string
 	WriteTaskFiles(prompt string) error
 	CaptureDiff() (string, error)
+	ReadPlan() (string, bool)
 	Commit(branch, message string) error
 	PushBranch(localBranch, remoteBranch string) error
 	PushEnv() []string
@@ -237,6 +246,7 @@ func (r realStage) WriteTaskFiles(prompt string) error {
 	return r.s.WriteTaskFiles(prompt)
 }
 func (r realStage) CaptureDiff() (string, error)          { return r.s.CaptureDiff() }
+func (r realStage) ReadPlan() (string, bool)              { return r.s.ReadPlan() }
 func (r realStage) Commit(branch, msg string) error       { return r.s.Commit(branch, msg) }
 func (r realStage) PushBranch(local, remote string) error { return r.s.PushBranch(local, remote) }
 func (r realStage) PushEnv() []string                     { return r.s.PushEnv() }
@@ -341,6 +351,8 @@ type taskRun struct {
 	draft       bool
 	platform    string
 	model       string
+	planOnly    bool
+	issueURL    string
 
 	// Filled in as HandleTask advances through the lifecycle.
 	proxyAuth  string      // "<user>:<secret>@" widening userinfo (empty if none)
@@ -385,7 +397,7 @@ type taskRun struct {
 	diffBytes        int64
 	// outcome is the terminal path taken, written into the metrics row's
 	// Outcome field: "pushed"|"denied"|"cancelled"|"push_failed"|"error"|
-	// "no_diff"|"setup_failed"|"verify_failed"|"policy_blocked". Set at each terminal return; "" (never reached a terminal
+	// "no_diff"|"setup_failed"|"verify_failed"|"policy_blocked"|"planned". Set at each terminal return; "" (never reached a terminal
 	// return with the audit log open, e.g. resumePush's shutdown re-defer)
 	// leaves the metrics row's Outcome empty, same as a pre-outcome-field row.
 	outcome string
@@ -486,6 +498,8 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		draft:       t.Draft,
 		platform:    t.Platform,
 		model:       t.Model,
+		planOnly:    t.PlanOnly,
+		issueURL:    t.IssueURL,
 	}
 
 	// Egress widening: block at the same kind of human-driven gate as the
@@ -649,6 +663,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		"type": "drydock_task", "repo_ref": t.RepoRef, "instruction": t.Instruction,
 		"agent": t.Agent, "model": t.Model, "platform": t.Platform,
 		"egress_extra": t.EgressExtra, "draft": t.Draft, "sensitive": t.Sensitive,
+		"plan_only": t.PlanOnly, "issue_url": t.IssueURL,
 	}); err == nil {
 		fmt.Fprintf(logf, "%s\n", inv)
 	}
@@ -708,6 +723,16 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		sw.emit(errorEvent(taskID, reason, ""))
 		return
 	}
+	// Plan-mode scope gate: a PlanOnly task terminates HERE, before the
+	// no_diff/verify/push logic even runs. The never-push guarantee is
+	// structural — this early return is the only continuation for a planOnly
+	// task, so runVerify and pushAndOpenPR are unreachable regardless of what
+	// the agent left in the work tree (empty diff, non-empty diff, hostile
+	// diff — all terminate "planned").
+	if tr.planOnly {
+		tr.finishPlanned(diff)
+		return
+	}
 	if diff == "" {
 		tr.outcome = "no_diff"
 		sw.emit(map[string]any{"event": "result", "outcome": "no_diff",
@@ -726,6 +751,42 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return // runVerify emitted the terminal event
 	}
 	tr.pushAndOpenPR(diff)
+}
+
+// finishPlanned is the plan-mode terminal: it captures the agent's plan
+// (best-effort), persists the run's evidence, and ends the task with outcome
+// "planned". It deliberately mirrors the verify_failed terminal idiom — brief
+// before terminal event, broker-authored result row last — and it never
+// verifies and never pushes: HandleTask returns immediately after this call,
+// so for a planOnly task pushAndOpenPR/runVerify are structurally
+// unreachable (THE plan-mode invariant), whatever the diff contains.
+func (tr *taskRun) finishPlanned(diff string) {
+	b := tr.b
+	plan, ok := tr.st.ReadPlan()
+	if ok {
+		b.persistPlan(tr.id, plan)
+	}
+	if diff != "" {
+		// A planning agent shouldn't touch the tree, but if it did, leave the
+		// diff beside the audit log like every other evidence-bearing outcome
+		// — the operator reviewing the plan should see what else changed.
+		b.persistDiff(tr.id, diff)
+	}
+	// The brief is written BEFORE the terminal event (the hint below points at
+	// `drydock inspect`, which reads it), recording PlanOnly/IssueURL so the
+	// plan run's provenance survives next to the plan artifact.
+	b.writeBrief(tr, diff)
+	// Synthetic audit result row mirrors runVerify's verify_failed pattern
+	// (last-wins over the agent's own success row, carrying metered cost).
+	cost := audit.TotalCost(tr.auditPath)
+	fmt.Fprintf(tr.logf,
+		`{"type":"result","subtype":"planned","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
+		time.Since(tr.taskStart).Milliseconds(), cost)
+	tr.outcome = "planned"
+	tr.sw.emit(map[string]any{"event": "result", "outcome": "planned",
+		"task_id": tr.id, "plan_bytes": len(plan), "has_plan": ok,
+		"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": cost,
+		"hint": "drydock inspect " + tr.id + " — review the plan, then run without --plan to implement"})
 }
 
 // runEgressGate handles the awaiting_egress stage when the task requests extra
@@ -789,12 +850,18 @@ func buildSetupEnv(proxyAuth, gatewayIP string, proxyPort int) []string {
 // buildTaskEnv assembles the env slice passed to the agent container. It is
 // pure (all inputs explicit) so it can be unit-tested without a Broker.
 func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
-	agentName, taskModel, openAICompatModel, operatorDefaultModel, taskVendor string) []string {
+	agentName, taskModel, openAICompatModel, operatorDefaultModel, taskVendor string,
+	planOnly bool) []string {
 	env := append([]string{}, grantEnv...)
 	env = append(env, buildSetupEnv(proxyAuth, gatewayIP, proxyPort)...)
 	defaultModel := effectiveDefaultModel(operatorDefaultModel, taskVendor)
 	env = append(env, modelEnv(taskModelFor(taskModel, openAICompatModel, taskVendor), defaultModel)...)
 	env = append(env, "DRYDOCK_AGENT="+agentName)
+	if planOnly {
+		// The entrypoint switches the agent into plan mode off this var
+		// (consumed there; absent entirely on a normal run).
+		env = append(env, "DRYDOCK_MODE=plan")
+	}
 	return env
 }
 
@@ -803,7 +870,8 @@ func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
 // unit-tested buildTaskEnv free function.
 func (tr *taskRun) buildEnv() []string {
 	return buildTaskEnv(tr.grant.EnvVars(), tr.proxyAuth, tr.b.GatewayIP, tr.b.ProxyPort,
-		tr.agentName, tr.model, tr.b.OpenAICompatModel, tr.b.DefaultModel, tr.taskVendor)
+		tr.agentName, tr.model, tr.b.OpenAICompatModel, tr.b.DefaultModel, tr.taskVendor,
+		tr.planOnly)
 }
 
 // appendBrokerResult writes the broker-authored terminal result for this task.
@@ -1006,6 +1074,8 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) trustbrief.DiffFacts {
 			RepoRef:           trustbrief.RedactRepoRef(tr.repoRef),
 			Sensitive:         tr.sensitive,
 			AutoApprove:       tr.autoApprove,
+			PlanOnly:          tr.planOnly,
+			IssueURL:          tr.issueURL,
 		},
 		Runtime: trustbrief.RuntimeFacts{
 			ImageRef: b.ImageRef, Agent: tr.agentName, Vendor: tr.taskVendor, Model: tr.model,

@@ -22,7 +22,7 @@ func TestBuildTaskEnv_ContainsExpectedVars(t *testing.T) {
 	grantEnv := []string{"ANTHROPIC_AUTH_TOKEN=" + bearer}
 
 	env := buildTaskEnv(grantEnv, "" /*proxyAuth*/, gwIP, 3128,
-		"claude", "" /*taskModel*/, "" /*ocModel*/, "claude-sonnet-4-6" /*opDefault*/, "anthropic")
+		"claude", "" /*taskModel*/, "" /*ocModel*/, "claude-sonnet-4-6" /*opDefault*/, "anthropic", false /*planOnly*/)
 
 	joined := strings.Join(env, "\n")
 
@@ -61,7 +61,7 @@ func TestBuildTaskEnv_ContainsExpectedVars(t *testing.T) {
 func TestBuildTaskEnv_ProxyAuthIncluded(t *testing.T) {
 	proxyAuth := "task-abc:mysecret@"
 	env := buildTaskEnv([]string{"ANTHROPIC_AUTH_TOKEN=tok"}, proxyAuth, "192.168.64.1", 3128,
-		"claude", "", "", "", "anthropic")
+		"claude", "", "", "", "anthropic", false)
 	joined := strings.Join(env, "\n")
 	if !strings.Contains(joined, "http://task-abc:mysecret@192.168.64.1:3128") {
 		t.Errorf("proxy credential not present in proxy URLs:\n%s", joined)
@@ -74,7 +74,7 @@ func TestBuildTaskEnv_ProxyAuthIncluded(t *testing.T) {
 func TestBuildTaskEnv_OpenAICompatModelNotLeaked(t *testing.T) {
 	const opDefault = "claude-sonnet-4-6"
 	env := buildTaskEnv([]string{"TOKEN=x"}, "", "10.0.0.1", 3128,
-		"opencode", "", "gemini-2.5-pro", opDefault, "openai-compat")
+		"opencode", "", "gemini-2.5-pro", opDefault, "openai-compat", false)
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, opDefault) {
 		t.Errorf("operator default model %q must not appear in openai-compat env:\n%s", opDefault, joined)
@@ -92,9 +92,29 @@ func TestBuildTaskEnv_OpenAICompatModelNotLeaked(t *testing.T) {
 func TestBuildTaskEnv_GoogleModelNotLeaked(t *testing.T) {
 	const opDefault = "claude-sonnet-4-6"
 	env := buildTaskEnv([]string{"TOKEN=x"}, "", "10.0.0.1", 3128,
-		"gemini", "", "", opDefault, "google")
+		"gemini", "", "", opDefault, "google", false)
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, opDefault) {
 		t.Errorf("operator default model %q must not leak into the google lane:\n%s", opDefault, joined)
+	}
+}
+
+// A plan-only task gets DRYDOCK_MODE=plan in its env (the entrypoint keys off
+// it); a normal task carries no DRYDOCK_MODE at all.
+func TestBuildTaskEnv_PlanOnlySetsMode(t *testing.T) {
+	env := buildTaskEnv([]string{"TOKEN=x"}, "", "10.0.0.1", 3128,
+		"claude", "", "", "", "anthropic", true /*planOnly*/)
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "DRYDOCK_MODE=plan") {
+		t.Errorf("plan-only env missing DRYDOCK_MODE=plan:\n%s", joined)
+	}
+}
+
+func TestBuildTaskEnv_NonPlanHasNoMode(t *testing.T) {
+	env := buildTaskEnv([]string{"TOKEN=x"}, "", "10.0.0.1", 3128,
+		"claude", "", "", "", "anthropic", false)
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "DRYDOCK_MODE") {
+		t.Errorf("non-plan env must not carry DRYDOCK_MODE:\n%s", joined)
 	}
 }

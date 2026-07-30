@@ -217,3 +217,35 @@ func TestWriteStats_AllUnmeteredSpendNotZeroDollar(t *testing.T) {
 		t.Errorf("expected 'spend: -' for all-unmetered dir:\n%s", out)
 	}
 }
+
+// planned is a first-class outcome in the fixed display list — it renders
+// its own line and sorts with the fixed outcomes (before any alphabetical
+// passthrough like "denied"), so its position is stable across reports.
+func TestWriteStats_PlannedInFixedOrder(t *testing.T) {
+	dir := t.TempDir()
+	planned := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"planned","is_error":false,"duration_ms":9000,"total_cost_usd":0.05,"num_turns":0,"src":"broker"}
+`
+	denied := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"denied","is_error":false,"duration_ms":0,"total_cost_usd":0.02,"num_turns":0,"src":"broker"}
+`
+	for id, content := range map[string]string{"planned1": planned, "denied1": denied} {
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "planned: 1") {
+		t.Fatalf("output missing %q:\n%s", "planned: 1", out)
+	}
+	pl, dn := strings.Index(out, "planned: 1"), strings.Index(out, "denied: 1")
+	if dn < 0 || pl > dn {
+		t.Errorf("planned must render in the fixed list, before the sorted passthrough outcomes:\n%s", out)
+	}
+}

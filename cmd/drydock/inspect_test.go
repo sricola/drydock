@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -335,5 +337,108 @@ func TestBriefFlagKinds_ForPendingColumn(t *testing.T) {
 	}
 	if got := briefFlagKinds(dir, "ffffffffffffffffffffffffffffffff"); got != "" {
 		t.Errorf("briefFlagKinds for missing brief = %q, want empty", got)
+	}
+}
+
+// writePlanBrief writes a plan-only brief (PlanOnly + IssueURL set) for id.
+func writePlanBrief(t *testing.T, dir, id, issueURL string) {
+	t.Helper()
+	b := trustbrief.Brief{
+		SchemaVersion: 1, TaskID: id, GeneratedAt: time.Now().UTC(),
+		Task: trustbrief.TaskFacts{
+			InstructionSHA256: trustbrief.HashInstruction("plan it"),
+			RepoRef:           "https://github.com/o/r.git",
+			PlanOnly:          true,
+			IssueURL:          issueURL,
+		},
+		Runtime:      trustbrief.RuntimeFacts{ImageRef: "sandbox:test", Agent: "claude", Vendor: "anthropic"},
+		Policy:       trustbrief.PolicyFacts{BudgetUSD: 2, TimeoutSeconds: 1800},
+		Verification: trustbrief.Verification{Status: trustbrief.VerificationNotConfigured},
+		Setup:        trustbrief.SetupEvidence{Status: trustbrief.SetupNotConfigured},
+	}
+	b.Policy.SnapshotSHA256 = b.Policy.Fingerprint()
+	if err := trustbrief.Write(dir, id, b); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A plan-only brief renders the issue provenance, the planned indicator with
+// the artifact path, and the captured plan inline (untrusted agent output:
+// control characters stripped per line).
+func TestRunInspect_PlanOnlyRendersIssueAndPlanInline(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	issueURL := "https://github.com/o/r/issues/42"
+	writePlanBrief(t, dir, id, issueURL)
+	planText := "## Plan\n1. add the feature\x1b[31m\n2. test it\n"
+	if err := os.WriteFile(filepath.Join(dir, id+".plan.md"), []byte(planText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	for _, want := range []string{
+		"issue    " + issueURL,
+		"planned",
+		id + ".plan.md",
+		"## Plan",
+		"1. add the feature",
+		"2. test it",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("inspect output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("plan content rendered with a raw escape byte (terminal-injection):\n%q", out)
+	}
+}
+
+// No plan artifact (the agent never wrote one): the planned indicator still
+// renders, pointing at the path, without inventing content.
+func TestRunInspect_PlanOnlyWithoutArtifactStillIndicates(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	writePlanBrief(t, dir, id, "")
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if !strings.Contains(out, "planned") || !strings.Contains(out, id+".plan.md") {
+		t.Errorf("plan indicator missing without artifact:\n%s", out)
+	}
+	if strings.Contains(out, "issue ") {
+		t.Errorf("no issue line expected when IssueURL is empty:\n%s", out)
+	}
+}
+
+// A symlinked plan artifact must be refused (O_NOFOLLOW), not followed — the
+// audit dir is host-side but the read path must match every other audit
+// artifact's defense posture.
+func TestRunInspect_SymlinkedPlanArtifactRefused(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	writePlanBrief(t, dir, id, "")
+	secret := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("SECRET-CONTENT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(dir, id+".plan.md")); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if strings.Contains(out, "SECRET-CONTENT") {
+		t.Errorf("symlinked plan.md was followed:\n%s", out)
+	}
+}
+
+// A non-plan brief must not grow issue/plan lines.
+func TestRunInspect_NonPlanBriefHasNoPlanLines(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	writeTestBrief(t, dir, id)
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if strings.Contains(out, "issue ") || strings.Contains(out, "plan ") {
+		t.Errorf("non-plan brief rendered issue/plan lines:\n%s", out)
 	}
 }
