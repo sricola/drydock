@@ -2,10 +2,54 @@ package broker
 
 import (
 	"fmt"
+	"sort"
 
+	"drydock/internal/config"
 	"drydock/internal/globmatch"
 	"drydock/internal/trustbrief"
 )
+
+// requiredAcks computes the second-look acknowledgment categories for a diff:
+// the sorted, de-duplicated set of flag kinds (trustbrief.Flag.Kind) where ANY
+// of the flag's example paths matches ANY diff_policy.second_look_paths glob.
+// Empty SecondLookPaths means the feature is off — nil, no acks ever required.
+//
+// Scope note (deliberate, security-reviewed): second-look is a HUMAN-GATE
+// REVIEW AID, not a containment boundary. The hard enforcement layer for
+// untouchable or unevaluatable diffs is checkDiffCaps, which fails closed
+// (policy_blocked) when FilesOmitted > 0 and a content-based policy
+// (blocked_paths / max_lines_changed) is configured. second_look_paths alone
+// deliberately does NOT trigger that guard: the approver still sees the full
+// diff and the Brief's files_omitted count at review. So when files were
+// omitted from analysis (past trustbrief's tracking bound), acks are computed
+// over the tracked files only — omitted files simply can't add categories.
+// Flag example paths are themselves capped (trustbrief maxFlagPaths), which is
+// the same best-effort character. Anything that must be impossible to push
+// belongs in blocked_paths, not here.
+func requiredAcks(facts trustbrief.DiffFacts, dp config.DiffPolicy) []string {
+	if len(dp.SecondLookPaths) == 0 {
+		return nil
+	}
+	kinds := map[string]bool{}
+	for _, fl := range facts.Flags {
+		for _, p := range fl.Paths {
+			for _, pat := range dp.SecondLookPaths {
+				if globmatch.Match(pat, p) {
+					kinds[fl.Kind] = true
+				}
+			}
+		}
+	}
+	if len(kinds) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(kinds))
+	for k := range kinds {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // checkDiffCaps applies the operator's diff_policy caps (Broker.DiffPolicy)
 // to the broker-computed DiffFacts for this task's review diff. It returns

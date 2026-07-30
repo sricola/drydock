@@ -1,16 +1,19 @@
 package broker
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
+	"io"
 	"net/http"
 	"slices"
 
 	"drydock/internal/config"
 )
 
-// HandleApprove signals the pending task's channel with true. Wire as
-// POST /admin/approve/{id}.
+// HandleApprove signals the pending task's channel with approval, after
+// validating that the request body acknowledges every second-look category the
+// task requires (see signal). Wire as POST /admin/approve/{id}.
 func (b *Broker) HandleApprove(w http.ResponseWriter, r *http.Request) { b.signal(w, r, true) }
 
 // HandleDeny signals false. Wire as POST /admin/deny/{id}.
@@ -118,17 +121,91 @@ func (b *Broker) HandleKill(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// maxAckBodyBytes caps the optional approve/deny request body. Acknowledgment
+// lists are a handful of short category strings; anything bigger is abuse.
+const maxAckBodyBytes = 4 << 10
+
+// readAcks parses the optional approve body {"acknowledge":["ci-workflow",..]}.
+// An empty body is fine (nil acks). A non-nil error means the body could not
+// be read or parsed — the caller decides whether that fails closed (it does,
+// whenever the task requires any acks).
+func readAcks(w http.ResponseWriter, r *http.Request) ([]string, error) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAckBodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil
+	}
+	var body struct {
+		Acknowledge []string `json:"acknowledge"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, err
+	}
+	return body.Acknowledge, nil
+}
+
+// missingAcks returns the required categories NOT covered by acks. Nil when
+// nothing is required. A parse failure (parseErr != nil) of a request for a
+// task WITH required acks fails closed: everything counts as missing.
+func missingAcks(required, acks []string, parseErr error) []string {
+	if len(required) == 0 {
+		return nil
+	}
+	if parseErr != nil {
+		return required
+	}
+	var missing []string
+	for _, req := range required {
+		if !slices.Contains(acks, req) {
+			missing = append(missing, req)
+		}
+	}
+	return missing
+}
+
+// signal resolves a pending gate: approve (ok=true) or deny (ok=false).
+//
+// SECOND-LOOK ENFORCEMENT (fail-safe by construction): when the task entered
+// the gate with required acknowledgment categories (b.requiredAcks, registered
+// atomically with b.pending by awaitGate), an approve must acknowledge a
+// SUPERSET of them via the request body {"acknowledge":[...]}. Validation
+// happens HERE, strictly BEFORE anything is sent on the approval channel: an
+// insufficient, empty, or unparseable approve returns 422 naming the missing
+// categories and never touches the channel — the gate stays registered, the
+// task stays pending, and a corrected approve can still succeed. There is no
+// code path on which an approve with missing acks signals the gate, so there
+// is no path on which it pushes. Deny ignores acks entirely (denying never
+// needs acknowledgment), as does the egress gate (which registers no
+// requiredAcks entry).
 func (b *Broker) signal(w http.ResponseWriter, r *http.Request, ok bool) {
 	id := r.PathValue("id")
 	b.pendingMu.Lock()
 	ch, exists := b.pending[id]
+	required := b.requiredAcks[id]
 	b.pendingMu.Unlock()
 	if !exists {
 		http.Error(w, "no such pending task", http.StatusNotFound)
 		return
 	}
+	var acks []string
+	if ok {
+		var parseErr error
+		acks, parseErr = readAcks(w, r)
+		if missing := missingAcks(required, acks, parseErr); len(missing) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":    "approval refused: second-look categories not acknowledged; task stays pending",
+				"missing":  missing,
+				"required": required,
+			})
+			return
+		}
+	}
 	select {
-	case ch <- ok:
+	case ch <- gateReply{ok: ok, acks: acks}:
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "already signaled", http.StatusConflict)

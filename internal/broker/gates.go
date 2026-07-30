@@ -31,40 +31,69 @@ const (
 	gateShutdown
 )
 
+// gateReply is what an /admin/approve or /admin/deny resolution delivers to a
+// waiting gate. acks carries the approver's acknowledged second-look
+// categories (nil for deny and for the egress gate, which never requires
+// acks). VALIDATION DOES NOT HAPPEN HERE: signal (admin.go) refuses an
+// insufficient approve with 422 BEFORE anything is sent on the channel, so a
+// gateReply with ok=true is by construction an approve whose acks satisfied
+// the task's requirement at send time.
+type gateReply struct {
+	ok   bool
+	acks []string
+}
+
 // awaitGate is the shared skeleton for gatePushMarked and gateEgressWiden. It:
 //   - optionally wraps ctx with the operator ApprovalTimeout;
-//   - registers a buffered channel in b.pending under taskID (deregisters on return);
+//   - registers a buffered channel in b.pending under taskID — and, atomically
+//     under the same lock, the task's required second-look acks in
+//     b.requiredAcks (deregisters both on return). The atomicity matters:
+//     were the ack requirement registered after the channel, an approve racing
+//     the gap would validate against an empty requirement and bypass the acks;
 //   - calls onReady, which must persist the review artifact, log, and fire any
 //     macOS notification specific to this gate;
 //   - blocks until the channel receives a signal or ctx is cancelled.
 //
-// Returns (true, gateApproved) on approval, (false, cause) on deny/kill/timeout/shutdown.
-// timeoutMsg is logged at Warn on DeadlineExceeded; cancelMsg is logged at Info
-// on any context cancellation that is not a shutdown.
-func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg string, onReady func()) (bool, gateCause) {
+// reqAcks is the second-look categories an approve must acknowledge (nil for
+// the egress gate and for tasks with none). Returns (true, gateApproved) on
+// approval, (false, cause) on deny/kill/timeout/shutdown. timeoutMsg is logged
+// at Warn on DeadlineExceeded; cancelMsg is logged at Info on any context
+// cancellation that is not a shutdown.
+func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg string, reqAcks []string, onReady func()) (bool, gateCause) {
 	if b.ApprovalTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, b.ApprovalTimeout)
 		defer cancel()
 	}
-	ch := make(chan bool, 1)
+	ch := make(chan gateReply, 1)
 	b.pendingMu.Lock()
 	if b.pending == nil {
-		b.pending = make(map[string]chan bool)
+		b.pending = make(map[string]chan gateReply)
 	}
 	b.pending[taskID] = ch
+	if len(reqAcks) > 0 {
+		if b.requiredAcks == nil {
+			b.requiredAcks = make(map[string][]string)
+		}
+		b.requiredAcks[taskID] = reqAcks
+	}
 	b.pendingMu.Unlock()
 	defer func() {
 		b.pendingMu.Lock()
 		delete(b.pending, taskID)
+		delete(b.requiredAcks, taskID)
 		b.pendingMu.Unlock()
 	}()
 
 	onReady()
 
 	select {
-	case ok := <-ch:
-		if ok {
+	case reply := <-ch:
+		if reply.ok {
+			if len(reply.acks) > 0 {
+				slog.Info("gate approved with acknowledgments",
+					"task_id", taskID, "acknowledged", reply.acks)
+			}
 			return true, gateApproved
 		}
 		return false, gateDenied
@@ -123,6 +152,7 @@ func (b *Broker) gatePushMarked(ctx context.Context, tr *taskRun, diff string) (
 	ok, cause := b.awaitGate(ctx, tr.id,
 		"task auto-denied at approval gate (approval_timeout reached)",
 		"task killed or broker shutting down before approval; aborting",
+		tr.requiredAcks,
 		func() {
 			diffPath := b.persistDiff(tr.id, diff)
 			if werr := writeGateMarker(b.AuditRoot, tr.id, gateMarker{
@@ -195,9 +225,12 @@ func gateOutcome(cause gateCause, resumed bool) (outcome, subtype string) {
 // never reach squid. Mirrors gatePushMarked so the operator only has to learn one
 // approval flow.
 func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []egress.Domain) bool {
+	// nil reqAcks: the egress gate never requires second-look acknowledgments;
+	// its approve resolves as gateReply{ok, nil} exactly as before.
 	ok, _ := b.awaitGate(ctx, taskID,
 		"task auto-denied at egress gate (approval_timeout reached)",
 		"task cancelled at egress gate",
+		nil,
 		func() {
 			// Persist the request next to the audit so reviewers have a stable
 			// artifact (the in-flight TaskState would disappear on a brokerd crash).

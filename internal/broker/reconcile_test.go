@@ -204,7 +204,7 @@ func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
 		ch := b.pending["live"]
 		b.pendingMu.Unlock()
 		if ch != nil {
-			ch <- true
+			ch <- gateReply{ok: true}
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -327,7 +327,7 @@ func TestResumePush_RegisteredStageNeverObservedRunning(t *testing.T) {
 	ch := b.pending["rpid"]
 	b.pendingMu.Unlock()
 	if ch != nil {
-		ch <- true
+		ch <- gateReply{ok: true}
 	}
 	waitFor(2*time.Second, func() bool {
 		b.pendingMu.Lock()

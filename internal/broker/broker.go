@@ -196,10 +196,16 @@ type Broker struct {
 	slotsOnce sync.Once
 	slots     chan struct{}
 
-	pendingMu  sync.Mutex
-	pending    map[string]chan bool               // task_id -> approval channel
-	tasks      map[string]*TaskState              // task_id -> live state (running + awaiting_approval)
-	cancellers map[string]context.CancelCauseFunc // task_id -> cancel hook for in-flight kill
+	pendingMu sync.Mutex
+	pending   map[string]chan gateReply // task_id -> approval channel
+	// requiredAcks maps a task waiting at the diff-approval gate to the
+	// second-look categories an approve must acknowledge. Registered by
+	// awaitGate atomically with the b.pending entry (same lock hold) and
+	// removed with it, so there is never a window where a task is approvable
+	// but its ack requirement is invisible to signal. Guarded by pendingMu.
+	requiredAcks map[string][]string
+	tasks        map[string]*TaskState              // task_id -> live state (running + awaiting_approval)
+	cancellers   map[string]context.CancelCauseFunc // task_id -> cancel hook for in-flight kill
 }
 
 // taskStage is the subset of *stage.Stage that HandleTask uses. It exists so
@@ -361,6 +367,13 @@ type taskRun struct {
 	// return with the audit log open, e.g. resumePush's shutdown re-defer)
 	// leaves the metrics row's Outcome empty, same as a pre-outcome-field row.
 	outcome string
+
+	// requiredAcks is the second-look acknowledgment categories the approver
+	// must ack for this diff (diff_policy.second_look_paths x the diff's
+	// trustbrief flags). Computed at gate entry — pushAndOpenPR on the live
+	// path, resumePush (from the persisted diff) on the resume path — and
+	// enforced by signal (admin.go) before any approve reaches the gate.
+	requiredAcks []string
 
 	// keepStage, when true, suppresses the deferred stage Cleanup so the stage
 	// directory survives a brokerd shutdown and can be resumed at next boot.
@@ -999,7 +1012,17 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"hint": "drydock inspect " + tr.id + " — a diff-policy cap blocked this task before review"})
 		return
 	}
+	// Second-look acknowledgments (diff_policy.second_look_paths): computed
+	// here at gate entry from the same DiffFacts the caps check used, so what
+	// the approver must acknowledge is exactly what the Brief reports. The
+	// requirement is registered with the pending channel inside awaitGate and
+	// enforced by signal — an approve missing any of these categories is
+	// refused with 422 and the task stays pending. Auto-approve is unaffected:
+	// second-look is a human-gate aid, and the hard enforcement that even
+	// auto-approve cannot bypass is checkDiffCaps above.
+	tr.requiredAcks = requiredAcks(facts, b.DiffPolicy)
 	b.setStage(tr.id, StagePending)
+	b.setSecondLook(tr.id, tr.requiredAcks)
 	// Only announce the approval gate when there's actually a human gate to
 	// wait on. Auto-approve pushes immediately, so an "awaiting_approval"
 	// stage would be a misleading blip in the stream.
@@ -1009,6 +1032,9 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"approve": "drydock approve " + tr.id,
 			"deny":    "drydock deny " + tr.id,
 			"review":  "drydock review " + tr.id}
+		if len(tr.requiredAcks) > 0 {
+			gateEv["second_look"] = tr.requiredAcks
+		}
 		// Surface the verifier's broker-observed verdict to the reviewer at
 		// the gate (advisory verification's whole value lives here).
 		if tr.verify != nil && tr.verify.Status != trustbrief.VerificationNotConfigured {
@@ -1021,6 +1047,9 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	if !tr.autoApprove {
 		tr.approvalGateWait = time.Since(gateStart)
 	}
+	// Gate resolved (either way): the second-look ask is no longer pending,
+	// mirroring how setEgressExtra clears after the egress gate.
+	b.setSecondLook(tr.id, nil)
 	if !approved {
 		// See gateOutcome's doc comment for how this maps and where the live
 		// and resumed (reconcile.go's resumePush) paths intentionally diverge.

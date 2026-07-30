@@ -12,6 +12,7 @@ import (
 
 	"drydock/internal/audit"
 	"drydock/internal/provider"
+	"drydock/internal/trustbrief"
 )
 
 // interruptedResultLine is the synthetic terminal event appended to a task
@@ -160,6 +161,14 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 			}
 		}()
 	}
+
+	// Recompute the second-look acknowledgment requirement from the persisted
+	// diff before re-entering the gate: the requirement must survive a brokerd
+	// restart, or bouncing the daemon while a flagged task sits at the gate
+	// would silently downgrade its approve to ack-less (an ack-bypass). Same
+	// requiredAcks(Analyze(diff), policy) computation as the live path.
+	tr.requiredAcks = requiredAcks(trustbrief.Analyze(diff), b.DiffPolicy)
+	b.setSecondLook(id, tr.requiredAcks)
 
 	// Recorded unconditionally, unlike pushAndOpenPR's !tr.autoApprove guard:
 	// auto-approved tasks return from gatePushMarked before its onReady ever
