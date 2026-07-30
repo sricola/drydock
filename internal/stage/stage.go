@@ -479,6 +479,12 @@ func (s *Stage) PushEnv() []string {
 	return gitHardenedEnv(env)
 }
 
+// CuratedEnv exposes the curated adapter env for host-side vendor-CLI calls
+// made outside a Stage — e.g. the drydock CLI fetching an issue via gh before
+// submit. Same allowlist, same rationale: never hand gh/glab the full
+// os.Environ().
+func CuratedEnv() []string { return curatedEnv() }
+
 func curatedEnv() []string {
 	out := make([]string, 0, len(adapterAllowedEnv))
 	for _, key := range adapterAllowedEnv {

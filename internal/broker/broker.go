@@ -76,6 +76,14 @@ type Task struct {
 	// Draft opens the PR/MR as a draft (gh/glab --draft; Gitea via a WIP:
 	// title prefix). Default false.
 	Draft bool `json:"draft"`
+	// PlanOnly marks a plan-only run: the agent VM gets DRYDOCK_MODE=plan in
+	// its env (the entrypoint keys off it) and is expected to produce a plan,
+	// not a diff. Default false = normal implement-and-diff run.
+	PlanOnly bool `json:"plan_only,omitempty"`
+	// IssueURL records the issue the instruction was ingested from (CLI
+	// --issue). Provenance only — the broker treats the instruction text as
+	// the single source of truth either way.
+	IssueURL string `json:"issue_url,omitempty"`
 }
 
 // SquidControl registers/deregisters per-task egress widening with squid.
@@ -341,6 +349,7 @@ type taskRun struct {
 	draft       bool
 	platform    string
 	model       string
+	planOnly    bool
 
 	// Filled in as HandleTask advances through the lifecycle.
 	proxyAuth  string      // "<user>:<secret>@" widening userinfo (empty if none)
@@ -486,6 +495,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		draft:       t.Draft,
 		platform:    t.Platform,
 		model:       t.Model,
+		planOnly:    t.PlanOnly,
 	}
 
 	// Egress widening: block at the same kind of human-driven gate as the
@@ -789,12 +799,18 @@ func buildSetupEnv(proxyAuth, gatewayIP string, proxyPort int) []string {
 // buildTaskEnv assembles the env slice passed to the agent container. It is
 // pure (all inputs explicit) so it can be unit-tested without a Broker.
 func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
-	agentName, taskModel, openAICompatModel, operatorDefaultModel, taskVendor string) []string {
+	agentName, taskModel, openAICompatModel, operatorDefaultModel, taskVendor string,
+	planOnly bool) []string {
 	env := append([]string{}, grantEnv...)
 	env = append(env, buildSetupEnv(proxyAuth, gatewayIP, proxyPort)...)
 	defaultModel := effectiveDefaultModel(operatorDefaultModel, taskVendor)
 	env = append(env, modelEnv(taskModelFor(taskModel, openAICompatModel, taskVendor), defaultModel)...)
 	env = append(env, "DRYDOCK_AGENT="+agentName)
+	if planOnly {
+		// The entrypoint switches the agent into plan mode off this var
+		// (consumed there; absent entirely on a normal run).
+		env = append(env, "DRYDOCK_MODE=plan")
+	}
 	return env
 }
 
@@ -803,7 +819,8 @@ func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
 // unit-tested buildTaskEnv free function.
 func (tr *taskRun) buildEnv() []string {
 	return buildTaskEnv(tr.grant.EnvVars(), tr.proxyAuth, tr.b.GatewayIP, tr.b.ProxyPort,
-		tr.agentName, tr.model, tr.b.OpenAICompatModel, tr.b.DefaultModel, tr.taskVendor)
+		tr.agentName, tr.model, tr.b.OpenAICompatModel, tr.b.DefaultModel, tr.taskVendor,
+		tr.planOnly)
 }
 
 // appendBrokerResult writes the broker-authored terminal result for this task.
