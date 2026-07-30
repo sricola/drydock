@@ -449,3 +449,25 @@ func TestChangedPathsForPolicy_HunkContentCannotInjectRename(t *testing.T) {
 		t.Errorf("paths = %v, want [a.txt]: prefixed content lines must not contribute paths", paths)
 	}
 }
+
+func TestClassifyPath_Exported(t *testing.T) {
+	if got := ClassifyPath("go.mod"); len(got) != 1 || got[0] != FlagDependency {
+		t.Errorf("ClassifyPath(go.mod) = %v, want [%s]", got, FlagDependency)
+	}
+	got := ClassifyPath(".github/workflows/ci.yml")
+	found := false
+	for _, k := range got {
+		if k == FlagCIWorkflow {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ClassifyPath(.github/workflows/ci.yml) = %v, want it to contain %s", got, FlagCIWorkflow)
+	}
+	if got := ClassifyPath("src/main.go"); len(got) != 0 {
+		t.Errorf("ClassifyPath(src/main.go) = %v, want empty", got)
+	}
+	if got := ClassifyPath(""); len(got) != 0 {
+		t.Errorf("ClassifyPath(\"\") = %v, want empty", got)
+	}
+}
