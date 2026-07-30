@@ -69,11 +69,13 @@ function shortId(id){ return (id||"").slice(0,12); }
 //   \p{Cf} = the Format category: bidi overrides, zero-width chars, BOM —
 //            matching inspect.go's unicode.Is(unicode.Cf, r).
 // Ordinary non-ASCII letters (é, ©, …) are untouched. The cap counts code
-// points (spread), not UTF-16 units, to match Go's rune-based count.
+// points (spread), not UTF-16 units, to match Go's rune-based count. The
+// boundary matches Go exactly: inspect.go appends "…" once n reaches 200,
+// so a string of exactly 200 code points also gets the ellipsis (>=, not >).
 function safeCell(s){
   const cleaned = String(s ?? "").replace(/[\p{Cc}\p{Cf}]/gu, "");
   const cps = [...cleaned];
-  return cps.length > 200 ? cps.slice(0, 200).join("") + "…" : cleaned;
+  return cps.length >= 200 ? cps.slice(0, 200).join("") + "…" : cleaned;
 }
 function toast(msg, kind){
   const t = el("div", { class: "toast" + (kind ? " " + kind : "") }, msg);
@@ -259,11 +261,13 @@ async function renderFinishedStrip(container, liveIDs){
     // must never be the fallback for a key this code doesn't recognize.
     const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed";
     const isOk = it.outcome_key === "ok";
+    // Color via class, not a style attribute: the strict CSP (default-src
+    // 'self', no style-src 'unsafe-inline') blocks inline style attributes.
     const icon = isErr
-      ? el("span", { style: "color:var(--red)", text: "✕" })
+      ? el("span", { class: "glyph-err", text: "✕" })
       : isOk
-      ? el("span", { style: "color:var(--green)", text: "✓" })
-      : el("span", { style: "color:var(--muted)", text: "∅" });
+      ? el("span", { class: "glyph-ok", text: "✓" })
+      : el("span", { class: "glyph-muted", text: "∅" });
     const row = el("div", { class: "recent-row", onclick: () => openReview(it.id, true) },
       icon,
       el("code", { class: "tid", text: shortId(it.id) }),
@@ -523,7 +527,15 @@ function renderBrief(box, b){
     if (v.credentials === "none") line += " · no credentials";
     else if (v.credentials) line += " · credentials " + safeCell(v.credentials);
     if (v.tree_sha) line += " · tree " + safeCell(String(v.tree_sha)).slice(0, 12);
-    const vCls = { passed: "v-passed", failed: "v-failed" }[v.status] || "v-inconclusive";
+    // Explicit switch, not an object-index lookup: indexing a plain object
+    // with an untrusted status string resolves prototype keys too (e.g.
+    // "constructor"), which would yield a truthy non-class value.
+    let vCls;
+    switch (v.status) {
+      case "passed": vCls = "v-passed"; break;
+      case "failed": vCls = "v-failed"; break;
+      default: vCls = "v-inconclusive";
+    }
     box.append(row("verify", "", val(line, vCls)));
     const cmds = v.commands || [];
     for (const c of cmds){
@@ -555,7 +567,10 @@ function renderBrief(box, b){
 async function openReview(id, readonly = false){
   if (overlayState) closeOverlay();   // close any existing overlay first
   const diffBox = el("div", { class: "tabbody" }, el("p", { class: "muted", text: "loading…" }));
-  const logsBox = el("div", { class: "tabbody", style: "display:none" }, "");
+  const logsBox = el("div", { class: "tabbody" }, "");
+  // CSSOM property write, not a style attribute: CSP blocks the attribute
+  // form, and the tab toggles below flip this same property ("" / "none").
+  logsBox.style.display = "none";
   const diffTab = el("button", { class: "tab on" }, "Diff");
   const logsTab = el("button", { class: "tab" }, "Logs");
   let logsLoaded = false;
@@ -570,7 +585,7 @@ async function openReview(id, readonly = false){
   const panel = el("div", { class: "panel" },
     el("div", { class: "panel-head" },
       el("strong", { text: "Review " + shortId(id) }),
-      el("span", { class: "kbd", style:"display:flex;gap:8px;align-items:center" }, "Esc to close",
+      el("span", { class: "kbd kbd-row" }, "Esc to close",
         el("button", { class:"tab", onclick: closeOverlay, text: "✕" }))),
     briefBox,
     el("div", { class: "tabs" }, diffTab, logsTab), diffBox, logsBox);
@@ -693,7 +708,9 @@ function renderSubmit() {
   if (pollTimer) clearTimeout(pollTimer);
   const form = el("form", { class: "submit-form" });
   const repo = el("input", { type: "text", placeholder: "git@github.com:owner/repo", required: "" });
-  const okMark = el("span", { class: "ok-mark", text: "✓", style: "display:none" });
+  const okMark = el("span", { class: "ok-mark", text: "✓" });
+  // CSSOM write (CSP-safe); repo.oninput below toggles this same property.
+  okMark.style.display = "none";
   repo.oninput = () => { okMark.style.display = validRepo(repo.value) ? "" : "none"; };
   const repoField = el("div", { class: "field" }, repo, okMark);
   const chips = el("div", { class: "actions" }, ...recentRepos().map(r =>

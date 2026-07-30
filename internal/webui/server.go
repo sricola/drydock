@@ -76,7 +76,9 @@ func (s *Server) Handler() http.Handler {
 // the standard anti-sniffing/anti-framing headers. Defense-in-depth behind the
 // loopback bind + bearer token; the primary XSS defense remains the UI's
 // textContent-only rendering discipline. The app is a single-origin page with
-// no inline script or style, so default-src 'self' is exact, not aspirational.
+// no inline script and no style *attributes* — styling is CSS classes plus
+// CSSOM property writes (node.style.x = ...), which CSP does not block — so
+// default-src 'self' is exact, not aspirational.
 // Headers are set before next runs: once the inner handler writes the body,
 // header writes would be silently dropped.
 func securityHeaders(next http.Handler) http.Handler {

@@ -38,6 +38,7 @@ button.ok,.btn.ok{border-color:#2c5a33;color:var(--green)} button.danger,.btn.da
 .btn.confirming{border-color:var(--red);color:var(--red)}
 button[disabled]{opacity:.45;cursor:not-allowed}
 .kbd{margin-left:auto;color:var(--faint);font-size:11px}
+.kbd-row{display:flex;gap:8px;align-items:center}
 .empty{color:var(--muted)} .muted{color:var(--muted)} a{color:var(--green)}
 .chip{font-size:11px;color:var(--muted);background:var(--surface);border:1px solid var(--line-2);border-radius:12px;padding:2px 9px;cursor:pointer}
 .toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--surface-2);border:1px solid var(--line-2);border-radius:8px;padding:7px 13px;font-size:12px;z-index:50}
@@ -46,6 +47,8 @@ button[disabled]{opacity:.45;cursor:not-allowed}
 .recent-title{color:var(--faint);font-size:11px;margin-bottom:4px}
 .recent-row{display:flex;gap:10px;align-items:center;padding:4px 0;color:var(--muted);font-size:12.5px;cursor:pointer}
 .recent-row .reason{color:#c98b8b} .recent-row .outcome{margin-left:auto;color:var(--fg)}
+/* outcome glyphs on the "just finished" rail — classes, not style attrs (CSP) */
+.glyph-err{color:var(--red)} .glyph-ok{color:var(--green)} .glyph-muted{color:var(--muted)}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;justify-content:center;align-items:flex-start;padding:6vh 16px;z-index:40}
 .panel{background:var(--surface);border:1px solid var(--line-2);border-radius:10px;width:min(720px,100%);max-height:86vh;overflow:auto;padding:14px}
 .panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
