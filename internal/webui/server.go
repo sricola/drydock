@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"drydock/internal/brokerclient"
+	"drydock/internal/trustbrief"
 )
 
 type Server struct {
@@ -62,6 +63,9 @@ func (s *Server) Handler() http.Handler {
 	})
 	api("GET /api/widen/{id}", func(w http.ResponseWriter, r *http.Request) {
 		s.serveAuditFile(w, r, ".widen.json", "application/json")
+	})
+	api("GET /api/brief/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.serveAuditFile(w, r, trustbrief.Suffix, "application/json")
 	})
 	api("GET /api/history", s.handleHistory)
 	return mux
