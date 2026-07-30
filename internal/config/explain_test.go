@@ -149,3 +149,62 @@ func TestEffectiveHash_StableAndSensitive(t *testing.T) {
 		t.Error("hash unchanged after a value changed")
 	}
 }
+
+// DiffPolicy is enforced policy: it must appear in the provenance table as a
+// yaml-only field (no env override), attribute to config.yaml exactly when
+// the yaml sets any of its fields, and stay in the policy-comparison set so
+// a host/daemon divergence in diff policy trips the DIVERGENT verdict.
+func TestExplain_DiffPolicyProvenance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Absent from yaml → default, rendered "disabled".
+	fields, _, err := Explain(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := fieldByName(fields, "DiffPolicy")
+	if !ok {
+		t.Fatal("DiffPolicy missing from Explain provenance")
+	}
+	if f.EnvVar != "" {
+		t.Errorf("DiffPolicy must be yaml-only, got env var %q", f.EnvVar)
+	}
+	if f.YAMLKey != "diff_policy" {
+		t.Errorf("DiffPolicy yaml key = %q, want diff_policy", f.YAMLKey)
+	}
+	if f.Source != SourceDefault {
+		t.Errorf("DiffPolicy source = %q, want %q when absent", f.Source, SourceDefault)
+	}
+	if f.Value != "disabled" {
+		t.Errorf("DiffPolicy value = %q, want disabled", f.Value)
+	}
+
+	// Set in yaml → config.yaml, compact summary.
+	yaml := "network: x\ngateway_ip: 1.2.3.4\n" +
+		"diff_policy:\n  max_files_changed: 50\n  max_lines_changed: 2000\n" +
+		"  blocked_paths: [\"**/*.pem\", \".github/workflows/**\"]\n" +
+		"  second_look_paths: [\"**/Dockerfile\"]\n"
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fields, _, err = Explain(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok = fieldByName(fields, "DiffPolicy")
+	if !ok {
+		t.Fatal("DiffPolicy missing from Explain provenance")
+	}
+	if f.Source != SourceYAML {
+		t.Errorf("DiffPolicy source = %q, want %q when yaml sets it", f.Source, SourceYAML)
+	}
+	if want := "50 files / 2000 lines / 2 blocked / 1 second-look"; f.Value != want {
+		t.Errorf("DiffPolicy value = %q, want %q", f.Value, want)
+	}
+
+	// It is enforced policy — it must survive PolicyComparisonFields.
+	if _, ok := fieldByName(PolicyComparisonFields(fields), "DiffPolicy"); !ok {
+		t.Error("DiffPolicy must stay in the policy-comparison field set")
+	}
+}

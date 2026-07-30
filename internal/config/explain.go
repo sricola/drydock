@@ -158,6 +158,22 @@ func renderVerifyRepos(repos map[string]VerifyRepo) string {
 	return fmt.Sprintf("%d repos: %s", len(keys), strings.Join(keys, ", "))
 }
 
+// renderDiffPolicy is a compact one-line summary of the diff_policy block.
+func renderDiffPolicy(dp DiffPolicy) string {
+	if !diffPolicySet(dp) {
+		return "disabled"
+	}
+	return fmt.Sprintf("%d files / %d lines / %d blocked / %d second-look",
+		dp.MaxFilesChanged, dp.MaxLinesChanged, len(dp.BlockedPaths), len(dp.SecondLookPaths))
+}
+
+// diffPolicySet reports whether any diff_policy field is non-zero (the zero
+// value disables the whole block).
+func diffPolicySet(dp DiffPolicy) bool {
+	return dp.MaxFilesChanged != 0 || dp.MaxLinesChanged != 0 ||
+		len(dp.BlockedPaths) != 0 || len(dp.SecondLookPaths) != 0
+}
+
 // provenanceTable enumerates every field of Config in declaration order,
 // pairing each with its yaml key, env var (or ""), guard, and renderer.
 // This table must stay in lockstep with applyEnvOverrides and Defaults();
@@ -237,6 +253,14 @@ func provenanceTable() []fieldDesc {
 			// Non-empty map = yaml-set (defaults have no repos).
 			differs: func(yamlCfg, def *Config) bool {
 				return len(yamlCfg.Verify.Repos) != len(def.Verify.Repos)
+			}},
+		{name: "DiffPolicy", yamlKey: "diff_policy",
+			value: func(c *Config) string { return renderDiffPolicy(c.DiffPolicy) },
+			// The rendered summary collapses the glob lists to counts, so
+			// compare the struct itself: any non-zero field = yaml-set
+			// (the default block is all-zero).
+			differs: func(yamlCfg, def *Config) bool {
+				return diffPolicySet(yamlCfg.DiffPolicy) != diffPolicySet(def.DiffPolicy)
 			}},
 		{name: "StageRoot", yamlKey: "stage_root", envVar: "STAGE_ROOT",
 			guardedEnv: envString("STAGE_ROOT"),

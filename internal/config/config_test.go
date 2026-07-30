@@ -594,3 +594,62 @@ func TestVerifyConfig_Rejects(t *testing.T) {
 		}
 	}
 }
+
+func TestDiffPolicy_LoadsAndValidates(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	yaml := "network: x\ngateway_ip: 1.2.3.4\n" +
+		"diff_policy:\n  max_files_changed: 50\n  max_lines_changed: 2000\n" +
+		"  blocked_paths: [\"**/*.pem\", \".github/workflows/**\"]\n" +
+		"  second_look_paths: [\"**/Dockerfile\"]\n"
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	dp := c.DiffPolicy
+	if dp.MaxFilesChanged != 50 || dp.MaxLinesChanged != 2000 ||
+		len(dp.BlockedPaths) != 2 || len(dp.SecondLookPaths) != 1 {
+		t.Errorf("diff_policy = %+v", dp)
+	}
+}
+
+func TestDiffPolicy_ZeroValueDisabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	c, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	dp := c.DiffPolicy
+	if dp.MaxFilesChanged != 0 || dp.MaxLinesChanged != 0 ||
+		len(dp.BlockedPaths) != 0 || len(dp.SecondLookPaths) != 0 {
+		t.Errorf("diff_policy zero value = %+v, want all-zero (disabled)", dp)
+	}
+}
+
+func TestDiffPolicy_Rejects(t *testing.T) {
+	base := "network: x\ngateway_ip: 1.2.3.4\ndiff_policy:\n"
+	cases := map[string]string{
+		base + "  max_files_changed: -1\n":       "diff_policy.max_files_changed",
+		base + "  max_lines_changed: -1\n":       "diff_policy.max_lines_changed",
+		base + "  blocked_paths: [\"a[b\"]\n":    "diff_policy.blocked_paths[0]",
+		base + "  blocked_paths: [\"\"]\n":       "diff_policy.blocked_paths[0]",
+		base + "  second_look_paths: [\"x[\"]\n": "diff_policy.second_look_paths[0]",
+		// Trailing-slash patterns are silently inert in the matcher
+		// ("dir/" never matches anything); they must be a loud config
+		// error steering the operator to "dir/**".
+		base + "  blocked_paths: [\"dir/\"]\n":   `dir/**`,
+		base + "  second_look_paths: [\"a/\"]\n": `a/**`,
+	}
+	for yaml, want := range cases {
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Load(%q) err=%v want substring %q", yaml, err, want)
+		}
+	}
+}
