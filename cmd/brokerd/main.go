@@ -526,6 +526,7 @@ func main() {
 		PushFreshBranchTries: cfg.PushFreshBranchTries,
 		UnmeteredVendors:     unmeteredVendors,
 		Verify:               verifyRepos(cfg.Verify.Repos),
+		DiffPolicy:           cfg.DiffPolicy,
 		PolicyFields:         policyFields,
 		PolicyHash:           policyHash,
 	}

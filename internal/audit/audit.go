@@ -67,9 +67,10 @@ type Metrics struct {
 	Vendor string `json:"vendor"`
 	Auth   string `json:"auth"`
 	// Outcome is the terminal path the broker actually took: "pushed",
-	// "denied", "cancelled", "push_failed", "error", or "no_diff" (auto-
-	// approved pushes fold into "pushed": the auto/gated distinction isn't
-	// surfaced separately). Empty on pre-v0.6.7 rows; see OutcomeKeyWithMetrics.
+	// "denied", "cancelled", "push_failed", "error", "no_diff", or
+	// "policy_blocked" (auto-approved pushes fold into "pushed": the
+	// auto/gated distinction isn't surfaced separately). Empty on pre-v0.6.7
+	// rows; see OutcomeKeyWithMetrics.
 	Outcome            string  `json:"outcome,omitempty"`
 	Repo               string  `json:"repo"`
 	Model              string  `json:"model,omitempty"`
@@ -277,6 +278,8 @@ func outcomeString(key string, r Result, m Meta) string {
 	switch key {
 	case "push_failed":
 		s = "push failed"
+	case "policy_blocked":
+		s = "policy blocked"
 	case "ok":
 		if r.NumTurns > 0 {
 			unit := "turns"
