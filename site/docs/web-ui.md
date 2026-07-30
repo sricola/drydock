@@ -51,10 +51,12 @@ vendor, model, image), the effective policy (budget, timeout, policy snapshot
 hash), egress rules, broker-metered spend, and a diff summary — hash, size,
 file/line counts, and any **FLAG** rows for structurally risky changes
 (binaries, symlinks, exec bits, dependency manifests, lockfiles, CI
-workflows, git metadata, submodule gitlinks). When
-[verification](submitting-tasks.html#verification-optional-per-repo) is
-configured, its block appears too: overall status, the verify VM's capability
-posture, and per-command exit codes and durations.
+workflows, git metadata, submodule gitlinks). When an
+[execution profile](submitting-tasks.html#execution-profiles-setup-per-repo)
+or [verification](submitting-tasks.html#verification-optional-per-repo) is
+configured, its block appears too: overall status, the VMs' capability
+posture, and per-command exit codes and durations (the setup block first —
+setup runs before the agent).
 
 Everything in the panel is what the broker observed — none of it is the
 agent's own account of what it did. It is read-only, fetched from the same

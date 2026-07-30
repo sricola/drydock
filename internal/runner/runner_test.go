@@ -51,6 +51,58 @@ func containsPair(args []string, flag, val string) bool {
 	return false
 }
 
+func TestBuildSetupArgs_ShapeAndContainment(t *testing.T) {
+	args := BuildSetupArgs(SetupSpec{
+		TaskID: "0123456789abcdef0123456789abcdef", Network: "drydock-egress",
+		ImageRef: "drydock-sandbox:latest", StageDir: "/stage/abc123",
+		Env: []string{
+			"HTTPS_PROXY=http://192.168.64.1:3128",
+			"HTTP_PROXY=http://192.168.64.1:3128",
+			"DRYDOCK_GW_IP=192.168.64.1",
+		},
+		Argv: []string{"npm", "ci"}, MemoryGB: 4, CPUs: 4,
+	})
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--name setup-0123456789abcdef0123456789abcdef",
+		"--cap-add CAP_NET_ADMIN",                             // root installs the egress pin, then drops
+		"--mount type=bind,source=/stage/abc123,target=/work", // live stage, rw
+		`init-firewall.sh "$DRYDOCK_GW_IP" 3128`,              // squid-only egress pin
+		"/usr/local/bin/drop-agent",                           // privilege drop before repo code
+		"HOME=/home/agent",
+		"--env HTTPS_PROXY=http://192.168.64.1:3128", // egress must work
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("setup argv missing %q:\n%s", want, joined)
+		}
+	}
+	// Setup gets squid-only egress, NOT the verifier's deny-all pin.
+	if strings.Contains(joined, "policy drop") {
+		t.Errorf("setup argv contains the verifier's deny-all pin:\n%s", joined)
+	}
+	// Setup must NOT be able to reach the model credential gateway (:8088):
+	// it has no bearer and no LLM business; :8088 is dropped as a backstop.
+	if strings.Contains(joined, "8088") {
+		t.Errorf("setup argv allows the model gateway port 8088; want squid-only:\n%s", joined)
+	}
+	// The command argv must arrive as positional args after the sh -c script
+	// (never interpolated into the script string — shell-injection surface).
+	// Exact tail shape: ..., "-c", <script>, "sh", "npm", "ci"
+	n := len(args)
+	if n < 3 || args[n-3] != "sh" || args[n-2] != "npm" || args[n-1] != "ci" {
+		t.Errorf("argv tail = %v, want [... sh npm ci]", args[max(0, n-3):])
+	}
+	// Setup can never spend: given a proxy-only Env, no arg may carry a grant
+	// bearer or credential-shaped material.
+	for _, a := range args {
+		for _, leak := range []string{"tok_", "AUTH_TOKEN", "API_KEY", "Bearer"} {
+			if strings.Contains(a, leak) {
+				t.Errorf("setup argv leaks credential material %q: %q", leak, a)
+			}
+		}
+	}
+}
+
 func TestBuildVerifyArgs_ShapeAndContainment(t *testing.T) {
 	args := BuildVerifyArgs(VerifySpec{
 		TaskID: "0123456789abcdef0123456789abcdef", Network: "drydock-egress",

@@ -126,6 +126,25 @@ func verifyRepos(repos map[string]config.VerifyRepo) map[string]broker.VerifyRep
 	return out
 }
 
+// setupProfiles maps the operator's profiles.repos config (keys already
+// canonicalized/validated by config.Validate) onto the broker's own mirror
+// type. A profile with Timeout 0 gets broker.DefaultSetupTimeout applied per
+// command at run time; nothing to default here.
+func setupProfiles(repos map[string]config.SetupProfile) map[string]broker.SetupProfile {
+	if len(repos) == 0 {
+		return nil
+	}
+	out := make(map[string]broker.SetupProfile, len(repos))
+	for key, sp := range repos {
+		out[key] = broker.SetupProfile{
+			Setup:     sp.Setup,
+			Readiness: sp.Readiness,
+			Timeout:   sp.Timeout,
+		}
+	}
+	return out
+}
+
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
 
 // taskContainerRE matches a drydock task VM name exactly (task- + a 32-hex
@@ -137,6 +156,11 @@ var taskContainerRE = regexp.MustCompile(`^task-[0-9a-f]{32}$`)
 // 32-hex task id; see runner.VerifyContainerName). Reaped by the same boot
 // orphan sweep as task VMs: a brokerd crash mid-verification can leave one up.
 var verifyContainerRE = regexp.MustCompile(`^verify-[0-9a-f]{32}$`)
+
+// setupContainerRE matches a drydock setup VM name (setup- + the same 32-hex
+// task id; see runner.SetupContainerName). Reaped by the same boot orphan
+// sweep: a brokerd crash mid-setup can leave one up.
+var setupContainerRE = regexp.MustCompile(`^setup-[0-9a-f]{32}$`)
 
 // resolveAPIKey returns the effective key for env-var name. A non-empty
 // exported value wins (so CI `export …` is unchanged); otherwise the value from
@@ -526,6 +550,7 @@ func main() {
 		PushFreshBranchTries: cfg.PushFreshBranchTries,
 		UnmeteredVendors:     unmeteredVendors,
 		Verify:               verifyRepos(cfg.Verify.Repos),
+		Setup:                setupProfiles(cfg.Profiles.Repos),
 		DiffPolicy:           cfg.DiffPolicy,
 		PolicyFields:         policyFields,
 		PolicyHash:           policyHash,
@@ -835,14 +860,16 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 	if err != nil {
 		slog.Warn("orphan prune: container ls failed", "err", err, "stderr", string(out))
 	} else {
-		// Names look like "task-<32hex>" or "verify-<32hex>"; we don't parse the
+		// Names look like "task-<32hex>", "verify-<32hex>", or "setup-<32hex>";
+		// we don't parse the
 		// JSON shape (it moves across container CLI versions), but we match each
 		// whitespace token against the EXACT name grammars so a "task-" substring
 		// in an image tag or label value can't get an unrelated container
 		// force-deleted.
 		for _, line := range strings.Split(string(out), "\n") {
 			for _, token := range strings.Fields(strings.ReplaceAll(line, `"`, " ")) {
-				if taskContainerRE.MatchString(token) || verifyContainerRE.MatchString(token) {
+				if taskContainerRE.MatchString(token) || verifyContainerRE.MatchString(token) ||
+					setupContainerRE.MatchString(token) {
 					_, _ = runCmd("container", "delete", "--force", token)
 					slog.Info("orphan prune: removed container", "name", token)
 				}

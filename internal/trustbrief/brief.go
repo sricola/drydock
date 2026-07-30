@@ -63,20 +63,51 @@ type Verification struct {
 	Commands    []VerifyCommand `json:"commands,omitempty"`
 }
 
+// Setup statuses. SetupNotConfigured means the execution profile declared no
+// setup phase. "inconclusive" covers timeouts and infra errors — absent
+// evidence must never read as passing, mirroring verification.
+const (
+	SetupNotConfigured = "not_configured"
+	SetupPassed        = "passed"
+	SetupFailed        = "failed"
+	SetupInconclusive  = "inconclusive"
+)
+
+// SetupCommand is one setup command's broker-observed result. Per-command
+// statuses reuse the VerifyCmd* consts — the vocabulary (passed/failed/
+// timed_out/error/skipped) is identical.
+type SetupCommand struct {
+	Argv       []string `json:"argv"`
+	Status     string   `json:"status"`
+	ExitCode   int      `json:"exit_code"`
+	DurationMs int64    `json:"duration_ms"`
+}
+
+// SetupEvidence is the setup-phase evidence block, mirroring Verification.
+// Network records the setup container's egress posture ("egress-allowlisted"
+// — setup does have network access, unlike the verifier's "denied").
+type SetupEvidence struct {
+	Status    string         `json:"status"`
+	Network   string         `json:"network,omitempty"`
+	LogSHA256 string         `json:"log_sha256,omitempty"`
+	Commands  []SetupCommand `json:"commands,omitempty"`
+}
+
 // Brief is the broker-observed evidence report for one task, generated at
 // the diff-approval gate. Every field is computed host-side; by design the
 // schema has nowhere to put an agent claim.
 type Brief struct {
-	SchemaVersion   int          `json:"schema_version"`
-	TaskID          string       `json:"task_id"`
-	GeneratedAt     time.Time    `json:"generated_at"`
-	Task            TaskFacts    `json:"task"`
-	Runtime         RuntimeFacts `json:"runtime"`
-	Policy          PolicyFacts  `json:"policy"`
-	Spend           SpendFacts   `json:"spend"`
-	Diff            DiffFacts    `json:"diff"`
-	Verification    Verification `json:"verification"`
-	MissingEvidence []string     `json:"missing_evidence"`
+	SchemaVersion   int           `json:"schema_version"`
+	TaskID          string        `json:"task_id"`
+	GeneratedAt     time.Time     `json:"generated_at"`
+	Task            TaskFacts     `json:"task"`
+	Runtime         RuntimeFacts  `json:"runtime"`
+	Policy          PolicyFacts   `json:"policy"`
+	Spend           SpendFacts    `json:"spend"`
+	Diff            DiffFacts     `json:"diff"`
+	Verification    Verification  `json:"verification"`
+	Setup           SetupEvidence `json:"setup"`
+	MissingEvidence []string      `json:"missing_evidence"`
 }
 
 type TaskFacts struct {

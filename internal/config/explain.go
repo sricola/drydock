@@ -158,6 +158,79 @@ func renderVerifyRepos(repos map[string]VerifyRepo) string {
 	return fmt.Sprintf("%d repos: %s", len(keys), strings.Join(keys, ", "))
 }
 
+// renderProfiles is a compact one-line summary of profiles.repos: counts plus
+// a content hash. Like renderDiffPolicy's glob lists, the counts alone would
+// be content-blind: EffectiveHash hashes this rendered value, so two profile
+// configs with identical counts but different COMMAND content (the daemon
+// runs `npm ci`, the edited config says something else) would make `drydock
+// policy explain` falsely report "in sync". Setup commands run pre-agent with
+// egress — divergence there must trip the DIVERGENT verdict.
+func renderProfiles(repos map[string]SetupProfile) string {
+	if len(repos) == 0 {
+		return "disabled"
+	}
+	setup, readiness := 0, 0
+	for _, sp := range repos {
+		setup += len(sp.Setup)
+		readiness += len(sp.Readiness)
+	}
+	return fmt.Sprintf("%d repos / %d setup / %d readiness (%s)",
+		len(repos), setup, readiness, profilesHash(repos))
+}
+
+// profilesHash is the first 8 hex chars of sha256 over a canonical rendering
+// of the profiles map: one block per repo — the repo key, the repo's timeout
+// ("timeout=<dur>": it is a documented hard bound on setup execution, so a
+// daemon-vs-config timeout edit must read as DIVERGENT), a "setup" marker,
+// each setup command, a "readiness" marker, each readiness command —
+// newline-joined, with the per-repo blocks ordered by SORTED repo key.
+// Sorting the blocks makes repo ordering irrelevant (maps are unordered; two
+// loads of the same yaml must hash identically), but command order WITHIN a
+// repo's setup/readiness list is deliberately preserved: execution order is
+// significant (`npm ci` before `npm run build`), so reordering commands is a
+// real config change and must change the hash. The section markers make a
+// command moving between setup and readiness change the hash too. Each argv
+// element is strconv.Quote'd before joining so element boundaries are
+// unambiguous — a plain space-join would make ["sh","-c","a b"] and
+// ["sh","-c","a","b"] collide, hiding an argv-boundary edit. Operates on
+// sorted key copies only — the caller's map and slices are never mutated.
+func profilesHash(repos map[string]SetupProfile) string {
+	keys := make([]string, 0, len(repos))
+	for k := range repos {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		sp := repos[k]
+		b.WriteString(k)
+		b.WriteString("\ntimeout=")
+		b.WriteString(renderDur(sp.Timeout))
+		b.WriteString("\nsetup\n")
+		for _, cmd := range sp.Setup {
+			b.WriteString(quoteArgv(cmd))
+			b.WriteByte('\n')
+		}
+		b.WriteString("readiness\n")
+		for _, cmd := range sp.Readiness {
+			b.WriteString(quoteArgv(cmd))
+			b.WriteByte('\n')
+		}
+	}
+	h := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(h[:])[:8]
+}
+
+// quoteArgv renders an argv with each element strconv.Quote'd, making the
+// encoding injective over element boundaries (see profilesHash).
+func quoteArgv(cmd []string) string {
+	quoted := make([]string, len(cmd))
+	for i, a := range cmd {
+		quoted[i] = strconv.Quote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
 // renderDiffPolicy is a compact one-line summary of the diff_policy block.
 // The glob lists render as count + content hash rather than count alone:
 // EffectiveHash and the policy-explain divergence diff both consume this
@@ -285,6 +358,12 @@ func provenanceTable() []fieldDesc {
 			// Non-empty map = yaml-set (defaults have no repos).
 			differs: func(yamlCfg, def *Config) bool {
 				return len(yamlCfg.Verify.Repos) != len(def.Verify.Repos)
+			}},
+		{name: "Profiles", yamlKey: "profiles",
+			value: func(c *Config) string { return renderProfiles(c.Profiles.Repos) },
+			// Any repo configured = yaml-set (defaults have no repos).
+			differs: func(yamlCfg, def *Config) bool {
+				return len(yamlCfg.Profiles.Repos) != len(def.Profiles.Repos)
 			}},
 		{name: "DiffPolicy", yamlKey: "diff_policy",
 			value: func(c *Config) string { return renderDiffPolicy(c.DiffPolicy) },

@@ -87,6 +87,52 @@ at config load. There is no env override for this block; configure it in
 `config.yaml` (it participates in `drydock policy explain`'s divergence
 check like any other field).
 
+## Execution profiles: setup and readiness (per repo)
+
+The optional `profiles` block in `config.yaml` gives a repository a **setup
+phase**: commands drydock runs against the task's live work tree **before
+the agent starts** — dependency install, code generation — plus readiness
+commands that gate the run. Keys must be the canonical `host/owner/repo`
+form (a non-canonical key is a config error, not a silent never-match):
+
+```yaml
+profiles:
+  repos:
+    "github.com/you/yourrepo":
+      setup:
+        - ["npm", "ci"]
+      readiness:
+        - ["node", "--version"]
+      timeout: 10m      # per command; 0 = the default (10m)
+```
+
+What the phase guarantees:
+
+- **Host config only.** The commands live in this file on your machine; the
+  sandboxed agent can never edit its own setup phase.
+- **Fail closed before any API spend.** Setup and readiness run before the
+  agent VM boots. Any command that fails, times out, or errors ends the task
+  with outcome `setup_failed` — the agent VM never boots, no credential is
+  ever injected into any VM, and zero API budget is spent.
+- **No credentials, egress-only network.** Setup VMs get the squid egress
+  proxy (so `npm ci` can reach your allowlisted registries) but no model
+  gateway and no API bearer.
+- **Same workspace the agent gets.** Commands run in fresh sandbox VMs (the
+  agent's image) against the live per-task work tree, so what setup installs
+  is exactly what the agent sees. The per-task stage is wiped at cleanup —
+  there is **no persistent cache yet**; setup runs from scratch each task.
+- **Self-contained commands.** Each command is its own argv in its own VM
+  run: shell state (`cd`, exported variables, activated virtualenvs) does
+  **not** carry between commands. Write each entry to stand alone.
+
+Verdicts are the process exit codes the broker observes — nothing a command
+prints can flip a status. The task shows a `setting_up` stage while the
+phase runs, and the per-command evidence (status, exit codes, durations)
+lands in the trust brief (`drydock inspect <id>`); the combined output is
+kept display-only at `~/.drydock/audit/<id>.setup.log`. See
+[Submitting tasks](submitting-tasks.html#execution-profiles-setup-per-repo)
+for the full behavior.
+
 ## Bring your own model
 
 `opencode` reaches any OpenAI-compatible endpoint via the `openai_compat` block

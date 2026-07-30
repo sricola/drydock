@@ -629,6 +629,63 @@ func TestDiffPolicy_ZeroValueDisabled(t *testing.T) {
 	}
 }
 
+func TestProfiles_LoadsAndValidates(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	yaml := "network: x\ngateway_ip: 1.2.3.4\n" +
+		"profiles:\n  repos:\n    \"github.com/o/r\":\n" +
+		"      setup:\n        - [\"npm\", \"ci\"]\n" +
+		"      readiness:\n        - [\"curl\", \"-fsS\", \"localhost:3000\"]\n" +
+		"      timeout: 10m\n"
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	sp, ok := c.Profiles.Repos["github.com/o/r"]
+	if !ok || sp.Timeout != 10*time.Minute ||
+		len(sp.Setup) != 1 || strings.Join(sp.Setup[0], " ") != "npm ci" ||
+		len(sp.Readiness) != 1 || strings.Join(sp.Readiness[0], " ") != "curl -fsS localhost:3000" {
+		t.Errorf("profiles repo = %+v ok=%v", sp, ok)
+	}
+}
+
+func TestProfiles_ZeroValueDisabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	c, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Profiles.Repos) != 0 {
+		t.Errorf("profiles zero value = %+v, want empty (disabled)", c.Profiles.Repos)
+	}
+}
+
+func TestProfiles_Rejects(t *testing.T) {
+	base := "network: x\ngateway_ip: 1.2.3.4\nprofiles:\n  repos:\n"
+	cases := map[string]string{
+		// Non-canonical key would silently never match a task — fail loudly at load.
+		base + "    \"https://github.com/o/r.git\":\n      setup: [[\"npm\", \"ci\"]]\n": "profiles",
+		// A profile with no setup commands is pointless — reject.
+		base + "    \"github.com/o/r\":\n      setup: []\n":                                 "profiles",
+		base + "    \"github.com/o/r\":\n      setup: [[]]\n":                               "profiles",
+		base + "    \"github.com/o/r\":\n      setup: [[\"\"]]\n":                           "profiles",
+		base + "    \"github.com/o/r\":\n      setup: [[\"npm\"]]\n      readiness: [[]]\n": "profiles",
+		base + "    \"github.com/o/r\":\n      setup: [[\"npm\"]]\n      timeout: -1s\n":    "profiles",
+	}
+	for yaml, wantSubstr := range cases {
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), wantSubstr) {
+			t.Errorf("Load(%q) err = %v, want %q", yaml, err, wantSubstr)
+		}
+	}
+}
+
 func TestDiffPolicy_Rejects(t *testing.T) {
 	base := "network: x\ngateway_ip: 1.2.3.4\ndiff_policy:\n"
 	cases := map[string]string{

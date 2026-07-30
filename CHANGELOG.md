@@ -9,6 +9,33 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Execution profiles — a host-configured setup phase that fails closed
+  before any model spend.** A new optional `profiles.repos` block in
+  `config.yaml` gives a repository `setup` commands (dependency install,
+  code generation) plus `readiness` commands, run in fresh sandbox VMs
+  against the task's **live** work tree **before the agent starts** — what
+  setup installs is exactly what the agent sees. The commands live in host
+  config only (the sandboxed agent can never edit its own setup phase), each
+  is a self-contained argv (shell state does not carry between commands),
+  and there is no persistent cache yet (the per-task stage is wiped at
+  cleanup). Setup VMs get squid-only egress — allowlisted registries are
+  reachable, but no model gateway and **no credentials**: any command
+  failure, timeout, or infra error ends the task with the new outcome
+  `setup_failed` while the agent VM has never booted and no API bearer was
+  ever injected into any VM, so a broken workspace costs $0 of model budget.
+  Verdicts are the exit codes the broker observes (nothing a command prints
+  can flip a status), recorded per command in the trust brief's new setup
+  block — rendered by `drydock inspect` and the web UI's brief panel above
+  verification — with the combined output kept display-only at
+  `~/.drydock/audit/<id>.setup.log`. The phase surfaces as a `setting_up`
+  stage in the submit stream, `drydock status`, and the web UI; `drydock
+  stats` counts `setup_failed` as a first-class outcome; each command is
+  bounded by `profiles.repos.*.timeout` (default 10m, on the
+  [security-defaults table](https://sricola.github.io/drydock/docs/security-defaults.html));
+  and the metrics row's `stage_ms` now records `.setup` with `preparing`
+  ending where setup begins, so the stages partition the task's wall-clock
+  without double-counting.
+
 - **`drydock doctor --repo <path>` — repo preflight with no API spend and no
   container boot.** Diagnoses one local repo for drydock readiness before the
   first submit: repo size against the effective per-task stage cap (the

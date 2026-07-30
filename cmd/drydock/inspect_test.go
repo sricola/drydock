@@ -27,6 +27,7 @@ func writeTestBrief(t *testing.T, dir, id string) trustbrief.Brief {
 		Diff: trustbrief.Analyze("diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n" +
 			"--- a/.github/workflows/ci.yml\n+++ b/.github/workflows/ci.yml\n@@ -1 +1 @@\n-a\n+b\n"),
 		Verification:    trustbrief.Verification{Status: trustbrief.VerificationNotConfigured},
+		Setup:           trustbrief.SetupEvidence{Status: trustbrief.SetupNotConfigured},
 		MissingEvidence: []string{"verification not configured"},
 	}
 	b.Policy.SnapshotSHA256 = b.Policy.Fingerprint()
@@ -203,6 +204,93 @@ func TestRunInspect_NotConfiguredRendersNoVerificationSection(t *testing.T) {
 	for _, forbid := range []string{"network denied", "no credentials", ".verify.log", "→ exit"} {
 		if strings.Contains(out, forbid) {
 			t.Errorf("not_configured brief rendered a verification section (%q):\n%s", forbid, out)
+		}
+	}
+}
+
+// The setup block renders every broker-observed fact from the setting_up
+// stage with the same grammar as verification: overall status + the setup
+// VMs' egress posture, per-command argv → exit (duration) / skipped lines,
+// and the display-only .setup.log path. It renders BEFORE the verification
+// block, because setup runs first.
+func TestRunInspect_RendersSetup(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	b := writeTestBrief(t, dir, id)
+	b.Setup = trustbrief.SetupEvidence{
+		Status:  trustbrief.SetupFailed,
+		Network: "egress-allowlisted",
+		Commands: []trustbrief.SetupCommand{
+			{Argv: []string{"npm", "ci"}, Status: trustbrief.VerifyCmdPassed, DurationMs: 9100},
+			{Argv: []string{"node", "--version"}, Status: trustbrief.VerifyCmdFailed, ExitCode: 1, DurationMs: 300},
+			{Argv: []string{"curl", "-fsS", "localhost:3000"}, Status: trustbrief.VerifyCmdSkipped},
+		},
+	}
+	if err := trustbrief.Write(dir, id, b); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	for _, want := range []string{
+		"setup    failed",
+		"network egress-allowlisted",
+		"npm ci → exit 0 (9.1s)",
+		"node --version → exit 1 (300ms)",
+		"curl -fsS localhost:3000 → skipped",
+		id + ".setup.log",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("inspect output missing %q:\n%s", want, out)
+		}
+	}
+	su, ve := strings.Index(out, "setup    "), strings.Index(out, "verify   ")
+	if su < 0 || ve < 0 || su > ve {
+		t.Errorf("setup section must render before verification (setup@%d verify@%d):\n%s", su, ve, out)
+	}
+}
+
+// A timed-out or errored setup command has no meaningful exit code: render
+// its status word, never a fabricated "exit 0" (same rule as verification).
+func TestRunInspect_RendersSetupTimedOut(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	b := writeTestBrief(t, dir, id)
+	b.Setup = trustbrief.SetupEvidence{
+		Status: trustbrief.SetupFailed, Network: "egress-allowlisted",
+		Commands: []trustbrief.SetupCommand{
+			{Argv: []string{"npm", "ci"}, Status: trustbrief.VerifyCmdTimedOut, DurationMs: 600000},
+		},
+	}
+	if err := trustbrief.Write(dir, id, b); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if !strings.Contains(out, "npm ci → timed_out (10m00s)") {
+		t.Errorf("inspect output missing the timed_out setup line:\n%s", out)
+	}
+	if strings.Contains(out, "exit 0") {
+		t.Errorf("a timed-out setup command must not render a fabricated exit code:\n%s", out)
+	}
+}
+
+// A not_configured setup block is a single status line: no egress posture,
+// no command lines, no log-path hint (there is no log). Old briefs written
+// before the setup stage existed (empty status) render the same way.
+func TestRunInspect_SetupNotConfiguredRendersSingleLine(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	writeTestBrief(t, dir, id) // Setup: not_configured
+
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if !strings.Contains(out, "setup    not_configured") {
+		t.Errorf("inspect output missing the plain not_configured setup status:\n%s", out)
+	}
+	for _, forbid := range []string{"egress-allowlisted", ".setup.log", "→ exit"} {
+		if strings.Contains(out, forbid) {
+			t.Errorf("not_configured brief rendered a setup section (%q):\n%s", forbid, out)
 		}
 	}
 }

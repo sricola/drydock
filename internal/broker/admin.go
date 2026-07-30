@@ -59,11 +59,13 @@ func (b *Broker) HandleTasks(w http.ResponseWriter, r *http.Request) {
 func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	b.pendingMu.Lock()
 	pending := len(b.pending)
-	var awaitingEgress, running, verifying, pendingApproval, pushing int
+	var awaitingEgress, settingUp, running, verifying, pendingApproval, pushing int
 	for _, t := range b.tasks {
 		switch t.Stage {
 		case StageAwaitingEgress:
 			awaitingEgress++
+		case StageSettingUp:
+			settingUp++
 		case StageRunning:
 			running++
 		case StageVerifying:
@@ -79,6 +81,7 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"ok":               true,
 		"pending":          pending, // legacy field; matches old shape
 		"awaiting_egress":  awaitingEgress,
+		"setting_up":       settingUp,
 		"running":          running,
 		"verifying":        verifying,
 		"pending_approval": pendingApproval,

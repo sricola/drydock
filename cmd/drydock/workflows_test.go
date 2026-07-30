@@ -68,13 +68,13 @@ func TestHealthHTTPContract(t *testing.T) {
 			if r.Method != http.MethodGet || r.URL.Path != "/healthz" {
 				t.Errorf("request = %s %s, want GET /healthz", r.Method, r.URL.Path)
 			}
-			_, _ = io.WriteString(w, `{"ok":true,"running":2,"awaiting_egress":1,"verifying":4,"pending_approval":3,"pushing":1}`)
+			_, _ = io.WriteString(w, `{"ok":true,"running":2,"awaiting_egress":1,"setting_up":5,"verifying":4,"pending_approval":3,"pushing":1}`)
 		}))
 		got, err := health()
 		if err != nil {
 			t.Fatalf("health: %v", err)
 		}
-		if !got.OK || got.Running != 2 || got.AwaitingEgress != 1 || got.Verifying != 4 || got.PendingApproval != 3 || got.Pushing != 1 {
+		if !got.OK || got.Running != 2 || got.AwaitingEgress != 1 || got.SettingUp != 5 || got.Verifying != 4 || got.PendingApproval != 3 || got.Pushing != 1 {
 			t.Fatalf("health = %+v, want decoded stage counts", got)
 		}
 	})

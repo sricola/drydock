@@ -63,6 +63,66 @@ cd /work
 exec /usr/local/bin/drop-agent "$@"
 `
 
+// setupScript is the in-VM bootstrap for a pre-agent setup command. Root
+// installs an egress pin that allows ONLY squid (:3128) — setup fetches
+// dependencies through the proxy but has no business reaching the model
+// credential gateway (:8088), so unlike the agent VM's pin we drop it.
+// Defense in depth: setup carries no bearer, but with :8088 closed a leaked
+// bearer still could not reach the gateway from a setup command (npm
+// postinstall, pip setup.py, arbitrary build hooks run here pre-review). It
+// then execs the command through drop-agent so repo code runs unprivileged
+// and cannot flush the pin. HOME must be the agent user's writable home
+// (v0.6.6 #198).
+const setupScript = `set -e
+/usr/local/bin/init-firewall.sh "$DRYDOCK_GW_IP" 3128
+export HOME=/home/agent
+cd /work
+exec /usr/local/bin/drop-agent "$@"
+`
+
+// SetupSpec describes one pre-agent setup command's VM run. Env carries the
+// proxy/gateway env (NEVER a grant bearer — setup can't spend); StageDir is
+// the live stage workdir; Argv is one setup/readiness command.
+type SetupSpec struct {
+	TaskID   string
+	Network  string
+	ImageRef string
+	StageDir string   // live stage.WorkDir(), mounted rw at /work
+	Env      []string // proxy/gateway env only — no credential material
+	Argv     []string // the setup command, passed as positionals
+	MemoryGB int
+	CPUs     int
+}
+
+// SetupContainerName is the container name for a task's setup VM. Distinct
+// from "task-<id>" and "verify-<id>" so kill/reap paths never collide.
+func SetupContainerName(taskID string) string { return "setup-" + taskID }
+
+// BuildSetupArgs returns the argv (after the `container` binary) for one
+// setup command. It forwards s.Env verbatim — the no-bearer guarantee is the
+// caller's contract (SetupSpec.Env must carry proxy/gateway vars only);
+// nothing here adds credential material.
+func BuildSetupArgs(s SetupSpec) []string {
+	args := []string{
+		"run", "--rm",
+		"--name", SetupContainerName(s.TaskID),
+		"--cap-add", "CAP_NET_ADMIN",
+		"--memory", fmt.Sprintf("%dG", s.MemoryGB),
+		"--cpus", fmt.Sprintf("%d", s.CPUs),
+		"--network", s.Network,
+	}
+	for _, e := range s.Env {
+		args = append(args, "--env", e)
+	}
+	args = append(args,
+		"--mount", fmt.Sprintf("type=bind,source=%s,target=/work", s.StageDir),
+		"--entrypoint", "/bin/sh",
+		s.ImageRef,
+		"-c", setupScript, "sh",
+	)
+	return append(args, s.Argv...)
+}
+
 // VerifySpec describes one verification command's VM run.
 type VerifySpec struct {
 	TaskID    string

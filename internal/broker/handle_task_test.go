@@ -37,11 +37,18 @@ type fakeStage struct {
 	pushBranch string
 	cleaned    atomic.Bool // atomic so the shutdown-survival test can poll without a race
 	gotPrompt  string
+	// onWriteTaskFiles, when set, runs inside WriteTaskFiles — the
+	// prompt-tamper ordering test uses it to record when the broker wrote the
+	// prompt relative to the setup/agent VM runs.
+	onWriteTaskFiles func(prompt string) error
 }
 
 func (f *fakeStage) WorkDir() string { return f.workDir }
 func (f *fakeStage) WriteTaskFiles(prompt string) error {
 	f.gotPrompt = prompt
+	if f.onWriteTaskFiles != nil {
+		return f.onWriteTaskFiles(prompt)
+	}
 	return nil
 }
 func (f *fakeStage) CaptureDiff() (string, error) { return f.diff, f.captureErr }

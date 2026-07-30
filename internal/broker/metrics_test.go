@@ -77,6 +77,46 @@ func TestHandleTask_AgentError_StillWritesMetricsRow(t *testing.T) {
 	}
 }
 
+// stage_ms must PARTITION the task's wall-clock. Preparing ends when the
+// FIRST stage after it begins: with a setup phase that is setup, not the
+// agent run — so preparing must exclude the setup commands' duration
+// (previously it spanned prep+setup, double-counting setup, because
+// runSandbox overwrites taskStart only when the agent starts).
+func TestAppendMetrics_SetupNotDoubleCountedInPreparing(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{}
+	log := &runLog{}
+	const setupSleep = 250 * time.Millisecond
+	setupFn := func(_ context.Context, _ []string, _, _ io.Writer) error {
+		time.Sleep(setupSleep)
+		return nil
+	}
+	b := testBroker(t, "anthropic", st, grant, setupSplitRun(log, setupFn))
+	b.Setup = map[string]SetupProfile{
+		"github.com/o/r": {Setup: [][]string{{"npm", "ci"}}},
+	}
+	_, events, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+	if term["outcome"] != "pushed" {
+		t.Fatalf("outcome=%v, want pushed", term["outcome"])
+	}
+	id := taskID(t, events)
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	sm, _ := m["stage_ms"].(map[string]any)
+	if sm == nil {
+		t.Fatalf("no stage_ms in metrics row: %v", m)
+	}
+	setupMs, _ := sm["setup"].(float64)
+	prepMs, _ := sm["preparing"].(float64)
+	if setupMs < float64(setupSleep.Milliseconds()) {
+		t.Fatalf("stage_ms.setup=%v, want >= %d (the setup command slept that long)",
+			setupMs, setupSleep.Milliseconds())
+	}
+	if prepMs >= float64(setupSleep.Milliseconds()) {
+		t.Errorf("stage_ms.preparing=%v ms swallowed the %v setup phase; preparing must end when setting_up begins",
+			prepMs, setupSleep)
+	}
+}
+
 func TestAppendBrokerResult_NumTurnsFromGrantRequests(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
 	grant := &countingGrant{fakeGrant: fakeGrant{spent: 0.02}, requests: 7}

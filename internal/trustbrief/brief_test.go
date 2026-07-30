@@ -30,6 +30,7 @@ func sampleBrief() Brief {
 		Spend:           SpendFacts{USDBrokerMetered: 0.12, DurationMs: 60000},
 		Diff:            Analyze("diff --git a/x b/x\n+y\n"),
 		Verification:    Verification{Status: VerificationNotConfigured},
+		Setup:           SetupEvidence{Status: SetupNotConfigured},
 		MissingEvidence: []string{"verification not configured"},
 	}
 }
@@ -198,5 +199,33 @@ func TestVerification_RoundTripAndOmitEmpty(t *testing.T) {
 	minimal, _ := json.Marshal(Verification{Status: VerificationNotConfigured})
 	if string(minimal) != `{"status":"not_configured"}` {
 		t.Errorf("minimal verification = %s, want status-only object", minimal)
+	}
+}
+
+func TestSetup_RoundTripAndOmitEmpty(t *testing.T) {
+	dir := t.TempDir()
+	b := sampleBrief()
+	b.Setup = SetupEvidence{
+		Status: SetupPassed, Network: "egress-allowlisted",
+		LogSHA256: HashInstruction("setup log"),
+		Commands: []SetupCommand{
+			{Argv: []string{"go", "mod", "download"}, Status: VerifyCmdPassed, ExitCode: 0, DurationMs: 3400},
+			{Argv: []string{"npm", "ci"}, Status: VerifyCmdTimedOut, ExitCode: -1, DurationMs: 60000},
+		},
+	}
+	if err := Write(dir, b.TaskID, b); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(dir, b.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Setup, b.Setup) {
+		t.Errorf("setup round-trip:\n got %+v\nwant %+v", got.Setup, b.Setup)
+	}
+	// A brief with no setup phase must marshal the minimal status-only shape.
+	minimal, _ := json.Marshal(SetupEvidence{Status: SetupNotConfigured})
+	if string(minimal) != `{"status":"not_configured"}` {
+		t.Errorf("minimal setup = %s, want status-only object", minimal)
 	}
 }
