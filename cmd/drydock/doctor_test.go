@@ -2,8 +2,69 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
+
+	"drydock/internal/config"
 )
+
+// TestRenderRepoDoctor_RendersChecks drives the real diagnoseRepo output for
+// a Rust repo (toolchain + egress warnings, nothing blocking) through the
+// renderer: warnings must surface as WARN lines, passes as ok lines, and the
+// returned blocker count must be zero so runRepoDoctor exits 0.
+func TestRenderRepoDoctor_RendersChecks(t *testing.T) {
+	dir := t.TempDir()
+	writeRepoFile(t, dir, "Cargo.toml", "[package]\nname = \"x\"\n")
+
+	checks := diagnoseRepo(dir, config.Defaults(), testEgress(), testLimits())
+	var blockers int
+	out := captureStdout(t, func() { blockers = renderRepoDoctor(checks) })
+
+	if blockers != 0 {
+		t.Fatalf("blockers = %d, want 0; output:\n%s", blockers, out)
+	}
+	if !strings.Contains(out, "toolchain") || !strings.Contains(out, "rust") {
+		t.Errorf("output should show the rust toolchain warning:\n%s", out)
+	}
+	if !strings.Contains(out, "egress") || !strings.Contains(out, "crates.io") {
+		t.Errorf("output should show the crates.io egress warning:\n%s", out)
+	}
+	if !strings.Contains(out, "WARN") {
+		t.Errorf("warnings should render with the WARN mark:\n%s", out)
+	}
+	if !strings.Contains(out, "size") {
+		t.Errorf("output should show the size check:\n%s", out)
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Errorf("no check should render as FAIL:\n%s", out)
+	}
+	if !strings.Contains(out, "no blockers") {
+		t.Errorf("summary line should report no blockers:\n%s", out)
+	}
+}
+
+// TestRenderRepoDoctor_CountsBlockers pins the exit-decision seam: a check
+// with OK=false renders as FAIL and bumps the returned blocker count, which
+// is what runRepoDoctor turns into os.Exit(1).
+func TestRenderRepoDoctor_CountsBlockers(t *testing.T) {
+	checks := []repoCheck{
+		{Label: "size", OK: false, Detail: "repo exceeds the stage cap"},
+		{Label: "toolchain", OK: true, Detail: "image ships go"},
+		{Label: "diff_policy", OK: false, Detail: "2 file(s) match blocked_paths"},
+	}
+	var blockers int
+	out := captureStdout(t, func() { blockers = renderRepoDoctor(checks) })
+
+	if blockers != 2 {
+		t.Fatalf("blockers = %d, want 2; output:\n%s", blockers, out)
+	}
+	if !strings.Contains(out, "FAIL") {
+		t.Errorf("blockers should render with the FAIL mark:\n%s", out)
+	}
+	if !strings.Contains(out, "2 blocker") {
+		t.Errorf("summary line should count the blockers:\n%s", out)
+	}
+}
 
 func TestCodexPresent(t *testing.T) {
 	cases := []struct {

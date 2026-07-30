@@ -18,6 +18,12 @@ drydock submit \
 A macOS notification fires when the diff is ready (opt out with
 `DRYDOCK_NO_NOTIFY=1`).
 
+Before the first submit against an unfamiliar repo, `drydock doctor --repo
+<path>` preflights a local checkout with no API spend and no container boot:
+size vs the stage cap, toolchains vs what the image ships, registry hosts vs
+your egress allowlist, and `diff_policy` collisions (see
+[Troubleshooting](troubleshooting.html#check-a-repo-before-submitting)).
+
 ## Push-credential preflight
 
 Before the sandbox boots, drydock runs `git push --dry-run` against your repo
@@ -188,7 +194,9 @@ drydock logs <id> [-f]     # stream-json audit (use -f to follow)
 drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
                            # aggregate run metrics across tasks
 drydock kill <id>          # cancel the in-flight task (VM down + gate unblocked)
-drydock doctor             # smoke-test the sandbox setup (no API spend)
+drydock doctor [--repo <path>]
+                           # smoke-test the sandbox setup, or preflight a local
+                           # repo with --repo (no API spend, no container)
 drydock redteam            # run live containment attacks on your own sandbox (no API spend)
 ```
 

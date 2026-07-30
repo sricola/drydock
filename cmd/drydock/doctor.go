@@ -1,12 +1,17 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"drydock/internal/config"
+	"drydock/internal/defaults"
+	"drydock/internal/egress"
 	"drydock/internal/provider"
 	"drydock/internal/remote"
 )
@@ -35,7 +40,19 @@ func pushCredsAvailable(credHelper, sshAuthSock string, sshKeys []string) (bool,
 // the container artifacts the broker would lean on.
 //
 // Exit code 0 = all checks passed; 1 = at least one check failed.
-func runDoctor() {
+func runDoctor(args []string) {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	repo := fs.String("repo", "", "diagnose a repo path for drydock readiness (no API spend, no container)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: drydock doctor [--repo <path>]\n\n%s\n\nFlags:\n", subHelp["doctor"])
+		fs.PrintDefaults()
+	}
+	_ = fs.Parse(args) // ExitOnError: Parse exits on bad flags / handles -h
+	if *repo != "" {
+		runRepoDoctor(*repo)
+		return
+	}
+
 	fmt.Println("drydock doctor — sandbox smoke test (no API spend)")
 	fmt.Println()
 	failed := false
@@ -260,6 +277,83 @@ func runDoctor() {
 		os.Exit(1)
 	}
 	fmt.Println("all checks passed — your sandbox is ready for `drydock submit`")
+}
+
+// runRepoDoctor is `doctor --repo <path>`: a pure, host-side preflight of one
+// local repo (size vs the stage cap, toolchain vs what the image ships, egress
+// registry allowlisting, diff-policy collisions). It never boots a container,
+// never spends API budget, and never shells out — the whole diagnosis is
+// diagnoseRepo's bounded walk. Exit 0 = no blockers (warnings are advisory);
+// 1 = at least one blocker; 2 = the path isn't a directory.
+func runRepoDoctor(path string) {
+	dir := filepath.Clean(path)
+	info, err := os.Stat(dir)
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "drydock doctor: --repo %s: %v\n", dir, err)
+		os.Exit(2)
+	case !info.IsDir():
+		fmt.Fprintf(os.Stderr, "drydock doctor: --repo %s is not a directory\n", dir)
+		os.Exit(2)
+	}
+
+	fmt.Printf("drydock doctor — repo preflight for %s (no API spend, no container)\n\n", dir)
+
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		cfg = config.Defaults()
+		stepWarn("config", "could not load ~/.drydock/config.yaml ("+err.Error()+") — using built-in defaults")
+	}
+	eg := loadEgressForRepoDoctor()
+
+	blockers := renderRepoDoctor(diagnoseRepo(dir, cfg, eg, productionStageLimits(cfg)))
+	if blockers > 0 {
+		os.Exit(1)
+	}
+}
+
+// loadEgressForRepoDoctor loads the operator's egress allowlist, falling back
+// to the embedded default (what `drydock init` would seed) when egress.yaml is
+// missing or unreadable, and to an empty config as the last resort — the
+// allowlist check then warns on every registry host, which is the honest
+// answer when no allowlist can be read.
+func loadEgressForRepoDoctor() egress.Config {
+	eg, err := egress.Load(config.EgressPath())
+	if err == nil {
+		return eg
+	}
+	var fallback egress.Config
+	if yerr := yaml.Unmarshal(defaults.EgressYAML, &fallback); yerr != nil {
+		stepWarn("egress config", "no readable egress.yaml and the embedded default failed to parse — treating the allowlist as empty")
+		return egress.Config{}
+	}
+	stepWarn("egress config", "could not load ~/.drydock/egress.yaml ("+err.Error()+") — using the built-in default allowlist")
+	return fallback
+}
+
+// renderRepoDoctor prints one line per check (pass → ok, Warn → WARN,
+// blocker → FAIL) plus a summary line, and returns the blocker count. The
+// os.Exit decision stays in runRepoDoctor so this seam is testable via
+// captureStdout.
+func renderRepoDoctor(checks []repoCheck) (blockers int) {
+	for _, c := range checks {
+		switch {
+		case !c.OK:
+			blockers++
+			step(c.Label, false, c.Detail)
+		case c.Warn:
+			stepWarn(c.Label, c.Detail)
+		default:
+			step(c.Label, true, c.Detail)
+		}
+	}
+	fmt.Println()
+	if blockers > 0 {
+		fmt.Printf("%d blocker(s) — a task on this repo would fail; fix before `drydock submit`\n", blockers)
+	} else {
+		fmt.Println("repo preflight passed — no blockers (warnings above, if any, are advisory)")
+	}
+	return blockers
 }
 
 // codexPresent reports whether `codex --version` indicates a working Codex

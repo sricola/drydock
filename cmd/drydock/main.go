@@ -18,7 +18,7 @@ Setup:
   drydock start                  run brokerd in the foreground (expects ANTHROPIC_API_KEY and/or OPENAI_API_KEY)
   drydock daemon install|uninstall|status   run brokerd unattended via launchd (starts at login, restarts on crash)
   drydock status                 brokerd up?, pending count, recent tasks
-  drydock doctor                 smoke-test the sandbox setup (no API spend)
+  drydock doctor [--repo <path>] smoke-test the sandbox (or preflight a repo with --repo; no API spend)
   drydock redteam                run live containment attacks on your sandbox (no API spend)
   drydock auth claude|codex      bootstrap Claude or ChatGPT/Codex subscription credentials for brokerd
   drydock ui [--port N] [--open] [--no-token]   local web UI (loopback, token-gated)
@@ -80,7 +80,7 @@ var subHelp = map[string]string{
 	"pending": "list task IDs awaiting approval (egress + diff gates both shown).",
 	"approve": "<id> [--acknowledge <category>]... — approve the pending push for <id>. Repeatable --acknowledge (alias --ack) covers each second-look category the diff requires; missing acknowledgments are refused (the task stays pending).",
 	"deny":    "<id> — deny the pending push (diff captured, not pushed).",
-	"doctor":  "smoke-test the sandbox setup: image freshness, VM boot, egress pin. No API spend.",
+	"doctor":  "smoke-test the sandbox setup: image freshness, VM boot, egress pin. No API spend. With --repo <path>: preflight a local repo instead (size vs stage cap, toolchain vs image, registry egress, diff-policy collisions) — no container boot.",
 	"redteam": "run live containment attacks (A1 key-exfil, A2 egress, A7 ephemerality) against your sandbox. No API spend.",
 	"auth":    "auth claude|codex [--status] — bootstrap Claude or ChatGPT/Codex subscription creds into ~/.drydock/.",
 	"submit":  "POST a new task; see `drydock submit -h` for the full flag list.",
@@ -177,8 +177,8 @@ func main() {
 		mustArgs(2)
 		signal("deny", os.Args[2], nil)
 	case "doctor":
-		consumeHelpFlag(cmd, subArgs)
-		runDoctor()
+		// `doctor` has its own flag.FlagSet which handles -h/--help.
+		runDoctor(subArgs)
 	case "redteam":
 		consumeHelpFlag(cmd, subArgs)
 		runRedteam()

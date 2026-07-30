@@ -349,6 +349,25 @@ func capPath(p string) string {
 	return p
 }
 
+// ClassifyPath returns the flag kinds a repo-relative path classifies as
+// (FlagDependency / FlagLockfile / FlagCIWorkflow / FlagGitMeta), deduped and
+// sorted. Empty for an ordinary source file. It is the exported face of
+// classifyPath for callers (repo preflight diagnosis) that want the
+// classification without a diff.
+func ClassifyPath(p string) []string {
+	var kinds []string
+	classifyPath(p, func(kind, _ string) {
+		for _, k := range kinds {
+			if k == kind {
+				return
+			}
+		}
+		kinds = append(kinds, kind)
+	})
+	sort.Strings(kinds)
+	return kinds
+}
+
 // classifyPath adds path-based flags. The lists are deliberately small and
 // high-signal: they mark files where a malicious change has outsized blast
 // radius (CI executes on the host org's runners; manifests/lockfiles pull

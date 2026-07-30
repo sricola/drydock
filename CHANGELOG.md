@@ -9,6 +9,22 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **`drydock doctor --repo <path>` — repo preflight with no API spend and no
+  container boot.** Diagnoses one local repo for drydock readiness before the
+  first submit: repo size against the effective per-task stage cap (the
+  tighter of `stage_quota_gb` and the stage guard's defaults), language
+  toolchains (from dependency manifests) against what the sandbox image ships
+  (node/python/go), package-registry hosts — ecosystem defaults plus any
+  custom registry assigned in `.npmrc`/`.yarnrc`/`Cargo.toml`/`pip.conf` —
+  against the egress allowlist, and repo files that already collide with
+  `diff_policy.blocked_paths`/`second_look_paths`. Warnings (missing
+  toolchain, unallowlisted registry, second-look collisions) are advisory and
+  exit 0; blockers (repo over the stage cap, files matching `blocked_paths`)
+  exit 1. The scan is one bounded walk that never follows symlinks (registry
+  config files are opened `O_NOFOLLOW` too) and never echoes file contents —
+  registry configs can hold auth tokens; only `url.Parse`-extracted hostnames
+  appear in the output. Plain `drydock doctor` is unchanged.
+
 - **`diff_policy` — host-side caps, blocked paths, and second-look
   acknowledgments for the diff a task proposes.** A new optional
   `config.yaml` block, enforced by brokerd against the broker-computed diff
