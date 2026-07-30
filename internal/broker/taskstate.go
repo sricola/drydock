@@ -33,6 +33,9 @@ type TaskState struct {
 	Stage       TaskStage       `json:"stage"`
 	StartedAt   time.Time       `json:"started_at"`
 	EgressExtra []egress.Domain `json:"egress_extra,omitempty"`
+	// SecondLook lists the diff-policy second-look categories the approver
+	// must acknowledge, populated while the task waits at the approval gate.
+	SecondLook []string `json:"second_look,omitempty"`
 }
 
 const instructionSnippetMax = 140
@@ -176,6 +179,18 @@ func (b *Broker) setEgressExtra(id string, extras []egress.Domain) {
 	defer b.pendingMu.Unlock()
 	if t, ok := b.tasks[id]; ok {
 		t.EgressExtra = extras
+	}
+}
+
+// setSecondLook populates the second-look acknowledgment categories on the
+// task state so the operator sees what an approve must ack while the task
+// waits at the diff-approval gate. Cleared (nil) when the gate resolves.
+// Display only — enforcement lives in b.requiredAcks and signal (admin.go).
+func (b *Broker) setSecondLook(id string, acks []string) {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	if t, ok := b.tasks[id]; ok {
+		t.SecondLook = acks
 	}
 }
 

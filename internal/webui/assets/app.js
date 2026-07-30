@@ -32,6 +32,7 @@ function el(tag, attrs = {}, ...kids) {
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") e.className = v;
     else if (k === "onclick") e.onclick = v;
+    else if (k === "onchange") e.onchange = v;
     else if (k === "text") e.textContent = v;
     else e.setAttribute(k, v);
   }
@@ -356,8 +357,13 @@ function egressGate(t) {
 }
 
 // push gate: cost + budget, open the diff to review, approve only after viewing.
+// A diff with required second-look categories gets a warning chip; the
+// acknowledgment checkboxes live in the review overlay (openReview), and an
+// approve fired from here without them gets brokerd's 422 → act's toast.
 function pushGate(t) {
-  const box = el("div", { class: "gate push dominant" }, el("div", { class: "gate-title", text: "Push awaiting review" }));
+  const title = el("div", { class: "gate-title", text: "Push awaiting review" });
+  if ((t.second_look || []).length) title.append(" ", el("span", { class: "brief-chip warn", text: "second-look" }));
+  const box = el("div", { class: "gate push dominant" }, title);
   const cost = el("span", { class: "cost", text: "spent: …" });
   box.append(cost);
   spentSoFar(t.id).then(s => (cost.textContent = s));
@@ -387,10 +393,21 @@ async function spentSoFar(id) {
 // act performs approve/deny/kill with optimistic feedback + immediate re-poll.
 // deny/kill are destructive, but confirmation now lives in dangerButton's
 // two-step (not a native confirm()); failures surface as a toast, not alert().
-async function act(verb, id) {
+// acks (approve only): second-look categories to acknowledge — sent as the
+// {"acknowledge":[...]} JSON body brokerd's gate validation reads. A 422
+// means required categories were NOT acknowledged: brokerd refused, the task
+// stays pending, and the toast names what's missing (the review overlay's
+// checkboxes are where they get acknowledged).
+async function act(verb, id, acks) {
   try {
-    const res = await api("POST", "/api/" + verb + "/" + id);
+    const body = verb === "approve" && Array.isArray(acks) && acks.length ? { acknowledge: acks } : undefined;
+    const res = await api("POST", "/api/" + verb + "/" + id, body);
     if (res.status === 409 || res.status === 404) { /* already resolved — just refresh */ }
+    else if (res.status === 422) {
+      let missing = [];
+      try { missing = ((await res.json()).missing || []).map(safeCell); } catch {}
+      toast("approve refused — unacknowledged second-look: " + (missing.join(", ") || "(categories unknown)") + " · open Review diff to acknowledge", "bad");
+    }
     else if (!res.ok) toast(`${verb} failed: HTTP ${res.status}`, "bad");
   } catch (e) { toast(`${verb} failed: ${e.message}`, "bad"); }
   renderBoard(); // immediate re-poll (don't wait the interval)
@@ -461,13 +478,41 @@ views.board = renderBoard;
 let overlayState = null; // { close, approve?, deny? } — read by the keys section
 function closeOverlay(){ if (overlayState){ overlayState.close(); overlayState = null; } }
 
+// ackCheckbox builds the per-category acknowledgment control for a required
+// second-look category. ack = { required, acked:Set, update() }: checking a
+// box records the category and calls update(), which enables the overlay's
+// Approve button once every required category is acked. This is UX, not the
+// security boundary — brokerd independently refuses (422) any approve whose
+// {"acknowledge":[...]} body doesn't superset the requirement.
+function ackCheckbox(cat, ack){
+  const cb = el("input", { type: "checkbox", class: "ack-cb", onchange: () => {
+    if (cb.checked) ack.acked.add(cat); else ack.acked.delete(cat);
+    ack.update();
+  }});
+  if (ack.acked.has(cat)) cb.checked = true;
+  return el("label", { class: "ack" }, cb, el("span", { class: "ack-text", text: "acknowledge " + safeCell(cat) }));
+}
+
+// appendAckRows renders bare acknowledgment rows for required categories that
+// have no FLAG row to attach to — including the fallback when the brief
+// itself failed to load: the approve must stay reachable (and still gated on
+// every checkbox) even without brief evidence on screen.
+function appendAckRows(box, cats, ack){
+  for (const cat of cats)
+    box.append(el("div", { class: "brief-row brief-flag" },
+      el("span", { class: "brief-k", text: "ACK" }), ackCheckbox(cat, ack)));
+}
+
 // renderBrief renders the trust brief (broker-observed evidence) above the
 // diff tabs. Information architecture mirrors cmd/drydock/inspect.go's
 // printBrief/printVerification exactly: repo+labels, runtime, policy, egress,
 // spend, diff summary, FLAG rows, verification block, gaps. Every string that
 // could carry work-tree data passes through safeCell, and all text lands via
 // el(...,{text:...}) (textContent) — never innerHTML.
-function renderBrief(box, b){
+// ack (optional): the review overlay's second-look state — each FLAG row
+// whose kind is a required category gains an acknowledgment checkbox, and
+// required categories without a FLAG row get standalone ACK rows.
+function renderBrief(box, b, ack = null){
   box.replaceChildren();
   const t = b.task || {}, rt = b.runtime || {}, pol = b.policy || {}, sp = b.spend || {}, d = b.diff || {};
   const dash = s => s || "(none)";
@@ -513,9 +558,17 @@ function renderBrief(box, b){
   if (d.truncated) diffKids.push(el("span", { class: "brief-chip warn", text: "TRUNCATED" }));
   box.append(row("diff", "", ...diffKids));
 
-  for (const fl of d.flags || [])
-    box.append(row("FLAG", "brief-flag", val(
-      safeCell(fl.kind || "") + ": " + (fl.paths || []).map(safeCell).join(", "))));
+  const ackRendered = new Set();
+  for (const fl of d.flags || []){
+    const flagRow = row("FLAG", "brief-flag", val(
+      safeCell(fl.kind || "") + ": " + (fl.paths || []).map(safeCell).join(", ")));
+    if (ack && ack.required.includes(fl.kind)){
+      flagRow.append(ackCheckbox(fl.kind, ack));
+      ackRendered.add(fl.kind);
+    }
+    box.append(flagRow);
+  }
+  if (ack) appendAckRows(box, ack.required.filter(c => !ackRendered.has(c)), ack);
 
   // verification block (mirrors printVerification)
   const v = b.verification || {};
@@ -566,6 +619,35 @@ function renderBrief(box, b){
 
 async function openReview(id, readonly = false){
   if (overlayState) closeOverlay();   // close any existing overlay first
+
+  // Second-look acknowledgment state. The required categories come from the
+  // live task (/api/tasks → second_look, kept fresh in boardTasks by the
+  // board poll); a read-only (history) overlay has no approve, so no acks.
+  // The Approve button starts disabled whenever anything is required and is
+  // enabled only by allAcked() — and even a bypassed click can't push:
+  // brokerd revalidates the ack superset server-side (422 otherwise).
+  const liveTask = boardTasks.get(id);
+  const required = (!readonly && liveTask && Array.isArray(liveTask.second_look)) ? liveTask.second_look.slice() : [];
+  const acked = new Set();
+  const allAcked = () => required.every(c => acked.has(c));
+  let approveBtn = null; // assigned below (non-readonly only)
+  const ackState = required.length ? {
+    required, acked,
+    update: () => {
+      if (!approveBtn) return;
+      if (allAcked()) approveBtn.removeAttribute("disabled");
+      else approveBtn.setAttribute("disabled", "");
+    },
+  } : null;
+  const doApprove = () => {
+    if (!allAcked()){
+      toast("acknowledge each second-look category first: " + required.filter(c => !acked.has(c)).map(safeCell).join(", "), "bad");
+      return;
+    }
+    act("approve", id, required.length ? required.slice() : undefined);
+    closeOverlay();
+  };
+
   const diffBox = el("div", { class: "tabbody" }, el("p", { class: "muted", text: "loading…" }));
   const logsBox = el("div", { class: "tabbody" }, "");
   // CSSOM property write, not a style attribute: CSP blocks the attribute
@@ -589,27 +671,42 @@ async function openReview(id, readonly = false){
         el("button", { class:"tab", onclick: closeOverlay, text: "✕" }))),
     briefBox,
     el("div", { class: "tabs" }, diffTab, logsTab), diffBox, logsBox);
-  if (!readonly) panel.append(el("div", { class: "actions" },
-    el("button", { class: "btn ok", onclick: () => { act("approve", id); closeOverlay(); } }, "Approve push"),
-    dangerButton("Deny", () => { act("deny", id); closeOverlay(); }, id + ":deny-push:overlay"),
-    el("span", { class: "kbd" }, "A approve · D deny · Esc close")));
+  if (!readonly) {
+    approveBtn = el("button", { class: "btn ok", onclick: doApprove }, "Approve push");
+    if (required.length) approveBtn.setAttribute("disabled", "");
+    panel.append(el("div", { class: "actions" },
+      approveBtn,
+      dangerButton("Deny", () => { act("deny", id); closeOverlay(); }, id + ":deny-push:overlay"),
+      el("span", { class: "kbd" }, "A approve · D deny · Esc close")));
+  }
 
   // Esc is owned by the global keydown registry (via overlayState), not a
   // per-open listener here — exactly one keydown handler in the app.
   const overlay = el("div", { class: "overlay", onclick: (e) => { if (e.target === overlay) closeOverlay(); } }, panel);
   document.body.append(overlay);
+  // Keyboard approve routes through the same doApprove gate as the button:
+  // unchecked second-look boxes refuse (toast) instead of firing an approve.
   overlayState = { close: () => { overlay.remove(); },
-                   approve: readonly ? null : () => { act("approve", id); closeOverlay(); },
+                   approve: readonly ? null : doApprove,
                    deny: readonly ? null : () => { act("deny", id); closeOverlay(); } };
   // Fetch the brief concurrently — the diff fetch below must never wait on it
   // (older tasks have no brief; the diff is the primary review surface).
+  // When the brief is missing/unreadable but acks are required, standalone
+  // ACK rows still render: the approve stays reachable and stays gated.
   (async () => {
     try {
       const res = await api("GET", "/api/brief/" + id);
-      if (res.status === 404) { briefBox.replaceChildren(el("p", { class: "muted", text: "no trust brief recorded" })); return; }
+      if (res.status === 404) {
+        briefBox.replaceChildren(el("p", { class: "muted", text: "no trust brief recorded" }));
+        if (ackState) appendAckRows(briefBox, ackState.required, ackState);
+        return;
+      }
       if (!res.ok) throw new Error(`${res.status}`);
-      renderBrief(briefBox, await res.json());
-    } catch { briefBox.replaceChildren(el("p", { class: "muted", text: "could not load trust brief" })); }
+      renderBrief(briefBox, await res.json(), ackState);
+    } catch {
+      briefBox.replaceChildren(el("p", { class: "muted", text: "could not load trust brief" }));
+      if (ackState) appendAckRows(briefBox, ackState.required, ackState);
+    }
   })();
   try {
     const res = await api("GET", "/api/diff/" + id);

@@ -51,6 +51,36 @@ drydock approve <id>       # … or: drydock deny <id>
 `drydock review` is the fast path; `approve` / `deny` are the explicit controls.
 A denied task keeps its diff in the audit dir but never pushes.
 
+### Diff policy: caps and second-look acknowledgments
+
+The optional `diff_policy` block in `config.yaml` (see
+[Configuration](configuration.html)) shapes what reaches this gate:
+
+- **Caps and blocked paths** (`max_files_changed`, `max_lines_changed`,
+  `blocked_paths`): a violating diff fails the task closed with outcome
+  `policy_blocked` **before review** — nothing to approve, and
+  `--auto-approve` does not bypass it. `drydock tasks` / `drydock stats`
+  show it as **policy blocked**; the diff and trust brief stay in the audit
+  dir.
+- **Second-look paths** (`second_look_paths`): the diff still reaches this
+  gate, but the broker computes the touched risk-flag categories (the trust
+  brief's FLAG kinds, e.g. `ci-workflow`, `lockfile`) and refuses any
+  approve that doesn't acknowledge all of them. `drydock pending` marks such
+  tasks with `SECOND-LOOK[...]`; `drydock review` prompts
+  `acknowledge <category> change? [y/N]` per category after the diff (any
+  refusal denies); the explicit path is:
+
+  ```bash
+  drydock approve <id> --acknowledge ci-workflow --acknowledge lockfile
+  ```
+
+  (`--ack` is an alias; repeat per category.) An approve with missing
+  acknowledgments is refused — the CLI prints the missing categories and the
+  corrected command, and the task stays pending. In the web UI the review
+  overlay renders a checkbox per required category and keeps the Approve
+  button disabled until every box is checked. The refusal is enforced by
+  brokerd itself, so no client can approve an under-acknowledged diff.
+
 If the branch pushes but the PR can't be opened (e.g. `gh` isn't authenticated),
 drydock reports it as **pushed** with a hint to open the PR manually; it never
 loses your work to a failed PR step.
@@ -142,8 +172,11 @@ reports `outcome=denied` and never pushes; a task killed mid-run reports
 `outcome=cancelled`; a run that produces no diff reports `outcome=no_diff`
 and still displays as `ok` (a clean no-op isn't a failure); a task whose
 **required** verification does not pass reports `outcome=verify_failed` and
-never reaches the approval gate. `drydock tasks`, `drydock stats`, and the
-web UI all show these outcomes distinctly from `pushed` and `push_failed`.
+never reaches the approval gate; a diff that violates `diff_policy` (caps or
+`blocked_paths`) reports `outcome=policy_blocked` — shown as **policy
+blocked** — and likewise never reaches the gate. `drydock tasks`, `drydock
+stats`, and the web UI all show these outcomes distinctly from `pushed` and
+`push_failed`.
 
 ## Operator surface
 
@@ -204,7 +237,7 @@ broker-authored row, `{"type":"metrics","src":"broker"}`, holding stage
 durations (`stage_ms.preparing`, `.running`, `.verifying` — omitted when the
 task never verified — and `.pushing`), egress/approval gate waits, the
 admitted request count, spend, the terminal `outcome` (`pushed`, `denied`,
-`cancelled`, `push_failed`, `verify_failed`, `error`, or `no_diff`), and the
+`cancelled`, `push_failed`, `verify_failed`, `policy_blocked`, `error`, or `no_diff`), and the
 egress-widen outcome; if brokerd ever
 appends more than one (e.g. after a resumed task), the last such row wins,
 so readers should take the last `metrics` line, not the first.

@@ -110,6 +110,39 @@ func TestWriteStats_DeniedOutcome(t *testing.T) {
 	}
 }
 
+// TestWriteStats_PolicyBlockedInFixedOrder: policy_blocked is a first-class
+// outcome in the fixed display list — it renders its own line and sorts with
+// the fixed outcomes (before any alphabetical passthrough like "denied"),
+// so its position is stable across reports.
+func TestWriteStats_PolicyBlockedInFixedOrder(t *testing.T) {
+	dir := t.TempDir()
+	blocked := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"policy_blocked","is_error":false,"duration_ms":4000,"total_cost_usd":0.03,"num_turns":0,"src":"broker"}
+`
+	denied := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"denied","is_error":false,"duration_ms":0,"total_cost_usd":0.02,"num_turns":0,"src":"broker"}
+`
+	for id, content := range map[string]string{"blocked1": blocked, "denied1": denied} {
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "policy_blocked: 1") {
+		t.Fatalf("output missing %q:\n%s", "policy_blocked: 1", out)
+	}
+	pb, dn := strings.Index(out, "policy_blocked: 1"), strings.Index(out, "denied: 1")
+	if dn < 0 || pb > dn {
+		t.Errorf("policy_blocked must render in the fixed list, before the sorted passthrough outcomes:\n%s", out)
+	}
+}
+
 func TestWriteStats_JSON(t *testing.T) {
 	var buf bytes.Buffer
 	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "", true); err != nil {

@@ -50,6 +50,20 @@ openai_compat:
 #       timeout: 10m      # 0 = default (10m)
 #       required: false   # true = failure/inconclusive blocks push
 
+# diff_policy: host-side caps on the diff a task may propose. A diff that
+# exceeds a cap or touches a blocked path fails the task closed as
+# policy_blocked BEFORE it reaches review; second-look paths still reach
+# review, but the approver must acknowledge each flagged category. Path
+# patterns are **-aware repo-relative globs: write "dir/**" to cover
+# everything under dir — a trailing-slash pattern like "dir/" matches
+# nothing and is rejected at load. Omit the block (or leave zeros/empty
+# lists) to disable every check.
+# diff_policy:
+#   max_files_changed: 0        # fail closed when the diff changes more files than this (0 = no cap)
+#   max_lines_changed: 0        # fail closed when added+deleted lines exceed this (0 = no cap)
+#   blocked_paths: []           # e.g. ["**/*.pem", ".github/workflows/**"] — touching one fails the task
+#   second_look_paths: []       # e.g. ["**/Dockerfile"] — approver must acknowledge each flagged category
+
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)
 audit_root:    ~/.drydock/audit        # per-task <id>.jsonl + .diff

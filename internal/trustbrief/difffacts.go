@@ -209,6 +209,72 @@ func Analyze(diff string) DiffFacts {
 	return facts
 }
 
+// ChangedPathsForPolicy scans a unified diff and returns EVERY changed path,
+// uncapped and unquoted, for containment policy matching
+// (diff_policy.blocked_paths). It exists because Analyze's DiffFacts are
+// ADVISORY display evidence with deliberately capped retention: paths are
+// truncated to maxPathBytes and an over-long header parses to Path="" — both
+// without incrementing FilesOmitted. A containment decision matched against
+// those capped paths is bypassable (a blocked file at a >512-byte path no
+// longer matches its glob), so the policy check must see the real paths.
+//
+// Collected per file: the post-change b-path from each `diff --git a/X b/Y`
+// header (covers adds, deletes, and modifications — for a deletion the b-path
+// is the deleted file), plus the `rename from <path>` source, so a rename
+// OUT of a blocked location is caught even though a 100%-similarity rename
+// emits no +++/--- lines and Analyze records only the destination.
+//
+// complete is false whenever any interpreted header line could not be parsed
+// to a non-empty path or hit boundedLine's length bound (so its path may be
+// truncated or missing entirely). Callers enforcing blocked_paths MUST fail
+// closed on !complete: an unevaluable path is indistinguishable from a
+// blocked one. Individual paths are deliberately NOT capped — that is the
+// point — but total retention is bounded by the size of the diff itself
+// (already capped upstream at stage.MaxDiffBytes), and boundedLine keeps any
+// single pathological line from allocating unboundedly.
+func ChangedPathsForPolicy(diff string) (paths []string, complete bool) {
+	complete = true
+	r := bufio.NewReaderSize(strings.NewReader(diff), 64<<10)
+	inHunk := false
+	for {
+		line, err := boundedLine(r)
+		if len(line) == 0 && err != nil {
+			break
+		}
+		switch {
+		case bytes.HasPrefix(line, bpDiffGit):
+			inHunk = false
+			// A line of exactly maxHeaderLine bytes is indistinguishable from
+			// a truncated longer one; treating it as incomplete is fail-closed.
+			if len(line) >= maxHeaderLine {
+				complete = false
+				break
+			}
+			if p := parseGitHeaderPath(string(line)); p != "" {
+				paths = append(paths, p)
+			} else {
+				complete = false
+			}
+		case bytes.HasPrefix(line, bpHunk):
+			inHunk = true
+		case !inHunk && bytes.HasPrefix(line, bpRenameFrom):
+			if len(line) >= maxHeaderLine {
+				complete = false
+				break
+			}
+			if p := unquotePath(string(bytes.TrimPrefix(line, bpRenameFrom))); p != "" {
+				paths = append(paths, p)
+			} else {
+				complete = false
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return paths, complete
+}
+
 // boundedLine reads one line, retaining at most maxHeaderLine bytes and
 // discarding the remainder. Every line the parser *interprets* (git headers,
 // mode lines) is short; content lines only need their first byte for +/-
@@ -241,10 +307,14 @@ func boundedLine(r *bufio.Reader) ([]byte, error) {
 
 // parseGitHeaderPath extracts the post-change (b/) path from a
 // `diff --git a/X b/Y` header. Git quotes paths containing spaces or
-// non-ASCII (`"b/we ird"`); those are unquoted with strconv. A pathological
-// a-path that itself contains ` "b/` or ` b/` can misattribute the path —
-// that degrades a flag's example path, never the parse (advisory evidence,
-// not an enforcement input).
+// non-ASCII (`"b/we ird"`); those are unquoted with strconv. Header lines are
+// trusted git FRAMING (attacker-controlled content lines inside hunks always
+// carry a +/-/space prefix and cannot alias a header). In genuine git output
+// an a-path cannot smuggle a ` b/` separator: any path containing a space is
+// quoted, and a literal `"` inside a quoted path is escaped, so the last
+// ` b/` (or first ` "b/`) is always the real b-path. Returns "" when no
+// b-path is found; ChangedPathsForPolicy treats that as complete=false and
+// its callers fail closed.
 func parseGitHeaderPath(line string) string {
 	rest := strings.TrimPrefix(line, "diff --git ")
 	if i := strings.Index(rest, ` "b/`); i >= 0 {

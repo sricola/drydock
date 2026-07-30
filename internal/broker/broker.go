@@ -126,6 +126,13 @@ type Broker struct {
 	// entry records verification status "not_configured" and pushes as before.
 	Verify map[string]VerifyRepo
 
+	// DiffPolicy caps the size and shape of the diff a task may propose
+	// (config diff_policy, wired from cfg.DiffPolicy by cmd/brokerd). The zero
+	// value disables every cap. A violating diff fails closed as the terminal
+	// outcome "policy_blocked" BEFORE the approval gate — auto_approve does
+	// not bypass it. See taskRun.checkDiffCaps (diffpolicy.go).
+	DiffPolicy config.DiffPolicy
+
 	// UnmeteredVendors names vendors whose lane carries NO USD metering at all
 	// (subscription auth lanes; a priceless openai-compat lane) — the same
 	// conditions cmd/brokerd used to mint a math.MaxFloat64 lease budget for
@@ -189,10 +196,16 @@ type Broker struct {
 	slotsOnce sync.Once
 	slots     chan struct{}
 
-	pendingMu  sync.Mutex
-	pending    map[string]chan bool               // task_id -> approval channel
-	tasks      map[string]*TaskState              // task_id -> live state (running + awaiting_approval)
-	cancellers map[string]context.CancelCauseFunc // task_id -> cancel hook for in-flight kill
+	pendingMu sync.Mutex
+	pending   map[string]chan gateReply // task_id -> approval channel
+	// requiredAcks maps a task waiting at the diff-approval gate to the
+	// second-look categories an approve must acknowledge. Registered by
+	// awaitGate atomically with the b.pending entry (same lock hold) and
+	// removed with it, so there is never a window where a task is approvable
+	// but its ack requirement is invisible to signal. Guarded by pendingMu.
+	requiredAcks map[string][]string
+	tasks        map[string]*TaskState              // task_id -> live state (running + awaiting_approval)
+	cancellers   map[string]context.CancelCauseFunc // task_id -> cancel hook for in-flight kill
 }
 
 // taskStage is the subset of *stage.Stage that HandleTask uses. It exists so
@@ -350,10 +363,17 @@ type taskRun struct {
 	diffBytes        int64
 	// outcome is the terminal path taken, written into the metrics row's
 	// Outcome field: "pushed"|"denied"|"cancelled"|"push_failed"|"error"|
-	// "no_diff"|"verify_failed". Set at each terminal return; "" (never reached a terminal
+	// "no_diff"|"verify_failed"|"policy_blocked". Set at each terminal return; "" (never reached a terminal
 	// return with the audit log open, e.g. resumePush's shutdown re-defer)
 	// leaves the metrics row's Outcome empty, same as a pre-outcome-field row.
 	outcome string
+
+	// requiredAcks is the second-look acknowledgment categories the approver
+	// must ack for this diff (diff_policy.second_look_paths x the diff's
+	// trustbrief flags). Computed at gate entry — pushAndOpenPR on the live
+	// path, resumePush (from the persisted diff) on the resume path — and
+	// enforced by signal (admin.go) before any approve reaches the gate.
+	requiredAcks []string
 
 	// keepStage, when true, suppresses the deferred stage Cleanup so the stage
 	// directory survives a brokerd shutdown and can be resumed at next boot.
@@ -865,7 +885,9 @@ func (tr *taskRun) runSandbox(args []string) error {
 // auto-approved ones, where the Brief is the only pre-push record a human
 // can later audit. Best-effort: the Brief is advisory evidence in v1, so a
 // write failure warns and the gate proceeds rather than failing the task.
-func (b *Broker) writeBrief(tr *taskRun, diff string) {
+// It returns the DiffFacts it computed so the diff-policy caps check (and
+// later consumers) reuse the one Analyze pass instead of re-parsing the diff.
+func (b *Broker) writeBrief(tr *taskRun, diff string) trustbrief.DiffFacts {
 	policy := trustbrief.PolicyFacts{
 		BudgetUSD:      b.TaskBudget,
 		BudgetHard:     b.MaxRequestCostUSD > 0,
@@ -944,6 +966,7 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) {
 	if err := trustbrief.Write(b.AuditRoot, tr.id, brief); err != nil {
 		slog.Warn("could not persist trust brief", "task_id", tr.id, "err", err)
 	}
+	return brief.Diff
 }
 
 // domainStrings renders egress domains as "host:p1,p2" strings for the Brief.
@@ -960,7 +983,8 @@ func domainStrings(ds []egress.Domain) []string {
 }
 
 // pushAndOpenPR handles the diff-approval gate, branch push, and PR creation.
-// It always emits a terminal event (result/outcome=denied|cancelled|pushed|push_failed).
+// It always emits a terminal event
+// (result/outcome=policy_blocked|denied|cancelled|pushed|push_failed).
 // HandleTask should return immediately after calling this; it is the last step
 // in the task lifecycle.
 func (tr *taskRun) pushAndOpenPR(diff string) {
@@ -968,8 +992,37 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	files, insertions, deletions := diffStat(diff)
 	tr.diffFiles = files
 	tr.diffBytes = int64(len(diff))
-	b.writeBrief(tr, diff)
+	facts := b.writeBrief(tr, diff)
+	// Diff-policy caps are ENFORCEMENT, applied before any gate — including
+	// the auto-approve branch below, which must never bypass them. A blocked
+	// task fails closed: nothing is pushed and it never registers as pending.
+	// The Brief and the .diff are already persisted, so `drydock inspect`
+	// shows the operator exactly what was blocked. The synthetic audit result
+	// row mirrors runVerify's verify_failed pattern (last-wins over the
+	// agent's own success row, carrying metered cost).
+	if blocked, reason := tr.checkDiffCaps(facts, diff); blocked {
+		cost := audit.TotalCost(tr.auditPath)
+		fmt.Fprintf(tr.logf,
+			`{"type":"result","subtype":"policy_blocked","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
+			time.Since(tr.taskStart).Milliseconds(), cost)
+		tr.outcome = "policy_blocked"
+		tr.sw.emit(map[string]any{"event": "result", "outcome": "policy_blocked",
+			"task_id": tr.id, "reason": reason,
+			"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": cost,
+			"hint": "drydock inspect " + tr.id + " — a diff-policy cap blocked this task before review"})
+		return
+	}
+	// Second-look acknowledgments (diff_policy.second_look_paths): computed
+	// here at gate entry from the same DiffFacts the caps check used, so what
+	// the approver must acknowledge is exactly what the Brief reports. The
+	// requirement is registered with the pending channel inside awaitGate and
+	// enforced by signal — an approve missing any of these categories is
+	// refused with 422 and the task stays pending. Auto-approve is unaffected:
+	// second-look is a human-gate aid, and the hard enforcement that even
+	// auto-approve cannot bypass is checkDiffCaps above.
+	tr.requiredAcks = requiredAcks(facts, b.DiffPolicy)
 	b.setStage(tr.id, StagePending)
+	b.setSecondLook(tr.id, tr.requiredAcks)
 	// Only announce the approval gate when there's actually a human gate to
 	// wait on. Auto-approve pushes immediately, so an "awaiting_approval"
 	// stage would be a misleading blip in the stream.
@@ -979,6 +1032,9 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"approve": "drydock approve " + tr.id,
 			"deny":    "drydock deny " + tr.id,
 			"review":  "drydock review " + tr.id}
+		if len(tr.requiredAcks) > 0 {
+			gateEv["second_look"] = tr.requiredAcks
+		}
 		// Surface the verifier's broker-observed verdict to the reviewer at
 		// the gate (advisory verification's whole value lives here).
 		if tr.verify != nil && tr.verify.Status != trustbrief.VerificationNotConfigured {
@@ -991,6 +1047,9 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	if !tr.autoApprove {
 		tr.approvalGateWait = time.Since(gateStart)
 	}
+	// Gate resolved (either way): the second-look ask is no longer pending,
+	// mirroring how setEgressExtra clears after the egress gate.
+	b.setSecondLook(tr.id, nil)
 	if !approved {
 		// See gateOutcome's doc comment for how this maps and where the live
 		// and resumed (reconcile.go's resumePush) paths intentionally diverge.

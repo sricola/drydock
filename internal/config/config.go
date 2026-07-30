@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"drydock/internal/globmatch"
 	"drydock/internal/provider"
 	"drydock/internal/repokey"
 	"gopkg.in/yaml.v3"
@@ -55,6 +56,27 @@ type VerifyRepo struct {
 	Commands [][]string    `yaml:"commands"`
 	Timeout  time.Duration `yaml:"timeout"`
 	Required bool          `yaml:"required"`
+}
+
+// DiffPolicy is the host-side policy applied to the diff a task proposes.
+// Caps and blocked paths fail the task closed as policy_blocked before it
+// reaches review; second-look paths still reach review but the approver must
+// acknowledge each flagged category. Path patterns are **-aware repo-relative
+// globs (internal/globmatch): use "dir/**" for everything under dir — a
+// trailing-slash pattern ("dir/") matches nothing and is a config error.
+// The zero value disables every check.
+type DiffPolicy struct {
+	// MaxFilesChanged fails the task when the diff changes more than this
+	// many files. 0 = no cap.
+	MaxFilesChanged int `yaml:"max_files_changed"`
+	// MaxLinesChanged fails the task when added+deleted lines exceed this.
+	// 0 = no cap.
+	MaxLinesChanged int `yaml:"max_lines_changed"`
+	// BlockedPaths: touching a matching path fails the task as policy_blocked.
+	BlockedPaths []string `yaml:"blocked_paths"`
+	// SecondLookPaths: touching a matching path flags the diff for explicit
+	// approver acknowledgement.
+	SecondLookPaths []string `yaml:"second_look_paths"`
 }
 
 // Config is the operator surface. yaml tags match what's written to
@@ -151,6 +173,10 @@ type Config struct {
 	Verify struct {
 		Repos map[string]VerifyRepo `yaml:"repos"`
 	} `yaml:"verify"`
+
+	// DiffPolicy caps the size and shape of the diff a task may propose.
+	// Zero value = disabled (no caps, no blocked/second-look paths).
+	DiffPolicy DiffPolicy `yaml:"diff_policy"`
 
 	// Where state lives
 	StageRoot   string `yaml:"stage_root"`
@@ -495,6 +521,32 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: verify.repos[%q].timeout must be >= 0", key)
 		}
 	}
+	if c.DiffPolicy.MaxFilesChanged < 0 {
+		return fmt.Errorf("config: diff_policy.max_files_changed must be >= 0, got %d", c.DiffPolicy.MaxFilesChanged)
+	}
+	if c.DiffPolicy.MaxLinesChanged < 0 {
+		return fmt.Errorf("config: diff_policy.max_lines_changed must be >= 0, got %d", c.DiffPolicy.MaxLinesChanged)
+	}
+	for _, g := range []struct {
+		field string
+		pats  []string
+	}{
+		{"blocked_paths", c.DiffPolicy.BlockedPaths},
+		{"second_look_paths", c.DiffPolicy.SecondLookPaths},
+	} {
+		field := g.field
+		for i, p := range g.pats {
+			if err := globmatch.Valid(p); err != nil {
+				return fmt.Errorf("config: diff_policy.%s[%d] invalid glob: %v", field, i, err)
+			}
+			// globmatch treats a trailing "/" as an empty final segment, so
+			// "dir/" is well-formed but matches nothing — silently inert
+			// policy. Make it a loud config error instead.
+			if strings.HasSuffix(p, "/") {
+				return fmt.Errorf("config: diff_policy.%s[%d] %q ends with %q and matches nothing; use %q to match everything under the directory", field, i, p, "/", p+"**")
+			}
+		}
+	}
 	if c.AggregateBudgetUSD < 0 {
 		return fmt.Errorf("config: aggregate_budget_usd must be >= 0, got %v", c.AggregateBudgetUSD)
 	}
@@ -570,6 +622,20 @@ openai_compat:
 #         - ["go", "test", "./..."]
 #       timeout: 10m      # 0 = default (10m)
 #       required: false   # true = failure/inconclusive blocks push
+
+# diff_policy: host-side caps on the diff a task may propose. A diff that
+# exceeds a cap or touches a blocked path fails the task closed as
+# policy_blocked BEFORE it reaches review; second-look paths still reach
+# review, but the approver must acknowledge each flagged category. Path
+# patterns are **-aware repo-relative globs: write "dir/**" to cover
+# everything under dir — a trailing-slash pattern like "dir/" matches
+# nothing and is rejected at load. Omit the block (or leave zeros/empty
+# lists) to disable every check.
+# diff_policy:
+#   max_files_changed: 0        # fail closed when the diff changes more files than this (0 = no cap)
+#   max_lines_changed: 0        # fail closed when added+deleted lines exceed this (0 = no cap)
+#   blocked_paths: []           # e.g. ["**/*.pem", ".github/workflows/**"] — touching one fails the task
+#   second_look_paths: []       # e.g. ["**/Dockerfile"] — approver must acknowledge each flagged category
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

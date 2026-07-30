@@ -316,7 +316,136 @@ func FuzzAnalyze(f *testing.F) {
 	f.Add("diff --git a/x b/x\nnew file mode 120000\n+++ b/x\n+target\n")
 	f.Add("Binary files a and b differ\n")
 	f.Add("\"a/we ird\"")
+	f.Add("diff --git a/" + strings.Repeat("d/", 300) + "k.pem b/" + strings.Repeat("d/", 300) + "k.pem\n")
+	f.Add("similarity index 100%\nrename from a\nrename to b\n")
 	f.Fuzz(func(t *testing.T, diff string) {
-		_ = Analyze(diff) // must not panic
+		_ = Analyze(diff)                  // must not panic
+		_, _ = ChangedPathsForPolicy(diff) // must not panic
 	})
+}
+
+// ChangedPathsForPolicy is a CONTAINMENT input (diff_policy.blocked_paths):
+// unlike Analyze's display-capped facts it must return every changed path in
+// full, include rename sources, and admit incompleteness so callers can fail
+// closed.
+
+func TestChangedPathsForPolicy_NormalDiff(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n" +
+		"index 1111111..2222222 100644\n" +
+		"--- a/main.go\n" +
+		"+++ b/main.go\n" +
+		"@@ -1 +1 @@\n" +
+		"-old\n" +
+		"+new\n" +
+		"diff --git a/docs/x.md b/docs/x.md\n" +
+		"@@ -0,0 +1 @@\n" +
+		"+hi\n"
+	paths, complete := ChangedPathsForPolicy(diff)
+	if !complete {
+		t.Fatal("complete = false for a well-formed diff")
+	}
+	if len(paths) != 2 || paths[0] != "main.go" || paths[1] != "docs/x.md" {
+		t.Errorf("paths = %v, want [main.go docs/x.md]", paths)
+	}
+}
+
+func TestChangedPathsForPolicy_LongPathUntruncated(t *testing.T) {
+	// The CRITICAL bypass: Analyze stores at most maxPathBytes of a path, so
+	// a .pem at a deeper path no longer glob-matches "**/*.pem" in DiffFacts.
+	// The policy set must carry the FULL path.
+	long := strings.Repeat("d/", 300) + "key.pem" // 607 bytes > maxPathBytes
+	if len(long) <= maxPathBytes {
+		t.Fatalf("test path is %d bytes, need > maxPathBytes (%d)", len(long), maxPathBytes)
+	}
+	diff := "diff --git a/" + long + " b/" + long + "\n" +
+		"@@ -0,0 +1 @@\n" +
+		"+SECRET\n"
+	// Precondition: the display path really is truncated (the bypass exists).
+	if got := Analyze(diff).Files[0].Path; got == long {
+		t.Fatal("Analyze no longer truncates; this test's premise changed")
+	}
+	paths, complete := ChangedPathsForPolicy(diff)
+	if !complete {
+		t.Fatal("complete = false for a well-formed long-path diff")
+	}
+	if len(paths) != 1 || paths[0] != long {
+		t.Errorf("paths = %v, want the full %d-byte path untruncated", paths, len(long))
+	}
+}
+
+func TestChangedPathsForPolicy_PureRenameIncludesSource(t *testing.T) {
+	diff := "diff --git a/.github/workflows/ci.yml b/ci.yml.disabled\n" +
+		"similarity index 100%\n" +
+		"rename from .github/workflows/ci.yml\n" +
+		"rename to ci.yml.disabled\n"
+	paths, complete := ChangedPathsForPolicy(diff)
+	if !complete {
+		t.Fatal("complete = false for a well-formed rename diff")
+	}
+	want := map[string]bool{"ci.yml.disabled": false, ".github/workflows/ci.yml": false}
+	for _, p := range paths {
+		if _, ok := want[p]; ok {
+			want[p] = true
+		}
+	}
+	for p, seen := range want {
+		if !seen {
+			t.Errorf("paths = %v, missing %q (rename source AND destination must both be present)", paths, p)
+		}
+	}
+}
+
+func TestChangedPathsForPolicy_QuotedRenameSourceUnquoted(t *testing.T) {
+	diff := "diff --git \"a/we ird/ci.yml\" b/plain.yml\n" +
+		"similarity index 100%\n" +
+		"rename from \"we ird/ci.yml\"\n" +
+		"rename to plain.yml\n"
+	paths, complete := ChangedPathsForPolicy(diff)
+	if !complete {
+		t.Fatal("complete = false for a well-formed quoted rename diff")
+	}
+	found := false
+	for _, p := range paths {
+		if p == "we ird/ci.yml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("paths = %v, want the unquoted rename source \"we ird/ci.yml\"", paths)
+	}
+}
+
+func TestChangedPathsForPolicy_Incomplete(t *testing.T) {
+	cases := map[string]string{
+		"over-length-git-header":   "diff --git a/" + strings.Repeat("x", 5000) + " b/y\n",
+		"exactly-bound-git-header": "diff --git " + strings.Repeat("x", maxHeaderLine-len("diff --git ")) + "\n",
+		"unparseable-git-header":   "diff --git nonsense-without-b-path\n",
+		"empty-b-path":             "diff --git a/x b/\ndiff --git a/y b/y\n",
+		"over-length-rename-from":  "diff --git a/x b/y\nrename from " + strings.Repeat("x", 5000) + "\n",
+		"empty-rename-from":        "diff --git a/x b/y\nrename from \n",
+	}
+	for name, diff := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, complete := ChangedPathsForPolicy(diff); complete {
+				t.Error("complete = true, want false: a header whose path may be missing or mangled must be reported so callers fail closed")
+			}
+		})
+	}
+}
+
+func TestChangedPathsForPolicy_HunkContentCannotInjectRename(t *testing.T) {
+	// "rename from" as hunk CONTENT (space/+/- prefixed) must not add paths,
+	// and raw header-like bytes only occur as trusted git framing.
+	diff := "diff --git a/a.txt b/a.txt\n" +
+		"@@ -1,2 +1,3 @@\n" +
+		" rename from decoy\n" +
+		"+rename from decoy2\n" +
+		"-rename from decoy3\n"
+	paths, complete := ChangedPathsForPolicy(diff)
+	if !complete {
+		t.Fatal("complete = false for a well-formed diff")
+	}
+	if len(paths) != 1 || paths[0] != "a.txt" {
+		t.Errorf("paths = %v, want [a.txt]: prefixed content lines must not contribute paths", paths)
+	}
 }

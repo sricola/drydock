@@ -158,6 +158,54 @@ func renderVerifyRepos(repos map[string]VerifyRepo) string {
 	return fmt.Sprintf("%d repos: %s", len(keys), strings.Join(keys, ", "))
 }
 
+// renderDiffPolicy is a compact one-line summary of the diff_policy block.
+// The glob lists render as count + content hash rather than count alone:
+// EffectiveHash and the policy-explain divergence diff both consume this
+// rendered value, so two configs whose blocked/second-look globs differ in
+// CONTENT but not count must not render identically — a bare count would make
+// `drydock policy explain` falsely report "in sync" while the daemon enforces
+// different blocked-path globs.
+func renderDiffPolicy(dp DiffPolicy) string {
+	if !diffPolicySet(dp) {
+		return "disabled"
+	}
+	return fmt.Sprintf("%d files / %d lines / %s / %s",
+		dp.MaxFilesChanged, dp.MaxLinesChanged,
+		globsSummary(dp.BlockedPaths, "blocked"),
+		globsSummary(dp.SecondLookPaths, "second-look"))
+}
+
+// globsSummary renders one glob list as `N label (hash)`, omitting the parens
+// entirely when the list is empty.
+func globsSummary(globs []string, label string) string {
+	if len(globs) == 0 {
+		return "0 " + label
+	}
+	return fmt.Sprintf("%d %s (%s)", len(globs), label, globsHash(globs))
+}
+
+// globsHash is the first 8 hex chars of sha256 over the SORTED glob list
+// joined with "\n", or "" for an empty list. Sorting makes the hash
+// order-insensitive — reordering semantically identical globs in config must
+// not report divergence — and operates on a copy so the caller's slice is
+// never mutated.
+func globsHash(globs []string) string {
+	if len(globs) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), globs...)
+	sort.Strings(sorted)
+	h := sha256.Sum256([]byte(strings.Join(sorted, "\n")))
+	return hex.EncodeToString(h[:])[:8]
+}
+
+// diffPolicySet reports whether any diff_policy field is non-zero (the zero
+// value disables the whole block).
+func diffPolicySet(dp DiffPolicy) bool {
+	return dp.MaxFilesChanged != 0 || dp.MaxLinesChanged != 0 ||
+		len(dp.BlockedPaths) != 0 || len(dp.SecondLookPaths) != 0
+}
+
 // provenanceTable enumerates every field of Config in declaration order,
 // pairing each with its yaml key, env var (or ""), guard, and renderer.
 // This table must stay in lockstep with applyEnvOverrides and Defaults();
@@ -237,6 +285,14 @@ func provenanceTable() []fieldDesc {
 			// Non-empty map = yaml-set (defaults have no repos).
 			differs: func(yamlCfg, def *Config) bool {
 				return len(yamlCfg.Verify.Repos) != len(def.Verify.Repos)
+			}},
+		{name: "DiffPolicy", yamlKey: "diff_policy",
+			value: func(c *Config) string { return renderDiffPolicy(c.DiffPolicy) },
+			// The rendered summary collapses the glob lists to counts, so
+			// compare the struct itself: any non-zero field = yaml-set
+			// (the default block is all-zero).
+			differs: func(yamlCfg, def *Config) bool {
+				return diffPolicySet(yamlCfg.DiffPolicy) != diffPolicySet(def.DiffPolicy)
 			}},
 		{name: "StageRoot", yamlKey: "stage_root", envVar: "STAGE_ROOT",
 			guardedEnv: envString("STAGE_ROOT"),

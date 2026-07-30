@@ -22,6 +22,55 @@ var dispatchedCommands = []string{
 	"approve", "deny", "doctor", "redteam", "auth", "ui", "policy", "version",
 }
 
+// TestParseApproveArgs pins the approve flag grammar: a single positional id
+// plus repeatable --acknowledge/--ack (space- or =-separated), accepted in
+// any order relative to the id (a stdlib FlagSet would stop at the first
+// positional and silently drop trailing flags).
+func TestParseApproveArgs(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		wantID  string
+		wantAck []string
+		wantErr bool
+	}{
+		{name: "bare id", args: []string{"abc123"}, wantID: "abc123"},
+		{name: "id then acknowledge", args: []string{"abc123", "--acknowledge", "ci-workflow"}, wantID: "abc123", wantAck: []string{"ci-workflow"}},
+		{name: "flags before id, mixed forms", args: []string{"--ack", "ci-workflow", "--acknowledge=lockfile", "abc123"}, wantID: "abc123", wantAck: []string{"ci-workflow", "lockfile"}},
+		{name: "ack equals form", args: []string{"abc123", "--ack=exec-bit"}, wantID: "abc123", wantAck: []string{"exec-bit"}},
+		{name: "missing id", args: []string{"--ack", "ci-workflow"}, wantErr: true},
+		{name: "two ids", args: []string{"a", "b"}, wantErr: true},
+		{name: "dangling flag", args: []string{"abc123", "--acknowledge"}, wantErr: true},
+		{name: "empty category", args: []string{"abc123", "--ack="}, wantErr: true},
+		{name: "unknown flag", args: []string{"abc123", "--force"}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, acks, err := parseApproveArgs(tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseApproveArgs(%v) = (%q, %v, nil), want error", tc.args, id, acks)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseApproveArgs(%v): %v", tc.args, err)
+			}
+			if id != tc.wantID {
+				t.Errorf("id = %q, want %q", id, tc.wantID)
+			}
+			if len(acks) != len(tc.wantAck) {
+				t.Fatalf("acks = %v, want %v", acks, tc.wantAck)
+			}
+			for i := range acks {
+				if acks[i] != tc.wantAck[i] {
+					t.Errorf("acks = %v, want %v", acks, tc.wantAck)
+				}
+			}
+		})
+	}
+}
+
 // Every command the top-level usage advertises must have an entry in subHelp.
 // Keep this explicit list aligned with main's switch; the subprocess test below
 // separately proves that one representative command per help-path family

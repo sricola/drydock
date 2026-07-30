@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"drydock/internal/audit"
+	"drydock/internal/config"
 	"drydock/internal/remote"
 )
 
@@ -167,6 +168,9 @@ func TestResumeAwaiting_StageGone_WritesInterrupted(t *testing.T) {
 	// A task that finished the agent (ok) then hit the gate, whose stage did NOT survive.
 	auditFile := filepath.Join(dir, "gone.jsonl")
 	os.WriteFile(auditFile, []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1}`+"\n"), 0o600)
+	// A diff IS present: this test must reach the stage-reopen (which fails),
+	// not short-circuit at the diff fail-safe that now runs first.
+	os.WriteFile(filepath.Join(dir, "gone.diff"), []byte("diff"), 0o600)
 	writeGateMarker(dir, "gone", gateMarker{RepoRef: "r", Agent: "claude"})
 
 	b := &Broker{AuditRoot: dir}
@@ -179,6 +183,124 @@ func TestResumeAwaiting_StageGone_WritesInterrupted(t *testing.T) {
 	if _, err := os.Stat(gateMarkerPath(dir, "gone")); !os.IsNotExist(err) {
 		t.Error("marker should be removed after the interrupted fallback")
 	}
+}
+
+// TestResumeAwaiting_MissingDiff_FailsSafe is the fail-open regression test:
+// the resumed gate recomputes its second-look acknowledgment requirement from
+// the persisted <id>.diff, so a missing (or unreadable/empty) diff must NOT
+// resume the task as an approvable gate — an empty diff has no flags, so
+// requiredAcks would be nil and a bare approve would push a branch whose
+// original gate required acks. Expected: same handling as a gone stage —
+// honest interrupted terminal, marker dropped, task never pending.
+func TestResumeAwaiting_MissingDiff_FailsSafe(t *testing.T) {
+	dir := t.TempDir()
+	stageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stageRoot, "nodiff", "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	auditFile := filepath.Join(dir, "nodiff.jsonl")
+	os.WriteFile(auditFile, []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1}`+"\n"), 0o600)
+	// Deliberately NO nodiff.diff on disk, though the stage itself survived.
+	writeGateMarker(dir, "nodiff", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, "nodiff", "work")}
+	b := &Broker{AuditRoot: dir,
+		reopenStage: func(root string) (taskStage, error) { return fs, nil },
+		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
+	b.ResumeAwaiting(stageRoot)
+
+	// The fail-safe branch runs inline in ResumeAwaiting (no goroutine), so the
+	// terminal line and marker drop are visible on return.
+	data, _ := os.ReadFile(auditFile)
+	if !strings.Contains(string(data), `"subtype":"interrupted"`) {
+		t.Errorf("missing-diff task should get an interrupted line, got:\n%s", data)
+	}
+	if _, err := os.Stat(gateMarkerPath(dir, "nodiff")); !os.IsNotExist(err) {
+		t.Error("marker should be removed after the missing-diff fallback")
+	}
+	// Grace period: if a resume goroutine had (wrongly) been spawned, it would
+	// register the task as pending within this window.
+	time.Sleep(50 * time.Millisecond)
+	b.pendingMu.Lock()
+	_, pending := b.pending["nodiff"]
+	_, registered := b.tasks["nodiff"]
+	b.pendingMu.Unlock()
+	if pending || registered {
+		t.Errorf("missing-diff task must not be resumed as approvable (pending=%v registered=%v)", pending, registered)
+	}
+}
+
+// TestReadDiffNoFollow_RefusesSymlink gives the resume-side diff read the same
+// symlink defense as persistDiff's write side: a planted <id>.diff -> elsewhere
+// must fail (and thus fail SAFE via the missing-diff branch), not feed the
+// resumed gate substituted bytes.
+func TestReadDiffNoFollow_RefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.diff")
+	if err := os.WriteFile(target, []byte("diff --git a/x b/x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.diff")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := readDiffNoFollow(link); err == nil {
+		t.Fatalf("readDiffNoFollow should refuse a symlinked path (O_NOFOLLOW), got %q", s)
+	}
+}
+
+// TestResumeAwaiting_RecomputesRequiredAcks proves the second-look
+// acknowledgment requirement survives a brokerd restart: a task parked at the
+// gate with a flagged diff must come back pending WITH its recomputed
+// b.requiredAcks entry, so an ack-less approve is still rejected after the
+// bounce (the ack-bypass the recompute in resumePush exists to prevent).
+func TestResumeAwaiting_RecomputesRequiredAcks(t *testing.T) {
+	dir := t.TempDir()
+	stageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stageRoot, "ackid", "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The persisted diff touches a CI workflow (flag kind "ci-workflow"), and
+	// the policy second-looks workflow paths: the resumed gate must require it.
+	os.WriteFile(filepath.Join(dir, "ackid.diff"), []byte(workflowDiff), 0o600)
+	writeGateMarker(dir, "ackid", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, "ackid", "work")}
+	b := &Broker{AuditRoot: dir,
+		DiffPolicy:  config.DiffPolicy{SecondLookPaths: []string{".github/workflows/**"}},
+		reopenStage: func(root string) (taskStage, error) { return fs, nil },
+		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
+	b.ResumeAwaiting(stageRoot)
+
+	if !waitFor(2*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending["ackid"]
+		b.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("resumed task never reached the approval gate")
+	}
+	// awaitGate registers b.requiredAcks atomically with b.pending, so once the
+	// task is pending the requirement (if any) is already in place.
+	b.pendingMu.Lock()
+	acks := append([]string(nil), b.requiredAcks["ackid"]...)
+	ch := b.pending["ackid"]
+	b.pendingMu.Unlock()
+	if len(acks) != 1 || acks[0] != "ci-workflow" {
+		t.Errorf("requiredAcks after resume = %v, want [ci-workflow] (restart must not drop the second-look requirement)", acks)
+	}
+
+	// Resolve the gate so the resume goroutine and its deferred cleanup exit
+	// promptly instead of leaking past the test.
+	if ch != nil {
+		ch <- gateReply{ok: true, acks: acks}
+	}
+	waitFor(2*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, still := b.tasks["ackid"]
+		b.pendingMu.Unlock()
+		return !still
+	})
 }
 
 func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
@@ -204,7 +326,7 @@ func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
 		ch := b.pending["live"]
 		b.pendingMu.Unlock()
 		if ch != nil {
-			ch <- true
+			ch <- gateReply{ok: true}
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -327,7 +449,7 @@ func TestResumePush_RegisteredStageNeverObservedRunning(t *testing.T) {
 	ch := b.pending["rpid"]
 	b.pendingMu.Unlock()
 	if ch != nil {
-		ch <- true
+		ch <- gateReply{ok: true}
 	}
 	waitFor(2*time.Second, func() bool {
 		b.pendingMu.Lock()
