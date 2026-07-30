@@ -22,15 +22,29 @@ type Issue struct {
 	Labels []string
 }
 
-// ownerRepoRE is the safe charset for a GitHub owner or repo path segment.
-// Anything outside it (spaces, slashes, shell metacharacters, "..") is
-// rejected at parse time so downstream argv construction never sees it.
-var ownerRepoRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+// ownerRepoRE constrains a GitHub owner or repo path segment: only the safe
+// charset [A-Za-z0-9._-], and the first and last character must be
+// alphanumeric. That shape alone rejects spaces, slashes, shell
+// metacharacters, and every all-punctuation or dash-/dot-edged value
+// (".", "..", "-", "--evil-flag", ".git", "foo."). Interior ".." runs
+// still match the regex, so validateOwnerRepo layers that check on top.
+var ownerRepoRE = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`)
+
+// validateOwnerRepo reports whether seg is acceptable as a GitHub owner or
+// repo path segment. The rule (slightly more permissive than GitHub's own,
+// strictly safe for argv construction): charset [A-Za-z0-9._-], must start
+// and end with an alphanumeric, and must not contain consecutive dots.
+// Rejects ".", "..", "-", "--evil-flag", ".git", "foo.", "foo..bar";
+// accepts "my-org", "my.repo", "repo_1", "a".
+func validateOwnerRepo(seg string) bool {
+	return ownerRepoRE.MatchString(seg) && !strings.Contains(seg, "..")
+}
 
 // ParseIssueURL strictly parses a GitHub issue URL of the form
 // https://github.com/{owner}/{repo}/issues/{number} (the scheme-less
 // github.com/o/r/issues/n shorthand is also accepted). A trailing slash and a
-// #fragment are tolerated. owner/repo are restricted to [A-Za-z0-9._-]+ and
+// #fragment are tolerated. owner/repo must satisfy validateOwnerRepo
+// (charset [A-Za-z0-9._-], alphanumeric first/last character, no "..") and
 // number must be a plain positive integer — these are the invariants
 // FetchIssue relies on to build a safe gh argv. Everything else (GitLab/Gitea
 // issue URLs, PR URLs, bare repo URLs, junk) is an error.
@@ -62,7 +76,7 @@ func ParseIssueURL(raw string) (owner, repo string, number int, err error) {
 		return "", "", 0, fmt.Errorf("not a GitHub issue URL: %q (expected https://github.com/{owner}/{repo}/issues/{number})", raw)
 	}
 	owner, repo = segs[0], segs[1]
-	if !ownerRepoRE.MatchString(owner) || !ownerRepoRE.MatchString(repo) {
+	if !validateOwnerRepo(owner) || !validateOwnerRepo(repo) {
 		return "", "", 0, fmt.Errorf("invalid owner/repo in issue URL: %q", raw)
 	}
 	// A plain base-10 positive integer only: Atoi would also accept "+42" and
@@ -114,8 +128,8 @@ var runCLIOutput = func(env []string, name string, args ...string) ([]byte, erro
 // the invariants are re-checked here anyway since FetchIssue is exported.
 // gh must be installed and authenticated on the host (gh auth login).
 func FetchIssue(env []string, owner, repo string, number int) (Issue, error) {
-	if !ownerRepoRE.MatchString(owner) || !ownerRepoRE.MatchString(repo) {
-		return Issue{}, fmt.Errorf("invalid owner/repo %q/%q: must match %s", owner, repo, ownerRepoRE)
+	if !validateOwnerRepo(owner) || !validateOwnerRepo(repo) {
+		return Issue{}, fmt.Errorf("invalid owner/repo %q/%q: must match %s with no consecutive dots", owner, repo, ownerRepoRE)
 	}
 	if number <= 0 {
 		return Issue{}, fmt.Errorf("invalid issue number %d: must be positive", number)
