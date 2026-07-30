@@ -9,6 +9,33 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **`diff_policy` — host-side caps, blocked paths, and second-look
+  acknowledgments for the diff a task proposes.** A new optional
+  `config.yaml` block, enforced by brokerd against the broker-computed diff
+  facts (the same analysis the trust brief reports; nothing the agent prints
+  can influence it). `max_files_changed` / `max_lines_changed` / a
+  `blocked_paths` glob list fail a violating task **closed** with outcome
+  `policy_blocked` before it ever reaches the approval gate — `--auto-approve`
+  does not bypass them, a diff too large to fully analyze fails closed when a
+  content-based policy is configured, and the captured diff plus trust brief
+  are preserved for inspection (`drydock tasks` / `stats` show it as
+  **policy blocked**). A separate `second_look_paths` list keeps the diff
+  reviewable but requires the approver to explicitly acknowledge each touched
+  risk-flag category: brokerd refuses any approve whose
+  `{"acknowledge":[...]}` body doesn't cover the requirement (HTTP 422 naming
+  the missing categories; the task stays pending), a brokerd restart
+  recomputes the requirement from the persisted diff, and denies never need
+  acknowledgment. The requirement surfaces everywhere an approval does:
+  `drydock pending` marks such tasks `SECOND-LOOK[...]`, `drydock review`
+  prompts per category before approving (any refusal denies), `drydock
+  approve <id> --acknowledge <category>` (repeatable; alias `--ack`) is the
+  explicit path — a refused approve prints the missing categories and the
+  corrected command — and the web UI's review overlay renders a checkbox per
+  required category, keeping the Approve button disabled until all are
+  checked. Glob patterns are `**`-aware repo-relative paths, validated at
+  config load (`dir/**`, not `dir/`), and the block participates in
+  `drydock policy explain`'s divergence check.
+
 - **Trust brief panel in the web UI.** Opening a review now renders the
   task's trust brief above the diff — the same broker-observed evidence
   `drydock inspect` prints: repo and base commit, runtime, effective policy,

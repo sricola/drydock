@@ -39,6 +39,54 @@ to declare them.
 | `push_retry_backoff` | `DRYDOCK_PUSH_RETRY_BACKOFF` | `1s` | Base delay for push retry backoff (`backoff * 2^n`); `0` disables the delay between retries |
 | `push_fresh_branch_tries` | `DRYDOCK_PUSH_FRESH_BRANCH_TRIES` | `2` | Alternate remote branch names (`agent/<id>-2`, `-3`, ...) to try when a branch-name collision is detected; `0` disables fresh-branch recovery |
 
+## Diff policy: caps, blocked paths, second-look
+
+The optional `diff_policy` block in `config.yaml` constrains the diff a task
+may propose. It is enforced host-side by brokerd against the broker-computed
+diff facts (the same analysis the trust brief reports), so nothing the agent
+prints can influence it. All checks are off by default (zero values / empty
+lists).
+
+```yaml
+diff_policy:
+  max_files_changed: 0        # fail closed when the diff changes more files than this (0 = no cap)
+  max_lines_changed: 0        # fail closed when added+deleted lines exceed this (0 = no cap)
+  blocked_paths: []           # e.g. ["**/*.pem", ".github/workflows/**"] — touching one fails the task
+  second_look_paths: []       # e.g. ["**/Dockerfile"] — approver must acknowledge each flagged category
+```
+
+Two distinct mechanisms:
+
+- **Caps and blocked paths fail closed, before review.** A diff that exceeds
+  `max_files_changed` / `max_lines_changed`, or touches any `blocked_paths`
+  pattern, ends the task with outcome `policy_blocked` **before it reaches
+  the approval gate** — there is nothing to approve, and `--auto-approve`
+  does not bypass it. The captured diff and trust brief are preserved in the
+  audit dir for inspection. A diff too large to fully analyze (files omitted
+  past the tracking bound) also fails closed whenever a content-based policy
+  (`blocked_paths` / `max_lines_changed`) is configured, rather than letting
+  unanalyzed files slip past it.
+- **Second-look paths still reach review, but approving requires
+  acknowledgment.** When a diff touches a `second_look_paths` pattern, the
+  broker computes the affected risk-flag categories (the trust brief's FLAG
+  kinds, e.g. `ci-workflow`, `lockfile`, `exec-bit`) and refuses any approve
+  that does not explicitly acknowledge every one of them: `drydock approve
+  <id> --acknowledge <category>` (repeatable; alias `--ack`), the per-category
+  prompts in `drydock review`, or the checkboxes in the web UI. An approve
+  with missing acknowledgments is refused (HTTP 422 naming the missing
+  categories) and **the task stays pending** — there is no path on which an
+  under-acknowledged approve pushes. Acknowledgments are a human-gate
+  feature: `--auto-approve` tasks skip the gate entirely, so
+  `second_look_paths` does not apply to them — anything that must be
+  impossible to push belongs in `blocked_paths`.
+
+Path patterns are `**`-aware repo-relative globs: `*` matches within a path
+segment, `**` crosses segments. Write `dir/**` to cover everything under
+`dir` — a trailing-slash pattern like `dir/` matches nothing and is rejected
+at config load. There is no env override for this block; configure it in
+`config.yaml` (it participates in `drydock policy explain`'s divergence
+check like any other field).
+
 ## Bring your own model
 
 `opencode` reaches any OpenAI-compatible endpoint via the `openai_compat` block

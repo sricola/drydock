@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 )
 
 func usage() {
@@ -35,7 +36,7 @@ Tasks:
 
 Approvals:
   drydock pending                list task IDs awaiting approval
-  drydock approve <id>           approve the pending push
+  drydock approve <id> [--acknowledge <category>]...   approve the pending push (ack each second-look category)
   drydock deny    <id>           deny the pending push (diff returned but not pushed)
 
 Other:
@@ -77,7 +78,7 @@ var subHelp = map[string]string{
 	"retry":   "<id> — re-run a prior task from its recorded invocation (repo + prompt + flags; re-enters the approval gate).",
 	"prune":   "delete old per-task audit artifacts; --older-than DUR [--keep-last N] [--yes]. Dry-run unless --yes.",
 	"pending": "list task IDs awaiting approval (egress + diff gates both shown).",
-	"approve": "<id> — approve the pending push for <id>.",
+	"approve": "<id> [--acknowledge <category>]... — approve the pending push for <id>. Repeatable --acknowledge (alias --ack) covers each second-look category the diff requires; missing acknowledgments are refused (the task stays pending).",
 	"deny":    "<id> — deny the pending push (diff captured, not pushed).",
 	"doctor":  "smoke-test the sandbox setup: image freshness, VM boot, egress pin. No API spend.",
 	"redteam": "run live containment attacks (A1 key-exfil, A2 egress, A7 ephemerality) against your sandbox. No API spend.",
@@ -165,12 +166,16 @@ func main() {
 		listPending()
 	case "approve":
 		consumeHelpFlag(cmd, subArgs)
-		mustArgs(2)
-		signal("approve", os.Args[2])
+		id, acks, err := parseApproveArgs(subArgs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "drydock: %v\nusage: drydock approve <id> [--acknowledge <category>]...\n", err)
+			os.Exit(2)
+		}
+		signal("approve", id, acks)
 	case "deny":
 		consumeHelpFlag(cmd, subArgs)
 		mustArgs(2)
-		signal("deny", os.Args[2])
+		signal("deny", os.Args[2], nil)
 	case "doctor":
 		consumeHelpFlag(cmd, subArgs)
 		runDoctor()
@@ -195,6 +200,53 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+}
+
+// parseApproveArgs scans `drydock approve` arguments by hand (no
+// flag.FlagSet, which stops parsing at the first positional — that would
+// silently drop an --acknowledge given after the id). Grammar: exactly one
+// positional task id plus repeatable --acknowledge/--ack, each taking a
+// second-look category as either the next argument or an =value.
+func parseApproveArgs(args []string) (id string, acks []string, err error) {
+	addAck := func(flagName, cat string) error {
+		if cat == "" {
+			return fmt.Errorf("%s requires a non-empty category", flagName)
+		}
+		acks = append(acks, cat)
+		return nil
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--acknowledge" || a == "--ack":
+			i++
+			if i >= len(args) {
+				return "", nil, fmt.Errorf("%s requires a category argument", a)
+			}
+			if err := addAck(a, args[i]); err != nil {
+				return "", nil, err
+			}
+		case strings.HasPrefix(a, "--acknowledge="):
+			if err := addAck("--acknowledge", strings.TrimPrefix(a, "--acknowledge=")); err != nil {
+				return "", nil, err
+			}
+		case strings.HasPrefix(a, "--ack="):
+			if err := addAck("--ack", strings.TrimPrefix(a, "--ack=")); err != nil {
+				return "", nil, err
+			}
+		case strings.HasPrefix(a, "-"):
+			return "", nil, fmt.Errorf("unknown flag %s", a)
+		default:
+			if id != "" {
+				return "", nil, fmt.Errorf("multiple task ids given (%q and %q)", id, a)
+			}
+			id = a
+		}
+	}
+	if id == "" {
+		return "", nil, fmt.Errorf("missing task id")
+	}
+	return id, acks, nil
 }
 
 func mustArgs(want int) {

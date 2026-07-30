@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,6 +28,10 @@ type taskState struct {
 	Stage       string    `json:"stage"`
 	StartedAt   time.Time `json:"started_at"`
 	EgressExtra []domain  `json:"egress_extra,omitempty"`
+	// SecondLook lists the diff-policy second-look categories an approve must
+	// acknowledge while the task waits at the diff gate (broker-computed;
+	// mirrors broker.TaskState.SecondLook).
+	SecondLook []string `json:"second_look,omitempty"`
 }
 
 type domain struct {
@@ -125,6 +130,18 @@ func listPending() {
 		default: // awaiting_approval
 			gate = "diff"
 			detail = singleLine(t.Instruction)
+			// Second-look annotation: approving this diff requires explicit
+			// per-category acknowledgment (drydock approve --acknowledge, or
+			// the checkboxes in `drydock ui`). Categories are broker-authored
+			// stable kinds, but route them through safeCell like every other
+			// rendered string.
+			if len(t.SecondLook) > 0 {
+				cats := make([]string, 0, len(t.SecondLook))
+				for _, c := range t.SecondLook {
+					cats = append(cats, safeCell(c))
+				}
+				detail = "SECOND-LOOK[" + strings.Join(cats, ",") + "] " + detail
+			}
 		}
 		// Flag kinds are broker-authored stable identifiers, but route them
 		// through safeCell like every other brief-sourced string on this
@@ -186,22 +203,83 @@ func pastTense(verb string) string {
 	}
 }
 
-func signal(verb, id string) {
+// signal resolves a pending gate (approve/deny) and exits nonzero on any
+// failure. acks carries the second-look categories an approve acknowledges;
+// deny (and an ack-less approve) keeps the historical empty-body POST.
+func signal(verb, id string, acks []string) {
+	if code := doSignal(verb, id, acks); code != 0 {
+		os.Exit(code)
+	}
+}
+
+// doSignal is the testable core of signal: it returns the process exit code
+// instead of calling os.Exit. For an approve with acknowledgments it marshals
+// {"acknowledge":[...]} as an application/json body — the contract brokerd's
+// second-look validation reads. A 422 means the approve was refused because
+// required categories were not acknowledged; the task stays pending, so the
+// refusal is printed with a corrected re-run hint rather than a bare status.
+func doSignal(verb, id string, acks []string) int {
 	c, base := brokerClient()
-	resp, err := c.Post(base+"/admin/"+verb+"/"+id, "", nil)
+	var body io.Reader
+	contentType := ""
+	if verb == "approve" && len(acks) > 0 {
+		payload, err := json.Marshal(map[string][]string{"acknowledge": acks})
+		if err != nil {
+			fmt.Fprintf(errOut, "drydock: encode acknowledgments: %v\n", err)
+			return 1
+		}
+		body = bytes.NewReader(payload)
+		contentType = "application/json"
+	}
+	resp, err := c.Post(base+"/admin/"+verb+"/"+id, contentType, body)
 	if err != nil {
 		printClientErr(err)
-		os.Exit(1)
+		return 1
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusNoContent:
 		fmt.Printf("task %s %s\n", id, pastTense(verb))
+		return 0
 	case http.StatusNotFound:
-		fmt.Fprintf(os.Stderr, "drydock: no such pending task: %s\n", id)
-		os.Exit(1)
+		fmt.Fprintf(errOut, "drydock: no such pending task: %s\n", id)
+		return 1
+	case http.StatusUnprocessableEntity:
+		printAckRefusal(id, resp.Body)
+		return 1
 	default:
-		fmt.Fprintf(os.Stderr, "drydock: brokerd returned %s\n", resp.Status)
-		os.Exit(1)
+		fmt.Fprintf(errOut, "drydock: brokerd returned %s\n", resp.Status)
+		return 1
 	}
+}
+
+// printAckRefusal renders brokerd's 422 second-look refusal: the body names
+// the missing (and full required) categories; print them plus a copy-pasteable
+// re-run hint covering every required category. Category kinds are
+// broker-authored stable identifiers, but they cross the terminal boundary, so
+// they pass through safeCell like every other rendered string. An unparseable
+// body still refuses loudly (the task stays pending either way).
+func printAckRefusal(id string, body io.Reader) {
+	var refusal struct {
+		Missing  []string `json:"missing"`
+		Required []string `json:"required"`
+	}
+	if err := json.NewDecoder(io.LimitReader(body, 64<<10)).Decode(&refusal); err != nil || len(refusal.Missing) == 0 {
+		fmt.Fprintln(errOut, "drydock: approval refused — this diff requires second-look acknowledgment (brokerd returned 422); task stays pending")
+		return
+	}
+	missing := make([]string, 0, len(refusal.Missing))
+	for _, m := range refusal.Missing {
+		missing = append(missing, safeCell(m))
+	}
+	fmt.Fprintf(errOut, "drydock: approval refused — second-look categories not acknowledged: %s\n", strings.Join(missing, ", "))
+	required := refusal.Required
+	if len(required) == 0 {
+		required = refusal.Missing
+	}
+	hint := "drydock approve " + id
+	for _, cat := range required {
+		hint += " --acknowledge " + safeCell(cat)
+	}
+	fmt.Fprintf(errOut, "drydock: task stays pending — re-run acknowledging each category:\n  %s\n", hint)
 }

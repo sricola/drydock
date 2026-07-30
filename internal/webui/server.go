@@ -92,17 +92,38 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// maxProxyBodyBytes caps a POST body forwarded to brokerd. The only
+// meaningful body today is an approve's {"acknowledge":[...]} — a handful of
+// short category strings (brokerd itself caps it at 4 KiB); anything bigger
+// is refused here rather than streamed at the daemon.
+const maxProxyBodyBytes = 8 << 10
+
 // proxy forwards the request to brokerd at adminPath and copies status+body back.
 // It uses the cached 5s-timeout broker client built once in Handler().
+// POST bodies (the approve acknowledgment JSON) are threaded through with
+// their Content-Type, size-capped; GET proxying is body-less as before.
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, method, adminPath string) {
 	if s.broker == nil {
 		http.Error(w, "brokerd not running — run `drydock start`", http.StatusBadGateway)
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), method, s.brokerBase+adminPath, nil)
+	var body io.Reader
+	if method == http.MethodPost && r.Body != nil {
+		if r.ContentLength > maxProxyBodyBytes {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		// Backstop for chunked/unknown-length bodies: MaxBytesReader fails the
+		// read past the cap, which aborts the upstream request.
+		body = http.MaxBytesReader(w, r.Body, maxProxyBodyBytes)
+	}
+	req, err := http.NewRequestWithContext(r.Context(), method, s.brokerBase+adminPath, body)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
+	}
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
 	}
 	resp, err := s.broker.Do(req)
 	if err != nil {
