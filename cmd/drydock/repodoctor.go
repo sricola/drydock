@@ -61,6 +61,7 @@ var manifestLangs = map[string]struct{ lang, eco string }{
 	"Gemfile":          {"ruby", "rubygems"},
 	"pom.xml":          {"java", "maven"},
 	"build.gradle":     {"java", "maven"},
+	"build.gradle.kts": {"java", "maven"},
 }
 
 // ecoRegistryHosts is the default registry host set each package ecosystem
@@ -258,10 +259,11 @@ func diffPolicyCheck(blocked, second int) repoCheck {
 // registry= / index-url= lines of any sane .npmrc/pip.conf sit well within it.
 const maxRegistryConfigBytes = 64 << 10
 
-// registryConfigFiles are the top-level files scanned for a custom registry
-// host. Read byte-capped; only url.Parse-extracted hostnames ever leave this
-// scan — these files commonly hold auth tokens that must never be echoed.
-var registryConfigFiles = []string{".npmrc", ".yarnrc", "Cargo.toml", "pip.conf"}
+// registryConfigFiles are the repo-root files scanned for a custom registry
+// host (".pip/pip.conf" is the one nested path). Read byte-capped; only
+// url.Parse-extracted hostnames ever leave this scan — these files commonly
+// hold auth tokens that must never be echoed.
+var registryConfigFiles = []string{".npmrc", ".yarnrc", ".yarnrc.yml", "Cargo.toml", "pip.conf", ".pip/pip.conf"}
 
 type customRegistry struct{ host, file string }
 
@@ -275,7 +277,16 @@ func customRegistryHosts(dir string) []customRegistry {
 	var out []customRegistry
 	seen := map[string]bool{}
 	for _, name := range registryConfigFiles {
-		f, err := os.OpenFile(filepath.Join(dir, name), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		// O_NOFOLLOW only guards the final path component; for the nested
+		// ".pip/pip.conf" entry, refuse a symlinked parent dir too so the
+		// never-follow-symlink invariant holds for every component.
+		if sub := filepath.Dir(name); sub != "." {
+			fi, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(sub)))
+			if err != nil || fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+				continue
+			}
+		}
+		f, err := os.OpenFile(filepath.Join(dir, filepath.FromSlash(name)), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
 			continue
 		}
@@ -294,7 +305,8 @@ func customRegistryHosts(dir string) []customRegistry {
 // registryHostFromLine returns the hostname of an http(s) URL on a line that
 // actually ASSIGNS a registry: `registry=` / `@scope:registry=` (.npmrc),
 // `index-url=` (pip.conf), `registry = "…"` / `index = "…"` (Cargo.toml
-// [source.*]/[registries.*] tables), or yarn classic's `registry "…"`.
+// [source.*]/[registries.*] tables), yarn classic's `registry "…"`, or yarn
+// berry's `npmRegistryServer: "…"` (.yarnrc.yml, top-level or npmScopes).
 // Comments and lines that merely mention the word "registry" near a URL —
 // including auth-token lines — map to "". Only the url.Parse hostname is
 // returned, never the raw line.
@@ -315,6 +327,8 @@ func registryHostFromLine(line string) string {
 			return ""
 		}
 		raw = rest
+	} else if key, rest, ok := strings.Cut(l, ":"); ok && strings.EqualFold(strings.TrimSpace(key), "npmRegistryServer") {
+		raw = rest // yarn berry .yarnrc.yml: npmRegistryServer: "https://…"
 	} else if fields := strings.Fields(l); len(fields) == 2 && strings.ToLower(fields[0]) == "registry" {
 		raw = fields[1] // yarn classic: registry "https://…"
 	} else {

@@ -168,6 +168,83 @@ func TestDiagnoseRepo_CustomNpmRegistryWarns(t *testing.T) {
 	}
 }
 
+func TestDiagnoseRepo_YarnBerryRegistryWarns(t *testing.T) {
+	const token = "yarn_SECRETTOKEN456def"
+	dir := t.TempDir()
+	writeRepoFile(t, dir, "package.json", "{}\n")
+	writeRepoFile(t, dir, ".yarnrc.yml",
+		"npmRegistryServer: \"https://nexus.corp/npm/\"\n"+
+			"npmAuthToken: \""+token+"\"\n")
+
+	checks := diagnoseRepo(dir, config.Defaults(), testEgress(), testLimits())
+	ec := findCheck(t, checks, "egress")
+	if !ec.OK || !ec.Warn {
+		t.Fatalf("egress check = %+v, want warn (never a blocker)", ec)
+	}
+	if !strings.Contains(ec.Detail, "nexus.corp") {
+		t.Errorf("egress Detail %q should name nexus.corp", ec.Detail)
+	}
+	if !strings.Contains(ec.Detail, ".yarnrc.yml") {
+		t.Errorf("egress Detail %q should name the .yarnrc.yml source file", ec.Detail)
+	}
+	for _, c := range checks {
+		if strings.Contains(c.Detail, token) {
+			t.Fatalf("check %q Detail echoes the .yarnrc.yml auth token: %q", c.Label, c.Detail)
+		}
+	}
+}
+
+func TestDiagnoseRepo_GradleKtsToolchainWarns(t *testing.T) {
+	dir := t.TempDir()
+	writeRepoFile(t, dir, "build.gradle.kts", "plugins { java }\n")
+
+	checks := diagnoseRepo(dir, config.Defaults(), testEgress(), testLimits())
+	tc := findCheck(t, checks, "toolchain")
+	if !tc.OK || !tc.Warn {
+		t.Fatalf("toolchain check = %+v, want warn (never a blocker)", tc)
+	}
+	if !strings.Contains(tc.Detail, "java") {
+		t.Errorf("toolchain Detail %q should name java", tc.Detail)
+	}
+	if !strings.Contains(tc.Detail, "build.gradle.kts") {
+		t.Errorf("toolchain Detail %q should name the build.gradle.kts manifest", tc.Detail)
+	}
+}
+
+func TestCustomRegistryHosts_PipConfSubdir(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoFile(t, repo, ".pip/pip.conf",
+		"[global]\nindex-url = https://pypi.corp/simple\n")
+
+	got := customRegistryHosts(repo)
+	if len(got) != 1 || got[0].host != "pypi.corp" || got[0].file != ".pip/pip.conf" {
+		t.Fatalf("customRegistryHosts = %+v, want pypi.corp from .pip/pip.conf", got)
+	}
+}
+
+// TestCustomRegistryHosts_SkipsSymlinkedPipDir extends the never-follow-symlink
+// invariant to the nested .pip/pip.conf path: O_NOFOLLOW only guards the final
+// component, so a symlinked .pip directory pointing outside the repo must be
+// refused before the open.
+func TestCustomRegistryHosts_SkipsSymlinkedPipDir(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "d", "pip.conf"),
+		[]byte("[global]\nindex-url = https://evil.example/simple\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := os.Symlink(filepath.Join(outside, "d"), filepath.Join(repo, ".pip")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if got := customRegistryHosts(repo); len(got) != 0 {
+		t.Fatalf("pip.conf under a symlinked .pip dir was read: %+v", got)
+	}
+}
+
 func TestDiagnoseRepo_BlockedPathPreviewBlocks(t *testing.T) {
 	dir := t.TempDir()
 	writeRepoFile(t, dir, ".github/workflows/ci.yml", "on: push\n")
@@ -258,6 +335,10 @@ func TestRegistryHostFromLine(t *testing.T) {
 		{"cargo source table entry", `registry = "https://my-registry.example/index"`, "my-registry.example"},
 		{"cargo registries index entry", `index = "https://crates.corp/git/index"`, "crates.corp"},
 		{"yarn classic space form", `registry "https://yarn.corp/"`, "yarn.corp"},
+		{"yarn berry npmRegistryServer", `npmRegistryServer: "https://nexus.corp/npm/"`, "nexus.corp"},
+		{"yarn berry npmRegistryServer indented scope", `  npmRegistryServer: "https://scoped.corp/npm/"`, "scoped.corp"},
+		{"yarn berry auth token line", `npmAuthToken: "yarn_SECRET"`, ""},
+		{"yaml key that is not npmRegistryServer", `homepage: "https://x.example/"`, ""},
 		{"comment mentioning a registry url", "# see https://x.example/registry-help", ""},
 		{"semicolon comment", "; registry=https://x.example/", ""},
 		{"prose containing registry and a url", "the registry lives at https://x.example/path", ""},
