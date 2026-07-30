@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"drydock/internal/trustbrief"
 )
 
 func auditServer(t *testing.T) *Server {
@@ -17,6 +20,7 @@ func auditServer(t *testing.T) *Server {
 		`{"type":"drydock_meta","subscription":false,"sensitive":false}`+"\n"+
 			`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":0.05,"num_turns":3}`+"\n"), 0o600)
 	os.WriteFile(filepath.Join(dir, id+".widen.json"), []byte(`[{"host":"x.test","ports":[443]}]`), 0o600)
+	trustbrief.Write(dir, id, trustbrief.Brief{SchemaVersion: 1, TaskID: id})
 	return &Server{AuditRoot: dir, Token: "secret"}
 }
 
@@ -120,5 +124,41 @@ func TestHistorySymlinkRejected(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Errorf("symlinked .jsonl appeared in history (len=%d) — handleHistory must not follow symlinks", len(items))
+	}
+}
+
+func TestBriefRoute(t *testing.T) {
+	s := auditServer(t)
+	id := "0123456789abcdef0123456789abcdef"
+	// 200 + exact body + json content-type
+	rec := do(t, s, "GET", "/api/brief/"+id, "127.0.0.1:7878", "Bearer secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("brief GET = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q, want application/json", ct)
+	}
+	if !strings.Contains(rec.Body.String(), `"schema_version"`) {
+		t.Errorf("brief body missing schema_version:\n%s", rec.Body.String())
+	}
+	// 404 missing
+	if rec := do(t, s, "GET", "/api/brief/ffffffffffffffffffffffffffffffff", "127.0.0.1:7878", "Bearer secret"); rec.Code != http.StatusNotFound {
+		t.Errorf("missing brief = %d, want 404", rec.Code)
+	}
+	// 400 bad id
+	if rec := do(t, s, "GET", "/api/brief/NOTHEX", "127.0.0.1:7878", "Bearer secret"); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad id = %d, want 400", rec.Code)
+	}
+}
+
+func TestBriefSymlinkRejected(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{AuditRoot: dir, Token: "secret"}
+	id := "0123456789abcdef0123456789abcdef"
+	if err := os.Symlink("/etc/hosts", filepath.Join(dir, id+trustbrief.Suffix)); err != nil {
+		t.Fatal(err)
+	}
+	if rec := do(t, s, "GET", "/api/brief/"+id, "127.0.0.1:7878", "Bearer secret"); rec.Code != http.StatusNotFound {
+		t.Errorf("symlinked brief = %d, want 404", rec.Code)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"drydock/internal/brokerclient"
+	"drydock/internal/trustbrief"
 )
 
 type Server struct {
@@ -63,8 +64,32 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/widen/{id}", func(w http.ResponseWriter, r *http.Request) {
 		s.serveAuditFile(w, r, ".widen.json", "application/json")
 	})
+	api("GET /api/brief/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.serveAuditFile(w, r, trustbrief.Suffix, "application/json")
+	})
 	api("GET /api/history", s.handleHistory)
-	return mux
+	return securityHeaders(mux)
+}
+
+// securityHeaders wraps next so every response — static assets and /api/*,
+// success and error paths (200/400/403/404) alike — carries a strict CSP plus
+// the standard anti-sniffing/anti-framing headers. Defense-in-depth behind the
+// loopback bind + bearer token; the primary XSS defense remains the UI's
+// textContent-only rendering discipline. The app is a single-origin page with
+// no inline script and no style *attributes* — styling is CSS classes plus
+// CSSOM property writes (node.style.x = ...), which CSP does not block — so
+// default-src 'self' is exact, not aspirational.
+// Headers are set before next runs: once the inner handler writes the body,
+// header writes would be silently dropped.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // proxy forwards the request to brokerd at adminPath and copies status+body back.

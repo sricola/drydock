@@ -57,6 +57,26 @@ function fmtDurMs(ms) {
   return m + "m" + String(rem).padStart(2, "0") + "s";
 }
 function shortId(id){ return (id||"").slice(0,12); }
+// safeCell mirrors cmd/drydock/inspect.go's safeCell: strip control and
+// format characters, cap at 200 code points. Values shown in the brief panel
+// (file paths especially) originate in the untrusted work tree; even though
+// everything lands via textContent (no HTML injection), Unicode format chars
+// still render: a bidi override (U+202E RLO, U+202A–U+202E, U+2066–U+2069)
+// lets a hostile filename visually spoof its extension ("wat‮gpj.exe"
+// displays reversed), and zero-width chars/BOM hide content.
+//   \p{Cc} = the Unicode Control category: exactly C0 (< 0x20), DEL (0x7f),
+//            and C1 (0x80–0x9f) — the same set inspect.go strips by range.
+//   \p{Cf} = the Format category: bidi overrides, zero-width chars, BOM —
+//            matching inspect.go's unicode.Is(unicode.Cf, r).
+// Ordinary non-ASCII letters (é, ©, …) are untouched. The cap counts code
+// points (spread), not UTF-16 units, to match Go's rune-based count. The
+// boundary matches Go exactly: inspect.go appends "…" once n reaches 200,
+// so a string of exactly 200 code points also gets the ellipsis (>=, not >).
+function safeCell(s){
+  const cleaned = String(s ?? "").replace(/[\p{Cc}\p{Cf}]/gu, "");
+  const cps = [...cleaned];
+  return cps.length >= 200 ? cps.slice(0, 200).join("") + "…" : cleaned;
+}
 function toast(msg, kind){
   const t = el("div", { class: "toast" + (kind ? " " + kind : "") }, msg);
   document.body.append(t);
@@ -241,11 +261,13 @@ async function renderFinishedStrip(container, liveIDs){
     // must never be the fallback for a key this code doesn't recognize.
     const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed";
     const isOk = it.outcome_key === "ok";
+    // Color via class, not a style attribute: the strict CSP (default-src
+    // 'self', no style-src 'unsafe-inline') blocks inline style attributes.
     const icon = isErr
-      ? el("span", { style: "color:var(--red)", text: "✕" })
+      ? el("span", { class: "glyph-err", text: "✕" })
       : isOk
-      ? el("span", { style: "color:var(--green)", text: "✓" })
-      : el("span", { style: "color:var(--muted)", text: "∅" });
+      ? el("span", { class: "glyph-ok", text: "✓" })
+      : el("span", { class: "glyph-muted", text: "∅" });
     const row = el("div", { class: "recent-row", onclick: () => openReview(it.id, true) },
       icon,
       el("code", { class: "tid", text: shortId(it.id) }),
@@ -439,10 +461,116 @@ views.board = renderBoard;
 let overlayState = null; // { close, approve?, deny? } — read by the keys section
 function closeOverlay(){ if (overlayState){ overlayState.close(); overlayState = null; } }
 
+// renderBrief renders the trust brief (broker-observed evidence) above the
+// diff tabs. Information architecture mirrors cmd/drydock/inspect.go's
+// printBrief/printVerification exactly: repo+labels, runtime, policy, egress,
+// spend, diff summary, FLAG rows, verification block, gaps. Every string that
+// could carry work-tree data passes through safeCell, and all text lands via
+// el(...,{text:...}) (textContent) — never innerHTML.
+function renderBrief(box, b){
+  box.replaceChildren();
+  const t = b.task || {}, rt = b.runtime || {}, pol = b.policy || {}, sp = b.spend || {}, d = b.diff || {};
+  const dash = s => s || "(none)";
+  const val = (text, cls) => el("span", { class: "brief-v" + (cls ? " " + cls : ""), text });
+  const row = (k, cls, ...kids) => el("div", { class: "brief-row" + (cls ? " " + cls : "") },
+    el("span", { class: "brief-k", text: k }), ...kids);
+
+  box.append(el("div", { class: "brief-observed", text: "trust brief · broker-observed" }));
+
+  // repo @ base[:12] + sensitive/auto-approve chips
+  let repoLine = safeCell(t.repo_ref || "");
+  const base = safeCell(String(t.base_commit || "")).slice(0, 12);
+  if (base) repoLine += " @ " + base;
+  const repoKids = [val(repoLine)];
+  if (t.sensitive) repoKids.push(el("span", { class: "brief-chip warn", text: "sensitive" }));
+  if (t.auto_approve) repoKids.push(el("span", { class: "brief-chip", text: "auto-approve" }));
+  box.append(row("repo", "", ...repoKids));
+
+  box.append(row("runtime", "", val(
+    "agent=" + safeCell(rt.agent || "") + " vendor=" + safeCell(rt.vendor || "") +
+    " model=" + dash(safeCell(rt.model || "")) + " image=" + safeCell(rt.image_ref || ""))));
+
+  let budget = "$" + Number(pol.budget_usd || 0).toFixed(2) + (pol.budget_hard ? " (hard)" : " (soft)");
+  if (pol.budget_unbounded) budget = "uncapped (no USD metering on this lane)";
+  box.append(row("policy", "", val(
+    "budget " + budget + " · timeout " + Number(pol.timeout_seconds || 0) + "s" +
+    " · policy sha " + safeCell(String(pol.snapshot_sha256 || "")).slice(0, 12))));
+
+  box.append(row("egress", "", val(
+    "default: " + dash((pol.egress_default || []).map(safeCell).join(" ")) +
+    " · widened: " + dash((pol.egress_widened || []).map(safeCell).join(" ")))));
+
+  box.append(row("spend", "", val(
+    "$" + Number(sp.usd_broker_metered || 0).toFixed(4) + " · " + fmtDurMs(Number(sp.duration_ms || 0)))));
+
+  // diff summary: sha[:12] · bytes · files (+adds −dels) [TRUNCATED]
+  const files = d.files || [];
+  let adds = 0, dels = 0;
+  for (const f of files){ adds += Number(f.adds || 0); dels += Number(f.dels || 0); }
+  const diffKids = [val(
+    "sha " + safeCell(String(d.sha256 || "")).slice(0, 12) + " · " + Number(d.bytes || 0) + " bytes · " +
+    (files.length + Number(d.files_omitted || 0)) + " files (+" + adds + " −" + dels + ")")];
+  if (d.truncated) diffKids.push(el("span", { class: "brief-chip warn", text: "TRUNCATED" }));
+  box.append(row("diff", "", ...diffKids));
+
+  for (const fl of d.flags || [])
+    box.append(row("FLAG", "brief-flag", val(
+      safeCell(fl.kind || "") + ": " + (fl.paths || []).map(safeCell).join(", "))));
+
+  // verification block (mirrors printVerification)
+  const v = b.verification || {};
+  if (!v.status || v.status === "not_configured"){
+    box.append(row("verify", "", val(safeCell(v.status || "not_configured"), "muted")));
+  } else {
+    let line = safeCell(v.status);
+    if (v.network) line += " · network " + safeCell(v.network);
+    if (v.credentials === "none") line += " · no credentials";
+    else if (v.credentials) line += " · credentials " + safeCell(v.credentials);
+    if (v.tree_sha) line += " · tree " + safeCell(String(v.tree_sha)).slice(0, 12);
+    // Explicit switch, not an object-index lookup: indexing a plain object
+    // with an untrusted status string resolves prototype keys too (e.g.
+    // "constructor"), which would yield a truthy non-class value.
+    let vCls;
+    switch (v.status) {
+      case "passed": vCls = "v-passed"; break;
+      case "failed": vCls = "v-failed"; break;
+      default: vCls = "v-inconclusive";
+    }
+    box.append(row("verify", "", val(line, vCls)));
+    const cmds = v.commands || [];
+    for (const c of cmds){
+      const argv = safeCell((c.argv || []).join(" "));
+      let txt, cls;
+      switch (c.status) {
+      case "passed":
+      case "failed":
+        txt = argv + " → exit " + Number(c.exit_code || 0) + " (" + fmtDurMs(Number(c.duration_ms || 0)) + ")";
+        cls = c.status === "passed" ? "v-passed" : "v-failed";
+        break;
+      case "skipped":
+        txt = argv + " → skipped"; cls = "muted";
+        break;
+      default: // timed_out, error: no meaningful exit code
+        txt = argv + " → " + safeCell(c.status || "") + " (" + fmtDurMs(Number(c.duration_ms || 0)) + ")";
+        cls = "v-inconclusive";
+      }
+      box.append(row("", "", val(txt, cls)));
+    }
+    // display-only pointer to the audit log; no fetch (the log is agent output)
+    if (cmds.length) box.append(row("", "", val("log " + safeCell(b.task_id || "") + ".verify.log", "muted")));
+  }
+
+  for (const m of b.missing_evidence || [])
+    box.append(row("gap", "", val(safeCell(m), "muted")));
+}
+
 async function openReview(id, readonly = false){
   if (overlayState) closeOverlay();   // close any existing overlay first
   const diffBox = el("div", { class: "tabbody" }, el("p", { class: "muted", text: "loading…" }));
-  const logsBox = el("div", { class: "tabbody", style: "display:none" }, "");
+  const logsBox = el("div", { class: "tabbody" }, "");
+  // CSSOM property write, not a style attribute: CSP blocks the attribute
+  // form, and the tab toggles below flip this same property ("" / "none").
+  logsBox.style.display = "none";
   const diffTab = el("button", { class: "tab on" }, "Diff");
   const logsTab = el("button", { class: "tab" }, "Logs");
   let logsLoaded = false;
@@ -450,11 +578,16 @@ async function openReview(id, readonly = false){
   logsTab.onclick = async () => { logsTab.classList.add("on"); diffTab.classList.remove("on"); logsBox.style.display = ""; diffBox.style.display = "none";
     if (!logsLoaded){ logsLoaded = true; try { renderLogs(logsBox, await (await api("GET","/api/logs/"+id)).text()); } catch { logsBox.replaceChildren(el("p", { class: "empty", text: "could not load logs" })); } } };
 
+  // Trust brief: broker-observed evidence, rendered above the tabs so the
+  // reviewer triages facts before reading the (agent-authored) diff.
+  const briefBox = el("div", { class: "briefbody" }, el("p", { class: "muted", text: "loading…" }));
+
   const panel = el("div", { class: "panel" },
     el("div", { class: "panel-head" },
       el("strong", { text: "Review " + shortId(id) }),
-      el("span", { class: "kbd", style:"display:flex;gap:8px;align-items:center" }, "Esc to close",
+      el("span", { class: "kbd kbd-row" }, "Esc to close",
         el("button", { class:"tab", onclick: closeOverlay, text: "✕" }))),
+    briefBox,
     el("div", { class: "tabs" }, diffTab, logsTab), diffBox, logsBox);
   if (!readonly) panel.append(el("div", { class: "actions" },
     el("button", { class: "btn ok", onclick: () => { act("approve", id); closeOverlay(); } }, "Approve push"),
@@ -468,6 +601,16 @@ async function openReview(id, readonly = false){
   overlayState = { close: () => { overlay.remove(); },
                    approve: readonly ? null : () => { act("approve", id); closeOverlay(); },
                    deny: readonly ? null : () => { act("deny", id); closeOverlay(); } };
+  // Fetch the brief concurrently — the diff fetch below must never wait on it
+  // (older tasks have no brief; the diff is the primary review surface).
+  (async () => {
+    try {
+      const res = await api("GET", "/api/brief/" + id);
+      if (res.status === 404) { briefBox.replaceChildren(el("p", { class: "muted", text: "no trust brief recorded" })); return; }
+      if (!res.ok) throw new Error(`${res.status}`);
+      renderBrief(briefBox, await res.json());
+    } catch { briefBox.replaceChildren(el("p", { class: "muted", text: "could not load trust brief" })); }
+  })();
   try {
     const res = await api("GET", "/api/diff/" + id);
     if (res.status === 404) { diffBox.replaceChildren(el("p", { class: "muted", text: "no diff" })); return; }
@@ -565,7 +708,9 @@ function renderSubmit() {
   if (pollTimer) clearTimeout(pollTimer);
   const form = el("form", { class: "submit-form" });
   const repo = el("input", { type: "text", placeholder: "git@github.com:owner/repo", required: "" });
-  const okMark = el("span", { class: "ok-mark", text: "✓", style: "display:none" });
+  const okMark = el("span", { class: "ok-mark", text: "✓" });
+  // CSSOM write (CSP-safe); repo.oninput below toggles this same property.
+  okMark.style.display = "none";
   repo.oninput = () => { okMark.style.display = validRepo(repo.value) ? "" : "none"; };
   const repoField = el("div", { class: "field" }, repo, okMark);
   const chips = el("div", { class: "actions" }, ...recentRepos().map(r =>

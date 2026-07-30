@@ -9,6 +9,22 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Trust brief panel in the web UI.** Opening a review now renders the
+  task's trust brief above the diff — the same broker-observed evidence
+  `drydock inspect` prints: repo and base commit, runtime, effective policy,
+  egress rules, broker-metered spend, the diff summary with its risk FLAG
+  rows, and the verification block when configured. Served read-only at
+  `GET /api/brief/{id}` through the same loopback-only, token-gated boundary
+  as the diff (symlink-refusing open, no directory traversal). Every field is
+  sanitized before display (control and bidirectional-override characters
+  stripped, length-capped) and rendered via `textContent` only; tasks
+  recorded before briefs existed show a muted "no trust brief recorded" line
+  and the diff still loads. As defense-in-depth behind the loopback bind and
+  bearer token, every UI response now also carries a strict
+  `Content-Security-Policy` (`default-src 'self'`; no inline script, no
+  external loads, no framing), `X-Content-Type-Options: nosniff`, and
+  `X-Frame-Options: DENY`.
+
 - **`drydock policy explain` — where did this setting come from, and is the
   daemon running it?** A new read-only subcommand prints every config field's
   effective value with the layer that supplied it (`default`, `config.yaml`,

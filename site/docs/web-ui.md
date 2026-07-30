@@ -41,6 +41,26 @@ the fragment and sends it as a bearer token on every API call.
 On the board, when exactly one task is at a gate: `R` review · `A` approve · `D`
 deny. `⌘/Ctrl+Enter` submits the form; `?` lists the shortcuts.
 
+## Trust brief panel
+
+Opening a review renders the task's **trust brief** above the diff: the same
+broker-observed evidence `drydock inspect <id>` prints, so you can weigh the
+diff without leaving the overlay. The panel shows the repo and base commit
+(with `sensitive` / `auto-approve` chips where set), the runtime (agent,
+vendor, model, image), the effective policy (budget, timeout, policy snapshot
+hash), egress rules, broker-metered spend, and a diff summary — hash, size,
+file/line counts, and any **FLAG** rows for structurally risky changes
+(binaries, symlinks, exec bits, dependency manifests, lockfiles, CI
+workflows, git metadata, submodule gitlinks). When
+[verification](submitting-tasks.html#verification-optional-per-repo) is
+configured, its block appears too: overall status, the verify VM's capability
+posture, and per-command exit codes and durations.
+
+Everything in the panel is what the broker observed — none of it is the
+agent's own account of what it did. It is read-only, fetched from the same
+loopback-only, token-gated API as the diff, and a task recorded before briefs
+existed simply shows "no trust brief recorded"; the diff still loads.
+
 ## Security
 
 The server is **loopback-only** (`127.0.0.1`) and **token-gated**: every API
@@ -48,6 +68,12 @@ call must carry the token minted at launch. It drives the same broker socket the
 CLI does, so the approval gate, audit trail, and [egress rules](egress.html) are
 unchanged: the UI never widens what a task can reach or push. See the
 [threat model](threat-model.html) for the guarantees it inherits.
+
+Every response also carries a strict `Content-Security-Policy`
+(`default-src 'self'` — no inline script, no external loads, no framing)
+plus `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`. That is
+defense-in-depth behind the loopback bind and token, not a substitute for
+them.
 
 `--no-token` removes the gate for a trusted single-user machine. drydock prints a
 warning when you use it, because then **any local process or web page can submit
