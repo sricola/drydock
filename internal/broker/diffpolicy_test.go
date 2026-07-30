@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"drydock/internal/config"
+	"drydock/internal/trustbrief"
 )
 
 // These tests drive the diff-policy caps (config diff_policy) through the full
@@ -189,6 +190,78 @@ func TestDiffCaps_AutoApproveStillBlocked(t *testing.T) {
 		t.Error("stage.Push must not be called: auto_approve must not bypass diff-policy caps")
 	}
 	assertNeverPending(t, b)
+}
+
+// Omitted-files fail-closed guard. trustbrief.Analyze caps Files at its
+// tracking bound; files past it are counted in FilesOmitted with no path or
+// line data, so blocked_paths and max_lines_changed cannot see them. These
+// tests call checkDiffCaps directly with a synthetic DiffFacts — routing a
+// >4096-file diff through HandleTask would prove nothing more.
+
+func capsRun(p config.DiffPolicy) *taskRun {
+	return &taskRun{b: &Broker{DiffPolicy: p}}
+}
+
+func TestDiffCaps_OmittedFilesFailClosedForBlockedPaths(t *testing.T) {
+	tr := capsRun(config.DiffPolicy{BlockedPaths: []string{"secrets/**"}})
+	facts := trustbrief.DiffFacts{
+		Files:        []trustbrief.FileChange{{Path: "a.go", Adds: 1}},
+		FilesOmitted: 904, // e.g. secrets/key.pem is file #5000, untracked
+	}
+	blocked, reason := tr.checkDiffCaps(facts)
+	if !blocked {
+		t.Fatal("blocked_paths set with FilesOmitted>0 must fail closed: an omitted file could match a blocked pattern")
+	}
+	if !strings.Contains(reason, "904 files omitted") || !strings.Contains(reason, "incompletely-analyzed") {
+		t.Errorf("reason=%q, want the incomplete-analysis reason naming 904 omitted files", reason)
+	}
+}
+
+func TestDiffCaps_OmittedFilesFailClosedForMaxLines(t *testing.T) {
+	tr := capsRun(config.DiffPolicy{MaxLinesChanged: 1000})
+	facts := trustbrief.DiffFacts{
+		Files:        []trustbrief.FileChange{{Path: "a.go", Adds: 1}}, // tracked lines well under cap
+		FilesOmitted: 3,
+	}
+	blocked, reason := tr.checkDiffCaps(facts)
+	if !blocked {
+		t.Fatal("max_lines_changed set with FilesOmitted>0 must fail closed: omitted files carry no line counts")
+	}
+	if !strings.Contains(reason, "files omitted") {
+		t.Errorf("reason=%q, want the incomplete-analysis reason", reason)
+	}
+}
+
+func TestDiffCaps_OmittedFilesMaxFilesReasonWins(t *testing.T) {
+	// Only max_files_changed is set, and the count (tracked+omitted) exceeds
+	// it. The count-based reason must win — not the incomplete-analysis one.
+	tr := capsRun(config.DiffPolicy{MaxFilesChanged: 10})
+	facts := trustbrief.DiffFacts{
+		Files:        []trustbrief.FileChange{{Path: "a.go", Adds: 1}, {Path: "b.go", Adds: 1}},
+		FilesOmitted: 20,
+	}
+	blocked, reason := tr.checkDiffCaps(facts)
+	if !blocked {
+		t.Fatal("22 files against a max_files_changed cap of 10 must block")
+	}
+	if !strings.Contains(reason, "max_files_changed") || !strings.Contains(reason, "22") {
+		t.Errorf("reason=%q, want the max_files_changed count reason naming 22 files", reason)
+	}
+	if strings.Contains(reason, "incompletely-analyzed") {
+		t.Errorf("reason=%q, the count reason must win over the incomplete-analysis reason", reason)
+	}
+}
+
+func TestDiffCaps_OmittedFilesNoPolicyProceeds(t *testing.T) {
+	// diff_policy fully disabled: omitted files alone must not block.
+	tr := capsRun(config.DiffPolicy{})
+	facts := trustbrief.DiffFacts{
+		Files:        []trustbrief.FileChange{{Path: "a.go", Adds: 1}},
+		FilesOmitted: 500,
+	}
+	if blocked, reason := tr.checkDiffCaps(facts); blocked {
+		t.Fatalf("zero DiffPolicy must not block, got blocked with reason %q", reason)
+	}
 }
 
 func TestDiffCaps_DisabledByDefault(t *testing.T) {

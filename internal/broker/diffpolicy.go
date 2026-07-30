@@ -18,13 +18,21 @@ import (
 // counts toward the file cap: files past Analyze's tracking bound are still
 // changed files, and an attacker must not escape the cap by exceeding the
 // parser's retention limit. Omitted files carry no per-file line counts or
-// paths, so the line and blocked-path checks cover the tracked files only —
-// but any diff big enough to omit files is far past any sane file cap anyway.
+// paths, so the line and blocked-path checks can only see the tracked files —
+// when any file was omitted and a content-based policy (blocked_paths or
+// max_lines_changed) is configured, the diff cannot be fully evaluated and
+// the task fails closed rather than letting an untracked file slip past the
+// policy. The max_files_changed check runs first so an over-cap diff reports
+// the clearer count-based reason.
 func (tr *taskRun) checkDiffCaps(facts trustbrief.DiffFacts) (blocked bool, reason string) {
 	p := tr.b.DiffPolicy
 	if files := len(facts.Files) + facts.FilesOmitted; p.MaxFilesChanged > 0 && files > p.MaxFilesChanged {
 		return true, fmt.Sprintf("diff changes %d files, over the diff_policy.max_files_changed cap of %d",
 			files, p.MaxFilesChanged)
+	}
+	if facts.FilesOmitted > 0 && (len(p.BlockedPaths) > 0 || p.MaxLinesChanged > 0) {
+		return true, fmt.Sprintf("diff too large to fully evaluate against policy: %d files omitted from analysis; refusing to approve a blocked_paths/max_lines policy against an incompletely-analyzed diff",
+			facts.FilesOmitted)
 	}
 	if p.MaxLinesChanged > 0 {
 		lines := 0
