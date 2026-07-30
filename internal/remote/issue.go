@@ -137,8 +137,17 @@ func FetchIssue(env []string, owner, repo string, number int) (Issue, error) {
 	// number is the validated positive int stringified (a positive int can
 	// never render with a leading dash); owner/repo are charset-validated and
 	// appear only as the value of --repo.
+	//
+	// The host is pinned to github.com in the --repo value (gh accepts the
+	// HOST/OWNER/REPO form). The curated env forwards GH_HOST, and without the
+	// pin an exported GH_HOST=github.mycorp.com would make gh resolve
+	// owner/repo against the enterprise host while the derived repo ref stays
+	// github.com/owner/repo — instruction and repo from different hosts.
+	// Hardcoding github.com is correct because ParseIssueURL only accepts
+	// github.com/www.github.com URLs (and github.com is the canonical API host
+	// for both).
 	out, err := runCLIOutput(env, "gh", "issue", "view", strconv.Itoa(number),
-		"--repo", owner+"/"+repo, "--json", "title,body,labels")
+		"--repo", "github.com/"+owner+"/"+repo, "--json", "title,body,labels")
 	if err != nil {
 		return Issue{}, fmt.Errorf("fetching issue %s/%s#%d failed (gh must be installed and authenticated; run: gh auth login): %w",
 			owner, repo, number, err)

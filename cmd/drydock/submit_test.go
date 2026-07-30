@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"drydock/internal/remote"
+	"drydock/internal/stage"
 )
 
 func TestParseEgressExtras(t *testing.T) {
@@ -237,6 +238,39 @@ func TestResolveIssue_DerivesRepoWhenOmitted(t *testing.T) {
 	}
 	if !strings.Contains(instr, "# Issue #12: T") {
 		t.Errorf("instruction not built from the issue:\n%q", instr)
+	}
+}
+
+// resolveIssue must hand the fetch seam the curated allowlist env, never the
+// full os.Environ(). The probe var is planted in the process env before the
+// call; if a future refactor switches fetchFn to os.Environ() the probe leaks
+// through and this test fails.
+func TestResolveIssue_FetchGetsCuratedEnv(t *testing.T) {
+	t.Setenv("DRYDOCK_SECRET_PROBE", "x") // in os.Environ(), not in the allowlist
+
+	var gotEnv []string
+	fake := func(env []string, owner, repo string, n int) (remote.Issue, error) {
+		gotEnv = env
+		return remote.Issue{Owner: owner, Repo: repo, Number: n, Title: "T"}, nil
+	}
+	if _, _, err := resolveIssue("https://github.com/acme/widgets/issues/12", "", false, fake); err != nil {
+		t.Fatalf("resolveIssue: %v", err)
+	}
+
+	if !reflect.DeepEqual(gotEnv, stage.CuratedEnv()) {
+		t.Errorf("fetch env = %q, want stage.CuratedEnv() = %q", gotEnv, stage.CuratedEnv())
+	}
+	var sawPath bool
+	for _, kv := range gotEnv {
+		if strings.HasPrefix(kv, "DRYDOCK_SECRET_PROBE=") {
+			t.Errorf("non-allowlisted os.Environ() var leaked into fetch env: %q", kv)
+		}
+		if strings.HasPrefix(kv, "PATH=") {
+			sawPath = true
+		}
+	}
+	if !sawPath {
+		t.Error("curated var PATH missing from fetch env")
 	}
 }
 

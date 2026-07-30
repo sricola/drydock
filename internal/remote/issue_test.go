@@ -101,7 +101,9 @@ func TestFetchIssue_Argv(t *testing.T) {
 		t.Fatalf("FetchIssue returned error: %v", err)
 	}
 
-	wantArgv := []string{"gh", "issue", "view", "42", "--repo", "owner/repo", "--json", "title,body,labels"}
+	// The --repo value pins the host to github.com (HOST/OWNER/REPO form) so a
+	// forwarded GH_HOST cannot redirect the fetch to another host.
+	wantArgv := []string{"gh", "issue", "view", "42", "--repo", "github.com/owner/repo", "--json", "title,body,labels"}
 	if !reflect.DeepEqual(gotArgv, wantArgv) {
 		t.Errorf("argv = %q, want %q", gotArgv, wantArgv)
 	}
