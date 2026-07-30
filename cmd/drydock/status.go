@@ -16,8 +16,8 @@ import (
 func runStatus() {
 	if h, err := health(); err == nil {
 		fmt.Printf("brokerd     up\n")
-		fmt.Printf("in flight   %d running · %d verifying · %d awaiting egress · %d awaiting diff · %d pushing\n",
-			h.Running, h.Verifying, h.AwaitingEgress, h.PendingApproval, h.Pushing)
+		fmt.Printf("in flight   %d setting up · %d running · %d verifying · %d awaiting egress · %d awaiting diff · %d pushing\n",
+			h.SettingUp, h.Running, h.Verifying, h.AwaitingEgress, h.PendingApproval, h.Pushing)
 	} else if brokerdDown(err) {
 		fmt.Printf("brokerd     down — start it with `drydock start`\n")
 	} else {
@@ -47,6 +47,7 @@ func runStatus() {
 type healthBody struct {
 	OK              bool `json:"ok"`
 	AwaitingEgress  int  `json:"awaiting_egress"`
+	SettingUp       int  `json:"setting_up"`
 	Running         int  `json:"running"`
 	Verifying       int  `json:"verifying"`
 	PendingApproval int  `json:"pending_approval"`

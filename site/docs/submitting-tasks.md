@@ -91,6 +91,50 @@ If the branch pushes but the PR can't be opened (e.g. `gh` isn't authenticated),
 drydock reports it as **pushed** with a hint to open the PR manually; it never
 loses your work to a failed PR step.
 
+## Execution profiles (setup, per repo)
+
+Some repos need preparation before an agent can work: dependencies
+installed, code generated. An **execution profile** in
+`~/.drydock/config.yaml` (see
+[Configuration](configuration.html#execution-profiles-setup-and-readiness-per-repo))
+gives a repo `setup` commands plus `readiness` commands that gate the run:
+
+```yaml
+profiles:
+  repos:
+    "github.com/you/yourrepo":
+      setup:
+        - ["npm", "ci"]
+      readiness:
+        - ["node", "--version"]
+      timeout: 10m      # per command; 0 = the default (10m)
+```
+
+The commands run in the sandbox against the task's **live work tree, before
+the agent starts** — what setup installs is exactly what the agent sees.
+They live in host config only, so the sandboxed agent can never edit its own
+setup phase. Setup VMs get egress through the squid proxy (registries on
+your allowlist are reachable) but **no model gateway and no credentials**.
+There is **no persistent cache yet**: the per-task workspace is wiped at
+cleanup, so setup runs from scratch on every task. Each command is a
+self-contained argv in its own VM run — shell state (`cd`, exports,
+virtualenv activation) does not carry between commands.
+
+Setup is always enforced; there is no advisory mode. Verdicts are the exit
+codes the broker observes (nothing a command prints can flip a status);
+commands run in order and stop at the first non-pass (later ones record
+`skipped`). Any failure, timeout, or infrastructure error **fails the task
+closed before any API spend**: the terminal outcome is `setup_failed`, the
+agent VM never boots, and no credential is ever injected into any VM — a
+broken workspace costs you $0 of model budget.
+
+While it runs, the task shows a `setting_up` stage — between `preparing` and
+`running` — in the submit stream, `drydock status`, and the web UI. The
+evidence lands in the trust brief (`drydock inspect <id>`): overall status,
+the setup VMs' egress posture, per-command exit codes and durations. The
+commands' combined output is kept (display-only, size-capped, never parsed)
+at `~/.drydock/audit/<id>.setup.log`.
+
 ## Verification (optional, per repo)
 
 drydock can run your own checks — build, tests, lint — against the agent's
@@ -177,6 +221,8 @@ Not every task reaches a push attempt. A diff denied at the approval gate
 reports `outcome=denied` and never pushes; a task killed mid-run reports
 `outcome=cancelled`; a run that produces no diff reports `outcome=no_diff`
 and still displays as `ok` (a clean no-op isn't a failure); a task whose
+execution profile does not pass reports `outcome=setup_failed` before the
+agent ever runs (no diff exists — nothing ran to produce one); a task whose
 **required** verification does not pass reports `outcome=verify_failed` and
 never reaches the approval gate; a diff that violates `diff_policy` (caps or
 `blocked_paths`) reports `outcome=policy_blocked` — shown as **policy
@@ -187,8 +233,8 @@ stats`, and the web UI all show these outcomes distinctly from `pushed` and
 ## Operator surface
 
 ```bash
-drydock status             # brokerd up?, breakdown (running · verifying · egress · diff · pushing)
-drydock inspect <id>       # trust brief: broker-observed evidence incl. verification
+drydock status             # brokerd up?, breakdown (setting up · running · verifying · egress · diff · pushing)
+drydock inspect <id>       # trust brief: broker-observed evidence incl. setup + verification
 drydock tasks              # recent runs: id, age, duration, cost, outcome
 drydock logs <id> [-f]     # stream-json audit (use -f to follow)
 drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
@@ -242,10 +288,12 @@ JSON: one event per line, in the order they happened. Separately, the live
 with a `ts` field (RFC 3339); that timestamp is on the submit stream only,
 not persisted into the audit file. The audit file ends with a
 broker-authored row, `{"type":"metrics","src":"broker"}`, holding stage
-durations (`stage_ms.preparing`, `.running`, `.verifying` — omitted when the
-task never verified — and `.pushing`), egress/approval gate waits, the
+durations (`stage_ms.preparing`, `.setup`, `.running`, `.verifying` —
+`.setup`/`.verifying` omitted when the task never ran those stages — and
+`.pushing`; the stages partition the task's wall-clock, so `preparing` ends
+where `setup` begins), egress/approval gate waits, the
 admitted request count, spend, the terminal `outcome` (`pushed`, `denied`,
-`cancelled`, `push_failed`, `verify_failed`, `policy_blocked`, `error`, or `no_diff`), and the
+`cancelled`, `push_failed`, `setup_failed`, `verify_failed`, `policy_blocked`, `error`, or `no_diff`), and the
 egress-widen outcome; if brokerd ever
 appends more than one (e.g. after a resumed task), the last such row wins,
 so readers should take the last `metrics` line, not the first.

@@ -195,7 +195,7 @@ function paintBody(rec, t){
   } else { rec.liveEl.textContent = ""; }
   if (t.stage === "awaiting_egress") rec.el.append(egressGate(t));
   else if (t.stage === "awaiting_approval") rec.el.append(pushGate(t));
-  if (["running","verifying","pushing","awaiting_egress","awaiting_approval"].includes(t.stage))
+  if (["setting_up","running","verifying","pushing","awaiting_egress","awaiting_approval"].includes(t.stage))
     rec.el.append(el("div", { class: "actions" }, dangerButton("Kill", () => act("kill", t.id), t.id + ":kill:card")));
 }
 
@@ -337,7 +337,7 @@ setInterval(() => {
 }, 1000);
 
 function stageBadge(stage) {
-  const label = { awaiting_egress: "egress?", running: "running", verifying: "verifying", awaiting_approval: "review?", pushing: "pushing" }[stage] || stage;
+  const label = { awaiting_egress: "egress?", setting_up: "setting up", running: "running", verifying: "verifying", awaiting_approval: "review?", pushing: "pushing" }[stage] || stage;
   return el("span", { class: "badge stage-" + stage, text: label });
 }
 
@@ -505,8 +505,9 @@ function appendAckRows(box, cats, ack){
 
 // renderBrief renders the trust brief (broker-observed evidence) above the
 // diff tabs. Information architecture mirrors cmd/drydock/inspect.go's
-// printBrief/printVerification exactly: repo+labels, runtime, policy, egress,
-// spend, diff summary, FLAG rows, verification block, gaps. Every string that
+// printBrief/printSetup/printVerification exactly: repo+labels, runtime,
+// policy, egress, spend, diff summary, FLAG rows, setup block, verification
+// block, gaps. Every string that
 // could carry work-tree data passes through safeCell, and all text lands via
 // el(...,{text:...}) (textContent) — never innerHTML.
 // ack (optional): the review overlay's second-look state — each FLAG row
@@ -570,27 +571,19 @@ function renderBrief(box, b, ack = null){
   }
   if (ack) appendAckRows(box, ack.required.filter(c => !ackRendered.has(c)), ack);
 
-  // verification block (mirrors printVerification)
-  const v = b.verification || {};
-  if (!v.status || v.status === "not_configured"){
-    box.append(row("verify", "", val(safeCell(v.status || "not_configured"), "muted")));
-  } else {
-    let line = safeCell(v.status);
-    if (v.network) line += " · network " + safeCell(v.network);
-    if (v.credentials === "none") line += " · no credentials";
-    else if (v.credentials) line += " · credentials " + safeCell(v.credentials);
-    if (v.tree_sha) line += " · tree " + safeCell(String(v.tree_sha)).slice(0, 12);
-    // Explicit switch, not an object-index lookup: indexing a plain object
-    // with an untrusted status string resolves prototype keys too (e.g.
-    // "constructor"), which would yield a truthy non-class value.
-    let vCls;
-    switch (v.status) {
-      case "passed": vCls = "v-passed"; break;
-      case "failed": vCls = "v-failed"; break;
-      default: vCls = "v-inconclusive";
+  // Explicit switch, not an object-index lookup: indexing a plain object
+  // with an untrusted status string resolves prototype keys too (e.g.
+  // "constructor"), which would yield a truthy non-class value.
+  const statusCls = (status) => {
+    switch (status) {
+      case "passed": return "v-passed";
+      case "failed": return "v-failed";
+      default: return "v-inconclusive";
     }
-    box.append(row("verify", "", val(line, vCls)));
-    const cmds = v.commands || [];
+  };
+  // One evidence-command line (shared by the setup and verification blocks;
+  // the vocabulary — passed/failed/timed_out/error/skipped — is identical).
+  const appendCmdRows = (cmds) => {
     for (const c of cmds){
       const argv = safeCell((c.argv || []).join(" "));
       let txt, cls;
@@ -609,6 +602,37 @@ function renderBrief(box, b, ack = null){
       }
       box.append(row("", "", val(txt, cls)));
     }
+  };
+
+  // setup block (mirrors printSetup) — before verification: setup runs
+  // first. A missing status (a brief from before the setup stage existed)
+  // renders as not_configured, same as the CLI.
+  const su = b.setup || {};
+  if (!su.status || su.status === "not_configured"){
+    box.append(row("setup", "", val("not_configured", "muted")));
+  } else {
+    let sline = safeCell(su.status);
+    if (su.network) sline += " · network " + safeCell(su.network);
+    box.append(row("setup", "", val(sline, statusCls(su.status))));
+    const scmds = su.commands || [];
+    appendCmdRows(scmds);
+    // display-only pointer to the audit log; no fetch (the log is VM output)
+    if (scmds.length) box.append(row("", "", val("log " + safeCell(b.task_id || "") + ".setup.log", "muted")));
+  }
+
+  // verification block (mirrors printVerification)
+  const v = b.verification || {};
+  if (!v.status || v.status === "not_configured"){
+    box.append(row("verify", "", val(safeCell(v.status || "not_configured"), "muted")));
+  } else {
+    let line = safeCell(v.status);
+    if (v.network) line += " · network " + safeCell(v.network);
+    if (v.credentials === "none") line += " · no credentials";
+    else if (v.credentials) line += " · credentials " + safeCell(v.credentials);
+    if (v.tree_sha) line += " · tree " + safeCell(String(v.tree_sha)).slice(0, 12);
+    box.append(row("verify", "", val(line, statusCls(v.status))));
+    const cmds = v.commands || [];
+    appendCmdRows(cmds);
     // display-only pointer to the audit log; no fetch (the log is agent output)
     if (cmds.length) box.append(row("", "", val("log " + safeCell(b.task_id || "") + ".verify.log", "muted")));
   }

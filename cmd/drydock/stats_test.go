@@ -110,6 +110,38 @@ func TestWriteStats_DeniedOutcome(t *testing.T) {
 	}
 }
 
+// setup_failed is a first-class outcome in the fixed display list — it
+// renders its own line and sorts with the fixed outcomes (before any
+// alphabetical passthrough like "denied"), so its position is stable.
+func TestWriteStats_SetupFailedInFixedOrder(t *testing.T) {
+	dir := t.TempDir()
+	failed := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"setup_failed","is_error":false,"duration_ms":8000,"total_cost_usd":0,"num_turns":0,"src":"broker"}
+`
+	denied := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"denied","is_error":false,"duration_ms":0,"total_cost_usd":0.02,"num_turns":0,"src":"broker"}
+`
+	for id, content := range map[string]string{"setupfail1": failed, "denied1": denied} {
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "setup_failed: 1") {
+		t.Fatalf("output missing %q:\n%s", "setup_failed: 1", out)
+	}
+	sf, dn := strings.Index(out, "setup_failed: 1"), strings.Index(out, "denied: 1")
+	if dn < 0 || sf > dn {
+		t.Errorf("setup_failed must render in the fixed list, before the sorted passthrough outcomes:\n%s", out)
+	}
+}
+
 // TestWriteStats_PolicyBlockedInFixedOrder: policy_blocked is a first-class
 // outcome in the fixed display list — it renders its own line and sorts with
 // the fixed outcomes (before any alphabetical passthrough like "denied"),

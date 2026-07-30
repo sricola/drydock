@@ -80,6 +80,7 @@ func (tr *taskRun) runSetup() bool {
 	tr.sw.emit(map[string]any{"event": "stage", "stage": "setting_up",
 		"task_id": tr.id, "commands": len(cfg.Setup) + len(cfg.Readiness)})
 	start := time.Now()
+	tr.setupStart = start // ends StageMs.Preparing here (see appendMetrics)
 	s, cancelled := tr.execSetup(cfg)
 	tr.setup = s
 	tr.setupDur = time.Since(start)

@@ -46,8 +46,17 @@ func (tr *taskRun) appendMetrics() {
 	if m.WidenOutcome == "" {
 		m.WidenOutcome = "none"
 	}
-	if !tr.prepStart.IsZero() && !tr.taskStart.IsZero() {
-		m.StageMs.Preparing = tr.taskStart.Sub(tr.prepStart).Milliseconds()
+	// Stage times partition the task's wall-clock: preparing ends at the
+	// first stage that follows it — setup when an execution profile ran
+	// (setupStart), else the agent start (taskStart). Without the setupStart
+	// anchor, preparing would span prep+setup while Setup is also recorded
+	// below, double-counting the setup phase.
+	prepEnd := tr.taskStart
+	if !tr.setupStart.IsZero() {
+		prepEnd = tr.setupStart
+	}
+	if !tr.prepStart.IsZero() && !prepEnd.IsZero() {
+		m.StageMs.Preparing = prepEnd.Sub(tr.prepStart).Milliseconds()
 	}
 	if !tr.taskStart.IsZero() && !tr.runEnd.IsZero() {
 		m.StageMs.Running = tr.runEnd.Sub(tr.taskStart).Milliseconds()

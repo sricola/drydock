@@ -102,9 +102,47 @@ func printBrief(b trustbrief.Brief) {
 		}
 		fmt.Printf("FLAG     %s: %s\n", safeCell(fl.Kind), strings.Join(paths, ", "))
 	}
+	printSetup(b)
 	printVerification(b)
 	for _, m := range b.MissingEvidence {
 		fmt.Printf("gap      %s\n", safeCell(m))
+	}
+}
+
+// printSetup renders the setting_up-stage evidence block, mirroring
+// printVerification: a not_configured brief gets the plain status line only
+// (a brief from before the setup stage existed — empty status — renders the
+// same way); a populated block gets the setup VMs' egress posture, one line
+// per command with the broker-observed verdict, and the display-only log
+// path. Rendered before the verification block because setup runs first.
+//
+// Argv elements are operator config, not VM output, but they still pass
+// through safeCell (strip + cap) like every other rendered string; the log
+// path is host-constructed from auditDir and the validated task id.
+func printSetup(b trustbrief.Brief) {
+	s := b.Setup
+	if s.Status == "" || s.Status == trustbrief.SetupNotConfigured {
+		fmt.Printf("setup    %s\n", trustbrief.SetupNotConfigured)
+		return
+	}
+	line := safeCell(s.Status)
+	if s.Network != "" {
+		line += " · network " + safeCell(s.Network)
+	}
+	fmt.Printf("setup    %s\n", line)
+	for _, c := range s.Commands {
+		argv := safeCell(strings.Join(c.Argv, " "))
+		switch c.Status {
+		case trustbrief.VerifyCmdPassed, trustbrief.VerifyCmdFailed:
+			fmt.Printf("         %s → exit %d (%s)\n", argv, c.ExitCode, shortDur(c.DurationMs))
+		case trustbrief.VerifyCmdSkipped:
+			fmt.Printf("         %s → skipped\n", argv)
+		default: // timed_out, error: no meaningful exit code
+			fmt.Printf("         %s → %s (%s)\n", argv, safeCell(c.Status), shortDur(c.DurationMs))
+		}
+	}
+	if len(s.Commands) > 0 {
+		fmt.Printf("         log %s\n", filepath.Join(auditDir(), b.TaskID+".setup.log"))
 	}
 }
 

@@ -365,6 +365,12 @@ type taskRun struct {
 	// not run in this process.
 	setup    *trustbrief.SetupEvidence
 	setupDur time.Duration // wall-clock of the setting_up stage (metrics)
+	// setupStart is when runSetup began its first command — the moment the
+	// preparing stage ended for a task with an execution profile. Zero when no
+	// setup ran. appendMetrics uses it to end StageMs.Preparing at setup
+	// start; without it preparing would span prep+setup (runSandbox only
+	// overwrites taskStart when the agent starts), double-counting setup.
+	setupStart time.Time
 
 	// Metrics capture (observability 4.7): filled as the lifecycle advances,
 	// written once by the deferred appendMetrics.
