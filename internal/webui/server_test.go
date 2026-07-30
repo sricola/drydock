@@ -143,6 +143,35 @@ func TestServesFavicon(t *testing.T) {
 	}
 }
 
+// TestSecurityHeaders checks every response — static assets, /api/* (including
+// its 403 path), and 404s — carries the CSP + nosniff + frame-deny headers.
+// Defense-in-depth behind the loopback bind and bearer token; the headers are
+// set before the inner handler runs so no path can skip them.
+func TestSecurityHeaders(t *testing.T) {
+	s := testServer()
+	const wantCSP = "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	cases := []struct {
+		name, target, auth string
+	}{
+		{"index", "/", ""},
+		{"api-authed", "/api/tasks", "Bearer secret"},
+		{"api-forbidden", "/api/tasks", ""},
+		{"not-found", "/nope.txt", ""},
+	}
+	for _, c := range cases {
+		rec := do(t, s, "GET", c.target, "127.0.0.1:7878", c.auth)
+		if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP {
+			t.Errorf("%s: Content-Security-Policy = %q, want %q", c.name, got, wantCSP)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", c.name, got)
+		}
+		if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s: X-Frame-Options = %q, want DENY", c.name, got)
+		}
+	}
+}
+
 func TestNonLoopbackOriginRejected(t *testing.T) {
 	s := testServer()
 	// A cross-origin request (browser-set Origin) must be rejected even with a
