@@ -139,6 +139,27 @@ func (b *Broker) persistDiff(id, diff string) string {
 	return path
 }
 
+// persistPlan writes a plan-mode run's captured plan to
+// <AuditRoot>/<id>.plan.md with the same defenses as every other audit
+// artifact (0600, O_NOFOLLOW — a planted symlink fails instead of redirecting
+// the write). Best effort, matching persistDiff: the plan is advisory
+// evidence, so a failure warns rather than failing the task. Returns the
+// path for logging.
+func (b *Broker) persistPlan(id, plan string) string {
+	path := filepath.Join(b.AuditRoot, id+".plan.md")
+	f, err := os.OpenFile(path,
+		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		slog.Warn("could not persist plan for review", "task_id", id, "err", err)
+		return path
+	}
+	defer f.Close()
+	if _, err := f.WriteString(plan); err != nil {
+		slog.Warn("could not persist plan for review", "task_id", id, "err", err)
+	}
+	return path
+}
+
 // gatePushMarked blocks at the diff-approval gate with a durable resume marker.
 // It persists the diff and a gate marker, blocks for approval, then removes the
 // marker UNLESS the gate was interrupted by shutdown (left for boot resume).

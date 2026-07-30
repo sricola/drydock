@@ -32,6 +32,8 @@ type fakeStage struct {
 	workDir    string
 	diff       string
 	captureErr error
+	plan       string // ReadPlan return text
+	planOK     bool   // ReadPlan return ok
 	pushErr    error
 	pushed     atomic.Bool // atomic so the approve-resume test can poll without a race
 	pushBranch string
@@ -52,6 +54,7 @@ func (f *fakeStage) WriteTaskFiles(prompt string) error {
 	return nil
 }
 func (f *fakeStage) CaptureDiff() (string, error) { return f.diff, f.captureErr }
+func (f *fakeStage) ReadPlan() (string, bool)     { return f.plan, f.planOK }
 func (f *fakeStage) Cleanup() error               { f.cleaned.Store(true); return nil }
 func (f *fakeStage) Commit(branch, msg string) error {
 	if f.pushErr != nil {

@@ -139,6 +139,48 @@ func (s *Stage) WriteTaskFiles(prompt string) error {
 	return nil
 }
 
+// MaxPlanBytes bounds the plan text ReadPlan returns (and the broker then
+// holds in memory / persists as the <id>.plan.md artifact). The plan is
+// agent-authored — i.e. untrusted VM output — so an unbounded read would let
+// a hostile agent balloon broker memory; anything past the cap is silently
+// dropped, never a task failure (the plan is advisory evidence, not a
+// reviewed diff).
+const MaxPlanBytes = 256 << 10 // 256 KiB
+
+// ReadPlan reads the agent-authored plan out of the work tree's .task dir
+// (<WorkDir>/.task/plan.md), capped at MaxPlanBytes. It returns ("", false)
+// when the plan is absent, not a regular file, symlinked, or unreadable —
+// plan capture is best-effort and the caller reports has_plan honestly.
+//
+// This is the read-side mirror of WriteTaskFiles' F-01 hardening: the work
+// tree is untrusted (a hostile clone can commit `.task`/`.task/plan.md` as a
+// symlink, and the agent VM can plant one at runtime), and this read runs on
+// the trusted host, so a followed link would exfiltrate an arbitrary
+// operator file into the plan artifact. Refuse a symlinked .task, require a
+// regular plan.md via Lstat (a FIFO would hang the broker on open), and open
+// with O_NOFOLLOW so a swapped-in symlink fails (ELOOP) instead of
+// redirecting the read.
+func (s *Stage) ReadPlan() (string, bool) {
+	dir := filepath.Join(s.WorkDir, ".task")
+	if fi, err := os.Lstat(dir); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		return "", false
+	}
+	path := filepath.Join(dir, "plan.md")
+	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
+		return "", false
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, MaxPlanBytes))
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
 // stageAll stages every change except the control dir and a top-level .git. (A
 // nested work-tree .git is a gitlink boundary git already refuses to recurse
 // into, so its contents and hooks never enter the diff/commit either way.)

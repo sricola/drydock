@@ -284,6 +284,11 @@ func outcomeString(key string, r Result, m Meta) string {
 		s = "setup failed"
 	case "policy_blocked":
 		s = "policy blocked"
+	case "planned":
+		// Plan-mode terminal: the broker captured the agent's plan and
+		// stopped — nothing was verified or pushed. Displayed as-is (matches
+		// the raw-subtype default; the explicit case documents the vocabulary).
+		s = "planned"
 	case "ok":
 		if r.NumTurns > 0 {
 			unit := "turns"

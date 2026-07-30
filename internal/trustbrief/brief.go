@@ -110,12 +110,20 @@ type Brief struct {
 	MissingEvidence []string      `json:"missing_evidence"`
 }
 
+// TaskFacts records the host-observed facts of the request itself. PlanOnly
+// and IssueURL (both additive, omitempty — no SchemaVersion bump) carry
+// plan-mode provenance: PlanOnly marks a run whose terminal was "planned"
+// (the broker never verified or pushed), and IssueURL records the issue the
+// instruction was ingested from, both broker-side fields — never agent
+// claims.
 type TaskFacts struct {
 	InstructionSHA256 string `json:"instruction_sha256"`
 	RepoRef           string `json:"repo_ref"`
 	BaseCommit        string `json:"base_commit,omitempty"`
 	Sensitive         bool   `json:"sensitive"`
 	AutoApprove       bool   `json:"auto_approve"`
+	PlanOnly          bool   `json:"plan_only,omitempty"`
+	IssueURL          string `json:"issue_url,omitempty"`
 }
 
 type RuntimeFacts struct {
