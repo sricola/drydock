@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"drydock/internal/brokerclient"
 	"drydock/internal/remote"
@@ -147,6 +148,18 @@ sockpath.Default().`)
 	}
 }
 
+// runPlan is `drydock plan <issue-url> [submit flags…]`: thin sugar for
+// `drydock submit --issue <url> --plan`. It delegates everything — flag
+// parsing, issue fetch, plan plumbing — to runSubmit; the only grammar here
+// is that the first argument must be the issue URL (not a flag), so a typo'd
+// invocation dies with usage instead of half-parsing.
+func runPlan(args []string) {
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		die("usage: drydock plan <issue-url> [submit flags]")
+	}
+	runSubmit(append([]string{"--issue", args[0], "--plan"}, args[1:]...))
+}
+
 // readInstruction resolves the instruction text from flags / file / stdin /
 // positional - argument, in that priority. Empty string is allowed only when
 // the caller explicitly passed "-".
@@ -186,7 +199,9 @@ func readInstruction(inline, file string, positional []string) (string, error) {
 const issueBodyCap = 24 * 1024
 
 // issueTruncationMarker is appended when the body was cut at issueBodyCap.
-const issueTruncationMarker = "\n\n[issue body truncated at 24 KiB]"
+// Derived from the cap so the stated size can never drift from the enforced
+// one.
+var issueTruncationMarker = fmt.Sprintf("\n\n[issue body truncated at %d KiB]", issueBodyCap/1024)
 
 // issueFlagConflict rejects --issue combined with any other instruction
 // source: --instruction (including "-"), --instruction-file, or an explicit
@@ -255,7 +270,14 @@ func issueInstruction(iss remote.Issue, plan bool) string {
 	body := iss.Body
 	truncated := len(body) > issueBodyCap
 	if truncated {
-		body = body[:issueBodyCap]
+		// Cut on a rune boundary: a multibyte character split at the cap
+		// would surface as U+FFFD in the rendered prompt. Backing off at
+		// most 3 bytes (utf8.UTFMax-1) drops the partial rune entirely.
+		cut := issueBodyCap
+		for cut > 0 && !utf8.RuneStart(body[cut]) {
+			cut--
+		}
+		body = body[:cut]
 	}
 	if body != "" {
 		b.WriteString("\n\n" + body)

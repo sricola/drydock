@@ -33,3 +33,23 @@ func TestReadInvocation_MissingLine(t *testing.T) {
 		t.Error("expected ok=false when no drydock_task line is present")
 	}
 }
+
+// A planned task's invocation must round-trip plan_only and issue_url, so
+// `drydock retry` of a plan run re-plans (never silently escalates to an
+// implementing run) and keeps the issue provenance on the new task.
+func TestReadInvocation_PlanRoundTrip(t *testing.T) {
+	trace := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","repo_ref":"https://github.com/o/r","instruction":"# Issue #42: t","agent":"claude","model":"","platform":"","egress_extra":null,"draft":false,"sensitive":false,"plan_only":true,"issue_url":"https://github.com/o/r/issues/42"}
+{"type":"result","subtype":"planned","is_error":false,"src":"broker"}
+`
+	req, ok := readInvocation(strings.NewReader(trace))
+	if !ok {
+		t.Fatal("expected to find the drydock_task invocation line")
+	}
+	if !req.PlanOnly {
+		t.Error("plan_only not recovered — a retried plan run would escalate to an implementing run")
+	}
+	if req.IssueURL != "https://github.com/o/r/issues/42" {
+		t.Errorf("issue_url not recovered: %q", req.IssueURL)
+	}
+}

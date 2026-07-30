@@ -663,6 +663,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		"type": "drydock_task", "repo_ref": t.RepoRef, "instruction": t.Instruction,
 		"agent": t.Agent, "model": t.Model, "platform": t.Platform,
 		"egress_extra": t.EgressExtra, "draft": t.Draft, "sensitive": t.Sensitive,
+		"plan_only": t.PlanOnly, "issue_url": t.IssueURL,
 	}); err == nil {
 		fmt.Fprintf(logf, "%s\n", inv)
 	}

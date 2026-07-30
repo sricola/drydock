@@ -17,7 +17,7 @@ import (
 // This test focuses on the data structure rather than os.Exit.
 
 var dispatchedCommands = []string{
-	"setup", "init", "start", "daemon", "submit", "status", "tasks", "stats",
+	"setup", "init", "start", "daemon", "submit", "plan", "status", "tasks", "stats",
 	"logs", "retry", "review", "inspect", "kill", "cancel", "prune", "pending",
 	"approve", "deny", "doctor", "redteam", "auth", "ui", "policy", "version",
 }
@@ -158,6 +158,20 @@ func TestCLIExitContracts(t *testing.T) {
 		out, code := runDrydockCLI(t, "version")
 		if code != 0 || !strings.Contains(out, "drydock dev") {
 			t.Errorf("version = exit %d output %q, want drydock dev + exit 0", code, out)
+		}
+	})
+	// `drydock plan` is thin sugar for `submit --issue <url> --plan`: without
+	// an issue URL it must fail with usage, never fall through to a submit.
+	t.Run("plan-no-args", func(t *testing.T) {
+		out, code := runDrydockCLI(t, "plan")
+		if code == 0 || !strings.Contains(out, "usage: drydock plan <issue-url>") {
+			t.Errorf("plan (no args) = exit %d output %q, want usage + non-zero exit", code, out)
+		}
+	})
+	t.Run("plan-flag-first", func(t *testing.T) {
+		out, code := runDrydockCLI(t, "plan", "--agent", "codex")
+		if code == 0 || !strings.Contains(out, "usage: drydock plan <issue-url>") {
+			t.Errorf("plan (flag first) = exit %d output %q, want usage + non-zero exit", code, out)
 		}
 	})
 }

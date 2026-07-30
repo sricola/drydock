@@ -261,7 +261,10 @@ make it automatic.
 A `.cursorrules`, `AGENTS.md`, or hostile docstring inside the staged
 repo can influence the agent's actions for that task. drydock does
 **not** filter staged content. Treat task results from repos with
-untrusted contributors with extra suspicion.
+untrusted contributors with extra suspicion. Issue-sourced instructions
+(`drydock submit --issue`) are attacker-influenced the same way — anyone
+who can file an issue is writing prompt text — and the human plan+diff
+gates are the boundary there too.
 
 ### N3. Side-channel data exfiltration via the diff
 

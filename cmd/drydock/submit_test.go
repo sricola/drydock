@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"drydock/internal/remote"
 )
@@ -269,5 +270,31 @@ func TestResolveIssue_FetchErrorSurfaces(t *testing.T) {
 	}
 	if _, _, err := resolveIssue("https://github.com/o/r/issues/1", "", false, fake); err == nil {
 		t.Error("fetch failure must surface")
+	}
+}
+
+// Truncation must cut on a rune boundary: a multibyte character split at
+// issueBodyCap would surface as U+FFFD in the rendered prompt (and the audit
+// trail). The whole truncated instruction must stay valid UTF-8.
+func TestIssueInstruction_TruncatesOnRuneBoundary(t *testing.T) {
+	// é is 2 bytes (0xC3 0xA9); an odd byte prefix guarantees the cap lands
+	// mid-rune somewhere in a run of them.
+	body := "x" + strings.Repeat("é", issueBodyCap)
+	iss := remote.Issue{Number: 3, Title: "multibyte", Body: body}
+	got := issueInstruction(iss, false)
+	if !utf8.ValidString(got) {
+		t.Error("truncated instruction is not valid UTF-8 (a rune was split at the cap)")
+	}
+	if !strings.Contains(got, issueTruncationMarker) {
+		t.Error("truncation marker missing on a capped multibyte body")
+	}
+}
+
+// The truncation marker must state the real cap: derived from issueBodyCap,
+// not a hardcoded literal that could drift when the cap changes.
+func TestIssueTruncationMarker_DerivedFromCap(t *testing.T) {
+	want := fmt.Sprintf("truncated at %d KiB", issueBodyCap/1024)
+	if !strings.Contains(issueTruncationMarker, want) {
+		t.Errorf("marker %q does not state the %d KiB cap", issueTruncationMarker, issueBodyCap/1024)
 	}
 }

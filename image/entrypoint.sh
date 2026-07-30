@@ -5,6 +5,16 @@ set -euo pipefail
 /usr/local/bin/init-firewall.sh "${DRYDOCK_GW_IP:?missing gateway ip}" 8088 3128
 cd /work
 PROMPT="$(cat /work/.task/prompt.txt)"
+# Plan mode: the broker sets DRYDOCK_MODE=plan for a plan-only task. Prepend
+# a steering preamble so every agent (all take -p "${PROMPT}") produces a
+# plan at /work/.task/plan.md instead of code changes. This only steers the
+# agent — the hard no-push guarantee is broker-side (a plan_only task
+# terminates "planned" before verify/push, whatever the tree contains).
+if [ "${DRYDOCK_MODE:-}" = "plan" ]; then
+  PROMPT="PLAN MODE: Do NOT create, modify, or delete any repository files. Produce a concise implementation plan for the task and write it to /work/.task/plan.md. Make no code changes.
+
+${PROMPT}"
+fi
 AGENT="${DRYDOCK_AGENT:-claude}"
 
 case "$AGENT" in

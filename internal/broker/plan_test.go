@@ -146,6 +146,39 @@ func TestPlanMode_NoPlanFileStillTerminatesPlanned(t *testing.T) {
 	}
 }
 
+// The persisted {"type":"drydock_task",...} invocation line must carry
+// plan_only and issue_url: `drydock retry` rebuilds the request from that
+// line, and without these fields a retried plan run would silently escalate
+// to an implementing run (and lose the issue provenance).
+func TestPlanMode_InvocationRecordCarriesPlanOnlyAndIssueURL(t *testing.T) {
+	issueURL := "https://github.com/o/r/issues/42"
+	st := &fakeStage{workDir: t.TempDir(), diff: "", plan: "## Plan\n", planOK: true}
+	b, events, term := submitPlan(t, st, fmt.Sprintf(
+		`{"repo_ref":"https://github.com/o/r.git","instruction":"plan x","agent":"claude","plan_only":true,"issue_url":%q}`,
+		issueURL))
+	if term["outcome"] != "planned" {
+		t.Fatalf("terminal=%v, want planned", term)
+	}
+	id, _ := events[0]["task_id"].(string)
+	audit := readAudit(t, b.AuditRoot, id)
+	var invocation string
+	for _, line := range strings.Split(audit, "\n") {
+		if strings.Contains(line, `"drydock_task"`) {
+			invocation = line
+			break
+		}
+	}
+	if invocation == "" {
+		t.Fatalf("no drydock_task invocation line in audit:\n%s", audit)
+	}
+	if !strings.Contains(invocation, `"plan_only":true`) {
+		t.Errorf("invocation missing plan_only:\n%s", invocation)
+	}
+	if !strings.Contains(invocation, fmt.Sprintf(`"issue_url":%q`, issueURL)) {
+		t.Errorf("invocation missing issue_url:\n%s", invocation)
+	}
+}
+
 func TestPlanMode_BriefRecordsIssueAndPlanFlag(t *testing.T) {
 	issueURL := "https://github.com/o/r/issues/42"
 	st := &fakeStage{workDir: t.TempDir(), diff: "", plan: "## Plan\n", planOK: true}

@@ -24,6 +24,43 @@ size vs the stage cap, toolchains vs what the image ships, registry hosts vs
 your egress allowlist, and `diff_policy` collisions (see
 [Troubleshooting](troubleshooting.html#check-a-repo-before-submitting)).
 
+## From a GitHub issue
+
+A GitHub issue can be the task instruction directly — no copy-pasting:
+
+```bash
+# 1. Plan first: the agent produces an implementation plan, changes nothing.
+drydock submit --issue https://github.com/o/r/issues/42 --plan
+#    (sugar: drydock plan https://github.com/o/r/issues/42)
+
+# 2. Review the plan.
+drydock inspect <id>            # renders the plan inline
+less ~/.drydock/audit/<id>.plan.md
+
+# 3. Happy with the plan? Run the same issue for real.
+drydock submit --issue https://github.com/o/r/issues/42
+```
+
+`--issue` fetches the issue **host-side** via your authenticated `gh` (with a
+curated environment, not a full copy of yours) and derives `--repo` from the
+URL when you omit it. Your GitHub credentials never enter the sandbox — only
+the issue *text* does, folded into the prompt with the title, labels, and a
+size-capped body.
+
+Treat that text as untrusted input: anyone who can write an issue on the repo
+is now writing instructions to your agent, exactly like a hostile
+`AGENTS.md` already could (see the
+[threat model](https://github.com/sricola/drydock/blob/main/THREAT_MODEL.md)).
+The human gates are the boundary — the plan you review, and the diff gate
+every implementing run still passes through.
+
+A `--plan` run is scope-gated in the broker, not just prompted: it terminates
+with outcome `planned` **before** the verify/push logic, so nothing is ever
+pushed from a plan run regardless of what the agent did in its VM. Any stray
+diff is still captured beside the audit log for your review, and
+`drydock retry <id>` of a plan run re-plans (it never silently escalates to
+an implementing run).
+
 ## Push-credential preflight
 
 Before the sandbox boots, drydock runs `git push --dry-run` against your repo
