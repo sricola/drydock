@@ -45,11 +45,12 @@ type Meta struct {
 	Sensitive    bool   `json:"sensitive"`
 }
 
-// StageMs is the per-stage wall-clock breakdown of a metrics row. Verifying
-// is omitempty so rows written before the verifier stage existed (and tasks
-// that never verify) keep their exact prior shape.
+// StageMs is the per-stage wall-clock breakdown of a metrics row. Setup and
+// Verifying are omitempty so rows written before those stages existed (and
+// tasks that never run them) keep their exact prior shape.
 type StageMs struct {
 	Preparing int64 `json:"preparing"`
+	Setup     int64 `json:"setup,omitempty"`
 	Running   int64 `json:"running"`
 	Verifying int64 `json:"verifying,omitempty"`
 	Pushing   int64 `json:"pushing"`
@@ -67,7 +68,8 @@ type Metrics struct {
 	Vendor string `json:"vendor"`
 	Auth   string `json:"auth"`
 	// Outcome is the terminal path the broker actually took: "pushed",
-	// "denied", "cancelled", "push_failed", "error", "no_diff", or
+	// "denied", "cancelled", "push_failed", "error", "no_diff",
+	// "setup_failed", "verify_failed", or
 	// "policy_blocked" (auto-approved pushes fold into "pushed": the
 	// auto/gated distinction isn't surfaced separately). Empty on pre-v0.6.7
 	// rows; see OutcomeKeyWithMetrics.
@@ -278,6 +280,8 @@ func outcomeString(key string, r Result, m Meta) string {
 	switch key {
 	case "push_failed":
 		s = "push failed"
+	case "setup_failed":
+		s = "setup failed"
 	case "policy_blocked":
 		s = "policy blocked"
 	case "ok":

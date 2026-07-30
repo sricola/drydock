@@ -126,6 +126,15 @@ type Broker struct {
 	// entry records verification status "not_configured" and pushes as before.
 	Verify map[string]VerifyRepo
 
+	// Setup maps canonical "host/owner/repo" repo keys (repokey.Normalize) to
+	// that repository's execution profile (config profiles.repos, mirrored by
+	// cmd/brokerd). nil/empty = setup off; a task whose repo has no entry
+	// records setup status "not_configured" and runs as before. Unlike Verify
+	// there is no advisory mode: a configured profile that does not pass
+	// fails the task closed BEFORE the agent VM boots and before any bearer
+	// is injected into any VM (fail-closed-before-spend; see runSetup).
+	Setup map[string]SetupProfile
+
 	// DiffPolicy caps the size and shape of the diff a task may propose
 	// (config diff_policy, wired from cfg.DiffPolicy by cmd/brokerd). The zero
 	// value disables every cap. A violating diff fails closed as the terminal
@@ -350,6 +359,13 @@ type taskRun struct {
 	verify    *trustbrief.Verification
 	verifyDur time.Duration // wall-clock of the verifying stage (metrics)
 
+	// setup is the broker-observed setup evidence, set by runSetup on every
+	// live path (status "not_configured" when the repo has no execution
+	// profile). nil before runSetup and on the resume path, where setup did
+	// not run in this process.
+	setup    *trustbrief.SetupEvidence
+	setupDur time.Duration // wall-clock of the setting_up stage (metrics)
+
 	// Metrics capture (observability 4.7): filled as the lifecycle advances,
 	// written once by the deferred appendMetrics.
 	prepStart        time.Time     // set at the "preparing" stage emit
@@ -363,7 +379,7 @@ type taskRun struct {
 	diffBytes        int64
 	// outcome is the terminal path taken, written into the metrics row's
 	// Outcome field: "pushed"|"denied"|"cancelled"|"push_failed"|"error"|
-	// "no_diff"|"verify_failed"|"policy_blocked". Set at each terminal return; "" (never reached a terminal
+	// "no_diff"|"setup_failed"|"verify_failed"|"policy_blocked". Set at each terminal return; "" (never reached a terminal
 	// return with the audit log open, e.g. resumePush's shutdown re-defer)
 	// leaves the metrics row's Outcome empty, same as a pre-outcome-field row.
 	outcome string
@@ -637,6 +653,18 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(logf, "%s\n", inv)
 	}
 
+	// Host-config setup phase (execution profiles): run the repo's
+	// host-approved setup/readiness commands in bearer-free VMs against the
+	// live stage BEFORE the agent VM boots. Fail-closed-before-spend: on any
+	// setup failure runSetup emits the terminal event and we return HERE —
+	// the grant minted above was never injected into any VM (buildSetupEnv
+	// carries no credential; runner.BuildRunArgs below is never reached), so
+	// a broken workspace costs $0 in API spend. The deferred grant.Revoke
+	// registered at mint time still fires on this return.
+	if !tr.runSetup() {
+		return
+	}
+
 	args := runner.BuildRunArgs(runner.Spec{
 		TaskID:     taskID,
 		Network:    b.Network,
@@ -720,19 +748,32 @@ func (tr *taskRun) runEgressGate() bool {
 	return true
 }
 
-// buildTaskEnv assembles the env slice passed to the container. It is pure
-// (all inputs explicit) so it can be unit-tested without a Broker.
-func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
-	agentName, taskModel, openAICompatModel, operatorDefaultModel, taskVendor string) []string {
-	env := append([]string{}, grantEnv...)
-	env = append(env,
+// buildSetupEnv assembles the env for a setup VM: the egress-proxy vars and
+// the gateway IP, and NOTHING else — never a grant bearer or any credential
+// material. The setup VM runs pre-review repo code (npm postinstall, pip
+// setup.py, arbitrary build hooks) with network egress, so it must have no
+// credential to leak or spend; this is one half of fail-closed-before-spend
+// (the other is runSetup's placement before the agent VM boots).
+// buildTaskEnv builds on it so the agent and setup VMs share one proxy
+// config. Pure (all inputs explicit) so it unit-tests without a Broker.
+func buildSetupEnv(proxyAuth, gatewayIP string, proxyPort int) []string {
+	return []string{
 		fmt.Sprintf("HTTPS_PROXY=http://%s%s:%d", proxyAuth, gatewayIP, proxyPort),
 		fmt.Sprintf("HTTP_PROXY=http://%s%s:%d", proxyAuth, gatewayIP, proxyPort),
 		// Bypass squid for the credential gateway itself — squid's allowlist
-		// is hostname-based and would deny a CONNECT to the gateway IP.
-		"NO_PROXY=127.0.0.1,localhost,"+gatewayIP,
-		"DRYDOCK_GW_IP="+gatewayIP,
-	)
+		// is hostname-based and would deny a CONNECT to the gateway IP. (The
+		// setup VM's firewall pin drops :8088 anyway; the agent VM needs it.)
+		"NO_PROXY=127.0.0.1,localhost," + gatewayIP,
+		"DRYDOCK_GW_IP=" + gatewayIP,
+	}
+}
+
+// buildTaskEnv assembles the env slice passed to the agent container. It is
+// pure (all inputs explicit) so it can be unit-tested without a Broker.
+func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
+	agentName, taskModel, openAICompatModel, operatorDefaultModel, taskVendor string) []string {
+	env := append([]string{}, grantEnv...)
+	env = append(env, buildSetupEnv(proxyAuth, gatewayIP, proxyPort)...)
 	defaultModel := effectiveDefaultModel(operatorDefaultModel, taskVendor)
 	env = append(env, modelEnv(taskModelFor(taskModel, openAICompatModel, taskVendor), defaultModel)...)
 	env = append(env, "DRYDOCK_AGENT="+agentName)
@@ -918,12 +959,23 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) trustbrief.DiffFacts {
 	if tr.verify != nil {
 		verification = *tr.verify
 	}
+	// Setup evidence likewise comes straight from runSetup's broker-observed
+	// block; nil (direct writeBrief unit calls; the resume path) honestly
+	// reads as not_configured — which needs no MissingEvidence noise, since
+	// a repo without an execution profile is the normal state.
+	setupEv := trustbrief.SetupEvidence{Status: trustbrief.SetupNotConfigured}
+	if tr.setup != nil {
+		setupEv = *tr.setup
+	}
 	var missing []string
 	switch verification.Status {
 	case trustbrief.VerificationNotConfigured:
 		missing = append(missing, "verification not configured for this repository (no verify.repos entry)")
 	case trustbrief.VerificationInconclusive:
 		missing = append(missing, "verification inconclusive — treat as unverified")
+	}
+	if setupEv.Status == trustbrief.SetupInconclusive {
+		missing = append(missing, "setup inconclusive — the workspace may not have been prepared")
 	}
 	missing = append(missing, "agent summary not captured (broker records no agent claims in v1)")
 
@@ -947,6 +999,7 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) trustbrief.DiffFacts {
 		},
 		Diff:            trustbrief.Analyze(diff),
 		Verification:    verification,
+		Setup:           setupEv,
 		MissingEvidence: missing,
 	}
 	// Optional capability: the production stage knows its clone commit; test
