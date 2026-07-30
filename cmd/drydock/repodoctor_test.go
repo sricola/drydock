@@ -222,6 +222,58 @@ func TestDiagnoseRepo_SkipsGitDir(t *testing.T) {
 	}
 }
 
+// TestCustomRegistryHosts_SkipsSymlinkedNpmrc pins the walk's never-follow-
+// symlink invariant onto the registry-config reader too: a repo whose .npmrc
+// is a symlink pointing outside the repo must be skipped, not read — otherwise
+// a hostile repo could make doctor read (and partially reveal hosts from) an
+// arbitrary out-of-repo file.
+func TestCustomRegistryHosts_SkipsSymlinkedNpmrc(t *testing.T) {
+	outside := t.TempDir()
+	target := filepath.Join(outside, "out-of-repo-npmrc")
+	if err := os.WriteFile(target, []byte("registry=https://evil.example/npm/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(repo, ".npmrc")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if got := customRegistryHosts(repo); len(got) != 0 {
+		t.Fatalf("symlinked .npmrc was read: %+v", got)
+	}
+}
+
+// TestRegistryHostFromLine pins the assignment-only grammar: real registry
+// assignments yield their hostname; comments, auth-token lines, and prose
+// that merely contains the word "registry" next to a URL yield "".
+func TestRegistryHostFromLine(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"npmrc assignment", "registry=https://nexus.corp/npm/", "nexus.corp"},
+		{"npmrc scoped assignment", "@myscope:registry=https://scoped.corp/npm/", "scoped.corp"},
+		{"pip index-url spaced", "index-url = https://pypi.corp/simple", "pypi.corp"},
+		{"cargo source table entry", `registry = "https://my-registry.example/index"`, "my-registry.example"},
+		{"cargo registries index entry", `index = "https://crates.corp/git/index"`, "crates.corp"},
+		{"yarn classic space form", `registry "https://yarn.corp/"`, "yarn.corp"},
+		{"comment mentioning a registry url", "# see https://x.example/registry-help", ""},
+		{"semicolon comment", "; registry=https://x.example/", ""},
+		{"prose containing registry and a url", "the registry lives at https://x.example/path", ""},
+		{"auth token line", "//nexus.corp/npm/:_authToken=npm_SECRET", ""},
+		{"unrelated assignment", "always-auth=true", ""},
+		{"registry assignment without url", "registry=local", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := registryHostFromLine(c.line); got != c.want {
+				t.Errorf("registryHostFromLine(%q) = %q, want %q", c.line, got, c.want)
+			}
+		})
+	}
+}
+
 func TestProductionStageLimits(t *testing.T) {
 	cfg := config.Defaults()
 

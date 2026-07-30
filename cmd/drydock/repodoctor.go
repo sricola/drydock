@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"drydock/internal/broker"
 	"drydock/internal/config"
@@ -265,13 +266,16 @@ var registryConfigFiles = []string{".npmrc", ".yarnrc", "Cargo.toml", "pip.conf"
 type customRegistry struct{ host, file string }
 
 // customRegistryHosts extracts custom registry hostnames from the repo's
-// package-manager config files: lines mentioning a registry or index-url with
-// an http(s) URL. Returns hostnames only, never tokens or raw lines.
+// package-manager config files: lines that assign a registry or index-url to
+// an http(s) URL. Returns hostnames only, never tokens or raw lines. Opened
+// with O_NOFOLLOW to match the walk's never-follow-symlink invariant — a repo
+// must not be able to point .npmrc at an out-of-repo file and have doctor
+// read it.
 func customRegistryHosts(dir string) []customRegistry {
 	var out []customRegistry
 	seen := map[string]bool{}
 	for _, name := range registryConfigFiles {
-		f, err := os.Open(filepath.Join(dir, name))
+		f, err := os.OpenFile(filepath.Join(dir, name), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
 			continue
 		}
@@ -288,22 +292,38 @@ func customRegistryHosts(dir string) []customRegistry {
 }
 
 // registryHostFromLine returns the hostname of an http(s) URL on a line that
-// configures a registry (registry= in .npmrc/.yarnrc/Cargo.toml [source],
-// index-url= in pip.conf). Anything else — including auth-token lines — maps
-// to "". Only the url.Parse hostname is returned, never the raw line.
+// actually ASSIGNS a registry: `registry=` / `@scope:registry=` (.npmrc),
+// `index-url=` (pip.conf), `registry = "…"` / `index = "…"` (Cargo.toml
+// [source.*]/[registries.*] tables), or yarn classic's `registry "…"`.
+// Comments and lines that merely mention the word "registry" near a URL —
+// including auth-token lines — map to "". Only the url.Parse hostname is
+// returned, never the raw line.
 func registryHostFromLine(line string) string {
-	l := strings.ToLower(line)
-	if !strings.Contains(l, "registry") && !strings.Contains(l, "index-url") {
+	l := strings.TrimSpace(line)
+	// Comment lines (npmrc/pip.conf use #/;) and npmrc //host/:_authToken
+	// scope lines are never assignments.
+	if strings.HasPrefix(l, "#") || strings.HasPrefix(l, ";") || strings.HasPrefix(l, "//") {
 		return ""
 	}
-	i := strings.Index(l, "https://")
-	if j := strings.Index(l, "http://"); j >= 0 && (i < 0 || j < i) {
-		i = j
-	}
-	if i < 0 {
+	var raw string
+	if key, rest, ok := strings.Cut(l, "="); ok {
+		key = strings.ToLower(strings.TrimSpace(key))
+		switch {
+		case key == "registry", key == "index-url", key == "index":
+		case strings.HasSuffix(key, ":registry"): // npm scoped: @scope:registry=
+		default:
+			return ""
+		}
+		raw = rest
+	} else if fields := strings.Fields(l); len(fields) == 2 && strings.ToLower(fields[0]) == "registry" {
+		raw = fields[1] // yarn classic: registry "https://…"
+	} else {
 		return ""
 	}
-	raw := line[i:]
+	raw = strings.TrimLeft(strings.TrimSpace(raw), `"'`)
+	if lower := strings.ToLower(raw); !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "http://") {
+		return ""
+	}
 	if k := strings.IndexAny(raw, " \t\"'"); k >= 0 {
 		raw = raw[:k]
 	}

@@ -3,6 +3,19 @@
 Start with `drydock doctor`; it smoke-tests the sandbox setup (image freshness,
 VM boot, the egress pin) with no API spend. Then consult the table below.
 
+## Check a repo before submitting
+
+`drydock doctor --repo <path>` preflights one local repo without booting a
+container or spending API budget: repo size against the per-task stage cap,
+language toolchains against what the sandbox image ships (node/python/go),
+package-registry hosts (defaults plus any custom registry in
+`.npmrc`/`.yarnrc`/`Cargo.toml`/`pip.conf`) against your egress allowlist, and
+repo files that collide with `diff_policy.blocked_paths` /
+`second_look_paths`. Warnings are advisory (the task can run but will likely
+hit friction); a red FAIL is a blocker — a task on that repo is guaranteed to
+fail — and the command exits 1. Run it before the first `drydock submit`
+against an unfamiliar repo.
+
 ## Common failures
 
 | Symptom | First place to look |
