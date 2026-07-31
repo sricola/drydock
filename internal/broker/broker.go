@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -104,6 +105,29 @@ type Task struct {
 	// ciretryloop.go's gate 6.
 	RetryOf string `json:"retry_of,omitempty"`
 	Attempt int    `json:"attempt,omitempty"`
+	// RootInstruction is the ORIGINAL, operator-authored instruction the chain
+	// started from — the one at the head of attempt 0 — carried unchanged down
+	// every hop. "" on an operator-submitted task (there is no chain yet); set
+	// once by BuildRetryTask on the first retry and inherited verbatim after
+	// that, so it is a fixed string for the life of a chain.
+	//
+	// It exists because a retry's instruction is ROOT + one CI-evidence section
+	// + one prior-diff section, NOT the parent's instruction plus another pair
+	// of sections. Carrying the parent's assembled instruction forward instead
+	// would stack every earlier attempt's fenced sections on every hop: the
+	// instruction would grow by ~20 KiB per hop, the documented ceiling of
+	// ci.max_attempts: 10 would be unreachable (the build refuses around depth
+	// 3 on the task body cap), and the fence's one stated property — that an
+	// announced token appears nowhere but its own BEGIN/END pair — would be
+	// false from depth 2 on, because the inherited text carries earlier
+	// attempts' delimiters that the current derivation never saw.
+	//
+	// With it, the per-hop instruction size is CONSTANT in depth and every
+	// retry carries exactly ONE prior diff: the most recent attempt's.
+	//
+	// Broker-owned like RetryOf/Attempt: POST /queue zeroes it, and nothing in
+	// a task VM can reach it.
+	RootInstruction string `json:"root_instruction,omitempty"`
 }
 
 // SquidControl registers/deregisters per-task egress widening with squid.
@@ -327,6 +351,26 @@ type Broker struct {
 	queueOnce sync.Once
 	queueTick time.Duration
 	now       func() int64
+
+	// draining is the shutdown latch (BeginQueueDrain). Once set, the queue
+	// accepts no further BROKER-AUTHORED work: takeDispatchable dispatches
+	// nothing more and maybeEnqueueCIRetry enqueues nothing more. It exists
+	// because the CI watch's teardown deliberately does not wait for an
+	// in-flight poll (StopCIWatch), so a poll that concludes DURING shutdown
+	// could otherwise decide a retry, Enqueue it, and have the still-running
+	// dispatcher start a fresh VM after CancelAll had already torn every task
+	// down — an orphan VM and stage the exiting process would never clean up.
+	// Nothing durable is lost: an item enqueued into a draining queue stays
+	// `queued` on disk and the next boot's ResumeQueue dispatches it.
+	// queueStopOnce makes StopDispatcher idempotent, so the drain latch and a
+	// test's own defer can both call it.
+	draining      atomic.Bool
+	queueStopOnce sync.Once
+	// queueRunning counts in-flight runQueued lifecycles so shutdown can wait
+	// for their teardown (VM force-delete, stage cleanup, the terminal queue
+	// write). They are goroutines, not HTTP handlers, so srv.Shutdown does not
+	// see them; without this the process could exit mid-teardown.
+	queueRunning sync.WaitGroup
 
 	// CI watch (increment B, ciwatch.go). ciStop ends the watch goroutine;
 	// ciOnce builds it lazily, mirroring queueOnce. There is no wake channel

@@ -151,6 +151,10 @@ func (b *Broker) HandleQueueAdd(w http.ResponseWriter, r *http.Request) {
 	// new failure mode for a field an operator has no reason to be sending.
 	t.Attempt = 0
 	t.RetryOf = ""
+	// And root_instruction with them: it is the text a retry re-poses as THE
+	// TASK, so a submitted value would be a second instruction body riding
+	// along inside a task body that already has one.
+	t.RootInstruction = ""
 	id, err := b.Enqueue(t)
 	if err != nil {
 		http.Error(w, safeErr(err), http.StatusBadRequest)
@@ -160,7 +164,7 @@ func (b *Broker) HandleQueueAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 // queueItemView is the projected shape GET /queue returns: enough for the
-// CLI's ID/STATE/AGE/ATTEMPTS/REPO table, deliberately NOT the full QueueItem
+// CLI's ID/STATE/AGE/ATTEMPTS/CI/RETRY/REPO/REASON table, deliberately NOT the full QueueItem
 // — the embedded Task carries the instruction text (and flags like Sensitive),
 // which a list endpoint has no business re-broadcasting.
 type queueItemView struct {
@@ -189,6 +193,17 @@ type queueItemView struct {
 	// without walking every link, and it is the value ci.max_attempts is
 	// compared against. omitempty, so a stock install's items are unchanged.
 	Attempt int `json:"attempt,omitempty"`
+	// LastError is the broker-authored reason a non-clean terminal was
+	// reached. It is projected here because it is the ONLY surface for one
+	// ending an operator cannot otherwise see: a CI retry the dispatcher
+	// dropped on the aggregate spend cap (dropSpendCappedRetryLocked) leaves
+	// no audit trace of its own — the child never ran, so it has no terminal
+	// row — and without this the reason existed on disk and nowhere a person
+	// would look. Broker-authored strings only (queueTerminal's outcome
+	// vocabulary and the fixed drop/cancel reasons), never agent or CI text,
+	// and safeStr'd like every other reflected value. omitempty, so an item
+	// with a clean terminal serialises exactly as before.
+	LastError string `json:"last_error,omitempty"`
 }
 
 // HandleQueueList returns every durable queue item (including terminals —
@@ -218,6 +233,7 @@ func (b *Broker) HandleQueueList(w http.ResponseWriter, r *http.Request) {
 			RetryOf:     safeStr(it.Task.RetryOf),
 			RetryTaskID: safeStr(it.RetryTaskID),
 			Attempt:     it.Task.Attempt,
+			LastError:   safeStr(it.LastError),
 		})
 	}
 	writeJSON(w, out)

@@ -72,7 +72,7 @@ moment brokerd has durably persisted the task:
 drydock queue add --repo git@github.com:o/r --instruction "fix the flaky test"
 drydock queue add --issue https://github.com/o/r/issues/42 --auto-approve
 
-drydock queue list           # ID / STATE / AGE / ATTEMPTS / CI / RETRY / REPO
+drydock queue list           # ID / STATE / AGE / ATTEMPTS / CI / RETRY / REPO / REASON
 drydock queue cancel <id>    # dequeue a waiting item, kill it if running, or
                              # cancel the CI watch if it is in awaiting_ci
 ```
@@ -81,13 +81,18 @@ Each item moves through a broker-enforced state machine:
 
 ```
 queued → preparing → running → verifying → awaiting_review → completed
-                                                    │      ↘ dead_letter
-                                                    ↓
-                                              awaiting_ci → completed
-                                                          ↘ ci_failed
-                                                          ↘ dead_letter
+   │                                                │      ↘ dead_letter
+   ↓                                                ↓
+dead_letter                                   awaiting_ci → completed
+(spend-capped                                             ↘ ci_failed
+ CI retry only)                                           ↘ dead_letter
         (cancelled is reachable from every non-terminal state)
 ```
+
+The `queued → dead_letter` edge has exactly one writer: the dispatcher dropping
+a **broker-initiated CI retry** whose vendor spend cap exhausted before it could
+dispatch. A human-submitted item never takes it — it parks instead. See the
+spend-ceiling bullet below.
 
 - **Same lifecycle, same gates.** A dispatched item runs the exact code path
   a synchronous submit runs — setup profiles, verification, the diff-approval
@@ -95,10 +100,16 @@ queued → preparing → running → verifying → awaiting_review → completed
   was queued.
 - **Shared concurrency cap.** Queued and synchronous tasks draw from the one
   `max_concurrent` pool; the dispatcher never over-commits it.
-- **Spend-ceiling parking.** When a vendor's aggregate spend cap is
-  exhausted, that vendor's items stay `queued` — parked, not failed, and a
-  park never counts as an attempt. They dispatch when the spend window
-  slides.
+- **Spend-ceiling parking, with one exception.** When a vendor's aggregate
+  spend cap is exhausted, that vendor's **human-submitted** items stay
+  `queued` — parked, not failed, and a park never counts as an attempt. They
+  dispatch when the spend window slides. A **broker-initiated CI retry**
+  (`retry_of` set) is **dropped to `dead_letter` instead**, with the reason in
+  `last_error` and in the `REASON` column of `drydock queue list`: nobody is
+  waiting for it, and an unattended retry that sits queued for a rolling
+  window and then dispatches hours later would land on a base that has moved
+  on, at a diff gate nobody is at. This is the only `queued → dead_letter`
+  edge in the machine above.
 - **Survives restarts.** Queue items are atomically-written files in the
   audit dir. At boot, brokerd re-dispatches anything still `queued`, resumes
   items parked at the approval gate, and **never re-runs** an item that was
@@ -107,7 +118,9 @@ queued → preparing → running → verifying → awaiting_review → completed
   second time.
 - **Terminals.** A clean finish (pushed, no-diff, or a plan) lands
   `completed`; any failure lands `dead_letter` with the reason in
-  `last_error`. Terminal items stay in `drydock queue list` as history.
+  `last_error` — surfaced by the `REASON` column of `drydock queue list` and
+  by `last_error` on `GET /queue`. Terminal items stay in `drydock queue list`
+  as history.
 - **Forward-only.** No state ever goes backwards and the graph has no cycle,
   so an item's state always answers "how far did this get", never "which lap
   is it on". A bounded CI retry is therefore always a *new* queue item with
@@ -128,10 +141,10 @@ deadline (a crash loop cannot extend the window).
 conclusion and the PR number:
 
 ```
-ID                                STATE              AGE  ATTEMPTS  CI                RETRY                             REPO
-0123456789abcdef0123456789abcdef  awaiting_ci        12m         1  pending #431      -                                 o/r
-89ab456789abcdef0123456789abcdef  ci_failed          41m         1  failed #430       -                                 o/r
-cdef456789abcdef0123456789abcdef  completed           2h         1  passed #429       -                                 o/r
+ID                                STATE              AGE  ATTEMPTS  CI                RETRY                             REPO                                      REASON
+0123456789abcdef0123456789abcdef  awaiting_ci        12m         1  pending #431      -                                 o/r                                       -
+89ab456789abcdef0123456789abcdef  ci_failed          41m         1  failed #430       -                                 o/r                                       -
+cdef456789abcdef0123456789abcdef  completed           2h         1  passed #429       -                                 o/r                                       -
 ```
 
 (The **RETRY** column is `-` unless the bounded retry is on; it is described
@@ -233,9 +246,12 @@ refuses the pair at load.** A retry child is an *unattended* task that re-poses
 the human diff gate, and it holds one of your `max_concurrent_tasks` slots for
 its whole life — gate included. With `approval_timeout: 0` ("wait forever") two
 PRs that fail CI at 03:00 fill the default cap of two slots with children parked
-at gates nobody is at, the park survives a restart, and every task you submit
-afterwards sits `queued` indefinitely with nothing warning you why. Pick a
-timeout you would actually be happy auto-denying at.
+at gates nobody is at, and every task you submit afterwards sits `queued`
+indefinitely with nothing warning you why. Restarting brokerd does clear the
+held slots — the semaphore is in-process, and the boot resume of a parked gate
+does not take one — but "restart the daemon" is not a plan for an unattended
+overnight queue, and the daemon is meant to run for weeks. Pick a timeout you
+would actually be happy auto-denying at.
 
 **The whole flow, end to end.** You submit a task. It runs, you approve its
 diff, it pushes `agent/<id>` and opens PR #1. The item parks in `awaiting_ci`
@@ -313,8 +329,21 @@ but a broker-initiated retry nobody asked for must not sit queued for hours and
 then dispatch against a base that has moved on. That holds at **both** ends —
 the decision declines to enqueue, and a child whose vendor cap exhausts in the
 gap before dispatch is dropped to `dead_letter` by the dispatcher rather than
-parked. Either way the reason is recorded (in the audit's `retry_detail`, or in
-the item's `last_error`).
+parked. Either way the reason is recorded: in the audit's `retry_detail` for a
+refused decision, and in the item's `last_error` for a dropped child — which
+`drydock queue list` shows in its `REASON` column and `GET /queue` returns as
+`last_error`. (A dropped child never runs, so it writes no audit terminal row of
+its own and appears nowhere in `drydock tasks`; the queue row is its only
+record.)
+
+**Without `aggregate_budget_usd`, both of those refusals are a no-op.** They
+test the same aggregate cap, which is unset by default and is `api_key`-mode-only
+by design, so it is absent entirely in subscription mode. In that configuration
+the only bound on retry spend is the per-chain product above — per failing task,
+with nothing capping how many chains run at once. brokerd prints a warning at
+boot when `ci.max_attempts > 0` with no aggregate cap. It does not refuse the
+pair, because that would make the feature unusable in subscription mode; if you
+are arming retry unattended and can use an aggregate cap, set one.
 
 **A retry that cannot say what failed is refused.** The check rollup is
 persisted on the `<id>.ci.json` marker alongside the terminal state, so a
@@ -327,10 +356,10 @@ would just re-run blind.
 item's depth and its links:
 
 ```
-ID                                STATE              AGE  ATTEMPTS  CI                RETRY                             REPO
-1111111111111111111111111111aaaa  ci_failed           2h         1  failed #431       #0 ->222222222222…                o/r
-2222222222222222222222222222bbbb  ci_failed           1h         1  failed #432       #1 <-111111111111… ->333333333333…  o/r
-3333333333333333333333333333cccc  completed          20m         1  passed #433       #2 <-222222222222…                o/r
+ID                                STATE              AGE  ATTEMPTS  CI                RETRY                             REPO                                      REASON
+1111111111111111111111111111aaaa  ci_failed           2h         1  failed #431       #0 ->222222222222…                o/r                                       -
+2222222222222222222222222222bbbb  ci_failed           1h         1  failed #432       #1 <-111111111111… ->333333333333…  o/r                                     -
+3333333333333333333333333333cccc  completed          20m         1  passed #433       #2 <-222222222222…                o/r                                       -
 ```
 
 `#N` is the attempt depth (`0` for the task you submitted). `<-` points at the
@@ -339,10 +368,14 @@ enqueued. `GET /queue` carries the same three fields unabbreviated as
 `attempt`, `retry_of`, and `retry_task_id`, and the audit's `ci_observation`
 record carries them plus a `retry_detail` string. `retry_detail` is the
 broker's reason for the ending it chose, and it is written only once the
-decision was actually reached: it is empty when the retry is off, when the
-observation was not a failure, or when a child was already recorded — and it
-names the reason when the bound, the spend cap, or a refused build stopped a
-retry that would otherwise have happened.
+decision was actually reached. It is **empty** whenever the decision was never
+reached at all — the retry is off, the observation was not a failure, the
+parent's terminal transition did not land, the task was a synchronous
+`drydock submit` with no durable queue item (so *every* non-queued task), a
+child was already recorded, or brokerd was shutting down. It **names the
+reason** when the decision was reached and refused: the bound, the spend cap, a
+refused build, or an enqueue that failed. On success it reads
+`enqueued retry attempt N of M`.
 
 **The bound is on disk.** The attempt counter lives in the persisted queue
 record and its CI marker, never in memory, and the retry decision runs only
@@ -357,9 +390,21 @@ in-flight chain continue up to the new, higher bound.
 carries two attacker-influenceable inputs: the failed **check names** (a
 repository's own workflow file chooses them) and the **prior attempt's diff**
 (agent-written). Both are control-character sanitized, byte-capped, and fenced
-under delimiters whose tokens are derived from **all** the fenced bytes in the
-instruction and proven to occur in none of them, so neither input can forge a
-convincing end line for its own section or for the other one. What that is *not*
+under delimiters whose tokens are derived from **all** the non-broker-authored
+bytes in the instruction and proven to occur in none of them, so neither input
+can forge a convincing end line for its own section or for the other one.
+
+**Exactly one attempt's worth of each, at every depth.** A retry's instruction
+is *your original task* plus one CI-evidence section plus one prior-diff
+section — never the parent's instruction plus another pair. The original is
+carried forward on its own broker-owned field, so attempt 10's prompt is the
+same size as attempt 1's and carries only the most recent attempt's diff. That
+is what makes the ceiling of `10` actually reachable (an accumulating
+instruction hits the 64 KiB task-body cap around attempt 3) and what keeps the
+fence's claim — "the genuine delimiters carry these tokens and no others" —
+true past the first hop.
+
+What that is *not*
 is a filter: the honest claim is that this text **decides nothing** — the
 retry, the bound, the gate, the repository, and every other control decision
 derive from broker-observed check *conclusions* alone — and that the human diff

@@ -202,7 +202,7 @@ task's own `egress_extra` plus `requires_approval`; nothing carries a prior
 approval forward, so one human "yes" can never authorize egress for a chain of
 unattended runs.
 
-**Implementation:** `internal/broker/broker.go::gateEgressWiden`. **Verified
+**Implementation:** `internal/broker/gates.go::gateEgressWiden`. **Verified
 by** `TestRedteam_A6_EgressWidenDenied`,
 `TestRedteam_A6_AutoApproveCannotBypassWideningGate`, and
 `TestRedteam_A6Retry_ChildReposesTheEgressWideningGate`.
@@ -363,6 +363,23 @@ default) is two things, and both are attacker-influenceable:
   own workflow file chooses the names;
 - the **previous attempt's own diff**, which is agent-written text.
 
+**Exactly one attempt's worth of each, at every depth of a chain**, and the
+singular matters: a retry's instruction is the operator's ORIGINAL task plus one
+CI-evidence section plus one prior-diff section — never the parent's assembled
+instruction plus another pair. The original is carried forward on its own field
+(`Task.RootInstruction`, broker-owned, zeroed by `POST /queue`) precisely so it
+can be. Two things rest on that. The untrusted text an agent sees is bounded by
+the section caps *regardless of depth* rather than by the caps times the chain
+length — hop 10 is the same size as hop 1, which is also what makes the
+documented `ci.max_attempts` ceiling of 10 reachable at all. And the fence claim
+below is true at every depth: an instruction that inherited its parent's would
+carry earlier hops' genuine `BEGIN`/`END` pairs, which are in neither the token's
+preimage nor its containment check, so it would announce "these tokens and no
+others" over a document containing several other perfectly genuine-looking ones.
+Pinned by `TestBuildRetryTask_InstructionSizeDoesNotGrowWithChainDepth`,
+`TestBuildRetryTask_FenceClaimHoldsAtEveryDepth`, and
+`TestBuildRetryTask_CarriesOnlyTheMostRecentPriorDiff`.
+
 Both are dropped into the retry task's instruction, control-character
 sanitized (C0, C1, DEL, and Unicode format/bidi characters stripped; invalid
 UTF-8 dropped rather than replaced — note that invisibles *outside* category
@@ -370,12 +387,16 @@ Cf, such as the Hangul fillers and variation selectors, are deliberately NOT
 stripped, because no line short of banning non-ASCII can be drawn there and
 combining marks are ordinary content in most scripts), byte-capped with an
 explicit truncation marker, and fenced under `### BEGIN/END UNTRUSTED <KIND> <token>` delimiters
-whose token is derived by SHA-256 from **every** fenced body in the instruction
-and proven to occur in none of them — so neither input can terminate its own
-section, or the other one's, with a delimiter a reader would believe. (Deriving
-each token from its own body alone was not enough: both tokens are
-deterministic and both are announced in the preamble, so the agent-written diff
-could compute and plant the *genuine* CI-OUTPUT token, and vice versa.) The assembled instruction is
+whose token is derived by SHA-256 from **every** body in the instruction drydock
+did not author itself — both fenced sections *and* the carried original
+instruction — and proven to occur in none of them, so neither input can
+terminate its own section, or the other one's, with a delimiter a reader would
+believe. (Deriving each token from its own body alone was not enough: both
+tokens are deterministic and both are announced in the preamble, so the
+agent-written diff could compute and plant the *genuine* CI-OUTPUT token, and
+vice versa.) The salt search that guarantees absence is bounded; exhausting it
+would refuse the retry rather than ship an instruction whose fence claim was
+false. The assembled instruction is
 hashed into `InstructionSHA256` like every other instruction: provenance, not
 filtration.
 
@@ -404,8 +425,15 @@ sits outside A7's single carve-out (the read-only dependency cache) rather than
 widening it, and B2 adds **no new A-claim**. Pinned host-side, without a VM, by
 `TestRedteam_A7Retry_ChildInheritsTextOnlyNeverTheParentsTreeOrBranch`, which
 drives the real dispatcher and asserts the child's stage root is its own and
-its clone ref is the parent's repo ref unchanged — no branch, no fragment, no
-reference to the parent anywhere in its persisted record.
+its clone ref is the parent's repo ref unchanged — **no reference to the
+parent's branch or tree** anywhere in its persisted record: no `agent/<parent>`,
+no base ref, no fragment, no mount.
+
+The child does of course reference the parent *as an id*, deliberately and in
+two places: `retry_of` on its persisted task, and a `- prior task: <id>` line in
+its instruction. That is the chain link every surface follows, not a leak — an
+id names a record, and naming one gives a fresh VM no access to the tree that
+record produced.
 
 ### N3. Side-channel data exfiltration via the diff
 
@@ -519,6 +547,17 @@ The bounds on that:
   waiting for it, whereas a broker-initiated retry that nobody asked for must
   not sit queued for hours and then dispatch against a base that has moved on.
   The refusal is recorded on the audit's `ci_observation` row.
+
+  **Where it is not set, that refusal is a no-op, and the per-chain product
+  above is the ONLY spend bound there is.** Both retry-specific refusals — the
+  decision's and the dispatcher's drop — test the same aggregate cap, which is
+  unwired when `aggregate_budget_usd` is `0` (the default) and is
+  `api_key`-mode-only by design, so it is absent entirely in subscription mode.
+  Nothing bounds the number of chains running concurrently:
+  `max_attempts × task_budget_usd` is per failing task, and ten tasks failing
+  CI overnight is ten of them. brokerd warns at boot when `ci.max_attempts > 0` with no
+  aggregate cap; it does not refuse, because refusing would make the feature
+  unusable in the auth mode most unattended installs run.
 - Only an **observed** check failure retries. A watch that timed out, gave up,
   or found no checks configured retries nothing: spending a fresh budget on
   "we could not tell" is the failure mode this rule exists to prevent.

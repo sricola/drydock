@@ -509,12 +509,22 @@ func TestCIRetry_ChildReposesTheHumanGate(t *testing.T) {
 		t.Fatalf("the retry did not persist a diff for review: %v", err)
 	}
 	// Nothing was pushed and no PR was opened while it waits.
-	time.Sleep(20 * time.Millisecond)
 	if ad.opened {
 		t.Fatal("the retry opened a PR without an approval — the gate was bypassed")
 	}
 	if got := queueItemState(t, b, child.ID).State; got != QueueAwaitingReview {
 		t.Fatalf("child state = %q, want awaiting_review", got)
+	}
+	// And nothing was pushed on the way OUT of the gate either. Resolving it —
+	// with a DENY — is the deterministic anchor for that: the item cannot leave
+	// awaiting_review any other way, so once it has reached a terminal we know
+	// the whole gate has been traversed and can assert on the adapter with no
+	// wall clock in the assertion. A sleep here only ever sampled the same fact
+	// at an arbitrary instant, in a suite that otherwise runs on the clock seam.
+	deny(t, b, child.ID)
+	waitForQueueState(t, b, child.ID, QueueCancelled)
+	if ad.opened {
+		t.Fatal("the retry opened a PR across a DENIED gate")
 	}
 }
 
@@ -837,8 +847,19 @@ func TestCIRetry_WatcherObservedFailureEnqueuesExactlyOneChild(t *testing.T) {
 	if child.Task.Attempt != 1 || child.Task.RetryOf != it.ID {
 		t.Errorf("child attempt/retry_of = %d/%q, want 1/%s", child.Task.Attempt, child.Task.RetryOf, it.ID)
 	}
-	// Let several more polls run: the marker is gone, so nothing re-decides.
-	time.Sleep(20 * time.Millisecond)
+	// Nothing can re-decide, and that rests on two DURABLE facts rather than on
+	// how long a test is willing to wait: the watch's entire state is the
+	// <id>.ci.json marker, which concludeCIWatch removed, so no later pass has
+	// anything to poll; and the parent carries the broker-owned enqueue-once
+	// flag, so even a replayed observation would stop at gate 5. Asserting
+	// those is what "no second child" actually means — a wall-clock sleep only
+	// sampled it at one arbitrary instant.
+	if _, err := os.Stat(ciMarkerPath(b.AuditRoot, it.ID)); !os.IsNotExist(err) {
+		t.Fatalf("the concluded watch left its marker behind (stat err = %v); later passes would re-poll it", err)
+	}
+	if got := queueItemState(t, b, it.ID).RetryTaskID; got != child.ID {
+		t.Fatalf("parent RetryTaskID = %q, want the child %q — the enqueue-once flag is what stops a replay", got, child.ID)
+	}
 	if n := len(queueItemsIn(t, b)); n != 2 {
 		t.Fatalf("%d queue items after the watch concluded, want 2", n)
 	}

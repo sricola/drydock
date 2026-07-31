@@ -93,9 +93,69 @@ func (b *Broker) StartDispatcher() {
 
 // StopDispatcher stops the dispatcher goroutine. In-flight runQueued
 // lifecycles are NOT interrupted here — CancelAll owns live-task teardown.
+//
+// Idempotent: brokerd reaches it through BeginQueueDrain from the signal
+// handler and a test reaches it from a defer, and a second close of queueStop
+// would panic.
 func (b *Broker) StopDispatcher() {
 	b.initQueueChans()
-	close(b.queueStop)
+	b.queueStopOnce.Do(func() { close(b.queueStop) })
+}
+
+// BeginQueueDrain latches the queue shut and stops the dispatcher. Call it
+// FIRST in shutdown, before StopCIWatch and CancelAll.
+//
+// The window it closes. StopCIWatch deliberately does not wait for an in-flight
+// poll (blocking the drain behind a GitHub round trip is the starvation D4
+// exists to prevent), so a poll that is mid-flight when the signal arrives can
+// still conclude, reach maybeEnqueueCIRetry, and Enqueue a child. Before this
+// latch the dispatcher was still running — brokerd never called StopDispatcher —
+// so that child could be taken and START A FRESH VM after CancelAll had already
+// torn down every live task, leaving a VM and a stage the exiting process never
+// cleans up. Nothing but a signal's timing was stopping it, and B2 is what made
+// the trigger unattended.
+//
+// After this returns, the two brokerd-side producers of new work are both shut:
+// maybeEnqueueCIRetry declines (gate 0) and takeDispatchable dispatches nothing.
+// Nothing durable is lost either way — an item that was already enqueued stays
+// `queued` on disk and the next boot's ResumeQueue dispatches it.
+//
+// The HTTP surface is NOT latched here: POST /queue keeps accepting items until
+// srv.Shutdown closes the listener, and those items simply wait for the next
+// boot, exactly as an item enqueued one second before the signal always did.
+func (b *Broker) BeginQueueDrain() {
+	b.draining.Store(true)
+	b.StopDispatcher()
+}
+
+// WaitQueueDrain blocks until every in-flight runQueued lifecycle has returned,
+// or ctx expires. Call it AFTER CancelAll, which is what makes those lifecycles
+// finish promptly; this only waits for the teardown they then run (force-delete
+// the VM, clean the stage, write the terminal). Returns whether the wait
+// completed rather than timed out.
+//
+// Without it the process could exit while a cancelled queued task was still
+// deleting its VM — the same truncation risk brokerd already avoids for
+// synchronous tasks by waiting on srv.Shutdown, which cannot see these
+// goroutines because they are not HTTP handlers.
+//
+// On a timeout the waiter goroutine is left parked on the WaitGroup. That is
+// deliberate and costs nothing: the only caller is a process on its way out,
+// and the alternative (a cancellable wait) would mean threading a context
+// through every lifecycle for a case whose whole meaning is "we are giving up
+// and exiting anyway".
+func (b *Broker) WaitQueueDrain(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		b.queueRunning.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (b *Broker) dispatchLoop() {
@@ -124,6 +184,9 @@ func (b *Broker) dispatchPass() {
 		if !ok {
 			return
 		}
+		// Counted BEFORE the goroutine starts, so a WaitQueueDrain that begins
+		// in the same instant cannot observe zero and return early.
+		b.queueRunning.Add(1)
 		go b.runQueued(it)
 	}
 }
@@ -142,6 +205,12 @@ func (b *Broker) dispatchPass() {
 // A spend-capped BROKER-INITIATED CI RETRY (Task.RetryOf != "") is DROPPED
 // instead, to dead_letter. See dropSpendCappedRetryLocked.
 func (b *Broker) takeDispatchable() (QueueItem, bool) {
+	// Shutdown latch (BeginQueueDrain). Checked here rather than only in the
+	// dispatch loop because a pass can already be mid-flight when the signal
+	// lands, and starting a VM after CancelAll would orphan it.
+	if b.draining.Load() {
+		return QueueItem{}, false
+	}
 	b.queueMu.Lock()
 	defer b.queueMu.Unlock()
 	for i := 0; i < len(b.queue); i++ {
@@ -153,10 +222,18 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 			if it.Task.RetryOf == "" {
 				continue // spend-parked: stays queued, next tick re-checks
 			}
-			if b.dropSpendCappedRetryLocked(it) {
-				b.queue = append(b.queue[:i], b.queue[i+1:]...)
-				i--
-			}
+			// Dropped either way. The durable write can fail (a full or
+			// read-only disk), but the DECISION does not depend on it: a
+			// spend-capped broker-initiated retry is never dispatched, so
+			// leaving the in-memory copy behind bought nothing except a
+			// re-decide and a re-logged warning on every pass of every tick
+			// for as long as the disk stayed broken. The durable record then
+			// still says `queued`, which the next boot's ResumeQueue re-loads
+			// and re-drops — self-healing, and in the safe direction (an item
+			// that does not run).
+			b.dropSpendCappedRetryLocked(it)
+			b.queue = append(b.queue[:i], b.queue[i+1:]...)
+			i--
 			continue
 		}
 		if !b.acquireSlot() {
@@ -178,9 +255,9 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 }
 
 // dropSpendCappedRetryLocked terminates a queued CI-retry child that the
-// aggregate spend cap caught BEFORE it could dispatch. Caller holds queueMu;
-// reports whether the durable transition landed (so the caller may drop the
-// in-memory copy).
+// aggregate spend cap caught BEFORE it could dispatch. Caller holds queueMu and
+// drops the in-memory copy regardless of what this returns; the failure of a
+// durable write must not turn into a re-decide on every dispatch pass.
 //
 // WHY DROP RATHER THAN PARK, given the dispatcher parks every other item.
 // ciretryloop.go's gate 7 already refuses to ENQUEUE a retry against an
@@ -201,17 +278,17 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 // dead_letter, not cancelled: nobody cancelled it. It is the queue's existing
 // "did not reach a clean finish" terminal, it is visibly not a success in every
 // surface that renders an item, and last_error says exactly what happened.
-func (b *Broker) dropSpendCappedRetryLocked(it QueueItem) bool {
+func (b *Broker) dropSpendCappedRetryLocked(it QueueItem) {
 	const why = "dropped before dispatch: the aggregate vendor spend cap was exhausted, and a broker-initiated ci retry is refused rather than parked — an unattended retry that dispatches hours later would land on a base that has moved on, at a diff gate nobody is waiting at"
 	if _, err := b.setQueueStateLocked(it.ID, QueueDeadLetter, func(q *QueueItem) {
 		q.LastError = why
 	}); err != nil {
-		slog.Warn("queue: could not drop a spend-capped ci retry", "task_id", it.ID, "err", err)
-		return false
+		slog.Warn("queue: could not persist the drop of a spend-capped ci retry; it will not dispatch in this process and the next boot re-drops it",
+			"task_id", it.ID, "err", err)
+		return
 	}
 	slog.Info("queue: dropped a spend-capped ci retry rather than parking it",
 		"task_id", it.ID, "retry_of", it.Task.RetryOf, "attempt", it.Task.Attempt)
-	return true
 }
 
 // vendorExceeded reports whether the aggregate spend cap is exhausted for the
@@ -284,6 +361,7 @@ func (b *Broker) setQueueStateLocked(id string, to QueueState, mut func(*QueueIt
 // mapped from the lifecycle's outcome and persisted; the terminal file is
 // KEPT for `drydock queue list` history (a later prune sweep cleans it).
 func (b *Broker) runQueued(it QueueItem) {
+	defer b.queueRunning.Done() // paired with dispatchPass's Add
 	defer b.releaseSlot()
 	t := it.Task
 	// Rooted at Background like every task context: cancellation comes from

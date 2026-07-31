@@ -38,6 +38,25 @@ import (
 //
 // And the bound this file is mostly made of: the assembled instruction must
 // fit MaxTaskBodyBytes BY CONSTRUCTION. See buildRetryInstruction.
+//
+// EVERY RETRY'S INSTRUCTION IS ROOT + EXACTLY ONE EVIDENCE SECTION + EXACTLY
+// ONE PRIOR-DIFF SECTION — the most recent attempt's, never an accumulation.
+// The text carried forward is Task.RootInstruction (the original,
+// operator-authored task), not the parent's ASSEMBLED instruction. Two
+// properties depend on that and neither survives without it:
+//
+//   - SIZE IS CONSTANT IN DEPTH. Appending to the parent's assembled
+//     instruction adds ~20 KiB of fenced sections per hop, so a chain refuses
+//     on the task body cap at about depth 3 and the documented
+//     `ci.max_attempts` ceiling of 10 is unreachable. With the root carried,
+//     hop 10 is the same size as hop 1.
+//   - THE FENCE PROPERTY IS TRUE AT EVERY DEPTH. untrustedFenceToken proves a
+//     token absent from the bodies it is given. Inherited text from earlier
+//     hops is in neither the preimage nor the containment check, so a stacked
+//     instruction announces N token pairs while claiming "these tokens and no
+//     others" — self-contradictory from depth 2 on. With one pair of bodies
+//     per instruction (plus the carried root, passed as a third containment
+//     body), the claim is exactly true.
 
 const (
 	// retryCIEvidenceCap bounds the CI-evidence section body in RAW bytes.
@@ -80,6 +99,13 @@ const (
 	// shrink, so that ADDING a truncation marker to a section that was not
 	// previously truncated can never re-cross the limit.
 	retryShrinkSlack = 256
+	// retryFenceSaltPasses bounds untrustedFenceToken's salt search. A bump is
+	// reached only by a 64-bit truncated-SHA-256 preimage over bytes an attacker
+	// must fix BEFORE seeing the token, so one bump has never been observed and
+	// 64 is astronomically past "never". The cap is here because the loop runs
+	// on the CI watch goroutine and an unbounded loop on a background goroutine
+	// is a hang, not a refusal; exhausting it refuses the retry instead.
+	retryFenceSaltPasses = 64
 )
 
 // Fence vocabulary. A section is delimited by
@@ -214,6 +240,11 @@ func BuildRetryTask(req RetryRequest) (Task, error) {
 	child.AutoApprove = false
 	child.RetryOf = req.ParentID
 	child.Attempt = retryChildAttempt(req.Parent.Attempt)
+	// The ROOT — the original task, not the parent's assembled instruction.
+	// Set once at the first hop and inherited byte-for-byte after that, which
+	// is what makes every hop the same size and gives each instruction exactly
+	// one pair of fenced bodies. See the file header.
+	child.RootInstruction = retryRootInstruction(req.Parent)
 	child.Instruction = ""
 
 	instr, err := buildRetryInstruction(child, req)
@@ -252,6 +283,24 @@ func BuildRetryTask(req RetryRequest) (Task, error) {
 //     task into a chain with 2^63 hops of headroom.
 //
 // A too-HIGH attempt needs no guard: it can only ever shorten a chain.
+// retryRootInstruction is the text a retry re-poses as THE TASK: the original,
+// operator-authored instruction the chain started from.
+//
+// At the first hop the parent IS the operator's task, so its Instruction is the
+// root. At every later hop the parent is itself a retry whose Instruction is
+// root + fenced sections, and its RootInstruction carries the root unchanged —
+// so this returns the same string for every hop of a chain, which is the whole
+// point. A parent that somehow carries a RootInstruction but is not a retry
+// (nothing writes that today; POST /queue zeroes the field) is treated the same
+// way: the recorded root wins, because it is the only value that can be the
+// head of a chain.
+func retryRootInstruction(parent Task) string {
+	if parent.RootInstruction != "" {
+		return parent.RootInstruction
+	}
+	return parent.Instruction
+}
+
 func retryChildAttempt(parentAttempt int) int {
 	if parentAttempt < 0 {
 		return 1 // as if the parent were an ordinary attempt-0 submission
@@ -269,8 +318,9 @@ func retryChildAttempt(parentAttempt int) int {
 //
 //  1. The ENVELOPE is measured, not guessed: `child` with an empty Instruction
 //     is marshalled, giving the exact byte cost of every other field of this
-//     particular task (repo ref, egress list, model, the lot). The budget for
-//     the instruction is then
+//     particular task (repo ref, egress list, model, the lot — INCLUDING the
+//     carried RootInstruction, which is why no separate accounting for it is
+//     needed anywhere below). The budget for the instruction is then
 //
 //     avail = MaxTaskBodyBytes - len(envelope) - retryEncodingMargin
 //
@@ -283,9 +333,15 @@ func retryChildAttempt(parentAttempt int) int {
 //     raw-byte-only budget is wrong by up to 6x on perfectly ordinary text.
 //
 //  2. Nominal caps: evidence 4 KiB + prior diff 16 KiB + scaffold ≤ 2 KiB =
-//     22 KiB of raw additions on top of the original instruction. For any
-//     original under ~20 KiB of ordinary prose that is comfortably inside
-//     64 KiB, and no clamping happens at all.
+//     22 KiB of raw additions on top of the ROOT instruction — the SAME 22 KiB
+//     at every depth, because the root is what is carried, not the parent's
+//     assembled text. For any root under ~20 KiB of ordinary prose that is
+//     comfortably inside 64 KiB and no clamping happens at all, at hop 1 and
+//     at hop 10 alike. (The root is charged twice against the 64 KiB body cap
+//     — once in the envelope as RootInstruction, once at the head of the
+//     assembled instruction — which is the price of the constant-size
+//     property. A root over ~30 KiB refuses at the FIRST hop rather than
+//     silently truncating, and refuses identically at every later one.)
 //
 //  3. Clamping, for everything else. If the encoded assembly exceeds `avail`
 //     by `excess`, the prior-diff cap is reduced by `excess + slack` raw
@@ -296,9 +352,9 @@ func retryChildAttempt(parentAttempt int) int {
 //     a reduction always removes real bytes rather than shaving an unused
 //     ceiling.
 //
-// The original instruction is NEVER truncated. It is the task; cutting it
-// would silently change what the agent was asked to do. If it does not leave
-// room for at least retryMinCIEvidenceBytes of evidence, the retry is refused.
+// The ROOT instruction is NEVER truncated. It is the task; cutting it would
+// silently change what the agent was asked to do. If it does not leave room for
+// at least retryMinCIEvidenceBytes of evidence, the retry is refused.
 func buildRetryInstruction(child Task, req RetryRequest) (string, error) {
 	envelope, err := json.Marshal(child) // child.Instruction is "" here
 	if err != nil {
@@ -310,15 +366,27 @@ func buildRetryInstruction(child Task, req RetryRequest) (string, error) {
 			MaxTaskBodyBytes)
 	}
 
+	root := child.RootInstruction
 	evidence := ciEvidenceText(req.Observation)
-	diff := sanitizeUntrustedText(req.PriorDiff)
+	// SANITIZE ONLY AS FAR AS THE CAP CAN USE. The prior diff arrives as
+	// whatever readDiffNoFollow read off disk — a whole attempt's patch, which
+	// the diff policy allows into the tens of megabytes — and at most
+	// retryPriorDiffCap of it can ever reach the instruction. Sanitizing the
+	// whole thing allocated a second full-size copy per decision to throw
+	// 99.9% of it away. The bounded form stops one byte past the cap, which is
+	// exactly enough for the truncation detection below to still fire, so the
+	// output is byte-identical to sanitizing the whole and then capping.
+	diff := sanitizeUntrustedTextLimit(req.PriorDiff, retryPriorDiffCap)
 
 	evCap := min(retryCIEvidenceCap, len(evidence))
 	dfCap := min(retryPriorDiffCap, len(diff))
 	evFloor := min(len(evidence), retryMinCIEvidenceBytes)
 
 	for pass := 0; pass < retryClampPasses; pass++ {
-		instr := assembleRetryInstruction(req, evidence, evCap, diff, dfCap)
+		instr, aerr := assembleRetryInstruction(req, root, evidence, evCap, diff, dfCap)
+		if aerr != nil {
+			return "", aerr
+		}
 		enc, merr := json.Marshal(instr)
 		if merr != nil {
 			return "", fmt.Errorf("ciretry: encoding the retry instruction: %w", merr)
@@ -333,15 +401,21 @@ func buildRetryInstruction(child Task, req RetryRequest) (string, error) {
 		case evCap > evFloor:
 			evCap = max(evFloor, evCap-excess-retryShrinkSlack)
 		default:
-			return "", retryNoRoomErr(req.ParentID, len(req.Parent.Instruction), avail)
+			return "", retryNoRoomErr(req.ParentID, len(root), avail)
 		}
 	}
-	return "", retryNoRoomErr(req.ParentID, len(req.Parent.Instruction), avail)
+	return "", retryNoRoomErr(req.ParentID, len(root), avail)
 }
 
-func retryNoRoomErr(parentID string, instrLen, avail int) error {
-	return fmt.Errorf("ciretry: refusing to retry %s: its %d-byte instruction leaves under %d bytes of the %d-byte instruction budget for CI evidence, and a retry that cannot say what failed is just a re-run",
-		parentID, instrLen, retryMinCIEvidenceBytes, avail)
+// retryNoRoomErr names the ORIGINAL task instruction, because that is the only
+// instruction text a retry carries and the only one an operator wrote. It used
+// to report the PARENT'S assembled instruction length, which at depth >= 2 was
+// mostly drydock's own accumulated scaffolding — so the refusal read as "your
+// 62074-byte instruction is too long" about an instruction the operator never
+// wrote and could not shorten.
+func retryNoRoomErr(parentID string, rootLen, avail int) error {
+	return fmt.Errorf("ciretry: refusing to retry %s: the original task instruction is %d bytes, which leaves under %d bytes of the %d-byte instruction budget for CI evidence, and a retry that cannot say what failed is just a re-run",
+		parentID, rootLen, retryMinCIEvidenceBytes, avail)
 }
 
 // assembleRetryInstruction renders the final instruction text.
@@ -356,7 +430,12 @@ func retryNoRoomErr(parentID string, instrLen, avail int) error {
 // why the last one failed, and it is reviewed at the same diff gate as every
 // other instruction. Its only processing is: sanitize, cap, fence, hash into
 // InstructionSHA256 for provenance.
-func assembleRetryInstruction(req RetryRequest, evidence string, evCap int, diff string, dfCap int) string {
+//
+// `root` is the ORIGINAL task instruction (Task.RootInstruction), not the
+// parent's assembled one — see the file header for why that distinction is
+// load-bearing rather than cosmetic. Exactly one evidence section and exactly
+// one prior-diff section are written, at every depth.
+func assembleRetryInstruction(req RetryRequest, root, evidence string, evCap int, diff string, dfCap int) (string, error) {
 	evBody, evCut := capBytesAtRune(evidence, evCap)
 	if evCut {
 		evBody += retryTruncationMarker(retryEvidenceTruncationMarker, evCap)
@@ -366,15 +445,25 @@ func assembleRetryInstruction(req RetryRequest, evidence string, evCap int, diff
 		dfBody += retryTruncationMarker(retryDiffTruncationMarker, dfCap)
 	}
 
-	// Both tokens are derived from, and proven absent from, BOTH bodies. See
-	// untrustedFenceToken: a per-section token would only be provably absent
-	// from its OWN section, which is not the property the preamble states.
-	evTok := untrustedFenceToken(retryEvidenceKind, evBody, dfBody)
-	dfTok := untrustedFenceToken(retryDiffKind, evBody, dfBody)
+	// Both tokens are derived from, and proven absent from, BOTH untrusted
+	// bodies AND the carried root instruction — i.e. every byte of the assembled
+	// document that drydock did not author itself. See untrustedFenceToken: a
+	// per-section token would only be provably absent from its OWN section,
+	// which is not the property the preamble states.
+	evTok, err := untrustedFenceToken(retryEvidenceKind, evBody, dfBody, root)
+	if err != nil {
+		return "", err
+	}
+	dfTok, err := untrustedFenceToken(retryDiffKind, evBody, dfBody, root)
+	if err != nil {
+		return "", err
+	}
 
 	var b strings.Builder
-	// 1. The original instruction, VERBATIM. It is the task.
-	b.WriteString(req.Parent.Instruction)
+	// 1. The ORIGINAL instruction, VERBATIM. It is the task. Not the parent's
+	//    assembled instruction: this is the one line that keeps a chain's hops
+	//    the same size and keeps the fence claim below true past depth 1.
+	b.WriteString(root)
 	b.WriteString("\n\n---\n\n")
 
 	// 2. Broker-authored header. Every value interpolated here is either an
@@ -383,6 +472,7 @@ func assembleRetryInstruction(req RetryRequest, evidence string, evCap int, diff
 	fmt.Fprintf(&b, "## drydock automated retry (attempt %d)\n\n", retryChildAttempt(req.Parent.Attempt))
 	fmt.Fprintf(&b, "The previous attempt at the task above was pushed and its pull request's CI checks FAILED, as observed by the drydock host.\n\n")
 	b.WriteString("This is a FRESH task on a FRESH clone of the repository's default branch HEAD. The previous attempt's branch is NOT your base and its changes are NOT in your working tree: redo the work, incorporating what the evidence below says went wrong. Your diff will be reviewed in full, against the default branch, exactly like the last one.\n\n")
+	b.WriteString("The two sections below cover exactly ONE attempt — the MOST RECENT one. Earlier attempts in this chain are deliberately not carried forward; the task above is the operator's original, unchanged since attempt 0.\n\n")
 	fmt.Fprintf(&b, "- prior task: %s\n", req.ParentID)
 	if u := sanitizeUntrustedLine(req.Observation.PRURL, 300); u != "" {
 		fmt.Fprintf(&b, "- prior pull request: %s\n", u)
@@ -415,7 +505,7 @@ func assembleRetryInstruction(req RetryRequest, evidence string, evCap int, diff
 	default:
 		writeFenced(&b, retryDiffKind, dfTok, dfBody)
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 func writeFenced(b *strings.Builder, kind, token, body string) {
@@ -428,9 +518,9 @@ func writeFenced(b *strings.Builder, kind, token, body string) {
 }
 
 // untrustedFenceToken derives this section's delimiter token from the final
-// bytes of EVERY untrusted section in the instruction, and PROVES the token
-// occurs in none of them: on the (preimage-hard, never-observed) collision it
-// re-derives with a bumped salt until it does not.
+// bytes of EVERY non-broker-authored body in the instruction, and PROVES the
+// token occurs in none of them: on the (preimage-hard, never-observed)
+// collision it re-derives with a bumped salt until it does not.
 //
 // WHY ALL THE BODIES AND NOT JUST THIS ONE. The preamble announces both tokens
 // verbatim and says "the genuine delimiters carry these tokens and no others".
@@ -449,11 +539,24 @@ func writeFenced(b *strings.Builder, kind, token, body string) {
 // a fenced section reaches a decision — which is exactly why the STATED
 // property has to be true: it is the only thing the fence claims.
 //
+// AND THE CARRIED ROOT INSTRUCTION IS ONE OF THE BODIES. It is not untrusted in
+// the same sense — an operator wrote it — but it IS text drydock did not author
+// and it sits in the same document above the fences, so a token that happened to
+// appear in it would make the preamble's "these tokens and no others" false in
+// the same way. Passing it here makes the claim hold over every byte of the
+// instruction that drydock did not write itself, at every depth of a chain.
+//
 // Deterministic and pure — same bodies, same tokens — so tests and the audit's
 // InstructionSHA256 are reproducible. The bodies are passed in a fixed order by
 // every caller, so the two kinds see the same preimage tail.
-func untrustedFenceToken(kind string, bodies ...string) string {
-	for salt := 0; ; salt++ {
+//
+// The salt search is CAPPED (retryFenceSaltPasses). Reaching the cap needs a
+// truncated-SHA-256 preimage 64 times over, so it has never happened and cannot
+// be steered into — but this runs on the CI watch goroutine, where an unbounded
+// loop is a silent hang rather than a refusal, and a refusal is the honest
+// ending everywhere else in this file.
+func untrustedFenceToken(kind string, bodies ...string) (string, error) {
+	for salt := 0; salt < retryFenceSaltPasses; salt++ {
 		h := sha256.New()
 		fmt.Fprintf(h, "drydock-fence\x00%s\x00%d", kind, salt)
 		for _, body := range bodies {
@@ -468,9 +571,11 @@ func untrustedFenceToken(kind string, bodies ...string) string {
 			}
 		}
 		if clean {
-			return tok
+			return tok, nil
 		}
 	}
+	return "", fmt.Errorf("ciretry: could not derive a collision-free %s fence token in %d salt passes; refusing to assemble an instruction whose fence claim would be false",
+		kind, retryFenceSaltPasses)
 }
 
 // ciEvidenceText renders the broker's observation as text. The COUNTS and the
@@ -562,9 +667,31 @@ func capBytesAtRune(s string, limit int) (string, bool) {
 // gate (D3, THREAT_MODEL N2). Combining marks in particular MUST survive: they
 // are ordinary content in most of the world's scripts.
 func sanitizeUntrustedText(s string) string {
+	// The output can never be longer than the input, so this limit is never
+	// reached and the behavior is the plain unbounded sanitize.
+	return sanitizeUntrustedTextLimit(s, len(s))
+}
+
+// sanitizeUntrustedTextLimit is sanitizeUntrustedText stopped as soon as it has
+// produced STRICTLY MORE than limit bytes.
+//
+// One byte past, not exactly at: the caller caps the result at the same limit
+// and reports a truncation only when the cap actually cut something, so a
+// result that stopped exactly AT the limit would be indistinguishable from an
+// input that happened to end there and the truncation marker would go missing.
+// Overshooting by one keeps the marker honest while still bounding the
+// allocation to the cap — which is the point, since the input can be tens of
+// megabytes and at most `limit` of it can ever be used.
+func sanitizeUntrustedTextLimit(s string, limit int) string {
+	if limit < 0 {
+		limit = 0
+	}
 	var b strings.Builder
-	b.Grow(len(s))
+	b.Grow(min(len(s), limit+utf8.UTFMax))
 	for _, r := range s {
+		if b.Len() > limit {
+			break
+		}
 		switch {
 		case r == '\n' || r == '\t':
 			b.WriteRune(r)

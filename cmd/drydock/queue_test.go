@@ -340,3 +340,56 @@ func TestQueueList_DecodesRetryFields(t *testing.T) {
 		t.Errorf("chainless retry cell = %q, want -", got)
 	}
 }
+
+// TestQueueList_ReasonColumnSurfacesLastError. One ending had no
+// operator-visible home at all: a bounded CI retry that the dispatcher drops on
+// the aggregate spend cap never runs, so it writes no audit terminal row and
+// appears nowhere in `drydock tasks` — its whole explanation is the queue item's
+// last_error. `GET /queue` did not project the field and nothing in cmd/ read
+// it, so the documented "the reason is recorded in the item's last_error" was
+// true on disk and nowhere a person would look.
+func TestQueueList_ReasonColumnSurfacesLastError(t *testing.T) {
+	fakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `[
+		 {"id":"1111111111111111111111111111aaaa","repo":"https://github.com/o/r.git","state":"dead_letter","enqueued_at_ms":%d,"retry_of":"2222222222222222222222222222bbbb","attempt":1,"last_error":"dropped before dispatch: the aggregate vendor spend cap was exhausted, and a broker-initiated ci retry is refused rather than parked"},
+		 {"id":"3333333333333333333333333333cccc","repo":"https://github.com/o/r.git","state":"queued","enqueued_at_ms":%d}
+		]`, time.Now().UnixMilli(), time.Now().UnixMilli())
+	})
+	items, err := fetchQueue()
+	if err != nil {
+		t.Fatalf("fetchQueue: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %+v", items)
+	}
+	var buf bytes.Buffer
+	renderQueueTable(&buf, items)
+	out := buf.String()
+	if !strings.Contains(out, "REASON") {
+		t.Errorf("table has no REASON column:\n%s", out)
+	}
+	if !strings.Contains(out, "dropped before dispatch") {
+		t.Errorf("the drop reason is not rendered:\n%s", out)
+	}
+	// A clean item renders "-", never a blank an operator could read as
+	// "no information available".
+	if got := queueReasonCell(items[1]); got != "-" {
+		t.Errorf("clean item reason cell = %q, want -", got)
+	}
+	// It is one column wide: the full string lives on GET /queue.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "dropped before dispatch") && len([]rune(line)) > 260 {
+			t.Errorf("the reason cell is untruncated (%d runes):\n%s", len([]rune(line)), line)
+		}
+	}
+}
+
+// The reason crosses into an operator's terminal off a disk record, so it goes
+// through safeCell like every other cell.
+func TestQueueList_ReasonCellIsSanitized(t *testing.T) {
+	got := queueReasonCell(queueListItem{LastError: "boom\x1b[31m\x07\r\ninjected"})
+	if strings.ContainsAny(got, "\x1b\x07\r\n") {
+		t.Errorf("queueReasonCell leaked control bytes: %q", got)
+	}
+}

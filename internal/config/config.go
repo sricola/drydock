@@ -125,10 +125,16 @@ type CIConfig struct {
 	WatchTimeout time.Duration `yaml:"watch_timeout"`
 	// MaxAttempts bounds the bounded-retry chain: on an observed CI failure
 	// the broker may enqueue up to this many fresh retry tasks. 0 (the
-	// default) disables retry entirely. Declared here in B1 so the schema is
-	// stable; the behavior lands in B2. Each attempt mints a fresh full
+	// default) disables retry entirely. Each attempt mints a fresh full
 	// task_budget_usd, so the worst-case spend for one chain is
 	// max_attempts × task_budget_usd — which is why MaxCIAttempts caps it.
+	//
+	// That per-chain product is the ONLY bound unless aggregate_budget_usd is
+	// also set: the retry's own spend refusals (the decision's gate 7 and the
+	// dispatcher's drop) both run through Broker.vendorExceeded, which reports
+	// false when no aggregate cap is wired — and the aggregate cap is
+	// api_key-mode-only, so it is absent in subscription mode. brokerd warns at
+	// boot when this is non-zero with no aggregate cap.
 	//
 	// A non-zero value REQUIRES a non-zero Config.ApprovalTimeout; validate()
 	// refuses the pair. A retry child is the daemon's only unattended task
@@ -789,9 +795,18 @@ func (c *Config) validate() error {
 	// the diff gate it always re-poses. So: two PRs fail CI at 03:00, two
 	// children dispatch, each burns a full task_budget_usd, and each then parks
 	// at a gate nobody is awake to answer — with max_concurrent_tasks at its
-	// default of 2 that is every slot on the box, and the parked state survives
-	// a restart via the gate marker. Every task the operator submits afterwards
-	// sits `queued` indefinitely, with nothing anywhere warning why.
+	// default of 2 that is every slot on the box. Every task the operator
+	// submits afterwards sits `queued` indefinitely, with nothing anywhere
+	// warning why.
+	//
+	// The starvation is IN-PROCESS, and that is the whole of it: the semaphore
+	// is a plain channel rebuilt empty at boot, and the boot resume path
+	// (resumePush) re-drives a surviving gate WITHOUT taking a slot — the only
+	// two acquireSlot callers are HandleTask and the dispatcher. So a restart
+	// does clear the held slots. That is not a reason to drop the requirement:
+	// the daemon is meant to run for weeks, the starvation lasts as long as it
+	// does, and "restart the daemon" is not a policy for an unattended overnight
+	// queue. It is a reason not to claim more than is true.
 	//
 	// The watch itself already honors this (D4: it holds no slot and no stage);
 	// the CHILD is the new unattended actor, and it does not. Requiring a

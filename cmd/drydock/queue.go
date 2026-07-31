@@ -151,6 +151,7 @@ type queueListItem struct {
 	RetryOf      string `json:"retry_of"`
 	RetryTaskID  string `json:"retry_task_id"`
 	Attempt      int    `json:"attempt"`
+	LastError    string `json:"last_error"`
 }
 
 func fetchQueue() ([]queueListItem, error) {
@@ -237,23 +238,49 @@ func shortID(id string) string {
 	return s
 }
 
-// renderQueueTable renders the queue as ID/STATE/AGE/ATTEMPTS/CI/RETRY/REPO,
-// oldest first (brokerd already sorts by enqueue time). AGE is derived from
-// enqueued_at_ms. Every broker-sourced string crosses the terminal boundary
-// through safeCell, same as the other tables.
+// queueReasonCell renders the REASON column: the broker's own `last_error` for
+// an item that did not finish cleanly.
+//
+// It exists because one ending has no other operator-visible home. A CI retry
+// the dispatcher drops on the aggregate spend cap never runs, so it writes no
+// audit terminal row and appears nowhere in `drydock tasks` — its whole
+// explanation is the `last_error` the drop wrote, and before this column that
+// string lived on disk and nowhere a person would look.
+//
+// The value is broker-authored (the outcome vocabulary, or a fixed drop/cancel
+// sentence); no agent or CI text reaches it. It still goes through safeCell,
+// like every other cell, because it is read off a queue file and written to a
+// terminal. Truncated to one column's worth — `GET /queue` carries it whole.
+func queueReasonCell(it queueListItem) string {
+	s := safeCell(it.LastError)
+	if s == "" {
+		return "-"
+	}
+	r := []rune(s)
+	if len(r) > 44 {
+		return string(r[:44]) + "…"
+	}
+	return s
+}
+
+// renderQueueTable renders the queue as
+// ID/STATE/AGE/ATTEMPTS/CI/RETRY/REPO/REASON, oldest first (brokerd already
+// sorts by enqueue time). AGE is derived from enqueued_at_ms. Every
+// broker-sourced string crosses the terminal boundary through safeCell, same as
+// the other tables.
 func renderQueueTable(w io.Writer, items []queueListItem) {
 	if len(items) == 0 {
 		fmt.Fprintln(w, "(queue is empty)")
 		return
 	}
-	fmt.Fprintf(w, "%-32s  %-15s  %5s  %8s  %-16s  %-32s  %s\n",
-		"ID", "STATE", "AGE", "ATTEMPTS", "CI", "RETRY", "REPO")
+	fmt.Fprintf(w, "%-32s  %-15s  %5s  %8s  %-16s  %-32s  %-40s  %s\n",
+		"ID", "STATE", "AGE", "ATTEMPTS", "CI", "RETRY", "REPO", "REASON")
 	for _, it := range items {
-		fmt.Fprintf(w, "%-32s  %-15s  %5s  %8d  %-16s  %-32s  %s\n",
+		fmt.Fprintf(w, "%-32s  %-15s  %5s  %8d  %-16s  %-32s  %-40s  %s\n",
 			safeCell(it.ID), safeCell(it.State),
 			relAge(time.UnixMilli(it.EnqueuedAtMs)), it.Attempts,
 			queueCICell(it), queueRetryCell(it),
-			safeCell(shorten(it.Repo, 40)))
+			safeCell(shorten(it.Repo, 40)), queueReasonCell(it))
 	}
 }
 

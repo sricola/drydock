@@ -13,6 +13,8 @@ import (
 //
 // The gates, in the order they are applied, and why each is where it is:
 //
+//	0. THE DAEMON IS NOT SHUTTING DOWN. A retry authored during the drain would
+//	   be the one task nothing tears down; see BeginQueueDrain.
 //	1. OBSERVED FAILURE ONLY (D3). CIFailed is the only state that may retry.
 //	   timed_out / unknown / no_checks / passed each already terminate honestly
 //	   under B1, and none of them is evidence that a build is broken — retrying
@@ -83,6 +85,15 @@ import (
 // It never fails the caller: a CI retry is an enhancement to an already-final
 // terminal, and no failure here may change the parent's recorded outcome.
 func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (string, string) {
+	// Gate 0 — SHUTDOWN. StopCIWatch does not wait for an in-flight poll, so a
+	// poll that concludes during the drain can reach here after the daemon has
+	// begun tearing every task down. Authoring NEW work then is exactly the
+	// orphan-VM window BeginQueueDrain closes; the parent's terminal is already
+	// durable, and the operator can resubmit. Fail toward under-spending, as
+	// crash window W2 does for the same reason.
+	if b.draining.Load() {
+		return "", ""
+	}
 	// Gate 1 — D3. The ONLY control input: a broker-observed conclusion bucket.
 	// Not a rollup, not a count, and emphatically not anything a repository's
 	// workflow printed into a check name or a log.

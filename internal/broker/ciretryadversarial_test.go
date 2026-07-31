@@ -871,6 +871,15 @@ func TestRedteam_A7Retry_ChildInheritsTextOnlyNeverTheParentsTreeOrBranch(t *tes
 	if strings.Contains(string(blob), "agent/"+parent.ID) {
 		t.Errorf("A7 BREACH (retry): the child's queue item references the parent's branch:\n%s", blob)
 	}
+	// It DOES name the parent's id, deliberately, and the claim is worded
+	// around that: A7 is about the parent's BRANCH and TREE, not about the
+	// parent. `retry_of` (and the "- prior task:" line in the instruction) is
+	// the chain link every surface follows, and naming a record gives a fresh
+	// VM no access to the tree that record produced.
+	if child.Task.RetryOf != parent.ID {
+		t.Errorf("the child does not name its parent (retry_of = %q): the chain would be unfollowable",
+			child.Task.RetryOf)
+	}
 	// And the parent's tree was never read: its marker is untouched and the
 	// child's staged work tree is a different directory entirely.
 	if _, err := os.Stat(filepath.Join(parentStage, "PARENT-TREE-MARKER")); err != nil {
