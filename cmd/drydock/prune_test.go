@@ -42,6 +42,7 @@ func TestTaskIDFromFile(t *testing.T) {
 		"2d66a317c7c77f92.diff":       "2d66a317c7c77f92",
 		"2d66a317c7c77f92.widen.json": "2d66a317c7c77f92",
 		"2d66a317c7c77f92.verify.log": "2d66a317c7c77f92",
+		"2d66a317c7c77f92.ci.json":    "2d66a317c7c77f92",
 	}
 	for name, wantID := range ok {
 		if id, got := taskIDFromFile(name); !got || id != wantID {

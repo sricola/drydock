@@ -58,6 +58,35 @@ type Adapter interface {
 	Available() error
 }
 
+// PullRequest is the identity of a PR/MR an adapter just opened: the platform's
+// number and its canonical URL. The zero value means "no PR identity was
+// observed" — it is missing evidence, never a claim that no PR exists and never
+// a claim that one does. Callers must treat the zero value as "cannot watch
+// this PR", not as a failure of the push that preceded it.
+type PullRequest struct {
+	Number int
+	URL    string
+}
+
+// PullRequestOpener is the OPTIONAL capability an adapter may implement to
+// report the identity of the PR it just opened. It is deliberately NOT part of
+// Adapter: adding a method there would break every adapter (and every test
+// fake) for a capability only the GitHub adapter can honor today. Callers
+// type-assert for it, exactly as the broker does for BaseCommit /
+// PushPreflight / WithContext / stagedExporter.
+//
+// Contract for implementations:
+//   - OpenRequestResult opens the request EXACTLY as OpenRequest does (same
+//     argv), so a caller picks one or the other — never both, or two PRs open.
+//   - A non-nil error means the open itself failed, and means the same thing
+//     OpenRequest's error means.
+//   - A nil error with a zero PullRequest means the open succeeded but the
+//     identity could not be determined (unexpected CLI output). That is a
+//     clean "no identity" result, never an error: the push already landed.
+type PullRequestOpener interface {
+	OpenRequestResult(r Request) (PullRequest, error)
+}
+
 // AdapterFor selects an adapter. Explicit `platform` wins; otherwise we
 // fall back to host-name inference. Self-hosted GitLab/Gitea callers MUST
 // set platform explicitly since the hostname won't say so.
@@ -126,4 +155,38 @@ var runCLI = func(workDir string, env []string, name string, args ...string) err
 		return fmt.Errorf("%s: %w\n%s", name, err, out)
 	}
 	return nil
+}
+
+// runCLIOutputIn is the capturing sibling of runCLI: same timeout, same
+// WaitDelay, same working directory, but it returns the command's STDOUT so a
+// caller can parse what the vendor CLI printed (runCLI's CombinedOutput
+// discards it into an error string, and mixing stderr chatter into the parse
+// would be unparseable anyway). On failure the captured stderr is folded into
+// the error instead.
+//
+// It is distinct from issue.go's runCLIOutput, which hard-pins Dir to "" —
+// `gh issue view --repo ...` is scoped by a flag, whereas `gh pr create` is
+// scoped by the work tree it runs in and MUST keep Request.WorkDir. The two
+// are not interchangeable; conflating them would run pr-create against the
+// broker's own cwd.
+//
+// CodeQL-safety (identical contract to runCLI, see its comment): name is split
+// out of the variadic args and is a compile-time string literal at every call
+// site, and every user-influenced value appears only as the VALUE following a
+// flag — never as a bare positional and never as argv[0].
+var runCLIOutputIn = func(workDir string, env []string, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), remoteCLITimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = workDir
+	cmd.Env = env
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("%s: %w\n%s", name, err, exitErr.Stderr)
+		}
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return out, nil
 }

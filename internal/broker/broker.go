@@ -181,6 +181,19 @@ type Broker struct {
 	PushRetryBackoff     time.Duration
 	PushFreshBranchTries int
 
+	// CIWatch enables host-side observation of a pushed PR's CI (config
+	// `ci.watch`). OFF by default: with it false, a stock install behaves
+	// exactly as it did before — finishPush opens the PR through the plain
+	// Adapter.OpenRequest path and writes no marker.
+	//
+	// When true AND the selected adapter implements remote.PullRequestOpener,
+	// a SUCCESSFUL push captures the PR's identity and persists a <id>.ci.json
+	// marker for the watcher. Neither the capture nor the marker write can
+	// turn a landed push into a failure: the branch is already saved, so
+	// missing PR identity is recorded as missing evidence (no marker, no
+	// watch) and the task completes exactly as it does today (D7).
+	CIWatch bool
+
 	// PolicyFields/PolicyHash are the daemon's effective policy as resolved by
 	// config.Explain at boot, stashed here so GET /admin/policy can report what
 	// brokerd actually loaded — read-only, no recomputation on request. Set
@@ -1371,11 +1384,27 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 	}
 	// Branch is saved. Opening the PR/MR is best-effort; never downgrade a
 	// successful push to a failure.
+	//
+	// `branch` — the branch pushWithRecovery actually landed — is what every
+	// downstream record keys on, NOT `base`: a collision pushes agent/<id>-2,
+	// and a marker naming agent/<id> would point the CI watch at a branch this
+	// task never pushed.
 	title, body := prContent(tr.instruction, tr.id)
-	prErr := adapter.OpenRequest(remote.Request{
+	req := remote.Request{
 		WorkDir: tr.st.WorkDir(), Branch: branch, Env: tr.st.PushEnv(),
 		Title: title, Body: body, Draft: tr.draft,
-	})
+	}
+	// The capability path opens the PR with the SAME argv as OpenRequest and
+	// additionally reports its identity; it replaces (never supplements) the
+	// plain call, or two PRs would be opened. Gated on CIWatch so a stock
+	// install takes the byte-identical path it always has.
+	var pr remote.PullRequest
+	var prErr error
+	if opener, ok := adapter.(remote.PullRequestOpener); ok && b.CIWatch {
+		pr, prErr = opener.OpenRequestResult(req)
+	} else {
+		prErr = adapter.OpenRequest(req)
+	}
 	tr.outcome = "pushed"
 	ev := map[string]any{"event": "result", "outcome": "pushed",
 		"task_id": tr.id, "branch": branch, "platform": adapter.Name(),
@@ -1386,7 +1415,41 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		ev["pr_error"] = safeErr(prErr)
 		ev["pr_hint"] = "branch '" + branch + "' was pushed; open a PR manually (" + adapter.Name() + ")"
 	}
+	// Additive only: pr_opened keeps its meaning ("the open call did not
+	// error"), and pr_number/pr_url appear only when the identity is actually
+	// known. No identity => the keys are absent and no marker exists, which is
+	// exactly today's behavior.
+	if pr.Number > 0 {
+		ev["pr_number"] = pr.Number
+		ev["pr_url"] = pr.URL
+		tr.recordCIMarker(branch, pr)
+	}
 	tr.sw.emit(ev)
+}
+
+// recordCIMarker persists the <id>.ci.json watch marker for a landed push with
+// a known PR identity. Best-effort BY CONSTRUCTION: the push already succeeded
+// and the terminal event is already assembled, so a marker write failure is
+// logged and cannot touch the outcome. The worst case is a task that completes
+// without a CI watch — the same as a task whose adapter reports no identity.
+func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
+	now := tr.b.nowMs()
+	m := ciMarker{
+		TaskID:   tr.id,
+		RepoRef:  tr.repoRef,
+		Branch:   branch,
+		PRNumber: pr.Number,
+		PRURL:    pr.URL,
+		// State is what the broker has OBSERVED, and it has observed nothing
+		// yet — pending, never "passed by default".
+		State:       CIPending,
+		CreatedAtMs: now,
+		UpdatedAtMs: now,
+	}
+	if err := writeCIMarker(tr.b.AuditRoot, m); err != nil {
+		slog.Warn("ci watch: could not persist marker; this push will not be watched",
+			"task_id", tr.id, "branch", branch, "pr", pr.Number, "err", err)
+	}
 }
 
 // resolveAgent picks the agent (task value → operator default → "claude") and
