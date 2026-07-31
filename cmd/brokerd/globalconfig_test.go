@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,6 +243,106 @@ func TestApplyGlobalCeiling_ConfigReachesTheEnforcementDecision(t *testing.T) {
 	applyGlobalCeiling(b2, cfg)
 	if st2 := b2.GlobalCeilingStatus(); !st2.Blocked || st2.Starts != 2 {
 		t.Errorf("after restart: blocked=%v starts=%d, want the ceiling to survive", st2.Blocked, st2.Starts)
+	}
+}
+
+// TestApplyGlobalCeiling_AUSDOnlyInstallIsWarnedItHasNoCrashBackstop.
+//
+// The ceiling's biggest deliberate blind spot — boot reconciliation recording
+// every crash-lost task with unknown spend rather than reading a dollar figure
+// out of an agent-writable trace — is documented as BOUNDED because the START
+// LIMB counts every one of those tasks exactly. That sentence is only true when
+// global_max_tasks is set. On a USD-only install nothing counts them, and the
+// under-count is not even bounded at max_concurrent_tasks: it repeats on every
+// crash.
+//
+// The response is a boot warning rather than a refusal (a control that bricks an
+// unattended install after a routine crash is worse than a stated blind spot), so
+// the test is that the warning is EMITTED for exactly that configuration.
+func TestApplyGlobalCeiling_AUSDOnlyInstallIsWarnedItHasNoCrashBackstop(t *testing.T) {
+	base := func(t *testing.T) *config.Config {
+		t.Helper()
+		t.Setenv("HOME", t.TempDir())
+		cfg, err := config.Load(filepath.Join(t.TempDir(), "missing.yaml"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		cfg.AuditRoot = t.TempDir()
+		cfg.GlobalWindow = 24 * time.Hour
+		return cfg
+	}
+	cases := map[string]struct {
+		budget float64
+		tasks  int
+		warned bool
+	}{
+		"usd limb only — no backstop":                 {budget: 100, tasks: 0, warned: true},
+		"both limbs — the start limb is the backstop": {budget: 100, tasks: 50, warned: false},
+		"task limb only — nothing to under-count":     {budget: 0, tasks: 50, warned: false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := base(t)
+			cfg.GlobalBudgetUSD, cfg.GlobalMaxTasks = tc.budget, tc.tasks
+			var logs bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			b := &broker.Broker{AuditRoot: cfg.AuditRoot, DefaultAgent: "claude"}
+			applyGlobalCeiling(b, cfg)
+			slog.SetDefault(prev)
+			got := strings.Contains(logs.String(), "crash recovery has NO backstop")
+			if got != tc.warned {
+				t.Errorf("warned=%v, want %v. Log:\n%s", got, tc.warned, logs.String())
+			}
+		})
+	}
+}
+
+// TestReconcile_AUSDOnlyInstallHasNoBackstopAtAll measures the residual the
+// warning above names, so the claim in globalreconcile.go's header is checked
+// rather than asserted. Ten crash-recovery cycles with four tasks in flight put
+// forty starts into the ledger with unknown spend, and a USD-only ceiling admits
+// every one of them.
+func TestReconcile_AUSDOnlyInstallHasNoBackstopAtAll(t *testing.T) {
+	b, l := reconcileBroker(t, 24*time.Hour)
+	// A resolvable agent: the ceiling fails closed on one it cannot resolve (G2),
+	// and this test is about the limbs, not about agent resolution.
+	b.Providers = map[string]creds.Provider{"anthropic": stubProvider{}}
+	b.GlobalBudgetUSD, b.GlobalMaxTasks = 100, 0 // USD-only: the configuration under test
+
+	// Real wall-clock instants, because the assertions below run through
+	// GlobalCeilingStatus, which reads the broker's own (unfaked, from this
+	// package) clock.
+	now := time.Now().UnixMilli()
+	for cycle := 0; cycle < 10; cycle++ {
+		for i := 0; i < 4; i++ {
+			writeTrace(t, b.AuditRoot, taskID(t), trace{
+				rows:  []string{agentRow(20)},
+				mtime: time.UnixMilli(now - 1000),
+			})
+		}
+		reconcileGlobalLedger(b, now)
+	}
+	u := l.Usage(now)
+	if u.Starts != 40 {
+		t.Fatalf("starts = %d, want 40: the sweep did not record the crash-lost tasks at all", u.Starts)
+	}
+	if u.USD != 0 || u.Degraded {
+		t.Fatalf("usd = %v degraded = %v; the sweep is expected to record unknown spend WITHOUT degrading",
+			u.USD, u.Degraded)
+	}
+	// The measured residual: $800 of real spend is invisible and the ceiling
+	// admits. This is not a bug to fix here — it is the documented consequence of
+	// refusing to read dollars out of an agent-writable file — but the START limb
+	// is the only thing that bounds it, and it is off.
+	if st := b.GlobalCeilingStatus(); st.Blocked {
+		t.Errorf("a USD-only ceiling refused (%s); this test exists to pin that it does NOT, which is the residual", st.Reason)
+	}
+	// Turning the task limb on is the whole remedy, and it works on the SAME
+	// ledger — the starts were there all along.
+	b.GlobalMaxTasks = 20
+	if st := b.GlobalCeilingStatus(); !st.Blocked {
+		t.Error("with global_max_tasks=20 and 40 reconciled starts the ceiling must refuse; the backstop is not working")
 	}
 }
 

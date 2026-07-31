@@ -1341,6 +1341,153 @@ func TestGlobalLedgerWriteClockGuardCorrectsAForwardJump(t *testing.T) {
 	}
 }
 
+// TestGlobalCap_TheWriteAndQueryClocksCannotDriftApart is the regression test for
+// the fail-open the FIRST clock fix introduced, which was worse than the hole it
+// closed: that one needed a 48-hour NTP correction, this one needed nothing but
+// ordinary uptime.
+//
+// The write clock (globalledger.writeNowLocked) and the query clock
+// (Broker.ceilingNowMs) are two skew accumulators sharing one tolerance and
+// SAMPLED AT DIFFERENT RATES — the query on every admission, the write only on a
+// task terminal. Every write's input is already the query clock's output, so the
+// write clock only ever sees the residue the query clock discarded as
+// sub-tolerance drift; aggregated over the much longer write interval that
+// residue crosses the tolerance and is charged to the write skew. When entry
+// timestamps were CLAMPED to the write clock while Usage was read at the query
+// clock, the gap between the two was monotone and never decayed — so it grew
+// past global_window and the window saw NOTHING. Both limbs read zero and the
+// ceiling admitted without bound, permanently, with no jump and no attacker.
+//
+// The fix is one effective clock for the stamp-and-query pair: an entry is
+// stamped against the CALLER's now, and the corrected instant is used only as
+// the prune cutoff.
+func TestGlobalCap_TheWriteAndQueryClocksCannotDriftApart(t *testing.T) {
+	newPair := func(t *testing.T, window time.Duration) (*Broker, *testClock, *testClock) {
+		t.Helper()
+		b := capBroker(t)
+		b.GlobalMaxTasks = 5
+		wall, mono := &testClock{}, &testClock{}
+		wall.set(capNow)
+		mono.set(0)
+		b.now, b.mono = wall.now, mono.now
+		l, err := OpenGlobalLedgerWithClock(b.AuditRoot, window, b.ceilingNowMs(), mono.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.GlobalLedger = l
+		return b, wall, mono
+	}
+
+	// THE ATTACK, and note there is no jump anywhere in it: the wall clock only
+	// ever moves in steps SMALLER than the tolerance, so the query clock reports
+	// no skew at all. Ten such steps between two terminals is what the write clock
+	// used to charge as a jump.
+	t.Run("sub-tolerance steps cannot blind the window", func(t *testing.T) {
+		b, wall, _ := newPair(t, time.Hour)
+		const rounds = 400
+		const checksPerRound = 5
+		admitted := 0
+		for round := 0; round < rounds; round++ {
+			for i := 0; i < checksPerRound; i++ {
+				wall.advance(ceilingClockToleranceMs*time.Millisecond - time.Millisecond)
+				if blocked, _ := b.globalCeilingExceeded("claude"); !blocked {
+					admitted++
+				}
+			}
+			tr := &taskRun{b: b, id: newID(), agentName: "claude", taskVendor: "anthropic", outcome: "pushed"}
+			tr.recordGlobalUsage()
+		}
+		// Wall time really has moved here (that is what "the wall clock runs fast"
+		// means), so entries legitimately age out of the one-hour window and a
+		// steady trickle of admissions is CORRECT. What must never happen is the
+		// window losing sight of the terminals recorded in the last hour, which is
+		// what the divergence did: it left Usage reading a flat zero.
+		u := b.GlobalLedger.Usage(b.ceilingNowMs())
+		if u.Starts == 0 {
+			t.Fatalf("FAIL-OPEN: the rolling window sees ZERO of %d recorded terminals; the two skew "+
+				"accumulators drifted past the window and the ceiling is blind", len(b.GlobalLedger.entries))
+		}
+		if blocked, _ := b.globalCeilingExceeded("claude"); !blocked {
+			t.Errorf("FAIL-OPEN: the ceiling admits with %d starts in window against a limb of %d",
+				u.Starts, b.GlobalMaxTasks)
+		}
+		// Before the fix this was 18,131 of 20,000. The bound is deliberately loose:
+		// the point is the order of magnitude, not an exact trickle.
+		if max := rounds * checksPerRound / 10; admitted > max {
+			t.Errorf("%d of %d admission checks passed against a limb of %d (bound %d): the ceiling "+
+				"stopped seeing its own entries", admitted, rounds*checksPerRound, b.GlobalMaxTasks, max)
+		}
+	})
+
+	// The property stated directly, on the entry timestamps themselves: whatever
+	// the write clock's correction is, an entry lands where the QUERY clock will
+	// look for it. This is the assertion a future refactor has to break before it
+	// can reintroduce the divergence.
+	t.Run("an entry is stamped in the clock the window is queried against", func(t *testing.T) {
+		b, wall, _ := newPair(t, time.Hour)
+		// Two sub-tolerance forward steps between two terminals — the minimal
+		// trigger. Each is drift to the query clock; together they used to be a
+		// "jump" to the write clock, permanently back-dating every later entry.
+		wall.advance(1500 * time.Millisecond)
+		b.ceilingNowMs()
+		wall.advance(1500 * time.Millisecond)
+		b.ceilingNowMs()
+		tr := &taskRun{b: b, id: newID(), agentName: "claude", taskVendor: "anthropic", outcome: "pushed"}
+		tr.recordGlobalUsage()
+
+		now := b.ceilingNowMs()
+		e := b.GlobalLedger.entries[len(b.GlobalLedger.entries)-1]
+		if e.EndedAtMs != now {
+			t.Errorf("the entry is stamped at %d but the window is queried at %d (a gap of %dms): "+
+				"the write clock's correction reached an entry timestamp, which is the divergence",
+				e.EndedAtMs, now, now-e.EndedAtMs)
+		}
+	})
+
+	// ...and the correction is still doing its job on the PRUNE CUTOFF, which is
+	// all C1 ever needed. A 48-hour forward jump followed by a terminal must not
+	// delete a single durable line.
+	t.Run("the correction still protects the prune cutoff", func(t *testing.T) {
+		b, wall, mono := newPair(t, time.Hour)
+		b.GlobalMaxTasks = 600
+		for i := 0; i < 20; i++ {
+			tr := &taskRun{b: b, id: newID(), agentName: "claude", taskVendor: "anthropic", outcome: "pushed"}
+			tr.recordGlobalUsage()
+		}
+		before := len(rawLines(t, b.GlobalLedger.Path()))
+		wall.advance(48 * time.Hour)
+		mono.advance(time.Second)
+		tr := &taskRun{b: b, id: newID(), agentName: "claude", taskVendor: "anthropic", outcome: "pushed"}
+		tr.recordGlobalUsage()
+		if after := len(rawLines(t, b.GlobalLedger.Path())); after != before+1 {
+			t.Errorf("durable lines went %d -> %d across a 48h jump plus a terminal, want %d",
+				before, after, before+1)
+		}
+		if u := b.GlobalLedger.Usage(b.ceilingNowMs()); u.Starts != 21 {
+			t.Errorf("usage sees %d starts after the jump, want 21", u.Starts)
+		}
+	})
+
+	// The rate-proportional half of the write clock's tolerance: writes are rare,
+	// so an hour of ORDINARY drift between two terminals must not be charged as a
+	// jump. It is safe in direction (an over-wide cutoff keeps entries too long)
+	// but it walks the cutoff backwards without bound on a healthy host, and a
+	// ledger that never prunes grows without bound.
+	t.Run("ordinary drift between two rare writes is not a jump", func(t *testing.T) {
+		b, wall, mono := newPair(t, time.Hour)
+		for i := 0; i < 10; i++ {
+			// An hour between terminals, with the wall clock running 0.1% fast.
+			wall.advance(time.Hour + 3600*time.Millisecond)
+			mono.advance(time.Hour)
+			tr := &taskRun{b: b, id: newID(), agentName: "claude", taskVendor: "anthropic", outcome: "pushed"}
+			tr.recordGlobalUsage()
+		}
+		if got := b.GlobalLedger.clockSkew; got != 0 {
+			t.Errorf("the write clock accumulated %dms of skew from ten hours of 0.1%% drift, want 0", got)
+		}
+	})
+}
+
 // A claim released only while a limb happens to be on is a claim leaked
 // forever the moment a limb is turned off mid-task — and a permanent unit of
 // ceiling once it is turned back on.

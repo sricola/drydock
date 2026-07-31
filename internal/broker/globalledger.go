@@ -502,39 +502,97 @@ type GlobalLedger struct {
 // So the ledger measures its own writes the way globalcap measures its own
 // reads: against MONOTONIC time, which no wall-clock change can move. It
 // anchors a (caller-wall, monotonic) pair at open and accumulates however much
-// the caller's clock has outrun monotonic time since. Two things follow, and
-// both are load-bearing:
+// the caller's clock has outrun monotonic time since.
+//
+// ---------------------------------------------------------------------------
+// THE CORRECTION APPLIES TO THE PRUNE CUTOFF, AND TO NOTHING ELSE. This is the
+// most important sentence in the file, and getting it wrong was a fail-open.
+// ---------------------------------------------------------------------------
+//
+// An earlier version ALSO clamped every entry's EndedAtMs to this corrected
+// instant. That looked like a strictly stronger invariant and was in fact a
+// permanent, silent fail-open, because it created a SECOND skew accumulator
+// alongside globalcap's and let the two drift apart without bound:
+//
+//   - The two accumulators share a tolerance (2000 ms of caller-vs-monotonic
+//     movement between two CONSECUTIVE observations is drift, not a jump) but
+//     they are SAMPLED AT DIFFERENT RATES. The query clock is sampled on every
+//     admission check; the write clock only on a task terminal, which is orders
+//     of magnitude rarer.
+//   - Every write's input is ALREADY the query clock's output, so the write
+//     clock only ever sees the residue the query clock discarded as
+//     sub-tolerance drift. Aggregated over the much longer write interval, that
+//     residue crosses the tolerance and is charged to l.clockSkew — while
+//     globalcap's own skew stays at zero, because no single query interval ever
+//     crossed it.
+//   - Entries were then STAMPED at the write clock and QUERIED at the query
+//     clock. The gap between the two is monotone (skew never decreases) and
+//     never decays, so it grows until it exceeds global_window — at which point
+//     Usage() sees NOTHING, both limbs read zero, and the ceiling admits
+//     without bound, forever. Measured: 4000 terminals under nothing but
+//     1900 ms sub-tolerance steps left 38,000,000 ms of write skew, zero
+//     visible starts, and 18,131 admissions against global_max_tasks=5.
+//
+// So an entry's timestamp is clamped to the CALLER's now — the same instant the
+// window is later queried against — and the corrected instant is used ONLY as
+// the prune cutoff. That leaves ONE effective clock for the stamp-and-query
+// pair, which is the only pair that has to agree, and the two properties that
+// remain are the two C1 actually needed:
 //
 //   - The PRUNE clock is the corrected instant, so a forward jump can never
 //     delete an entry that has not really aged out.
-//   - An entry's EndedAtMs is CLAMPED to the corrected instant, so no entry can
-//     be dated in the future — neither by a jumped clock nor by a caller that
-//     took the timestamp from somewhere it should not have. That keeps
-//     newestEventMs, which pruneLocked and boot reconciliation both anchor to,
-//     un-inflatable by entry content.
+//   - An entry's EndedAtMs is CLAMPED to the caller's clock, so no entry can be
+//     dated into the future by its own CONTENT — which is what keeps
+//     newestEventMs, the anchor pruneLocked and boot reconciliation trust,
+//     un-inflatable by a caller that took the timestamp from somewhere it
+//     should not have.
 //
-// The correction only ever moves the write clock BACKWARDS (skew is floored at
-// zero and never decreases), so its error direction is keeping entries longer
-// than the window — over-counting, the direction a ceiling is allowed to take.
+// The residual correction can only ever move the prune cutoff BACKWARDS (skew
+// is floored at zero and never decreases), so entries can only be kept LONGER
+// than the window — over-counting, the direction a ceiling is allowed to take,
+// and the direction that cannot blind the window.
 //
-// The residual is the same one globalcap documents: a clock change while brokerd
-// is DOWN is not detectable, because a monotonic reading does not survive a
-// restart. It is logged at open, not refused.
+// The other residual is the same one globalcap documents: a clock change while
+// brokerd is DOWN is not detectable, because a monotonic reading does not
+// survive a restart. It is logged at open, not refused.
 
-// ledgerClockToleranceMs is how much caller-wall-vs-monotonic movement BETWEEN
-// TWO CONSECUTIVE WRITES is treated as drift rather than as a clock change. It
-// mirrors ceilingClockToleranceMs and is deliberately generous: the cost of
-// treating a jump as drift is a wiped ledger, while the cost of treating drift
-// as a jump is keeping entries slightly too long.
+// ledgerClockToleranceMs is the FLOOR on how much caller-wall-vs-monotonic
+// movement BETWEEN TWO CONSECUTIVE WRITES is treated as drift rather than as a
+// clock change. It mirrors ceilingClockToleranceMs and is deliberately generous:
+// the cost of treating a jump as drift is a wiped ledger, while the cost of
+// treating drift as a jump is keeping entries slightly too long.
 const ledgerClockToleranceMs = ceilingClockToleranceMs
+
+// ledgerClockDriftDivisor makes the write clock's tolerance RATE-PROPORTIONAL on
+// top of that floor: one part in this many of the monotonic interval since the
+// previous write is also allowed as drift.
+//
+// It exists because the write clock is sampled far more rarely than the query
+// clock — once per task terminal versus once per admission — and a FIXED
+// tolerance calibrated for "two consecutive observations" is the wrong shape for
+// an interval that may be an hour long. Real drift is a RATE (a slewing NTP
+// client, a slow crystal), so an hour between two writes legitimately accrues
+// far more of it than a millisecond does, and charging that to l.clockSkew walks
+// the prune cutoff backwards without bound on a perfectly healthy host. The
+// direction is safe — an over-wide cutoff keeps entries too long, it cannot
+// blind the window — but an unbounded regression means a ledger that eventually
+// never prunes at all.
+//
+// 1% is orders of magnitude above any real clock's error and orders of magnitude
+// below any jump worth correcting: over a one-hour write interval it allows 36
+// seconds of drift while still catching the 48-hour NTP correction C1 is about.
+const ledgerClockDriftDivisor = 100
 
 // ledgerMonoMs is the default monotonic source: milliseconds since this
 // process's own anchor, immune to every wall-clock change.
 func ledgerMonoMs() int64 { return int64(time.Since(processStartMono) / time.Millisecond) }
 
-// writeNowLocked is the instant a MUTATING call measures against: the caller's
-// clock, less however far the caller's clock has jumped forward relative to
-// monotonic time since this handle was opened. See the discussion above.
+// writeNowLocked is the PRUNE CUTOFF a mutating call measures against: the
+// caller's clock, less however far the caller's clock has jumped forward
+// relative to monotonic time since this handle was opened.
+//
+// Its output is NOT an entry timestamp and must never become one — see the
+// dual-accumulator discussion above, which is a fail-open, not a nit.
 //
 // Callers must hold l.mu. A nil mono seam returns the caller's clock unchanged.
 func (l *GlobalLedger) writeNowLocked(nowMs int64) int64 {
@@ -552,23 +610,36 @@ func (l *GlobalLedger) writeNowLocked(nowMs int64) int64 {
 	// backward wall jump and is deliberately not corrected: it moves the cutoff
 	// back and prunes less, which is the over-counting direction.
 	delta := (nowMs - l.clockWall) - (mono - l.clockMono)
+	// The tolerance is the fixed floor PLUS a rate-proportional term over the
+	// monotonic interval this delta accrued across. See ledgerClockDriftDivisor:
+	// writes are rare, so a fixed tolerance turns ordinary drift into a permanent
+	// cutoff regression.
+	tolerance := int64(ledgerClockToleranceMs)
+	if elapsed := mono - l.clockMono; elapsed > 0 {
+		tolerance += elapsed / ledgerClockDriftDivisor
+	}
 	l.clockWall, l.clockMono = nowMs, mono
-	if delta >= ledgerClockToleranceMs {
+	if delta >= tolerance {
 		l.clockSkew += delta
 		slog.Warn("globalledger: the write clock jumped forward relative to monotonic time",
 			"path", l.path, "jump_ms", delta, "total_skew_ms", l.clockSkew,
-			"note", "the ledger's prune cutoff and entry timestamps are corrected by this amount so the jump cannot delete durable entries")
+			"note", "the ledger's PRUNE CUTOFF is corrected by this amount so the jump cannot delete durable entries; entry timestamps are NOT corrected — they are stamped against the caller's clock, which is the clock the window is queried against")
 	}
 	return nowMs - l.clockSkew
 }
 
-// clampEventMs holds the invariant "no entry is dated after the clock that
-// recorded it". A missing timestamp becomes the write clock; a future one is
-// pulled back to it. Both directions are the ledger refusing to let an entry's
-// own content set the anchor pruneLocked and reconcileFloorMs trust.
-func clampEventMs(endedAtMs, writeNowMs int64) int64 {
-	if endedAtMs <= 0 || endedAtMs > writeNowMs {
-		return writeNowMs
+// clampEventMs holds the invariant "no entry is dated after the CALLER's clock".
+// A missing timestamp becomes that clock; a future one is pulled back to it.
+// Both directions are the ledger refusing to let an entry's own content set the
+// anchor pruneLocked and reconcileFloorMs trust.
+//
+// callerNowMs, NOT writeNowLocked's corrected instant. The entry is later
+// QUERIED against the caller's clock (globalcap's ceilingNowMs), and stamping it
+// from a different accumulator is the dual-accumulator fail-open documented
+// above: the two drift apart monotonically until the window sees nothing.
+func clampEventMs(endedAtMs, callerNowMs int64) int64 {
+	if endedAtMs <= 0 || endedAtMs > callerNowMs {
+		return callerNowMs
 	}
 	return endedAtMs
 }
@@ -853,12 +924,20 @@ func (l *GlobalLedger) Record(nowMs int64, e GlobalEntry) error {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// The write clock, guarded against a forward wall-clock jump, and the entry
-	// clamped into it: an entry dated after the clock that recorded it would
-	// raise newestEventMs — the anchor pruneLocked trusts — and let one bad
-	// timestamp delete the durable record. See writeNowLocked.
-	nowMs = l.writeNowLocked(nowMs)
+	// TWO DIFFERENT INSTANTS, and keeping them apart is load-bearing:
+	//
+	//   - the ENTRY is stamped against the CALLER's clock, which is the clock the
+	//     window is later queried against. Clamping it to the corrected instant
+	//     instead makes the ledger's skew accumulator and globalcap's drift apart
+	//     until the window sees nothing — see writeNowLocked's discussion.
+	//   - the PRUNE CUTOFF is the corrected instant, so a forward wall-clock jump
+	//     cannot delete an entry that has not really aged out.
+	//
+	// The clamp still holds "no entry is dated after the clock that recorded it",
+	// which is what keeps newestEventMs — the anchor pruneLocked trusts —
+	// un-inflatable by entry CONTENT.
 	e.EndedAtMs = clampEventMs(e.EndedAtMs, nowMs)
+	nowMs = l.writeNowLocked(nowMs)
 	if _, dup := l.byID[e.TaskID]; dup {
 		return nil
 	}
@@ -1121,9 +1200,12 @@ func (l *GlobalLedger) RecordBatch(nowMs int64, es []GlobalEntry) (int, error) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// Same guard as Record: boot reconciliation is the OTHER writer, and a
+	// Same split as Record: entries are clamped to the CALLER's clock (the one
+	// the window is queried against) and only the PRUNE CUTOFF takes the
+	// jump-corrected instant. Boot reconciliation is the OTHER writer, and a
 	// forward wall-clock jump reaching pruneLocked through it wipes the durable
 	// record just as thoroughly. See writeNowLocked.
+	callerNowMs := nowMs
 	nowMs = l.writeNowLocked(nowMs)
 
 	var (
@@ -1147,7 +1229,7 @@ func (l *GlobalLedger) RecordBatch(nowMs int64, es []GlobalEntry) (int, error) {
 			}
 			continue
 		}
-		e.EndedAtMs = clampEventMs(e.EndedAtMs, nowMs)
+		e.EndedAtMs = clampEventMs(e.EndedAtMs, callerNowMs)
 		if e.Src == "" {
 			e.Src = GlobalSrcReconcile
 		}

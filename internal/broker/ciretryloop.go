@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"time"
 )
 
 // This file is THE BOUNDED LOOP (plan Task 6): the one place an observed CI
@@ -122,9 +123,16 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (retryID,
 	if err != nil {
 		return "", "", false
 	}
-	// Gate 5. The durable enqueue-once flag. Broker-owned and unreachable from
+	// Gate 5. THE DURABLE ENQUEUE-ONCE FLAG. Broker-owned and unreachable from
 	// any task VM, unlike the audit trace (see appendCIObservationRow).
-	if it.RetryTaskID != "" {
+	//
+	// CIRetryEnqueued is the authority and RetryTaskID is the belt-and-braces
+	// second read. They are NOT interchangeable: RetryTaskID is written after
+	// Enqueue returns, so it is empty for a parent whose child exists but whose
+	// link write was lost, and that parent must still be refused. CIRetryEnqueued
+	// is written before Enqueue is called and covers that window. See crash
+	// window W3 above, and QueueItem's own note on the two fields.
+	if it.CIRetryEnqueued || it.RetryTaskID != "" {
 		return "", "", false
 	}
 
@@ -209,8 +217,23 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (retryID,
 	// through so the next tick re-asks; RetryTaskID still guarantees at most one
 	// child. The detail variant is used because the bare globalCeilingExceeded
 	// DISCARDS the very bit this distinction rests on.
+	//
+	// AND THE PARK IS BOUNDED. A fault that never clears — a ledger file that
+	// stays unreadable, a store that is never opened — would otherwise park this
+	// decision on every watch tick forever: concludeCIWatch keeps the marker on a
+	// not-recorded return, and pollCIMarker's already-terminal branch runs BEFORE
+	// the deadline check, so a marker held open by a park is never timed out
+	// either. Nothing spends, but the marker leaks for the daemon's life. Past the
+	// bound the park becomes an honest refusal, which ends the chain and lets the
+	// marker be removed. See ciRetryParkBound.
 	if blocked, why, unmeasured := b.globalCeilingExceededDetail(parent.Agent); blocked {
 		if unmeasured {
+			if since := it.CIRetryDeferredAtMs; since > 0 && b.nowMs()-since >= b.ciRetryParkBoundMs() {
+				slog.Warn("ci retry: the bounded-retry decision has been parked past its bound; refusing rather than parking forever",
+					"task_id", obs.TaskID, "parked_ms", b.nowMs()-since, "reason", why)
+				return "", fmt.Sprintf("no retry: the global usage ceiling was still unmeasurable after %s of deferral (%s)",
+					(time.Duration(b.ciRetryParkBoundMs()) * time.Millisecond).String(), why), false
+			}
 			return "", "retry deferred: " + why, true
 		}
 		return "", "no retry: " + why, false
@@ -248,6 +271,18 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (retryID,
 	// its own lease, its own VM, its own verify, and — because AutoApprove was
 	// forced false by BuildRetryTask (D5) — ITS OWN HUMAN DIFF GATE. Nothing on
 	// this path can skip that gate, and nothing tries to.
+	// THE ENQUEUE-ONCE MARK, WRITTEN FIRST. Everything after this point either
+	// creates a child or fails trying, and from here on no replay of this
+	// observation may ask the question again — gate 5 reads this flag.
+	//
+	// If it cannot be persisted we do NOT enqueue. A child whose parent does not
+	// durably record that an enqueue happened is a child a replay can duplicate,
+	// and duplicating an unattended spend loop is the one failure this whole file
+	// exists to prevent. Losing the retry is the same direction crash window W2
+	// already takes.
+	if !b.markCIRetryEnqueued(obs.TaskID) {
+		return "", "no retry: the durable enqueue-once marker could not be claimed (unwritable, or already claimed by a concurrent decision), and enqueuing without it could duplicate the retry", false
+	}
 	childID, err := b.Enqueue(child)
 	if err != nil {
 		slog.Warn("ci retry: could not enqueue the retry task", "task_id", obs.TaskID, "err", safeErr(err))
@@ -302,6 +337,75 @@ func (b *Broker) linkCIRetryChild(parentID, childID string) {
 	}
 }
 
+// markCIRetryEnqueued stamps the parent's durable ENQUEUE-ONCE flag, and it is
+// the ONE write in this file that is not best-effort: it reports whether the
+// flag is durable, and its caller refuses to enqueue when it is not.
+//
+// It is linkCIRetryChild's sibling in mechanics (not a setQueueState call — the
+// parent is already terminal; one field on an already-final record; under
+// queueMu; State never touched) and its opposite in ORDERING, which is the whole
+// reason it exists. linkCIRetryChild runs after the child is durable, so it can
+// only ever record a child that already exists. This runs BEFORE, so it records
+// the INTENT — and an intent recorded before the act is the only thing a replay
+// after a crash in between can see.
+//
+// It is a COMPARE-AND-SET, not an idempotent write, and that distinction is the
+// last interleaving: gate 5 reads the flag outside this lock, so two decisions
+// racing on one parent can both pass it. Reporting an already-set flag as
+// "claimed" would let the loser enqueue a second child. Only the writer that
+// actually flipped it may go on to Enqueue; the loser is refused. Under
+// sequential execution the flag is never already set here, because gate 5 would
+// have returned.
+func (b *Broker) markCIRetryEnqueued(parentID string) bool {
+	b.queueMu.Lock()
+	defer b.queueMu.Unlock()
+	it, err := readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		slog.Warn("ci retry: could not read the parent to mark the enqueue-once flag; refusing the retry",
+			"task_id", parentID, "err", err)
+		return false
+	}
+	if it.CIRetryEnqueued {
+		slog.Warn("ci retry: the enqueue-once flag was already claimed for this parent; refusing this decision so it cannot mint a second child",
+			"task_id", parentID)
+		return false
+	}
+	it.CIRetryEnqueued = true
+	it.UpdatedAtMs = b.nowMs()
+	if err := writeQueueItem(b.AuditRoot, it); err != nil {
+		slog.Warn("ci retry: could not persist the enqueue-once flag on the parent; refusing the retry rather than risking a duplicate child",
+			"task_id", parentID, "err", err)
+		return false
+	}
+	for i := range b.queue {
+		if b.queue[i].ID == parentID {
+			b.queue[i] = it
+			break
+		}
+	}
+	return true
+}
+
+// ciRetryParkBoundMs is how long a bounded-retry decision may stay PARKED on an
+// unmeasurable global ceiling before it becomes an honest refusal.
+//
+// The bound exists because a park keeps the item's <id>.ci.json marker alive
+// (concludeCIWatch keeps it on a not-recorded return) and pollCIMarker's
+// already-terminal branch short-circuits before the deadline check, so a marker
+// held open by a park is never timed out. A permanently unmeasurable ceiling
+// therefore parked forever and leaked the marker for the daemon's life.
+//
+// It is the CI watch's own timeout, so the rule is easy to state and impossible
+// to get out of step with: a retry decision cannot be deferred for longer than
+// the watch that produced it could have run.
+func (b *Broker) ciRetryParkBoundMs() int64 {
+	to := b.CIWatchTimeout
+	if to <= 0 {
+		to = defaultCIWatchTimeout
+	}
+	return to.Milliseconds()
+}
+
 // setCIRetryDeferred stamps (or clears) the parent's durable "the bounded-retry
 // decision has not been made yet" flag.
 //
@@ -325,6 +429,14 @@ func (b *Broker) setCIRetryDeferred(parentID string, deferred bool) (changed boo
 		return false
 	}
 	it.CIRetryDeferred = deferred
+	// The park's own anchor, stamped on the transition into a park and cleared on
+	// the way out. It is DURABLE so a crash loop cannot keep restarting the bound
+	// — the same property ciDeadline holds for the watch itself.
+	if deferred {
+		it.CIRetryDeferredAtMs = b.nowMs()
+	} else {
+		it.CIRetryDeferredAtMs = 0
+	}
 	it.UpdatedAtMs = b.nowMs()
 	if err := writeQueueItem(b.AuditRoot, it); err != nil {
 		slog.Warn("ci retry: could not persist the deferred-retry flag on the parent",

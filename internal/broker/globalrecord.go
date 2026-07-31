@@ -1,10 +1,9 @@
 package broker
 
 import (
+	"fmt"
 	"log/slog"
 	"time"
-
-	"drydock/internal/audit"
 )
 
 // This file is the GLOBAL CEILING's RECORDING half (docs/superpowers/plans/
@@ -236,6 +235,43 @@ func (tr *taskRun) meteredCostUSD() float64 {
 // brokerMeteredSpendUSD answers "what did the BROKER meter for this task, and
 // do we believe it?" — the only spend question the ceiling is allowed to ask.
 // It never reads audit.TotalCost (G4); see the file header.
+//
+// ---------------------------------------------------------------------------
+// IT READS NO TRACE CONTENT AT ALL, and the resumed branch is why that sentence
+// had to become absolute.
+// ---------------------------------------------------------------------------
+//
+// The resumed branch used to call audit.LastBrokerResult on the task's own
+// trace and return trusted=true, and recordGlobalUsage wrote that straight into
+// the TRUSTED USD limb. The trace is agent-writable — the VM's stdout is copied
+// into it verbatim — and `src` is a self-declared string in that text, which is
+// exactly the reasoning boot reconciliation was rewritten around (C2). Measured:
+// a resumed terminal over a trace whose last src:"broker" row claimed
+// total_cost_usd 999999 produced `global_budget_usd is exhausted: $999999.00 of
+// $100.00`, refusing every start on the install — across all vendors and both
+// auth modes — until it aged out, and forever in total mode.
+//
+// What kept it out in practice was ORDERING, not authentication: appendBrokerResult
+// runs after the agent process exits, so the genuine row is normally last. That
+// is not a control. appendBrokerResult writes to an already-open file and one
+// failed write on a task that then parks at the diff gate hands the limb to the
+// agent — which is why that write now logs loudly instead of being discarded.
+//
+// So the same rule the reconciliation fix established applies here: A VALUE READ
+// FROM THE AGENT-WRITABLE TRACE IS NEVER TRUSTED, and the honest answer for a
+// resumed task is "a task ran, we cannot authenticate what it cost". The
+// structural pin in globalrecord_test.go fails the build if this file so much as
+// NAMES a tail reader again.
+//
+// WHAT THAT COSTS, and why it costs nothing operators can see: the resumed
+// terminal's own synthetic result row now carries `no_spend_info`, so every tail
+// reader (the aggregate-cap restart seed, `drydock stats`, `drydock tasks`, the
+// web UI) SKIPS it and finds the previous process's genuine broker row beneath
+// it — the same figure they read today, straight from the process that metered
+// it, rather than re-laundered through a row this process stamps src:"broker".
+// The only limb that loses anything is the global USD one, which under-counts by
+// that task's spend; the START limb counts it exactly, which is the backstop G7
+// names, and it is listed as a residual in docs/THREAT_MODEL.md.
 func (tr *taskRun) brokerMeteredSpendUSD() (usd float64, trusted bool) {
 	switch {
 	case tr.leaseCaptured:
@@ -243,18 +279,12 @@ func (tr *taskRun) brokerMeteredSpendUSD() (usd float64, trusted bool) {
 		// source there is, and the one every live task uses.
 		return tr.leaseSpentUSD, true
 	case tr.resumed:
-		// A task resumed at the diff-approval gate after a restart: its agent
-		// ran in a PREVIOUS process, whose lease is long gone. The previous
-		// process's own broker-authored result row is the surviving record of
-		// what that lease metered — the same src=="broker" row the aggregate
-		// cap is reseeded from — so it is broker-observed, just at one remove.
-		// Untrusted when there is no such row: we then have no broker-authored
-		// figure at all, and inventing one would be worse than saying so.
-		res, ok := audit.LastBrokerResult(tr.auditPath)
-		if !ok || res.TotalCostUSD < 0 {
-			return 0, false
-		}
-		return res.TotalCostUSD, true
+		// A task resumed at the diff-approval gate after a restart: its agent ran
+		// in a PREVIOUS process, whose lease is long gone. There is no
+		// broker-held record of what that lease metered in THIS process, and the
+		// only surviving copy lives in a file the agent could write. So: a task
+		// ran, and we cannot authenticate what it cost.
+		return 0, false
 	default:
 		// No lease was ever captured, which means the agent VM never ran in
 		// this process (a terminal before the mint, or during setup — setup VMs
@@ -262,4 +292,27 @@ func (tr *taskRun) brokerMeteredSpendUSD() (usd float64, trusted bool) {
 		// the only value the lane could possibly have produced.
 		return 0, true
 	}
+}
+
+// brokerResultSpendFields renders the spend half of a synthetic broker-authored
+// {"type":"result"} row: the metered figure, plus the `no_spend_info` marker
+// when the broker has no authenticatable figure to state.
+//
+// The marker is not cosmetic. Every tail reader that answers a money question
+// (audit.LastBrokerResultFile, audit.LastRowsFile) SKIPS a row carrying it, so a
+// broker row that metered nothing cannot shadow a real figure beneath it and
+// cannot render an unknown spend as a measured $0.00. It is the same mechanism
+// reconcile.go's synthetic `interrupted` terminal already uses, applied to the
+// other rows the broker writes without a lease of its own — most importantly a
+// RESUMED task's, whose agent ran in a previous process.
+//
+// It is a rendered fragment rather than a struct because these rows are written
+// as literal JSON at seven call sites, and matching that shape keeps the change
+// to the one field that varies.
+func (tr *taskRun) brokerResultSpendFields() string {
+	usd, trusted := tr.brokerMeteredSpendUSD()
+	if !trusted || !usableUSD(usd) || usd < 0 {
+		return `"total_cost_usd":0,"no_spend_info":true`
+	}
+	return fmt.Sprintf(`"total_cost_usd":%.6f`, usd)
 }

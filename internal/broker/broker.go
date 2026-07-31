@@ -1156,8 +1156,8 @@ func (tr *taskRun) finishPlanned(diff string) {
 	// (last-wins over the agent's own success row, carrying metered cost).
 	cost := tr.meteredCostUSD()
 	fmt.Fprintf(tr.logf,
-		`{"type":"result","subtype":"planned","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-		time.Since(tr.taskStart).Milliseconds(), cost)
+		`{"type":"result","subtype":"planned","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+		time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
 	tr.outcome = "planned"
 	tr.sw.emit(map[string]any{"event": "result", "outcome": "planned",
 		"task_id": tr.id, "plan_bytes": len(plan), "has_plan": ok,
@@ -1282,9 +1282,20 @@ func (tr *taskRun) appendBrokerResult(isError bool) {
 	if rc, ok := tr.grant.(interface{ Requests() int }); ok {
 		turns = rc.Requests()
 	}
-	_, _ = fmt.Fprintf(tr.logf,
+	// THE WRITE ERROR IS LOGGED, NOT DISCARDED, and that is a control matter
+	// rather than tidiness. This row being last is what makes every tail reader
+	// prefer the broker's own figure over whatever the agent printed; a row that
+	// did not land leaves an AGENT-AUTHORED result as the last one in the trace,
+	// which is the state the resumed-task and aggregate-cap-reseed paths were
+	// relying on ordering — not authentication — to avoid. Nothing here can fix
+	// it (the trace is the only place this figure exists), but an operator whose
+	// disk filled at exactly the wrong moment should be able to find out.
+	if _, err := fmt.Fprintf(tr.logf,
 		`{"type":"result","subtype":"%s","is_error":%t,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":%d,"src":"broker"}`+"\n",
-		subtype, isError, time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent(), turns)
+		subtype, isError, time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent(), turns); err != nil {
+		slog.Warn("audit: the broker-authored result row could not be written; this task's metered spend is not recorded in its trace, and the last result row in it is the AGENT's",
+			"task_id", tr.id, "err", err)
+	}
 }
 
 // runSandbox runs the agent container, writes to the audit log, and emits the
@@ -1542,8 +1553,8 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	if blocked, reason := tr.checkDiffCaps(facts, diff); blocked {
 		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
-			`{"type":"result","subtype":"policy_blocked","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-			time.Since(tr.taskStart).Milliseconds(), cost)
+			`{"type":"result","subtype":"policy_blocked","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+			time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
 		tr.outcome = "policy_blocked"
 		tr.sw.emit(map[string]any{"event": "result", "outcome": "policy_blocked",
 			"task_id": tr.id, "reason": reason,
@@ -1647,8 +1658,8 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		// cost + the aggregate-cap seed stay correct) and stream the reason.
 		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
-			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-			time.Since(tr.taskStart).Milliseconds(), cost)
+			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+			time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
 		tr.outcome = "push_failed"
 		tr.sw.emit(map[string]any{"event": "result", "outcome": "push_failed",
 			"task_id": tr.id, "reason": string(reason), "push_attempts": attempts,

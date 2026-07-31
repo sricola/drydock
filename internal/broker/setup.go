@@ -122,8 +122,8 @@ func (tr *taskRun) runSetup() bool {
 		// no bearer ever existed inside a VM).
 		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
-			`{"type":"result","subtype":"setup_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-			time.Since(tr.taskStart).Milliseconds(), cost)
+			`{"type":"result","subtype":"setup_failed","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+			time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
 		tr.outcome = "setup_failed"
 		// Point at the setup log only when one was actually created — the
 		// inconclusive paths that never launched a VM have no log file.

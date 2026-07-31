@@ -1176,6 +1176,46 @@ func TestGlobalLedgerDamageClassification(t *testing.T) {
 	}
 }
 
+// TestGlobalLedgerKeyCaseIsNotCorruption pins a property of encoding/json that
+// silently makes corruption probes VACUOUS, so nobody writes one and believes it.
+//
+// Go matches JSON object keys to struct tags CASE-INSENSITIVELY. `ENDED_AT_MS`,
+// `Ended_At_Ms` and `ended_at_ms` all decode into the same field, so mutating a
+// key's CASE is not a corruption at all — a probe that flips one and then asserts
+// "the line was quarantined" is asserting nothing, and two such probes against
+// this ledger passed for exactly that reason while testing nothing.
+//
+// The mutation that IS corruption is one that changes the key's LETTERS
+// (`ended_at_msX`), which leaves the field at its zero value and trips
+// decodeGlobalEntry's `EndedAtMs <= 0` check. Both directions are asserted here
+// so the distinction is written down rather than rediscovered.
+func TestGlobalLedgerKeyCaseIsNotCorruption(t *testing.T) {
+	id := glTaskID(3)
+	cases := map[string]struct {
+		line      string
+		wantValid bool
+	}{
+		"the canonical spelling": {
+			`{"kind":"task","task_id":"` + id + `","ended_at_ms":1700000000000}`, true},
+		"SHOUTED keys still decode — encoding/json is case-insensitive": {
+			`{"KIND":"task","TASK_ID":"` + id + `","ENDED_AT_MS":1700000000000}`, true},
+		"mixed case still decodes": {
+			`{"Kind":"task","Task_Id":"` + id + `","Ended_At_Ms":1700000000000}`, true},
+		"a changed LETTER is real corruption": {
+			`{"kind":"task","task_id":"` + id + `","ended_at_msX":1700000000000}`, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, ok := decodeGlobalEntry([]byte(tc.line))
+			if ok != tc.wantValid {
+				t.Errorf("decodeGlobalEntry ok = %v, want %v. If this is a case mutation that you "+
+					"expected to be rejected: encoding/json does not work that way, and the probe "+
+					"that relies on it is vacuous.", ok, tc.wantValid)
+			}
+		})
+	}
+}
+
 // A NaN spends the ceiling in the one direction it must never fail: every
 // comparison against NaN is false, so `usage.USD >= budget` is false forever and
 // the USD limb admits without bound. It also breaks json.Marshal, which would

@@ -446,17 +446,24 @@ func TestGlobalCeiling_TheLedgerIsNeverMountedIntoASandboxVM(t *testing.T) {
 // broker itself will copy an agent's number into a broker row.
 //
 // That class cannot be prevented by a downstream test, so it is prevented HERE,
-// structurally: every fmt.Fprintf in this package whose format both stamps
-// src:"broker" AND carries a total_cost_usd must take that figure from the
-// gateway lease — tr.meteredCostUSD() or tr.grant.Spent() — and from nothing
-// else. The package is PARSED rather than grepped, so a comment discussing the
-// old shortcut cannot make it pass.
+// structurally: every fmt.Fprintf in this package whose format stamps
+// src:"broker" must take its dollar figure from the gateway lease —
+// tr.grant.Spent(), or tr.brokerResultSpendFields() which wraps it — and from
+// nothing else. The package is PARSED rather than grepped, so a comment
+// discussing the old shortcut cannot make it pass.
+//
+// meteredCostUSD is DELIBERATELY NOT on the allowed list any more, even though it
+// is still the right thing for a display surface. It discards the trust flag, and
+// a durable row stamped src:"broker" is the one place that flag has to survive:
+// the row is what the aggregate-cap restart seed and every cost column read.
+// brokerResultSpendFields is the wrapper that keeps them together, by rendering
+// `no_spend_info` instead of a figure whenever the broker cannot authenticate one.
 func TestGlobalCeiling_NoBrokerAuthoredRowCanSourceItsCostFromTheAgent(t *testing.T) {
 	fset, files := brokerPackageFiles(t)
 	// The only expressions allowed to become a broker-authored row's cost.
 	allowed := map[string]bool{
-		"meteredCostUSD": true, // the lease, or a resumed task's own broker row
-		"Spent":          true, // tr.grant.Spent(): the live lease itself
+		"brokerResultSpendFields": true, // the lease, with its trust flag preserved
+		"Spent":                   true, // tr.grant.Spent(): the live lease itself
 	}
 
 	found := 0
@@ -479,23 +486,43 @@ func TestGlobalCeiling_NoBrokerAuthoredRowCanSourceItsCostFromTheAgent(t *testin
 				if !ok || !strings.Contains(format, `"src":"broker"`) {
 					return true
 				}
-				idx := strings.Index(format, "total_cost_usd")
-				if idx < 0 {
-					return true
-				}
 				found++
-				argN := 2 + countVerbs(format[:idx])
-				if argN >= len(call.Args) {
-					t.Errorf("%s: could not locate the cost argument", fset.Position(call.Pos()))
+				// TWO SHAPES, because the spend half of these rows is now rendered
+				// by a helper rather than interpolated as a bare float:
+				//
+				//   ..."total_cost_usd":%.6f...   -> the figure is at a locatable
+				//                                    verb index (appendBrokerResult).
+				//   ...,%s,"num_turns"...         -> the whole `total_cost_usd`
+				//                                    (plus `no_spend_info`) fragment
+				//                                    comes from one argument.
+				if idx := strings.Index(format, "total_cost_usd"); idx >= 0 {
+					argN := 2 + countVerbs(format[:idx])
+					if argN >= len(call.Args) {
+						t.Errorf("%s: could not locate the cost argument", fset.Position(call.Pos()))
+						return true
+					}
+					expr := resolveToExpr(fn.Body, call.Args[argN])
+					if name := calleeName(expr); !allowed[name] {
+						t.Errorf("%s: a src:\"broker\" result row takes its total_cost_usd from %s, "+
+							"which is not the gateway lease. Allowed: tr.brokerResultSpendFields() or tr.grant.Spent(). "+
+							"Anything else can launder an agent-authored figure into a broker-stamped row (plan G4).",
+							fset.Position(call.Pos()), describeExpr(expr))
+					}
 					return true
 				}
-				expr := resolveToExpr(fn.Body, call.Args[argN])
-				name := calleeName(expr)
-				if !allowed[name] {
-					t.Errorf("%s: a src:\"broker\" result row takes its total_cost_usd from %s, "+
-						"which is not the gateway lease. Allowed: tr.meteredCostUSD() or tr.grant.Spent(). "+
-						"Anything else can launder an agent-authored figure into a broker-stamped row (plan G4).",
-						fset.Position(call.Pos()), describeExpr(expr))
+				// The helper shape: exactly one argument must resolve to an allowed
+				// producer, or this row's dollars came from somewhere unaudited.
+				via := ""
+				for _, a := range call.Args[2:] {
+					if name := calleeName(resolveToExpr(fn.Body, a)); allowed[name] {
+						via = name
+						break
+					}
+				}
+				if via == "" {
+					t.Errorf("%s: a src:\"broker\" result row renders its spend fields from something other than "+
+						"tr.brokerResultSpendFields() or tr.grant.Spent(); an agent-authored figure can reach a "+
+						"broker-stamped row that way (plan G4).", fset.Position(call.Pos()))
 				}
 				return true
 			})
@@ -507,6 +534,17 @@ func TestGlobalCeiling_NoBrokerAuthoredRowCanSourceItsCostFromTheAgent(t *testin
 	// ..., CostUSD: ...}), and it carries a dollar figure into the same
 	// operator-facing surfaces. A net that matches only format strings is a net
 	// with a hole exactly the size of the next row someone writes idiomatically.
+	// The struct-literal half keeps meteredCostUSD on its allowed list, and the
+	// difference from the Fprintf half above is deliberate. The only row this half
+	// matches is metrics.go's, which is DISPLAY-ONLY and explicitly not read by the
+	// ceiling (see metrics.go's own note) — so the trust flag has nothing to
+	// survive for, while the figure is still worth showing. A row that a control
+	// reads is written by Fprintf and is held to the stricter list.
+	structAllowed := map[string]bool{
+		"brokerResultSpendFields": true,
+		"Spent":                   true,
+		"meteredCostUSD":          true, // display-only rows
+	}
 	structFound := 0
 	for _, f := range files {
 		for _, decl := range f.Decls {
@@ -545,7 +583,7 @@ func TestGlobalCeiling_NoBrokerAuthoredRowCanSourceItsCostFromTheAgent(t *testin
 				structFound++
 				expr := resolveToExpr(fn.Body, costField)
 				name := calleeName(expr)
-				if !allowed[name] {
+				if !structAllowed[name] {
 					t.Errorf("%s: a src:\"broker\" struct-literal row takes its dollar figure from %s, "+
 						"which is not the gateway lease. Allowed: tr.meteredCostUSD() or tr.grant.Spent(). "+
 						"Anything else can launder an agent-authored figure into a broker-stamped row (plan G4).",
@@ -560,12 +598,12 @@ func TestGlobalCeiling_NoBrokerAuthoredRowCanSourceItsCostFromTheAgent(t *testin
 			"so the struct-literal half of the net has stopped working")
 	}
 
-	// Task 4 converted six synthetic rows plus appendBrokerResult. Fewer than
-	// that means the matcher stopped matching and the net is not catching
-	// anything.
+	// Task 4 converted six synthetic rows plus appendBrokerResult; the resumed
+	// terminal is the seventh. Fewer than that means the matcher stopped matching
+	// and the net is not catching anything.
 	if found < 7 {
 		t.Fatalf("matched only %d broker-authored cost rows; the structural net has stopped working "+
-			"(Task 4 converted six synthetic rows plus appendBrokerResult)", found)
+			"(seven synthetic rows plus appendBrokerResult)", found)
 	}
 }
 
@@ -607,23 +645,33 @@ func TestGlobalCeiling_AuditTotalCostStaysDeleted(t *testing.T) {
 
 // TestGlobalCeiling_NothingInTheCeilingReadsAnAgentWritableFile.
 //
-// The ledger's inputs must trace to broker-authored values only. The store, the
-// enforcement and the headroom surface therefore touch the audit package NOT AT
-// ALL — they have no business reading a <id>.jsonl, which carries the agent's
-// stdout verbatim — and the one file that does (globalrecord.go, for a task
-// resumed after a restart whose lease is long gone) may use only the
-// src-FILTERED reader.
+// The ledger's inputs must trace to broker-authored values only, so NONE of the
+// ceiling's four files may touch the audit package at all. A <id>.jsonl carries
+// the agent's own stdout verbatim; there is no reader over it that changes that.
+//
+// globalrecord.go used to be excepted, on the grounds that a task RESUMED after a
+// restart has no lease in this process and its previous process's src=="broker"
+// row is the only surviving record of what it cost — so the exception allowed the
+// src-FILTERED reader. That exception was a fail-open, and it is now gone: `src`
+// is a self-declared string in agent-writable text, the filter is not
+// authentication, and the resumed branch returned trusted=true. A forged
+// src:"broker" row claiming $999,999 went straight into the trusted USD limb and
+// refused every start on the install. See brokerMeteredSpendUSD's own note.
+//
+// THE RULE IS NOW ABSOLUTE AND HAS NO EXCEPTIONS, which is what makes it
+// enforceable: a value read from the agent-writable trace is never trusted, so
+// the ceiling does not read it.
 func TestGlobalCeiling_NothingInTheCeilingReadsAnAgentWritableFile(t *testing.T) {
 	fset := token.NewFileSet()
-	// The src-filtered readers. LastBrokerResult skips any row an agent wrote.
-	allowedAuditCalls := map[string]bool{"LastBrokerResult": true}
+	ceilingFiles := []string{"globalledger.go", "globalcap.go", "globalheadroom.go", "globalrecord.go"}
 
-	seen := 0
-	for _, name := range []string{"globalledger.go", "globalcap.go", "globalheadroom.go", "globalrecord.go"} {
+	parsed := 0
+	for _, name := range ceilingFiles {
 		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
+		parsed++
 		ast.Inspect(f, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
 			if !ok {
@@ -633,26 +681,30 @@ func TestGlobalCeiling_NothingInTheCeilingReadsAnAgentWritableFile(t *testing.T)
 			if !ok || pkg.Name != "audit" {
 				return true
 			}
-			seen++
-			if name != "globalrecord.go" {
-				t.Errorf("%s: reads audit.%s. The ceiling's store, enforcement and headroom surface "+
-					"must not touch a task trace at all — it carries the agent's own stdout.",
-					fset.Position(sel.Pos()), sel.Sel.Name)
-				return true
-			}
-			if !allowedAuditCalls[sel.Sel.Name] {
-				t.Errorf("%s: reads audit.%s. Only the src-FILTERED readers may feed the ceiling; "+
-					"an unfiltered one returns whatever the agent printed (plan G4).",
-					fset.Position(sel.Pos()), sel.Sel.Name)
-			}
+			t.Errorf("%s: reads audit.%s. NO file of the global ceiling may touch a task trace — it "+
+				"carries the agent's own stdout, `src` is a self-declared string inside it, and no "+
+				"reader over it produces a value the ceiling may trust (plan G2/G4).",
+				fset.Position(sel.Pos()), sel.Sel.Name)
 			return true
 		})
 	}
-	// Vacuity guard: globalrecord.go really does reach for a trace (the resumed
-	// task's previous-process broker row), so the matcher above is live and a
-	// pass means "only the filtered reader", not "the walk found nothing".
-	if seen == 0 {
-		t.Fatal("found no audit.* reference at all in the ceiling's files; the walk has stopped working")
+	// Vacuity guard: the walk has to have had four real files to look at, or a
+	// pass means "nothing was parsed" rather than "nothing was found".
+	if parsed != len(ceilingFiles) {
+		t.Fatalf("parsed %d of %d ceiling files; the walk has stopped working", parsed, len(ceilingFiles))
+	}
+	// ...and the rule is stated over the IMPORT too, so the file cannot reacquire
+	// a trace reader under an alias.
+	for _, name := range ceilingFiles {
+		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range f.Imports {
+			if strings.Contains(imp.Path.Value, "internal/audit") {
+				t.Errorf("%s imports internal/audit; the ceiling has no business opening a task trace", name)
+			}
+		}
 	}
 }
 

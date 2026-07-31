@@ -67,40 +67,43 @@ func TestGateSpend_UnmeteredLaneSaysSoRatherThanShowingZero(t *testing.T) {
 	settle(t, b)
 }
 
-// publishGateSpend's three answers, unit-tested where the end-to-end drive
-// cannot reach them: no lease and not resumed (nothing could have spent), and a
-// RESUMED task whose previous process left no broker result row — which must
-// publish "unknown" rather than a $0 that would read as measured.
-func TestGateSpend_PublishesUnknownWhenNothingBrokerAuthoredExists(t *testing.T) {
+// A RESUMED task publishes UNKNOWN, whatever its trace says. Its agent ran in a
+// previous process whose lease is long gone, and the only surviving copy of what
+// that lease metered lives in a file the agent's own stdout is copied into.
+//
+// This test used to assert the opposite — that a src:"broker" row in the trace
+// published as `broker` at 2.25 — and the inversion IS the fix. `src` is a
+// self-declared string in agent-writable text; filtering on it is not
+// authentication. The same read fed recordGlobalUsage's TRUSTED USD limb, where
+// a forged row claiming $999,999 refused every start on the install.
+func TestGateSpend_AResumedTaskPublishesUnknownNotATraceReading(t *testing.T) {
 	b := &Broker{AuditRoot: t.TempDir()}
 	dir := t.TempDir()
 	audPath := filepath.Join(dir, "t1.jsonl")
-	// Only the AGENT's own row survives from the previous process.
-	if err := os.WriteFile(audPath, []byte(
-		`{"type":"result","subtype":"success","total_cost_usd":88.8}`+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	b.registerTask("t1", "r", "i", nil)
 	tr := &taskRun{b: b, id: "t1", taskVendor: "anthropic", resumed: true, auditPath: audPath}
-	tr.publishGateSpend()
 
-	ts := taskStateFromAdmin(t, b, "t1")
-	if ts.SpentSrc != "" || ts.SpentUSD != 0 {
-		t.Errorf("resumed with no broker row published %v/%q, want 0/\"\" (unknown) — an agent-authored 88.8 must not surface",
-			ts.SpentUSD, ts.SpentSrc)
-	}
-
-	// And the case where the previous process DID leave a broker row: that row
-	// is broker-observed at one remove, so it publishes as "broker".
-	if err := os.WriteFile(audPath, []byte(
-		`{"type":"result","subtype":"success","total_cost_usd":2.25,"src":"broker"}`+"\n"+
-			`{"type":"result","subtype":"success","total_cost_usd":88.8}`+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	tr.publishGateSpend()
-	ts = taskStateFromAdmin(t, b, "t1")
-	if ts.SpentSrc != "broker" || ts.SpentUSD != 2.25 {
-		t.Errorf("resumed with a broker row published %v/%q, want 2.25/broker", ts.SpentUSD, ts.SpentSrc)
+	for name, trace := range map[string]string{
+		"only the agent's own row": `{"type":"result","subtype":"success","total_cost_usd":88.8}` + "\n",
+		"a genuine broker row": `{"type":"result","subtype":"success","total_cost_usd":2.25,"src":"broker"}` + "\n" +
+			`{"type":"result","subtype":"success","total_cost_usd":88.8}` + "\n",
+		"a FORGED broker row, which is byte-identical to a genuine one": `{"type":"result","subtype":"success","total_cost_usd":999999,"src":"broker"}` + "\n",
+		"no trace at all": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if trace == "" {
+				os.Remove(audPath)
+			} else if err := os.WriteFile(audPath, []byte(trace), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			b.setSpend("t1", -1, "sentinel")
+			tr.publishGateSpend()
+			ts := taskStateFromAdmin(t, b, "t1")
+			if ts.SpentSrc != "" || ts.SpentUSD != 0 {
+				t.Errorf("a resumed task published %v/%q, want 0/\"\" (unknown): the gate surface read a "+
+					"figure out of an agent-writable file", ts.SpentUSD, ts.SpentSrc)
+			}
+		})
 	}
 }
 

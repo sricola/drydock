@@ -92,4 +92,28 @@ func applyGlobalCeiling(b *broker.Broker, cfg *config.Config) {
 		slog.Warn("global usage ceiling: global_budget_usd is below task_budget_usd, so a single task can exhaust (and overshoot) the whole global budget before its spend is recorded; set global_max_tasks for a bound that is enforced at admission",
 			"global_budget_usd", cfg.GlobalBudgetUSD, "task_budget_usd", cfg.TaskBudgetUSD)
 	}
+
+	// A USD-ONLY INSTALL HAS NO CRASH-RECOVERY BACKSTOP, and that is worth a line
+	// at boot because the documented reasoning for the ceiling's biggest
+	// deliberate blind spot ASSUMES the task limb is on.
+	//
+	// Boot reconciliation records every crash-lost task as USD 0 / USDTrusted
+	// false — it will not read a dollar figure out of an agent-writable trace — and
+	// deliberately does NOT raise the degraded flag, because degrading is sticky
+	// for the daemon's life and would brick an unattended install after an ordinary
+	// crash. What makes that trade sound is that THE START LIMB COUNTS EVERY ONE OF
+	// THOSE TASKS EXACTLY, so the blind spot is bounded even though the dollars are
+	// gone. With global_max_tasks at 0 that sentence is simply false: nothing counts
+	// them, the under-count is real money, and it repeats without bound across
+	// repeated crashes — ten crash-recovery cycles with four tasks in flight leaves
+	// forty invisible starts and a ceiling that admits freely.
+	//
+	// It is a WARNING rather than a refusal, and rather than degrading the USD limb
+	// on reconciled entries, for the reason above: a control that bricks an
+	// unattended install after a routine crash is a worse failure than a bounded,
+	// stated blind spot. The remedy is one line of config.
+	if cfg.GlobalBudgetUSD > 0 && cfg.GlobalMaxTasks <= 0 {
+		slog.Warn("global usage ceiling: global_budget_usd is set but global_max_tasks is 0, so crash recovery has NO backstop — a task killed before its ledger write is recorded with unknown spend (boot reconciliation will not read a dollar figure out of an agent-writable trace), and with no task-start limb nothing counts it at all; the under-count is unbounded across repeated crashes. Set global_max_tasks to bound it.",
+			"global_budget_usd", cfg.GlobalBudgetUSD)
+	}
 }

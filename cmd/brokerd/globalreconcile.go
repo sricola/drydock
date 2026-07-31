@@ -80,9 +80,25 @@ import (
 // its trace, and we are now declining to believe it. Every reconciled entry is
 // therefore recorded with USD 0 and USDTrusted false — "we know a task ran, we
 // do not know what it cost" — so the USD limb under-counts by that task's spend.
-// The bound is small (at most the tasks in flight at the crash, which is
-// max_concurrent_tasks) and the START limb counts every one of them exactly,
-// which is precisely the backstop G7 names.
+//
+// AND THE BOUND ON THAT UNDER-COUNT IS CONDITIONAL, which an earlier version of
+// this comment did not say. The claim is: at most the tasks in flight at the
+// crash (max_concurrent_tasks), because the START limb counts every one of them
+// exactly — the backstop G7 names. That is true ONLY WHEN global_max_tasks > 0.
+//
+// On a USD-ONLY install (global_max_tasks: 0) there is no start limb, so nothing
+// counts them at all: the dollars are unknown, no limb registers the tasks, and
+// the ceiling admits freely. It does not even bound at max_concurrent_tasks,
+// because it REPEATS on every crash — ten crash-recovery cycles with four tasks
+// in flight is forty invisible starts and $800 of real spend the ceiling never
+// sees. applyGlobalCeiling warns about exactly this configuration at boot, and
+// docs/THREAT_MODEL.md states it as a residual.
+//
+// The alternative — degrading the USD limb whenever a reconciled entry is added
+// and the task limb is off — was considered and rejected for the reason below:
+// degrade is sticky for the daemon's life, so it would refuse every start after
+// an ordinary crash, and an unattended install bricked by a routine event is a
+// worse failure than a stated blind spot with a one-line config remedy.
 //
 // WHAT IT DELIBERATELY DOES NOT DO IS DEGRADE THE USD LIMB FOR THIS. Degrade is
 // sticky for the daemon's life, so degrading on every reconciled entry would

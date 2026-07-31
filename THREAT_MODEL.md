@@ -524,10 +524,19 @@ usage the broker cannot parse joins it:
   in the running total would make `usage.USD >= budget` false forever and the
   limb would admit without bound. The start is still counted, but the entry does
   **not** raise the degraded flag, so the USD limb is quietly a lower bound.
-- **A RESUMED task with no surviving broker row.** A task resumed at the diff
-  gate after a restart ran its agent in a previous process, whose lease is gone.
-  Where that process's own broker-authored row did not survive, the spend is
-  recorded as unknown rather than invented.
+- **EVERY RESUMED task.** A task resumed at the diff gate after a restart ran
+  its agent in a previous process, whose lease is gone. The only surviving copy
+  of what that lease metered is a `src:"broker"` row in the task's own trace —
+  an append-only file the agent's own stdout is copied into, in which `src` is
+  a self-declared string. The ceiling therefore does **not** read it: a resumed
+  task's spend is recorded as **unknown**, never invented and never taken from
+  the trace. (It used to be read, and marked trusted; a forged row claiming
+  `total_cost_usd: 999999` went straight into the trusted USD limb and refused
+  every start on the install until it aged out. What kept that out in practice
+  was ordering, not authentication.) The resumed task's own broker result row
+  now carries `no_spend_info`, so the cost columns and the per-vendor
+  `aggregate_budget_usd` restart seed still read the previous process's genuine
+  row beneath it — only the global USD limb declines the figure.
 - **Every BOOT-RECONCILED entry.** A task killed between its audit terminal and
   its ledger write is recovered from the audit trail — but a task trace is an
   append-only file the agent's own stdout is copied into, so no figure in it can
@@ -535,10 +544,16 @@ usage the broker cannot parse joins it:
   dollars as **unknown**, for every such task, and deliberately does not raise
   the degraded flag: degrading is sticky for the daemon's life, so doing it on
   every crash-recovered task would refuse every subsequent start after an
-  ordinary crash. The blind spot is bounded by the tasks in flight at the crash.
-  Closing it properly means the broker recording its metered figure somewhere a
-  sandbox cannot append to — a broker-only sidecar — rather than re-trusting the
-  trace.
+  ordinary crash. **The blind spot is bounded by the tasks in flight at the
+  crash ONLY IF `global_max_tasks` is also set** — that limb is what counts
+  them. On a USD-only install (`global_max_tasks: 0`) nothing counts them at
+  all, so the under-count is real money and is not even bounded at
+  `max_concurrent_tasks`: it repeats on every crash. Ten crash-recovery cycles
+  with four tasks in flight leaves forty invisible starts and a ceiling that
+  admits freely. brokerd warns at boot for exactly this configuration; the
+  remedy is to set `global_max_tasks`. Closing it properly means the broker
+  recording its metered figure somewhere a sandbox cannot append to — a
+  broker-only sidecar — rather than re-trusting the trace.
 - **Batch-style routes on an `openai_compat` lane**, where usage is not in the
   response the broker proxies at all. For the built-in vendors this is *closed*
   rather than open: the gateway's route allowlist deliberately omits
@@ -590,9 +605,17 @@ Residual, stated without softening:
   **down** is still not detectable (a monotonic reading does not survive a
   reboot); it is logged loudly at open rather than refused, because refusing it
   would also refuse every legitimately idle install.
+- **The write clock's correction applies to the PRUNE CUTOFF only, never to an
+  entry's timestamp.** An entry is stamped against the same clock the window is
+  later queried against. Correcting the stamp too created a SECOND skew
+  accumulator sampled at a different rate from the query clock's — writes happen
+  once per task terminal, queries once per admission — and the two drifted apart
+  monotonically until the gap exceeded `global_window` and the window saw
+  *nothing*. That was a permanent fail-open reachable with no clock jump and no
+  attacker, only uptime.
 - **Clock-skew correction only ever grows.** The accumulated forward-jump
   correction is floored at zero and never decreases, so repeated back-and-forth
-  clock moves widen the effective window each time. That is the over-counting
+  clock moves widen the effective prune cutoff each time. That is the over-counting
   direction — entries are kept longer than the configured window, never shorter
   — but an install whose clock is moved repeatedly will refuse on entries an
   operator expects to have aged out. The remedy is a restart, which re-anchors.

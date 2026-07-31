@@ -179,6 +179,12 @@ func (b *Broker) applyCIObservation(obs CIObservation) bool {
 		// enqueue-once: the decision below never runs a second time for an
 		// observation whose terminal is already on the parent's record. See
 		// ciretryloop.go's crash-window analysis.
+		//
+		// Clear a STALE deferral on the way out. A parent that reaches here with
+		// the flag still set is one whose enqueue landed but whose flag-clearing
+		// write did not; the decision is over, and leaving the flag would tell an
+		// operator the retry is still pending forever. A no-op when already clear.
+		b.setCIRetryDeferred(obs.TaskID, false)
 		return true
 	}
 	// The bounded retry (B2, D6), and note the ORDER: the parent's terminal is
@@ -222,16 +228,29 @@ func (b *Broker) recordCIQueueTerminal(obs CIObservation, to QueueState, lastErr
 		return "", false, true // synchronous task: no queue item, nothing to move
 	}
 	if cur.State == to && cur.CIState == string(obs.State) {
-		if !cur.CIRetryDeferred {
+		// THE FALL-THROUGH IS NARROW, AND THE NARROWNESS IS THE FIX. A parked
+		// decision must be re-asked (see below), but a decision that ALREADY
+		// ENQUEUED must never be, and "parked" alone does not distinguish the two:
+		// the deferral flag and the parent's link are separate best-effort writes,
+		// so a crash — or one correlated write failure — between Enqueue and those
+		// writes leaves a parent that has a child, still says `CIRetryDeferred`,
+		// and has an empty `RetryTaskID`. Falling through on the deferral alone
+		// re-ran the decision for that parent and minted a SECOND child, breaking
+		// "at most one child per parent, ever" — ciretryloop.go's crash window W3.
+		//
+		// CIRetryEnqueued is written BEFORE Enqueue, so it covers that window
+		// exactly. RetryTaskID is checked too, belt and braces, for items written
+		// by a build that predates the flag.
+		if !cur.CIRetryDeferred || cur.CIRetryEnqueued || cur.RetryTaskID != "" {
 			return to, true, true // already applied; a crash-window replay
 		}
 		// The terminal is already durable, but the bounded-retry decision was
-		// PARKED because the global usage ceiling could not be measured. That is
-		// the one case where a repeat pass must NOT short-circuit: the decision
-		// runs once per observation, and short-circuiting it here is what turned
-		// a transient fault into a permanently destroyed retry chain. Report it
-		// as recorded-and-not-a-replay so the caller re-asks; RetryTaskID is
-		// still the enqueue-once flag, so re-asking cannot mint a second child.
+		// PARKED because the global usage ceiling could not be measured, and
+		// nothing has been enqueued for it. That is the one case where a repeat
+		// pass must NOT short-circuit: the decision runs once per observation, and
+		// short-circuiting it here is what turned a transient fault into a
+		// permanently destroyed retry chain. Report it as recorded-and-not-a-replay
+		// so the caller re-asks.
 		return cur.State, false, true
 	}
 	// The observation's own Detail (why the watch ended without a conclusion:

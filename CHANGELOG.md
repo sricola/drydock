@@ -62,10 +62,19 @@ entry below corresponds to a Git tag of the same name.
     (clamped to now), because everything inside a trace is text the agent's own
     stdout was copied into. A forward wall-clock jump is corrected against
     monotonic time on the **write** path as well as the read path, so it can
-    neither zero a limb nor delete a durable entry.
-  - **Only broker-metered spend counts.** The USD figure is the credential
-    gateway's own lease metering. An agent-reported `total_cost_usd` cannot
-    inflate the ceiling to deny service or deflate it to keep spending.
+    neither zero a limb nor delete a durable entry. The write path's correction
+    applies to the **prune cutoff only**: entries are stamped against the same
+    clock the window is queried against, so the two cannot drift apart.
+  - **Only broker-metered spend counts, and NOTHING is read out of a task
+    trace.** The USD figure is the credential gateway's own lease metering. An
+    agent-reported `total_cost_usd` cannot inflate the ceiling to deny service
+    or deflate it to keep spending — and neither can one wearing a
+    `src:"broker"` label, because `src` is a self-declared string in a file the
+    agent's stdout is copied into. That applies to a **resumed** task too: its
+    lease died with the previous process, so its spend is recorded as unknown
+    rather than recovered from its trace. Its broker result row carries
+    `no_spend_info`, so the cost columns and the `aggregate_budget_usd` restart
+    seed still read the previous process's genuine row.
   - **Headroom is visible**: `GET /admin/ceiling` and a new section in
     `drydock stats` report spend and starts against each limb, the window,
     in-flight starts not yet recorded, and whether either number is degraded.
@@ -79,8 +88,11 @@ entry below corresponds to a Git tag of the same name.
     at boot.
 
   Both limbs default to `0`. A stock install creates no ledger file, runs no
-  extra boot scan, and takes byte-identical admission paths. `THREAT_MODEL.md`
-  N4 documents the coverage and the non-coverage; the generated security-defaults
+  extra boot scan, and takes byte-identical admission paths. Setting
+  `global_budget_usd` **without** `global_max_tasks` now warns at boot: the task
+  limb is the only thing that bounds the crash-recovery and resumed-task blind
+  spots, and without it they repeat on every crash. `THREAT_MODEL.md` N4
+  documents the coverage and the non-coverage; the generated security-defaults
   table gains a row per key.
 
 - **Bounded automatic retry on an observed CI failure (orchestration increment
@@ -116,7 +128,17 @@ entry below corresponds to a Git tag of the same name.
     kill mid-decision can end a chain one attempt short but can never produce a
     second child or extend a chain past `max_attempts`. `attempt` and
     `retry_of` are broker-owned: `POST /queue` zeroes both, so the bound does
-    not rest on a single downstream clamp.
+    not rest on a single downstream clamp. **Enqueue-once is anchored on a
+    durable marker written BEFORE the enqueue** (`ci_retry_enqueued`), not on
+    the parent's `retry_task_id` link, which is written after: a crash — or one
+    failed write — in the window between them left a parent with a child and no
+    link, and a decision that had been *deferred* would then re-ask and mint a
+    second child. If that marker cannot be persisted, no retry is enqueued.
+  - **A deferred retry decision is BOUNDED.** A decision the global ceiling
+    could not *measure* parks so the next watch tick can re-ask, but it gives up
+    after the CI watch's own timeout and refuses honestly — a permanently
+    unmeasurable ceiling used to park forever and hold the task's CI marker for
+    the daemon's life.
   - **A retry that cannot say what failed is refused, not shipped.** The
     `<id>.ci.json` marker persists the check rollup alongside the terminal
     state, so a conclusion replayed after a crash or a failed queue write still

@@ -113,8 +113,8 @@ func (tr *taskRun) runVerify(diff string) bool {
 		// (last-wins over the agent's own success row, carrying metered cost).
 		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
-			`{"type":"result","subtype":"verify_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-			time.Since(tr.taskStart).Milliseconds(), cost)
+			`{"type":"result","subtype":"verify_failed","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+			time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
 		tr.outcome = "verify_failed"
 		// Point at the verification log only when one was actually created —
 		// the inconclusive paths that never launched a VM (no export
@@ -350,8 +350,8 @@ func (tr *taskRun) verifiedTreeGuard() bool {
 	}
 	cost := tr.meteredCostUSD()
 	fmt.Fprintf(tr.logf,
-		`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-		time.Since(tr.taskStart).Milliseconds(), cost)
+		`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+		time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
 	tr.outcome = "push_failed"
 	tr.sw.emit(map[string]any{"event": "result", "outcome": "push_failed",
 		"task_id": tr.id,

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -247,8 +249,20 @@ func TestGlobalCeiling_RetryStormIsBoundedEndToEnd(t *testing.T) {
 		if runs.Load() >= uncappedStarts {
 			t.Errorf("the storm was not actually truncated (%d runs vs an uncapped %d)", runs.Load(), uncappedStarts)
 		}
-		// The truncation is visible on the durable queue: unattended retries the
-		// ceiling MEASURED as over-cap are dead-lettered, human items park.
+		// The truncation must be VISIBLE and DURABLE, and there are three places it
+		// can legitimately land depending on where the limb happened to fill:
+		//
+		//   - a retry that was enqueued and then found the limb exhausted at
+		//     DISPATCH is dead-lettered (unattended work is dropped, not parked);
+		//   - a human-submitted item at the same point PARKS in `queued`;
+		//   - a retry the limb refused at the DECISION was never enqueued at all,
+		//     so there is no queue item to look at — the record is the parent's
+		//     own broker-authored ci_observation row and its retry_detail.
+		//
+		// Which one happens is a race between the dispatcher draining the queue and
+		// the watch concluding the last chain, so requiring the first two made this
+		// assertion flaky (it failed roughly 40% of runs) while testing nothing
+		// stronger. Any of the three is the ceiling explaining itself.
 		var dropped, parked int
 		for _, it := range queueItemsIn(t, b) {
 			switch {
@@ -261,10 +275,26 @@ func TestGlobalCeiling_RetryStormIsBoundedEndToEnd(t *testing.T) {
 				parked++
 			}
 		}
-		if dropped == 0 && parked == 0 {
-			t.Error("the ceiling truncated the storm but left no dropped retry and no parked item to explain why")
+		refusedAtDecision := 0
+		traces, err := filepath.Glob(filepath.Join(b.AuditRoot, "*.jsonl"))
+		if err != nil {
+			t.Fatal(err)
 		}
-		t.Logf("bounded: %d agent runs (limb %d), %d retries dropped, %d items parked", runs.Load(), limb, dropped, parked)
+		for _, p := range traces {
+			raw, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			if bytes.Contains(raw, []byte(`"retry_detail"`)) && bytes.Contains(raw, []byte("global_max_tasks")) {
+				refusedAtDecision++
+			}
+		}
+		if dropped == 0 && parked == 0 && refusedAtDecision == 0 {
+			t.Error("the ceiling truncated the storm but left no dropped retry, no parked item and no " +
+				"recorded decision-time refusal to explain why")
+		}
+		t.Logf("bounded: %d agent runs (limb %d), %d retries dropped, %d items parked, %d refused at the decision",
+			runs.Load(), limb, dropped, parked, refusedAtDecision)
 	})
 
 	// --- the USD limb: soft, with an overshoot that is asserted exactly ---

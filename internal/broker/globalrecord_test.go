@@ -833,57 +833,85 @@ func TestGlobalRecord_ClaimIsReleasedAfterTheEntryLands(t *testing.T) {
 // This is also the path that converges globalcap.go's documented residual: such
 // a task holds no in-flight claim here, so its ledger entry is the only thing
 // that makes it visible to the ceiling.
-func TestGlobalRecord_ResumedTerminalUsesTheBrokerAuthoredRow(t *testing.T) {
+// THE ASSERTION IS INVERTED FROM WHAT IT WAS, AND THE INVERSION IS THE FIX.
+//
+// This test used to require the resumed entry to CARRY the previous process's
+// src:"broker" figure and to mark it trusted. That read came from the task's own
+// audit trace — a file the agent's stdout is copied into verbatim, in which
+// `src` is a self-declared string — and recordGlobalUsage wrote it straight into
+// the TRUSTED USD limb. Measured: a forged row claiming 999999 produced
+// "global_budget_usd is exhausted: $999999.00 of $100.00" and refused every task
+// start on the install, across all vendors and both auth modes, until it aged out
+// — forever, in total mode.
+//
+// What kept it out in practice was ORDERING (the genuine broker row is normally
+// appended after the agent exits), not authentication, and one swallowed write
+// error on a task that then parks at the diff gate handed the limb to the agent.
+//
+// The rule is now the one boot reconciliation already follows: a value read from
+// the agent-writable trace is NEVER trusted, so the ceiling does not read it. The
+// START still counts exactly — that is the limb G7 names as the backstop.
+func TestGlobalRecord_AResumedTerminalTrustsNoTraceContent(t *testing.T) {
 	root := t.TempDir()
-	id := newID()
-	auditPath := filepath.Join(root, id+".jsonl")
-	// A realistic trace: the agent's own (untrusted, cheap) row, then the
-	// broker's own metered row last — exactly what appendBrokerResult leaves.
-	trace := `{"type":"drydock_meta","subscription":false,"sensitive":false}` + "\n" +
-		`{"type":"drydock_task","agent":"claude"}` + "\n" +
-		`{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"total_cost_usd":0.0002,"num_turns":1}` + "\n" +
-		`{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"total_cost_usd":12.5,"num_turns":1,"src":"broker"}` + "\n"
-	if err := os.WriteFile(auditPath, []byte(trace), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	l, err := OpenGlobalLedger(root, 24*time.Hour, recNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &Broker{AuditRoot: root, GlobalLedger: l}
+	b := &Broker{AuditRoot: root, GlobalLedger: l, GlobalBudgetUSD: 100}
 	clk := &testClock{}
 	clk.set(recNow)
 	b.now = clk.now
 
-	tr := &taskRun{b: b, id: id, auditPath: auditPath, resumed: true,
-		agentName: "claude", taskVendor: "anthropic", outcome: "pushed"}
-	tr.recordGlobalUsage()
+	header := `{"type":"drydock_meta","subscription":false,"sensitive":false}` + "\n" +
+		`{"type":"drydock_task","agent":"claude"}` + "\n"
+	traces := map[string]string{
+		// A genuine-looking trace: the agent's own cheap row, then a broker row.
+		"a broker row that looks entirely genuine": header +
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"total_cost_usd":0.0002,"num_turns":1}` + "\n" +
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"total_cost_usd":12.5,"num_turns":1,"src":"broker"}` + "\n",
+		// ...and one an agent forged, which is BYTE-IDENTICAL in kind. Nothing
+		// distinguishes them, which is the whole argument.
+		"a forged inflating row": header +
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"total_cost_usd":999999,"num_turns":1,"src":"broker"}` + "\n",
+		// The deflating direction is refused for the same reason.
+		"a forged deflating row": header +
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"total_cost_usd":0,"num_turns":1,"src":"broker"}` + "\n",
+		"no broker row at all": header +
+			`{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0}` + "\n",
+	}
+	ids := make([]string, 0, len(traces))
+	for name, trace := range traces {
+		id := newID()
+		ids = append(ids, id)
+		path := filepath.Join(root, id+".jsonl")
+		if err := os.WriteFile(path, []byte(trace), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		tr := &taskRun{b: b, id: id, auditPath: path, resumed: true,
+			agentName: "claude", taskVendor: "anthropic", outcome: "pushed"}
+		tr.recordGlobalUsage()
 
-	e := onlyEntry(t, l, id)
-	if e.USD != 12.5 {
-		t.Errorf("usd = %v, want the previous process's broker-authored 12.5 (never the agent's 0.0002)", e.USD)
-	}
-	if !e.USDTrusted {
-		t.Error("usd_trusted = false; a src:\"broker\" row on a metered lane is broker-observed")
+		e := onlyEntry(t, l, id)
+		if e.USDTrusted {
+			t.Errorf("%s: usd_trusted = true; nothing read from an agent-writable trace may be trusted", name)
+		}
+		if e.USD != 0 {
+			t.Errorf("%s: usd = %v, want 0; the resumed path must not source a figure from trace content", name, e.USD)
+		}
 	}
 
-	// And with NO broker row (a trace whose broker terminal never landed), the
-	// figure is declared unknown rather than invented — while the start counts.
-	id2 := newID()
-	path2 := filepath.Join(root, id2+".jsonl")
-	if err := os.WriteFile(path2, []byte(
-		`{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0}`+"\n"), 0o600); err != nil {
-		t.Fatal(err)
+	u := l.Usage(recNow)
+	if u.Starts != len(ids) {
+		t.Errorf("usage.Starts = %d, want %d: every resumed terminal is a task start, which is the limb "+
+			"that still bounds this case", u.Starts, len(ids))
 	}
-	tr2 := &taskRun{b: b, id: id2, auditPath: path2, resumed: true,
-		agentName: "claude", taskVendor: "anthropic", outcome: "denied"}
-	tr2.recordGlobalUsage()
-	e2 := onlyEntry(t, l, id2)
-	if e2.USDTrusted {
-		t.Error("usd_trusted = true with no broker-authored row to read it from")
+	if u.USD != 0 {
+		t.Errorf("the TRUSTED usd limb reads $%.2f out of agent-writable files", u.USD)
 	}
-	if u := l.Usage(recNow); u.Starts != 2 {
-		t.Errorf("usage.Starts = %d, want 2: both resumed terminals are task starts", u.Starts)
+	// And the ceiling is not refused by the forgery either: an unauthenticatable
+	// figure contributes nothing in EITHER direction.
+	if u.USD >= b.GlobalBudgetUSD {
+		t.Errorf("a forged trace exhausted the USD limb: $%.2f of $%.2f", u.USD, b.GlobalBudgetUSD)
 	}
 }
 

@@ -184,13 +184,23 @@ usage the broker cannot parse joins it. It under-counts when:
   sanitised to an untrusted **$0** rather than believed — a NaN in the total
   would make the limb admit forever — and the entry does not raise the degraded
   flag, so the total is quietly a lower bound;
-- a task is **resumed at the diff gate after a restart** and its previous
-  process's broker row did not survive;
+- a task is **resumed at the diff gate after a restart**, always. Its agent ran
+  in a previous process whose lease is gone, and the only surviving copy of what
+  that lease metered lives in the task's own trace — which the ceiling will not
+  read, because `src` is a self-declared string in a file the agent's stdout is
+  copied into. The spend is recorded as **unknown**. The task's own broker
+  result row carries `no_spend_info`, so the cost columns and the per-vendor
+  `aggregate_budget_usd` restart seed still read the previous process's genuine
+  row beneath it;
 - an entry was recovered by **boot reconciliation**. A task killed between its
   audit terminal and its ledger write is recovered from the audit trail, but a
   task trace is an append-only file the agent's own stdout is copied into, so no
   figure in it can be authenticated. Such an entry records the **start** exactly
-  and the dollars as **unknown**, every time;
+  and the dollars as **unknown**, every time. **That under-count is bounded only
+  if `global_max_tasks` is also set** — the start limb is what counts those
+  tasks. On a USD-only install nothing counts them, and the gap repeats on every
+  crash rather than being bounded by `max_concurrent_tasks`; brokerd warns at
+  boot when it sees that configuration;
 - the route is **batch-style** and usage is not in the proxied response at all.
   For the built-in vendors this is closed rather than open: the gateway's route
   allowlist deliberately omits `/v1/messages/batches` (F-03) and answers it
@@ -204,7 +214,9 @@ usage the broker cannot parse joins it. It under-counts when:
 `global_max_tasks` is the backstop for every one of those: it counts events, not
 dollars, so no metering gap can under-report it. If you run subscription or
 unpriced `openai_compat` lanes, set the **task limb** — the dollar limb cannot
-help you there.
+help you there. **Set it even if the dollar limb is what you care about**: it is
+also the only thing that bounds the crash-recovery and resumed-task gaps above,
+and without it those are unbounded across repeated crashes.
 
 ### Only broker-metered spend counts
 

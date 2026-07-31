@@ -875,12 +875,26 @@ func TestReconcile_NeverSourcesATrustedValueFromTraceContent(t *testing.T) {
 		"LastBrokerResult":     "src is a self-declared string in an agent-writable file (C2)",
 		"LastBrokerResultFile": "src is a self-declared string in an agent-writable file (C2)",
 		"LastRowsFile":         "bundles the tail readers above",
-		"LastResultAndMetrics": "bundles the tail readers above",
-		"TotalCost":            "deliberately absent from internal/audit; never reintroduce it here",
-		"HasBrokerResultLine":  "a tail scan; the sweep must not branch on trace content at all",
-		"scanTailForResult":    "a tail scan",
-		"AllowedSrcCostFile":   "any future tail reader belongs on this list",
+		// The REAL symbol is LastResultAndMetricsFile. The key here used to be
+		// "LastResultAndMetrics", which matches nothing in internal/audit — so a
+		// full tail read through it passed this test. A forbidden-symbol list is
+		// only as good as its spelling; every key here is a name that actually
+		// exists (or, for TotalCost, one that deliberately does not).
+		"LastResultAndMetricsFile": "bundles the tail readers above",
+		"LastResultAndMetrics":     "kept so a future rename to the shorter form is caught too",
+		"TotalCost":                "deliberately absent from internal/audit; never reintroduce it here",
+		"HasBrokerResultLine":      "a tail scan; the sweep must not branch on trace content at all",
+		"scanTailForResult":        "a tail scan",
+		"AllowedSrcCostFile":       "any future tail reader belongs on this list",
 	}
+	// VACUITY GUARD ON THE LIST ITSELF. Every key that names a real audit reader
+	// must exist in internal/audit, or it is a key that can never match — which is
+	// exactly how LastResultAndMetricsFile went unguarded.
+	assertAuditSymbolsExist(t, forbidden, map[string]bool{
+		"TotalCost":            true, // deliberately deleted; see the tombstone test
+		"LastResultAndMetrics": true, // the shorter spelling, guarded pre-emptively
+		"AllowedSrcCostFile":   true, // a placeholder for future readers
+	})
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "globalreconcile.go", nil, parser.ParseComments)
 	if err != nil {
@@ -920,23 +934,109 @@ func TestReconcile_NeverSourcesATrustedValueFromTraceContent(t *testing.T) {
 		}
 		return true
 	})
-	for _, node := range []ast.Node{f} {
-		ast.Inspect(node, func(n ast.Node) bool {
-			as, ok := n.(*ast.AssignStmt)
-			if !ok {
-				return true
-			}
-			for i, lhs := range as.Lhs {
-				sel, ok := lhs.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "USDTrusted" {
-					continue
-				}
-				if id, ok := as.Rhs[i].(*ast.Ident); !ok || id.Name != "false" {
-					pos := fset.Position(as.Pos())
-					t.Errorf("globalreconcile.go:%d assigns a non-literal-false to USDTrusted", pos.Line)
-				}
-			}
+	ast.Inspect(f, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
 			return true
-		})
+		}
+		for i, lhs := range as.Lhs {
+			sel, ok := lhs.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "USDTrusted" {
+				continue
+			}
+			if id, ok := as.Rhs[i].(*ast.Ident); !ok || id.Name != "false" {
+				pos := fset.Position(as.Pos())
+				t.Errorf("globalreconcile.go:%d assigns a non-literal-false to USDTrusted", pos.Line)
+			}
+		}
+		return true
+	})
+
+	// THE THIRD HALF, and C3's own vector: the TIMESTAMP. USDTrusted was pinned
+	// and EndedAtMs was not, so reintroducing `e.EndedAtMs = m.EndedAtMs` — the
+	// exact line C3 was about — passed this test. An ended_at_ms read out of the
+	// trace controls WHERE in the rolling window an entry lands: future-dated it
+	// parks spend for a year, back-dated it drops the entry below the lookback
+	// floor and THE START VANISHES.
+	//
+	// The only permitted source is reconcileEventMs, which takes filesystem mtime
+	// and clamps it at both ends.
+	endedAtSources := 0
+	checkEndedAt := func(pos token.Pos, value ast.Expr) {
+		endatSrc := ""
+		if call, ok := value.(*ast.CallExpr); ok {
+			if id, ok := call.Fun.(*ast.Ident); ok {
+				endatSrc = id.Name
+			}
+		}
+		endedAtSources++
+		if endatSrc != "reconcileEventMs" {
+			p := fset.Position(pos)
+			t.Errorf("globalreconcile.go:%d sets EndedAtMs from something other than reconcileEventMs(...); "+
+				"a reconciled entry's timestamp comes from filesystem metadata, never from trace content (C3). "+
+				"Future-dating parks spend in the window for a year; back-dating makes a real start vanish.", p.Line)
+		}
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.KeyValueExpr:
+			if key, ok := v.Key.(*ast.Ident); ok && key.Name == "EndedAtMs" {
+				checkEndedAt(v.Pos(), v.Value)
+			}
+		case *ast.AssignStmt:
+			for i, lhs := range v.Lhs {
+				if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "EndedAtMs" && i < len(v.Rhs) {
+					checkEndedAt(v.Pos(), v.Rhs[i])
+				}
+			}
+		}
+		return true
+	})
+	if endedAtSources == 0 {
+		t.Fatal("found no EndedAtMs assignment in globalreconcile.go; the timestamp half of the pin is vacuous")
+	}
+}
+
+// assertAuditSymbolsExist fails if a key in a forbidden-symbol map names nothing
+// in internal/audit. A misspelled key matches no AST node and silently disables
+// that entry — which is how a full tail read through LastResultAndMetricsFile
+// passed a test whose list said "LastResultAndMetrics".
+//
+// exempt names entries that are deliberately not real symbols (a deleted
+// function whose return is the point, or a pre-emptive spelling).
+func assertAuditSymbolsExist(t *testing.T, forbidden map[string]string, exempt map[string]bool) {
+	t.Helper()
+	fset := token.NewFileSet()
+	names, err := filepath.Glob("../../internal/audit/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	parsed := 0
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		parsed++
+		for _, decl := range af.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				have[fn.Name.Name] = true
+			}
+		}
+	}
+	if parsed == 0 {
+		t.Fatal("parsed no files from internal/audit; the spelling guard would be vacuous")
+	}
+	for name := range forbidden {
+		if exempt[name] || have[name] {
+			continue
+		}
+		t.Errorf("the forbidden-symbol list names %q, which does not exist in internal/audit. "+
+			"A key that matches nothing disables its own entry — check the spelling against the real "+
+			"function name, or add it to the exempt set with a reason.", name)
 	}
 }
