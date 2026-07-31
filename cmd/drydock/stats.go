@@ -78,6 +78,7 @@ func renderStats(w io.Writer, rep stats.Report) {
 	renderOutcomes(w, rep.Overall)
 
 	fmt.Fprintf(w, "dur p50/p95: %s\n", pair(rep.Overall.DurP50Ms, rep.Overall.DurP95Ms, rep.Overall.DurSamples))
+	fmt.Fprintf(w, "queue wait p50/p95: %s\n", pair(rep.Overall.QueueWaitP50Ms, rep.Overall.QueueWaitP95Ms, rep.Overall.QueueWaitSamples))
 	fmt.Fprintf(w, "approval wait p50/p95: %s\n", pair(rep.Overall.ApprovalWaitP50Ms, rep.Overall.ApprovalWaitP95Ms, rep.Overall.ApprovalWaitSamples))
 	fmt.Fprintf(w, "egress wait p50/p95: %s\n", pair(rep.Overall.EgressWaitP50Ms, rep.Overall.EgressWaitP95Ms, rep.Overall.EgressWaitSamples))
 
@@ -95,7 +96,7 @@ func renderStats(w io.Writer, rep stats.Report) {
 // broker-authored "denied" passthrough subtype), sorted for determinism.
 // Rates are rounded to the nearest percent.
 func renderOutcomes(w io.Writer, s stats.Summary) {
-	fixed := []string{"ok", "planned", "error", "setup_failed", "push_failed", "policy_blocked", "interrupted", "running"}
+	fixed := []string{"ok", "planned", "completed", "error", "setup_failed", "push_failed", "policy_blocked", "dead_letter", "interrupted", "running"}
 	seen := make(map[string]bool, len(fixed))
 	printOne := func(outcome string) {
 		n, ok := s.Outcomes[outcome]

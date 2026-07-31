@@ -237,11 +237,20 @@ func (b *Broker) runQueued(it QueueItem) {
 
 	// preparing -> running, stamping the attempt. Only an actual dispatch
 	// counts as an attempt — spend-parked items never reach here.
-	if _, err := b.setQueueState(it.ID, QueueRunning, func(q *QueueItem) {
+	// queuedMs (enqueue -> dispatch wait) feeds the metrics row's
+	// stage_ms.queued; when the running transition could not be persisted we
+	// fall back to now, so the metrics row still records the wait.
+	queuedMs := b.nowMs() - it.EnqueuedAtMs
+	if fresh, err := b.setQueueState(it.ID, QueueRunning, func(q *QueueItem) {
 		q.StartedAtMs = b.nowMs()
 		q.Attempts++
 	}); err != nil {
 		slog.Warn("queue: could not persist running state", "task_id", it.ID, "err", err)
+	} else {
+		queuedMs = fresh.StartedAtMs - fresh.EnqueuedAtMs
+	}
+	if queuedMs < 0 {
+		queuedMs = 0 // a skewed clock must not write a negative stage duration
 	}
 
 	tr := &taskRun{
@@ -260,6 +269,7 @@ func (b *Broker) runQueued(it QueueItem) {
 		planOnly:    t.PlanOnly,
 		issueURL:    t.IssueURL,
 		taskAgent:   t.Agent,
+		queuedMs:    queuedMs,
 	}
 	// Bridge the diff-approval gate entry into the durable queue state
 	// (running -> awaiting_review) so `drydock queue list` shows a queued

@@ -229,6 +229,61 @@ func TestQueue_CompletedAndDeadLetterStates(t *testing.T) {
 	})
 }
 
+// TestQueue_MetricsRowRecordsQueuedMs: a queued task's terminal metrics row
+// carries stage_ms.queued = StartedAtMs - EnqueuedAtMs (time spent waiting on
+// the durable queue before dispatch). The fake clock advances on every nowMs
+// call, so the queued duration is deterministically > 0.
+func TestQueue_MetricsRowRecordsQueuedMs(t *testing.T) {
+	b := queueBroker(t, 1, writesResult(`{"type":"result","subtype":"success"}`))
+	var clock atomic.Int64
+	clock.Store(1_000_000)
+	b.now = func() int64 { return clock.Add(250) }
+
+	id, err := b.Enqueue(Task{RepoRef: "https://github.com/o/r.git", Instruction: "x", AutoApprove: true})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+	waitForQueueState(t, b, id, QueueCompleted)
+
+	it := queueItemState(t, b, id)
+	wantQueued := it.StartedAtMs - it.EnqueuedAtMs
+	if wantQueued <= 0 {
+		t.Fatalf("fixture broken: StartedAtMs-EnqueuedAtMs = %d, want > 0", wantQueued)
+	}
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	sm, _ := m["stage_ms"].(map[string]any)
+	if sm == nil {
+		t.Fatalf("no stage_ms in metrics row: %v", m)
+	}
+	queued, ok := sm["queued"].(float64)
+	if !ok {
+		t.Fatalf("stage_ms.queued missing from a queued task's metrics row: %v", sm)
+	}
+	if int64(queued) != wantQueued {
+		t.Errorf("stage_ms.queued = %v, want %d (StartedAtMs - EnqueuedAtMs)", queued, wantQueued)
+	}
+}
+
+// TestQueue_SynchronousTaskOmitsQueued is the back-compat half: a synchronous
+// POST /tasks task never sat on the queue, so its metrics row must omit
+// stage_ms.queued entirely (omitempty), keeping the row byte-shape unchanged.
+func TestQueue_SynchronousTaskOmitsQueued(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	b := testBroker(t, "anthropic", st, &fakeGrant{}, writesResult(`{"type":"result","subtype":"success"}`))
+	_, events, _ := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+	id, _ := events[0]["task_id"].(string)
+	m := lastMetricsLine(t, readAudit(t, b.AuditRoot, id))
+	sm, _ := m["stage_ms"].(map[string]any)
+	if sm == nil {
+		t.Fatalf("no stage_ms in metrics row: %v", m)
+	}
+	if v, present := sm["queued"]; present {
+		t.Errorf("stage_ms.queued = %v on a synchronous task, want the key omitted entirely", v)
+	}
+}
+
 // TestQueue_CancelQueuedBeforeDispatch: a queued (never dispatched) item
 // cancels cleanly and its agent never runs.
 func TestQueue_CancelQueuedBeforeDispatch(t *testing.T) {

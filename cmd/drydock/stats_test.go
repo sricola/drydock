@@ -175,6 +175,55 @@ func TestWriteStats_PolicyBlockedInFixedOrder(t *testing.T) {
 	}
 }
 
+// TestWriteStats_QueueWaitAndOutcomes: a queued task's stage_ms.queued renders
+// as the queue-wait percentile line, and the queue's terminal vocabulary
+// (completed, dead_letter) renders in the fixed outcome list — before any
+// alphabetical passthrough outcome, same rule as policy_blocked.
+func TestWriteStats_QueueWaitAndOutcomes(t *testing.T) {
+	dir := t.TempDir()
+	queued := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":60000,"total_cost_usd":0.10,"num_turns":4,"src":"broker"}
+{"type":"metrics","src":"broker","task_id":"q1","agent":"claude","vendor":"anthropic","auth":"api_key","repo":"github.com/o/r","outcome":"pushed","stage_ms":{"queued":1500,"preparing":5000,"running":60000,"pushing":800},"egress_gate_wait_ms":0,"approval_gate_wait_ms":30000,"requests":4,"diff_files":2,"diff_bytes":512,"cost_usd":0.10,"widen_requested":0,"widen_outcome":"none"}
+`
+	completed := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"completed","is_error":false,"duration_ms":1000,"total_cost_usd":0.01,"num_turns":1,"src":"broker"}
+`
+	deadLetter := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"dead_letter","is_error":false,"duration_ms":1000,"total_cost_usd":0.01,"num_turns":1,"src":"broker"}
+`
+	denied := `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"denied","is_error":false,"duration_ms":0,"total_cost_usd":0.02,"num_turns":0,"src":"broker"}
+`
+	for id, content := range map[string]string{
+		"q1": queued, "c1": completed, "dl1": deadLetter, "denied1": denied,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "queue wait p50/p95: 1.5s/1.5s") {
+		t.Errorf("output missing queue wait percentiles:\n%s", out)
+	}
+	for _, want := range []string{"completed: 1", "dead_letter: 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	dn := strings.Index(out, "denied: 1")
+	if dn < 0 || strings.Index(out, "completed: 1") > dn || strings.Index(out, "dead_letter: 1") > dn {
+		t.Errorf("completed/dead_letter must render in the fixed list, before sorted passthrough outcomes:\n%s", out)
+	}
+}
+
 func TestWriteStats_JSON(t *testing.T) {
 	var buf bytes.Buffer
 	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "", true); err != nil {

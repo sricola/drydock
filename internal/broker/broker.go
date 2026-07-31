@@ -447,6 +447,12 @@ type taskRun struct {
 	// overwrites taskStart when the agent starts), double-counting setup.
 	setupStart time.Time
 
+	// queuedMs is the time this task waited on the durable queue before
+	// dispatch (StartedAtMs - EnqueuedAtMs), set by runQueued before the
+	// lifecycle starts. 0 on the synchronous POST /tasks path and on resume,
+	// so appendMetrics omits stage_ms.queued there (omitempty back-compat).
+	queuedMs int64
+
 	// Metrics capture (observability 4.7): filled as the lifecycle advances,
 	// written once by the deferred appendMetrics.
 	prepStart        time.Time     // set at the "preparing" stage emit

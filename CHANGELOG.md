@@ -9,6 +9,29 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Durable task queue (orchestration increment A).** `drydock queue add`
+  takes the same flags as `submit` but returns the moment brokerd has
+  durably persisted the task; it runs unattended when a concurrency slot
+  frees. Items move through a broker-enforced state machine
+  (`queued → preparing → running → verifying → awaiting_review →
+  completed | dead_letter`, with `cancelled` reachable from every
+  non-terminal state) and are stored as atomically-written, 0600,
+  symlink-refusing files in the audit dir, so the queue **survives brokerd
+  restarts**: at boot, still-`queued` items re-dispatch, items parked at the
+  diff-approval gate resume, and an item that was mid-flight when the daemon
+  died is dead-lettered — never run a second time. The dispatcher shares
+  `max_concurrent` with synchronous submits (one pool, never over-committed)
+  and **parks** a vendor's items while that vendor's aggregate spend cap is
+  exhausted (parked ≠ failed; a park is not an attempt). A dispatched item
+  runs the exact synchronous lifecycle — setup profiles, verification, diff
+  policy, and the approval gate unless `--auto-approve`. Surfaces:
+  `drydock queue add/list/cancel` + `POST/GET /queue`,
+  `POST /queue/cancel/{id}`; the terminal metrics row records the enqueue →
+  dispatch wait as `stage_ms.queued` (omitted for synchronous tasks, whose
+  rows are byte-shape unchanged); `drydock stats` gains a queue-wait
+  p50/p95 line and the `completed`/`dead_letter` outcome vocabulary, which
+  `drydock tasks` and the web UI render too.
+
 - **Persistent per-repo dependency cache (opt-in).** `cache: true` in a
   repo's execution profile reuses setup's dependency downloads (npm, Go
   modules, pip, cargo) across tasks: a host-side, content-addressed store

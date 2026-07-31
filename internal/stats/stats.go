@@ -44,6 +44,9 @@ type Summary struct {
 	ApprovalWaitP50Ms   int64          `json:"approval_wait_p50_ms"`
 	ApprovalWaitP95Ms   int64          `json:"approval_wait_p95_ms"`
 	ApprovalWaitSamples int            `json:"approval_wait_samples"`
+	QueueWaitP50Ms      int64          `json:"queue_wait_p50_ms"`
+	QueueWaitP95Ms      int64          `json:"queue_wait_p95_ms"`
+	QueueWaitSamples    int            `json:"queue_wait_samples"`
 	SpendUSD            float64        `json:"spend_usd"`
 	SpendPerDayUSD      float64        `json:"spend_per_day_usd"`
 	UnmeteredTasks      int            `json:"unmetered_tasks"`
@@ -187,7 +190,7 @@ func Summarize(samples []Sample) Summary {
 	s := Summary{Outcomes: map[string]int{}}
 	s.Tasks = len(samples)
 
-	var durs, egressWaits, approvalWaits []int64
+	var durs, egressWaits, approvalWaits, queueWaits []int64
 	var oldest, newest time.Time
 
 	for i, sm := range samples {
@@ -203,6 +206,13 @@ func Summarize(samples []Sample) Summary {
 			}
 			if sm.M.ApprovalGateWaitMs > 0 {
 				approvalWaits = append(approvalWaits, sm.M.ApprovalGateWaitMs)
+			}
+			// stage_ms.queued is present only on tasks that came through the
+			// durable queue; synchronous tasks are excluded from the sample
+			// set (same rule as the gate waits) rather than dragging the
+			// queue-latency percentiles toward zero.
+			if sm.M.StageMs.Queued > 0 {
+				queueWaits = append(queueWaits, sm.M.StageMs.Queued)
 			}
 			s.Requests += sm.M.Requests
 			s.WidenRequested += sm.M.WidenRequested
@@ -236,6 +246,9 @@ func Summarize(samples []Sample) Summary {
 	s.ApprovalWaitP50Ms = percentile(approvalWaits, 50)
 	s.ApprovalWaitP95Ms = percentile(approvalWaits, 95)
 	s.ApprovalWaitSamples = len(approvalWaits)
+	s.QueueWaitP50Ms = percentile(queueWaits, 50)
+	s.QueueWaitP95Ms = percentile(queueWaits, 95)
+	s.QueueWaitSamples = len(queueWaits)
 
 	if s.Tasks > 0 {
 		days := math.Ceil(newest.Sub(oldest).Hours() / 24)
