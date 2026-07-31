@@ -137,6 +137,20 @@ func (b *Broker) HandleQueueAdd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	// The bounded-retry chain fields are BROKER-OWNED. Nothing on the HTTP
+	// surface has a legitimate reason to set them — a chain is authored only by
+	// BuildRetryTask — and an operator-supplied `attempt` is the one value that
+	// can LENGTHEN a chain past ci.max_attempts (a negative one makes
+	// `attempt < max` true for max+|n| hops). ciretryloop's gate 6 clamps it,
+	// and dropping it here means the bound no longer rests on that single
+	// downstream reader staying correct forever. `retry_of` goes with it: a
+	// forged parent id would make a hand-submitted task render as a link in
+	// someone else's chain in every surface that follows one.
+	//
+	// Zeroed rather than 400'd: they are inert on this path, so a 400 would be a
+	// new failure mode for a field an operator has no reason to be sending.
+	t.Attempt = 0
+	t.RetryOf = ""
 	id, err := b.Enqueue(t)
 	if err != nil {
 		http.Error(w, safeErr(err), http.StatusBadRequest)
@@ -196,9 +210,14 @@ func (b *Broker) HandleQueueList(w http.ResponseWriter, r *http.Request) {
 			Attempts:     it.Attempts,
 			PRNumber:     it.PRNumber,
 			CIState:      it.CIState,
-			RetryOf:      it.Task.RetryOf,
-			RetryTaskID:  it.RetryTaskID,
-			Attempt:      it.Task.Attempt,
+			// safeStr for parity with the audit copy (appendCIObservationRow):
+			// both ids are broker-authored today, but this one arrives off a
+			// disk record and is reflected to an operator's terminal, so it
+			// gets the same control-character strip every other reflected
+			// string gets rather than depending on how it got there.
+			RetryOf:     safeStr(it.Task.RetryOf),
+			RetryTaskID: safeStr(it.RetryTaskID),
+			Attempt:     it.Task.Attempt,
 		})
 	}
 	writeJSON(w, out)

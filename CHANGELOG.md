@@ -40,17 +40,33 @@ entry below corresponds to a Git tag of the same name.
     the persisted queue record and its `<id>.ci.json` marker, never in memory,
     and the decision runs only *after* the parent's terminal is durable — so a
     kill mid-decision can end a chain one attempt short but can never produce a
-    second child or extend a chain past `max_attempts`.
-  - **The spend cap refuses rather than parks.** A retry blocked by
-    `aggregate_budget_usd` is declined outright, with the reason recorded,
-    instead of sitting queued for a rolling window and dispatching hours later
-    unattended.
+    second child or extend a chain past `max_attempts`. `attempt` and
+    `retry_of` are broker-owned: `POST /queue` zeroes both, so the bound does
+    not rest on a single downstream clamp.
+  - **A retry that cannot say what failed is refused, not shipped.** The
+    `<id>.ci.json` marker persists the check rollup alongside the terminal
+    state, so a conclusion replayed after a crash or a failed queue write still
+    carries its evidence — and an observation that carries none is declined
+    rather than turned into a fresh full-budget task that would re-run blind.
+  - **The spend cap refuses rather than parks — at both ends.** A retry
+    blocked by `aggregate_budget_usd` at the decision is declined outright,
+    with the reason recorded; one whose vendor cap exhausts in the gap before
+    dispatch is **dropped to `dead_letter` by the dispatcher** rather than
+    parked, so an unattended retry never sits queued for a rolling window and
+    then dispatches hours later. A human-submitted task still parks.
 
   Worst case for one chain is `max_attempts × task_budget_usd` **on top of**
   the parent's own budget — each attempt mints a fresh full budget. Default is
   `0` (off); the ceiling is `10`. `ci.max_attempts` needs `ci.watch` to do
   anything — the decision is only reachable from a terminal CI observation — and
   a plan-only parent or a synchronous `drydock submit` task is never retried.
+
+  **`ci.max_attempts > 0` now requires a non-zero `approval_timeout`**, and
+  brokerd refuses the pair at load. A retry child re-poses the human diff gate
+  while holding one of your `max_concurrent_tasks` slots, so "retry overnight"
+  plus "wait at the gate forever" is silent slot starvation: two failed PRs at
+  03:00 fill the default cap of 2 and every task submitted afterwards sits
+  `queued` indefinitely.
 
   The accepted cost, stated rather than buried: **each attempt opens its own
   pull request**, and closing the superseded one is the operator's job. drydock

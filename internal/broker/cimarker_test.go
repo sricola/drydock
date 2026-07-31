@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,9 @@ func TestCIMarkerRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readCIMarker: %v", err)
 	}
-	if got != want {
+	// reflect.DeepEqual, not ==: ciMarker carries a remote.CheckSummary, which
+	// holds a []Check and is therefore not comparable.
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("round trip mangled the marker:\n got %+v\nwant %+v", got, want)
 	}
 	// The retry-chain fields must survive verbatim: the bound they encode has

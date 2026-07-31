@@ -138,6 +138,9 @@ func (b *Broker) dispatchPass() {
 // untouched (parking is not an attempt) and later items may overtake it.
 // When no slot is available the pass ends — the semaphore is global, so no
 // other item could dispatch either; the next tick/wake retries.
+//
+// A spend-capped BROKER-INITIATED CI RETRY (Task.RetryOf != "") is DROPPED
+// instead, to dead_letter. See dropSpendCappedRetryLocked.
 func (b *Broker) takeDispatchable() (QueueItem, bool) {
 	b.queueMu.Lock()
 	defer b.queueMu.Unlock()
@@ -147,7 +150,14 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 			continue // defensive: the in-memory queue should only hold queued items
 		}
 		if b.vendorExceeded(it.Task.Agent) {
-			continue // spend-parked: stays queued, next tick re-checks
+			if it.Task.RetryOf == "" {
+				continue // spend-parked: stays queued, next tick re-checks
+			}
+			if b.dropSpendCappedRetryLocked(it) {
+				b.queue = append(b.queue[:i], b.queue[i+1:]...)
+				i--
+			}
+			continue
 		}
 		if !b.acquireSlot() {
 			return QueueItem{}, false // cap reached; retry next tick/wake
@@ -165,6 +175,43 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 		return fresh, true
 	}
 	return QueueItem{}, false
+}
+
+// dropSpendCappedRetryLocked terminates a queued CI-retry child that the
+// aggregate spend cap caught BEFORE it could dispatch. Caller holds queueMu;
+// reports whether the durable transition landed (so the caller may drop the
+// in-memory copy).
+//
+// WHY DROP RATHER THAN PARK, given the dispatcher parks every other item.
+// ciretryloop.go's gate 7 already refuses to ENQUEUE a retry against an
+// exhausted cap, with the reasoning spelled out there: an unattended,
+// broker-authored task that sits queued for a rolling spend window and then
+// dispatches hours later — against a base that has moved on, into a diff gate
+// nobody is waiting at — is a hazard, not a courtesy. But that refusal only
+// held at the INSTANT of the decision, and the cap far more often exhausts in
+// the gap that follows: the parent's own spend has usually not settled into the
+// ledger when its child is enqueued, so the common case was the dispatcher
+// silently parking exactly what gate 7 refuses. This makes the two agree.
+//
+// A HUMAN-submitted item is untouched by this and still parks: a person asked
+// for it and wants it run when the window rolls over. The distinguishing fact
+// is Task.RetryOf, which only the broker's own BuildRetryTask sets (the HTTP
+// surface zeroes it — see HandleQueueAdd).
+//
+// dead_letter, not cancelled: nobody cancelled it. It is the queue's existing
+// "did not reach a clean finish" terminal, it is visibly not a success in every
+// surface that renders an item, and last_error says exactly what happened.
+func (b *Broker) dropSpendCappedRetryLocked(it QueueItem) bool {
+	const why = "dropped before dispatch: the aggregate vendor spend cap was exhausted, and a broker-initiated ci retry is refused rather than parked — an unattended retry that dispatches hours later would land on a base that has moved on, at a diff gate nobody is waiting at"
+	if _, err := b.setQueueStateLocked(it.ID, QueueDeadLetter, func(q *QueueItem) {
+		q.LastError = why
+	}); err != nil {
+		slog.Warn("queue: could not drop a spend-capped ci retry", "task_id", it.ID, "err", err)
+		return false
+	}
+	slog.Info("queue: dropped a spend-capped ci retry rather than parking it",
+		"task_id", it.ID, "retry_of", it.Task.RetryOf, "attempt", it.Task.Attempt)
+	return true
 }
 
 // vendorExceeded reports whether the aggregate spend cap is exhausted for the

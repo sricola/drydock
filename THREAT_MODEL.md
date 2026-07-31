@@ -365,11 +365,17 @@ default) is two things, and both are attacker-influenceable:
 
 Both are dropped into the retry task's instruction, control-character
 sanitized (C0, C1, DEL, and Unicode format/bidi characters stripped; invalid
-UTF-8 dropped rather than replaced), byte-capped with an explicit truncation
-marker, and fenced under `### BEGIN/END UNTRUSTED <KIND> <token>` delimiters
-whose token is derived by SHA-256 from the fenced bytes themselves and proven
-not to occur inside them — so the untrusted text cannot terminate its own
-section with a delimiter a reader would believe. The assembled instruction is
+UTF-8 dropped rather than replaced — note that invisibles *outside* category
+Cf, such as the Hangul fillers and variation selectors, are deliberately NOT
+stripped, because no line short of banning non-ASCII can be drawn there and
+combining marks are ordinary content in most scripts), byte-capped with an
+explicit truncation marker, and fenced under `### BEGIN/END UNTRUSTED <KIND> <token>` delimiters
+whose token is derived by SHA-256 from **every** fenced body in the instruction
+and proven to occur in none of them — so neither input can terminate its own
+section, or the other one's, with a delimiter a reader would believe. (Deriving
+each token from its own body alone was not enough: both tokens are
+deterministic and both are announced in the preamble, so the agent-written diff
+could compute and plant the *genuine* CI-OUTPUT token, and vice versa.) The assembled instruction is
 hashed into `InstructionSHA256` like every other instruction: provenance, not
 filtration.
 
@@ -379,7 +385,9 @@ are mechanically tested, are narrower: the fence is not trivially defeated
 (`TestCIRetryAdversarial_UntrustedTextCannotTerminateItsOwnSection` drives fence
 delimiters, forged section-end headings, `SYSTEM:`- and tool-call-shaped
 payloads, nested fences, bidi overrides, zero-width characters, and
-astral-plane runes at a cap boundary through both channels), and **containment
+astral-plane runes at a cap boundary through both channels;
+`TestBuildRetryTask_ForgedCrossSectionFenceIsImpossible` adds the cross-section
+case, replanting each announced token in the *other* channel), and **containment
 does not depend on the fence holding**
 (`TestCIRetryAdversarial_HostileTextChangesNoControlField` asserts that every
 control-bearing field of the enqueued child — the decision itself, the bound,

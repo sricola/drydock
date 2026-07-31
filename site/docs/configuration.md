@@ -32,7 +32,7 @@ to declare them.
 | `aggregate_budget_usd` | `DRYDOCK_AGGREGATE_BUDGET_USD` | `0` (disabled) | Cross-task USD ceiling per `api_key` provider over `aggregate_window`; `0` disables the cap; subscription mode is out of scope (bounded per-task by `task_max_requests`) |
 | `aggregate_window` | `DRYDOCK_AGGREGATE_WINDOW` | `24h` | Rolling window for the aggregate cap; `0` = total since brokerd boot, resets on restart |
 | `task_timeout` | n/a | `30m` | Wall-clock per task |
-| `approval_timeout` | n/a | `0s` | Auto-deny a task left at an approval gate after this long; `0` = wait forever (right for interactive use; set for unattended runs) |
+| `approval_timeout` | n/a | `0s` | Auto-deny a task left at an approval gate after this long; `0` = wait forever (right for interactive use; set for unattended runs). **Must be non-zero when `ci.max_attempts > 0`** — brokerd refuses the pair at load, because an unattended retry child holds a concurrency slot across the gate it re-poses |
 | `max_concurrent_tasks` | `DRYDOCK_MAX_CONCURRENT_TASKS` | `2` | Excess POSTs to `/tasks` get HTTP 503 |
 | `notifications` | `DRYDOCK_NO_NOTIFY=1` (off) | `true` | macOS notifications on pending approval |
 | `push_max_retries` | `DRYDOCK_PUSH_MAX_RETRIES` | `3` | Transient push failures (network errors) to retry with exponential backoff before giving up; `0` disables transient retry |
@@ -190,7 +190,7 @@ ci:
   watch:         false          # enable the watch (default false = off)
   poll_interval: 60s            # watch tick; 0 = built-in default (60s), minimum 10s
   watch_timeout: 90m            # absolute per-PR deadline; 0 = built-in default (90m); must exceed max(2 x poll_interval, 5m)
-  max_attempts:  0              # bounded retry on an observed CI failure; 0 = off
+  max_attempts:  0              # bounded retry on an observed CI failure; 0 = off (>0 requires a non-zero approval_timeout)
 ```
 
 | Field (under `ci:`) | Env override | Default | Meaning |
@@ -240,7 +240,16 @@ ci:
   **refused outright rather than parked** (with the reason recorded): an
   operator's own queued item waits for the window because a human is waiting
   for it, but a broker-initiated retry must not sit queued for hours and then
-  dispatch unattended against a base that has moved on.
+  dispatch unattended against a base that has moved on. That holds at both
+  ends — the decision declines to enqueue, and a child whose cap exhausts in
+  the gap before dispatch is dropped to `dead_letter` rather than parked.
+- **It requires a non-zero `approval_timeout`, and the pair is refused at
+  load.** A retry child is the daemon's only *unattended* task author, and it
+  holds one of your `max_concurrent_tasks` slots for its entire life — the
+  human diff gate it always re-poses included. With `approval_timeout: 0`
+  ("wait forever") two PRs failing CI overnight fill the default cap of two
+  slots with children parked at gates nobody is at, the park survives a
+  restart, and every task submitted afterwards sits `queued` indefinitely.
 - **A retry never bypasses the diff gate.** The child is an ordinary queued
   task: its own slot, its own credential lease, its own VM, its own verify, and
   its own human approval — `auto_approve` is force-cleared on it even when the
@@ -263,7 +272,10 @@ ci:
   the decision runs only after the parent's terminal reached disk. A brokerd
   killed mid-decision can end a chain one attempt short; it can never restart
   one, mint two children for one parent, or extend a chain past
-  `max_attempts`. Lowering `max_attempts` mid-chain stops the chain at the next
+  `max_attempts`. `attempt` and `retry_of` are broker-owned — `POST /queue`
+  zeroes both — and a conclusion replayed after a crash or a failed queue write
+  carries the check rollup the marker persisted with it, so a retry can never
+  be authorized by an observation that cannot say what failed. Lowering `max_attempts` mid-chain stops the chain at the next
   decision without unwinding an already-enqueued retry; raising it lets an
   in-flight chain continue to the new bound.
 - **Follow a chain** with the `RETRY` column in `drydock queue list` (attempt

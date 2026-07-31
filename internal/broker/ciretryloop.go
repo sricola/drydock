@@ -152,6 +152,15 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (string, 
 	// against a base that has moved on, with a diff gate nobody is waiting at.
 	// Refusing costs the operator one honest line in the audit and spends
 	// nothing; they can resubmit deliberately.
+	//
+	// THIS GATE ONLY HOLDS AT THE INSTANT OF THE DECISION, and that is not
+	// where the cap usually exhausts: the parent's own spend has often not
+	// settled into the ledger yet when its child is enqueued, so the COMMON
+	// case is a cap that exhausts in the gap between here and dispatch. The
+	// dispatcher therefore enforces the same choice on the other side —
+	// dropSpendCappedRetryLocked drops (dead_letters) a queued item with
+	// Task.RetryOf set rather than parking it. Without that half the claim
+	// above was true of a minority of the cases it described.
 	if b.vendorExceeded(parent.Agent) {
 		return "", "no retry: the aggregate vendor spend cap is exhausted; refused rather than parked because a ci retry is broker-initiated and unattended"
 	}

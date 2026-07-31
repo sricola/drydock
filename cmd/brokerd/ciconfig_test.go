@@ -65,7 +65,10 @@ func TestApplyCIConfig_ShippedSampleLeavesWatchOff(t *testing.T) {
 func TestApplyCIConfig_MapsEveryField(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := filepath.Join(t.TempDir(), "c.yaml")
-	body := "network: x\ngateway_ip: 1.2.3.4\n" +
+	// approval_timeout must be non-zero alongside max_attempts > 0: an
+	// unattended retry child holds a slot across the diff gate it re-poses, so
+	// config.validate() refuses "retry on" + "wait at the gate forever".
+	body := "network: x\ngateway_ip: 1.2.3.4\napproval_timeout: 2h\n" +
 		"ci:\n  watch: true\n  poll_interval: 30s\n  watch_timeout: 2h\n  max_attempts: 3\n"
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

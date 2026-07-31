@@ -257,7 +257,11 @@ var allQueueStates = []QueueState{
 
 func TestQueueStateCanTransitionTo(t *testing.T) {
 	valid := map[QueueState][]QueueState{
-		QueueQueued:    {QueuePreparing, QueueCancelled},
+		// queued -> dead_letter: the dispatcher DROPS a broker-initiated CI
+		// retry whose vendor spend cap exhausted before it could dispatch,
+		// rather than parking it (dropSpendCappedRetryLocked). A
+		// human-submitted item still parks.
+		QueueQueued:    {QueuePreparing, QueueDeadLetter, QueueCancelled},
 		QueuePreparing: {QueueRunning, QueueDeadLetter, QueueCancelled},
 		// running -> completed: no_diff and plan-only runs finish without
 		// ever entering verify or review.

@@ -14,7 +14,7 @@ anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gatewa
 task_budget_usd:        2.0            # soft USD cap: metered post-hoc; overshoot bounded to task_max_inflight in-flight requests (default 1); set max_request_cost_usd for a reservation-backed bound (api_key mode only; ignored in subscription mode)
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
-approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs)
+approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs, and REQUIRED non-zero when ci.max_attempts > 0)
 default_model:          ""             # model fallback for Claude Code and Codex (e.g. claude-sonnet-4-6); empty = agent picks. opencode uses openai_compat.model instead. Per-task --model overrides.
 default_agent:          claude         # sandbox CLI: claude | codex | gemini | opencode. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
@@ -104,11 +104,17 @@ openai_compat:
 # uses the same curated env as every other host CLI call — but it is no longer
 # only operator-initiated. See THREAT_MODEL.md N5. Set watch: false (the
 # default) to stop it entirely.
+#
+# max_attempts REQUIRES a non-zero approval_timeout, and brokerd refuses the
+# pair at load. A retry child is an UNATTENDED task that re-poses the human
+# diff gate while holding one of your max_concurrent_tasks slots; with
+# approval_timeout: 0 (wait forever) an overnight retry parks at a gate nobody
+# is at and every task submitted after it sits queued indefinitely.
 ci:
   watch:         false          # enable the host-side CI watch (default false = off; nothing polls, no gh call on a timer)
   poll_interval: 60s            # watch tick; one gh API call per watched PR per tick. 0 = built-in default (60s); minimum 10s
   watch_timeout: 90m            # ABSOLUTE per-PR deadline anchored at push, so a restart can't extend it. 0 = built-in default (90m); must exceed the dispatch floor max(2 x poll_interval, 5m)
-  max_attempts:  0              # bounded retry on an observed CI failure (increment B2). 0 = off. Worst-case spend for one chain is max_attempts × task_budget_usd; max 10
+  max_attempts:  0              # bounded retry on an observed CI failure (increment B2). 0 = off. Worst-case spend for one chain is max_attempts × task_budget_usd; max 10. >0 requires a non-zero approval_timeout
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

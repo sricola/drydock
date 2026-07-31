@@ -222,10 +222,20 @@ off by default (`0`), and it does nothing at all unless `ci.watch` is also
 those exist only when the watch is on.
 
 ```yaml
+approval_timeout: 2h   # REQUIRED (non-zero) once max_attempts > 0
 ci:
   watch:        true
   max_attempts: 2      # at most two retries per chain; 0 = off, ceiling 10
 ```
+
+**`max_attempts > 0` requires a non-zero `approval_timeout`, and brokerd
+refuses the pair at load.** A retry child is an *unattended* task that re-poses
+the human diff gate, and it holds one of your `max_concurrent_tasks` slots for
+its whole life — gate included. With `approval_timeout: 0` ("wait forever") two
+PRs that fail CI at 03:00 fill the default cap of two slots with children parked
+at gates nobody is at, the park survives a restart, and every task you submit
+afterwards sits `queued` indefinitely with nothing warning you why. Pick a
+timeout you would actually be happy auto-denying at.
 
 **The whole flow, end to end.** You submit a task. It runs, you approve its
 diff, it pushes `agent/<id>` and opens PR #1. The item parks in `awaiting_ci`
@@ -300,8 +310,18 @@ configuration ceiling is `10`. If `aggregate_budget_usd` is set and its window
 is exhausted, a retry is **refused outright, not parked**: an operator's own
 queued task waits for the window to slide because a human is waiting for it,
 but a broker-initiated retry nobody asked for must not sit queued for hours and
-then dispatch against a base that has moved on. The refusal is recorded in the
-audit with its reason.
+then dispatch against a base that has moved on. That holds at **both** ends —
+the decision declines to enqueue, and a child whose vendor cap exhausts in the
+gap before dispatch is dropped to `dead_letter` by the dispatcher rather than
+parked. Either way the reason is recorded (in the audit's `retry_detail`, or in
+the item's `last_error`).
+
+**A retry that cannot say what failed is refused.** The check rollup is
+persisted on the `<id>.ci.json` marker alongside the terminal state, so a
+conclusion replayed after a crash — or after a queue write that failed on a
+full disk — still carries the evidence it was derived from. An observation that
+carries none is declined rather than turned into a fresh full-budget task that
+would just re-run blind.
 
 **Following a chain.** `drydock queue list`'s **RETRY** column shows each
 item's depth and its links:
@@ -337,8 +357,9 @@ in-flight chain continue up to the new, higher bound.
 carries two attacker-influenceable inputs: the failed **check names** (a
 repository's own workflow file chooses them) and the **prior attempt's diff**
 (agent-written). Both are control-character sanitized, byte-capped, and fenced
-under delimiters whose tokens are derived from the fenced bytes themselves, so
-the text cannot forge a convincing end to its own section. What that is *not*
+under delimiters whose tokens are derived from **all** the fenced bytes in the
+instruction and proven to occur in none of them, so neither input can forge a
+convincing end line for its own section or for the other one. What that is *not*
 is a filter: the honest claim is that this text **decides nothing** — the
 retry, the bound, the gate, the repository, and every other control decision
 derive from broker-observed check *conclusions* alone — and that the human diff
