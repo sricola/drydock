@@ -250,9 +250,11 @@ func TestQueueStateCanTransitionTo(t *testing.T) {
 		QueueAwaitingReview, QueueCompleted, QueueDeadLetter, QueueCancelled,
 	}
 	valid := map[QueueState][]QueueState{
-		QueueQueued:         {QueuePreparing, QueueCancelled},
-		QueuePreparing:      {QueueRunning, QueueDeadLetter, QueueCancelled},
-		QueueRunning:        {QueueVerifying, QueueAwaitingReview, QueueDeadLetter, QueueCancelled},
+		QueueQueued:    {QueuePreparing, QueueCancelled},
+		QueuePreparing: {QueueRunning, QueueDeadLetter, QueueCancelled},
+		// running -> completed: no_diff and plan-only runs finish without
+		// ever entering verify or review.
+		QueueRunning:        {QueueVerifying, QueueAwaitingReview, QueueCompleted, QueueDeadLetter, QueueCancelled},
 		QueueVerifying:      {QueueAwaitingReview, QueueDeadLetter, QueueCancelled},
 		QueueAwaitingReview: {QueueCompleted, QueueDeadLetter, QueueCancelled},
 		QueueCompleted:      {},

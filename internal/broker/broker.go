@@ -233,6 +233,22 @@ type Broker struct {
 	slotsOnce sync.Once
 	slots     chan struct{}
 
+	// Queue + dispatcher (orchestration increment A, queue.go). queue is the
+	// in-memory FIFO of not-yet-dispatched items, mirroring the durable
+	// *.queue.json store (queuestore.go); queueMu guards it AND serializes
+	// every read-modify-write of a queue item's file (setQueueState).
+	// queueWake nudges the dispatcher on Enqueue so a queued item doesn't
+	// wait out a full tick; queueStop ends the dispatcher goroutine.
+	// queueTick is the dispatcher poll interval (0 -> defaultQueueTick);
+	// tests set it low. now is the queue's clock seam (nil -> UnixMilli).
+	queueMu   sync.Mutex
+	queue     []QueueItem
+	queueWake chan struct{}
+	queueStop chan struct{}
+	queueOnce sync.Once
+	queueTick time.Duration
+	now       func() int64
+
 	pendingMu sync.Mutex
 	pending   map[string]chan gateReply // task_id -> approval channel
 	// requiredAcks maps a task waiting at the diff-approval gate to the
@@ -373,6 +389,18 @@ type taskRun struct {
 	model       string
 	planOnly    bool
 	issueURL    string
+	// taskAgent is the agent as REQUESTED by the task ("" = use defaults);
+	// agentName below is what resolveAgent resolved it to. Both are kept
+	// because the audit's drydock_task invocation record must replay the
+	// original request, not the resolution.
+	taskAgent string
+
+	// onAwaitingReview, when set, fires as the task enters the diff-approval
+	// gate (right after the stage flips to StagePending). The queued path
+	// (runQueued) uses it to bridge the lifecycle stage into the durable
+	// queue state (running -> awaiting_review); nil on the synchronous
+	// HandleTask path and on resume, where there is no queue item.
+	onAwaitingReview func()
 
 	// Filled in as HandleTask advances through the lifecycle.
 	proxyAuth  string      // "<user>:<secret>@" widening userinfo (empty if none)
@@ -519,7 +547,9 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 
 	// All the per-task state below is threaded through the lifecycle steps as
 	// taskRun fields rather than long parameter lists. Fields are filled in as
-	// they become available; the defers above and below stay in this scope.
+	// they become available; the defers above stay in this scope, and the
+	// lifecycle's own defers live inside runLifecycle (which returns straight
+	// into this function's return, so their firing point is unchanged).
 	tr := &taskRun{
 		b:           b,
 		ctx:         taskCtx,
@@ -535,7 +565,24 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		model:       t.Model,
 		planOnly:    t.PlanOnly,
 		issueURL:    t.IssueURL,
+		taskAgent:   t.Agent,
 	}
+	tr.runLifecycle()
+}
+
+// runLifecycle drives the whole post-accept task lifecycle — egress gate →
+// widening → stage prepare → agent resolve/mint → audit setup → host-config
+// setup → agent run → diff capture → plan/no_diff terminals → verify →
+// approval gate → push — emitting every event to tr.sw and always ending in a
+// terminal event. It is the single lifecycle shared by the synchronous path
+// (HandleTask, real NDJSON stream) and the queued path (runQueued, discard
+// stream); everything the caller must do first — slot acquire, task context +
+// registerTask, request validation, the accepted event — stays with the
+// caller. Its deferred cleanups (widening deregister, stage cleanup, grant
+// revoke, cache release, metrics row, audit sync/close) fire when it returns,
+// which on both paths is immediately before the caller's own defers.
+func (tr *taskRun) runLifecycle() {
+	b, taskID, sw := tr.b, tr.id, tr.sw
 
 	// Egress widening: block at the same kind of human-driven gate as the
 	// diff push. Without this the requires_approval flag is a lie —
@@ -547,7 +594,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// Register per-task egress widening (no-op for non-widened tasks). The
 	// returned userinfo scopes the extra hosts to THIS task's proxy credential;
 	// cleanup deregisters on every exit path. Fail-closed.
-	proxyAuth, widenCleanup, err := b.setupWidening(taskID, t.EgressExtra)
+	proxyAuth, widenCleanup, err := b.setupWidening(taskID, tr.egressExtra)
 	if err != nil {
 		sw.emit(errorEvent(taskID, "egress widening setup failed", ""))
 		return
@@ -599,7 +646,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	st, err := prepare(tr.ctx, stageDir, t.RepoRef)
+	st, err := prepare(tr.ctx, stageDir, tr.repoRef)
 	if err != nil {
 		slog.Warn("task clone failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "clone failed", "check the repo URL and that brokerd can reach it"))
@@ -631,7 +678,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	agentName, prov, err := b.resolveAgent(t.Agent)
+	agentName, prov, err := b.resolveAgent(tr.taskAgent)
 	if err != nil {
 		sw.emit(errorEvent(taskID, err.Error(), ""))
 		return
@@ -686,7 +733,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	subscription := (taskVendor == "anthropic" && b.AnthropicAuth == "subscription") ||
 		(taskVendor == "openai" && b.OpenAIAuth == "subscription")
 	tr.subscription = subscription
-	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t,"sensitive":%t}`+"\n", subscription, t.Sensitive)
+	fmt.Fprintf(logf, `{"type":"drydock_meta","subscription":%t,"sensitive":%t}`+"\n", subscription, tr.sensitive)
 
 	// Persist the invocation so `drydock retry <id>` can re-run this task
 	// without the operator reconstructing repo+prompt+flags by hand. Marshaled
@@ -695,10 +742,10 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// operator opts back in. Not a `result`/`drydock_meta` line, so it doesn't
 	// affect outcome/cost parsing.
 	if inv, err := json.Marshal(map[string]any{
-		"type": "drydock_task", "repo_ref": t.RepoRef, "instruction": t.Instruction,
-		"agent": t.Agent, "model": t.Model, "platform": t.Platform,
-		"egress_extra": t.EgressExtra, "draft": t.Draft, "sensitive": t.Sensitive,
-		"plan_only": t.PlanOnly, "issue_url": t.IssueURL,
+		"type": "drydock_task", "repo_ref": tr.repoRef, "instruction": tr.instruction,
+		"agent": tr.taskAgent, "model": tr.model, "platform": tr.platform,
+		"egress_extra": tr.egressExtra, "draft": tr.draft, "sensitive": tr.sensitive,
+		"plan_only": tr.planOnly, "issue_url": tr.issueURL,
 	}); err == nil {
 		fmt.Fprintf(logf, "%s\n", inv)
 	}
@@ -732,7 +779,7 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// regular prompt.txt a setup command pre-created, and refuses (fail-closed
 	// here, as stage failed) if setup replaced .task or prompt.txt with a
 	// symlink.
-	if err := tr.st.WriteTaskFiles(t.Instruction); err != nil {
+	if err := tr.st.WriteTaskFiles(tr.instruction); err != nil {
 		slog.Warn("task stage failed", "task_id", taskID, "err", err)
 		tr.outcome = "error"
 		sw.emit(errorEvent(taskID, "stage failed", ""))
@@ -1216,6 +1263,13 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	// auto-approve cannot bypass is checkDiffCaps above.
 	tr.requiredAcks = requiredAcks(facts, b.DiffPolicy)
 	b.setStage(tr.id, StagePending)
+	// Bridge the gate entry into the durable queue state for a queued task
+	// (running -> awaiting_review). nil on the synchronous and resume paths.
+	// Fired for auto-approve too: the task genuinely passes through the gate
+	// machinery, it just resolves instantly.
+	if tr.onAwaitingReview != nil {
+		tr.onAwaitingReview()
+	}
 	b.setSecondLook(tr.id, tr.requiredAcks)
 	// Only announce the approval gate when there's actually a human gate to
 	// wait on. Auto-approve pushes immediately, so an "awaiting_approval"

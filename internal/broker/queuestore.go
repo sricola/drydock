@@ -42,10 +42,13 @@ func (s QueueState) Terminal() bool {
 
 // validTransition is the single source of truth for the queue state machine.
 // Terminal states are deliberately absent: they have no outgoing edges.
+// running -> completed exists because some lifecycle terminals are normal
+// finishes that never enter verify or review: a run that produced no diff
+// (no_diff) and a plan-only run (planned) both complete straight from running.
 var validTransition = map[QueueState][]QueueState{
 	QueueQueued:         {QueuePreparing, QueueCancelled},
 	QueuePreparing:      {QueueRunning, QueueDeadLetter, QueueCancelled},
-	QueueRunning:        {QueueVerifying, QueueAwaitingReview, QueueDeadLetter, QueueCancelled},
+	QueueRunning:        {QueueVerifying, QueueAwaitingReview, QueueCompleted, QueueDeadLetter, QueueCancelled},
 	QueueVerifying:      {QueueAwaitingReview, QueueDeadLetter, QueueCancelled},
 	QueueAwaitingReview: {QueueCompleted, QueueDeadLetter, QueueCancelled},
 }
