@@ -1,0 +1,385 @@
+package broker
+
+import (
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"drydock/internal/remote"
+	"drydock/internal/repokey"
+	"drydock/internal/stage"
+)
+
+// This file is the host-side CI watcher (Increment B, D3/D4).
+//
+// It is a single bounded goroutine that polls the durable <id>.ci.json markers
+// finishPush wrote and records one terminal, BROKER-OBSERVED conclusion per
+// watched PR. Its shape is deliberately the dispatcher's (queue.go
+// StartDispatcher/dispatchLoop/StopDispatcher): the same lazy channel init, the
+// same "one immediate pass then tick" loop, the same stop semantics, and the
+// same b.now/nowMs clock seam so tests are deterministic.
+//
+// Two invariants are load-bearing:
+//
+//   - D4: THE WATCH NEVER ACQUIRES A CONCURRENCY SLOT AND NEVER KEEPS A STAGE.
+//     MaxConcurrent defaults to 2, and a poll can wait on GitHub for minutes to
+//     hours; holding a slot would starve every task on the box. Nothing below
+//     calls acquireSlot, registerTask, reopenStage, or touches the boot
+//     keep-map. Because a retry re-clones (D2) there is nothing to keep alive:
+//     the parent's stage tore down normally at push.
+//
+//   - D3: CI STATUS DRIVES CONTROL FLOW, CI LOG TEXT NEVER DOES. The only fact
+//     that moves a marker is remote.Checks' rollup over check conclusions. No
+//     log is fetched, parsed, stored, or forwarded anywhere on this path.
+//
+// And the rule both of them serve: ABSENCE OF EVIDENCE NEVER READS AS PASSING.
+// A timeout, a run of gh errors, an unwatchable repo ref, and a PR with no
+// checks each get their own honest recorded state; none of them is CIPassed.
+
+const (
+	// defaultCIPollInterval is the watch tick when Broker.CIPollInterval is
+	// unset. Deliberately slow: this spends the operator's GitHub rate limit
+	// on a timer (THREAT_MODEL N5), and CI runs in minutes, not milliseconds.
+	defaultCIPollInterval = 60 * time.Second
+	// defaultCIWatchTimeout bounds a single watch when Broker.CIWatchTimeout is
+	// unset. Long enough for a slow matrix build, short enough that a PR whose
+	// checks never start cannot hold a marker forever.
+	defaultCIWatchTimeout = 90 * time.Minute
+	// ciWatchMaxConsecutiveErrors is how many back-to-back check-read failures
+	// a watch tolerates before giving up. Transient gh failures (network blip,
+	// a 5xx, a rate-limit pause) must not end a watch; a persistent one must
+	// not hold a marker until the deadline either. The counter resets on ANY
+	// successful read, so a flaky link never accumulates its way to a give-up.
+	ciWatchMaxConsecutiveErrors = 5
+)
+
+// The watcher's own terminal CIState values. cimarker.go owns the four states
+// finishPush and the rollup produce (pending/passed/failed/no_checks); these
+// two name the ways a watch can end WITHOUT a conclusion, and exist here so
+// Task 1's file needs no edit. Neither is a pass, and no consumer may read
+// either one as one.
+const (
+	// CITimedOut: the absolute watch deadline expired with no terminal
+	// conclusion observed. Says nothing about whether CI would have passed.
+	CITimedOut CIState = "timed_out"
+	// CIUnknown: the watch gave up — repeated check-read failures, or a marker
+	// whose repo ref cannot be watched at all. Missing evidence, recorded
+	// honestly rather than rounded to a verdict.
+	CIUnknown CIState = "unknown"
+)
+
+// CIObservation is ONE terminal, broker-observed CI conclusion for a watched
+// PR, delivered to Broker.OnCIObserved. It carries the marker's identity (so a
+// consumer needs no second read of a file that is about to be deleted), the
+// observed state, and the conclusion counts.
+//
+// It carries NO CI log text, by construction: Summary is remote.CheckSummary,
+// which has no log field, and Detail is broker-authored English describing why
+// the watch ended — never anything a repo's workflow printed.
+type CIObservation struct {
+	TaskID   string
+	RepoRef  string
+	Branch   string
+	PRNumber int
+	PRURL    string
+	// Attempt/RetryOf carry the bounded-retry chain forward for B2.
+	Attempt int
+	RetryOf string
+	// State is terminal: passed, failed, no_checks, timed_out, or unknown.
+	State CIState
+	// Summary is the conclusion rollup when one was obtained; the zero value
+	// (Rollup "") when the watch ended without one. The zero value is NOT a
+	// verdict — read State, never Summary.Rollup, to decide anything.
+	Summary remote.CheckSummary
+	// Detail is a short, broker-authored reason for a non-conclusive end.
+	Detail string
+	// ObservedAtMs is the broker clock (b.nowMs) at the moment of record.
+	ObservedAtMs int64
+}
+
+// initCIChans lazily builds the watcher's stop channel (via b.ciOnce) so a
+// Broker built by struct literal — every existing caller and test — needs no
+// constructor. Mirrors initQueueChans.
+func (b *Broker) initCIChans() {
+	b.ciOnce.Do(func() {
+		b.ciStop = make(chan struct{})
+		b.ciDone = make(chan struct{})
+	})
+}
+
+// StartCIWatch launches the watch goroutine. Call once at boot, AFTER
+// ResumeQueue/StartDispatcher, and only when the watch is enabled — there is no
+// separate resume entry point because the loop's first pass reads the markers
+// off disk, so a marker that survived a restart is picked up immediately.
+func (b *Broker) StartCIWatch() {
+	b.initCIChans()
+	go func() {
+		defer close(b.ciDone)
+		b.ciWatchLoop()
+	}()
+}
+
+// StopCIWatch ends the watch goroutine. It does NOT wait: a poll already in
+// flight is bounded by the vendor-CLI timeout, and blocking shutdown behind a
+// GitHub round trip would be the same starvation D4 exists to prevent. The
+// in-flight marker simply stays on disk and is re-watched at the next boot with
+// the same absolute deadline. Callers that need to observe the exit (tests) can
+// wait on b.ciDone.
+func (b *Broker) StopCIWatch() {
+	b.initCIChans()
+	close(b.ciStop)
+}
+
+func (b *Broker) ciWatchLoop() {
+	tick := b.CIPollInterval
+	if tick <= 0 {
+		tick = defaultCIPollInterval
+	}
+	tk := time.NewTicker(tick)
+	defer tk.Stop()
+	// consecutive check-read failures per task id. Owned exclusively by this
+	// goroutine — never shared, so it needs no lock and can never race.
+	errRuns := map[string]int{}
+	for {
+		b.ciWatchPass(errRuns)
+		select {
+		case <-b.ciStop:
+			return
+		case <-tk.C:
+		}
+	}
+}
+
+// ciWatchPass polls every live marker once. Markers are processed
+// oldest-marker-first (ListCIMarkers' order) and independently: an unwatchable
+// or failing marker can never strand another one.
+func (b *Broker) ciWatchPass(errRuns map[string]int) {
+	markers, err := ListCIMarkers(b.AuditRoot)
+	if err != nil {
+		slog.Warn("ci watch: could not scan markers", "err", err)
+		return
+	}
+	live := make(map[string]bool, len(markers))
+	for _, m := range markers {
+		live[m.TaskID] = true
+		// Stop promptly on shutdown rather than working through a long list.
+		select {
+		case <-b.ciStop:
+			return
+		default:
+		}
+		b.pollCIMarker(m, errRuns)
+	}
+	// Forget error runs for markers that no longer exist, so the map cannot
+	// grow without bound on a long-lived daemon.
+	for id := range errRuns {
+		if !live[id] {
+			delete(errRuns, id)
+		}
+	}
+}
+
+// pollCIMarker advances one marker by one poll. Exactly one of these happens:
+// the watch concludes (terminal state recorded, hook fired, marker deleted),
+// the marker is refreshed as still-pending, or a tolerated error is counted.
+func (b *Broker) pollCIMarker(m ciMarker, errRuns map[string]int) {
+	// A marker whose recorded state is ALREADY terminal is the crash window
+	// between "record the conclusion" and "remove the marker". Re-report the
+	// persisted conclusion and clean up; never re-decide an already-decided
+	// watch, and never spend a gh call on it.
+	if ciTerminal(m.State) {
+		b.concludeCIWatch(m, m.State, "", remote.CheckSummary{}, errRuns)
+		return
+	}
+
+	// The deadline is absolute and anchored to persisted data, so a restart —
+	// or a crash loop — can never extend a watch.
+	if now := b.nowMs(); now >= b.ciDeadline(m) {
+		b.concludeCIWatch(m, CITimedOut, "watch deadline expired with no terminal CI conclusion",
+			remote.CheckSummary{}, errRuns)
+		return
+	}
+
+	owner, repo, ok := ownerRepoFromRef(m.RepoRef)
+	if !ok {
+		// remote.Checks pins github.com in the --repo value (the GH_HOST
+		// defense), so a marker for any other host is not watchable at all.
+		// Conclude now with missing evidence rather than failing every poll
+		// until the deadline.
+		b.concludeCIWatch(m, CIUnknown, "repo_ref is not a github.com owner/repo reference; this PR cannot be watched",
+			remote.CheckSummary{}, errRuns)
+		return
+	}
+
+	sum, err := b.runChecks(b.ciEnv(), owner, repo, m.PRNumber)
+	if err != nil {
+		n := errRuns[m.TaskID] + 1
+		errRuns[m.TaskID] = n
+		slog.Warn("ci watch: reading check conclusions failed",
+			"task_id", m.TaskID, "pr", m.PRNumber, "consecutive_errors", n, "err", safeErr(err))
+		if n >= ciWatchMaxConsecutiveErrors {
+			// Give up — but NEVER as a pass, and never silently. The recorded
+			// state says exactly what happened: nothing was observed.
+			b.concludeCIWatch(m, CIUnknown,
+				fmt.Sprintf("gave up after %d consecutive check-read failures", n),
+				remote.CheckSummary{}, errRuns)
+		}
+		return
+	}
+	// Any successful read clears the run: the tolerance is for CONSECUTIVE
+	// failures, so an intermittently flaky gh never accumulates to a give-up.
+	delete(errRuns, m.TaskID)
+
+	st := ciStateFor(sum.Rollup)
+	if !ciTerminal(st) {
+		b.refreshCIMarker(m, st)
+		return
+	}
+	b.concludeCIWatch(m, st, "", sum, errRuns)
+}
+
+// refreshCIMarker persists a still-pending observation: the state, the update
+// stamp, and the now-materialized absolute deadline (so the bound is on disk
+// even if the operator later changes ci.watch_timeout). Atomic write, reusing
+// Task 1's writer. A write failure is logged and the watch continues — the
+// marker on disk is still valid, just staler.
+func (b *Broker) refreshCIMarker(m ciMarker, st CIState) {
+	m.State = st
+	m.UpdatedAtMs = b.nowMs()
+	m.DeadlineMs = b.ciDeadline(m)
+	if err := writeCIMarker(b.AuditRoot, m); err != nil {
+		slog.Warn("ci watch: could not refresh marker", "task_id", m.TaskID, "err", err)
+	}
+}
+
+// concludeCIWatch ends one watch. Order is chosen for crash safety:
+//
+//  1. Persist the terminal state to the marker, so a crash before the hook
+//     runs leaves the conclusion on disk and the next pass re-reports it
+//     (rather than losing the observation or re-querying GitHub).
+//  2. Fire OnCIObserved.
+//  3. Delete the marker.
+//
+// The cost of that order is that a crash between 2 and 3 delivers the same
+// observation twice, so OnCIObserved MUST be idempotent. That is the safe
+// direction: Task 3's consumer is a forward-only queue transition, which
+// rejects the duplicate, whereas losing the observation would strand a task.
+func (b *Broker) concludeCIWatch(m ciMarker, st CIState, detail string, sum remote.CheckSummary, errRuns map[string]int) {
+	delete(errRuns, m.TaskID)
+	now := b.nowMs()
+	if m.State != st {
+		m.State = st
+		m.UpdatedAtMs = now
+		m.DeadlineMs = b.ciDeadline(m)
+		if err := writeCIMarker(b.AuditRoot, m); err != nil {
+			slog.Warn("ci watch: could not persist the terminal ci state",
+				"task_id", m.TaskID, "state", string(st), "err", err)
+		}
+	}
+	if b.OnCIObserved != nil {
+		b.OnCIObserved(CIObservation{
+			TaskID:       m.TaskID,
+			RepoRef:      m.RepoRef,
+			Branch:       m.Branch,
+			PRNumber:     m.PRNumber,
+			PRURL:        m.PRURL,
+			Attempt:      m.Attempt,
+			RetryOf:      m.RetryOf,
+			State:        st,
+			Summary:      sum,
+			Detail:       detail,
+			ObservedAtMs: now,
+		})
+	}
+	if err := removeCIMarker(b.AuditRoot, m.TaskID); err != nil {
+		slog.Warn("ci watch: could not remove a concluded marker",
+			"task_id", m.TaskID, "err", err)
+	}
+	slog.Info("ci watch: observed", "task_id", m.TaskID, "pr", m.PRNumber,
+		"state", string(st), "checks", sum.Total, "failed", sum.Failed)
+}
+
+// ciDeadline is the watch's ABSOLUTE end, in unix millis. It is the marker's
+// own persisted DeadlineMs when set, and otherwise CreatedAtMs (also persisted,
+// stamped at push time) plus the configured timeout. Both anchors survive a
+// restart unchanged, which is the point: a task whose daemon crash-loops cannot
+// keep resetting its watch window.
+func (b *Broker) ciDeadline(m ciMarker) int64 {
+	if m.DeadlineMs > 0 {
+		return m.DeadlineMs
+	}
+	to := b.CIWatchTimeout
+	if to <= 0 {
+		to = defaultCIWatchTimeout
+	}
+	return m.CreatedAtMs + to.Milliseconds()
+}
+
+// ciStateFor maps a check rollup to the marker state. Note the default: an
+// unmodeled rollup is NOT a pass and NOT a terminal — it keeps the watch alive
+// until the deadline, which then records an honest timeout.
+func ciStateFor(r remote.CheckRollup) CIState {
+	switch r {
+	case remote.RollupPassed:
+		return CIPassed
+	case remote.RollupFailed:
+		return CIFailed
+	case remote.RollupNoChecks:
+		return CINoChecks
+	default: // RollupPending, "" (a zero summary), anything unrecognized
+		return CIPending
+	}
+}
+
+// ciTerminal reports whether a state ends the watch. CIPending is the only
+// non-terminal state; everything else — including the two "no verdict" states —
+// concludes it.
+func ciTerminal(s CIState) bool {
+	switch s {
+	case CIPassed, CIFailed, CINoChecks, CITimedOut, CIUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// ownerRepoFromRef extracts the GitHub owner/repo from a task's repo_ref,
+// across every spelling repokey.Normalize canonicalizes (https, ssh://,
+// scp-style git@host:owner/repo, with or without .git). The host must be
+// github.com: remote.Checks hard-pins github.com inside its --repo value as the
+// GH_HOST defense, so a marker naming any other host is honestly unwatchable
+// rather than quietly retargeted.
+func ownerRepoFromRef(ref string) (owner, repo string, ok bool) {
+	parts := strings.Split(repokey.Normalize(ref), "/")
+	if len(parts) != 3 {
+		return "", "", false
+	}
+	if parts[0] != "github.com" { // Normalize already lowercased the host
+		return "", "", false
+	}
+	if parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
+// runChecks is the check-read seam: b.checksFn when a test injected one,
+// remote.Checks otherwise. Tests never shell out to gh.
+func (b *Broker) runChecks(env []string, owner, repo string, number int) (remote.CheckSummary, error) {
+	if b.checksFn != nil {
+		return b.checksFn(env, owner, repo, number)
+	}
+	return remote.Checks(env, owner, repo, number)
+}
+
+// ciEnv is the environment every gh call in this file runs with: the CURATED
+// adapter env, never os.Environ(). Same rule as every other host-side vendor
+// CLI invocation — the broker's own environment (credentials, lease material,
+// operator secrets) must not leak into a subprocess.
+func (b *Broker) ciEnv() []string {
+	if b.ciEnvFn != nil {
+		return b.ciEnvFn()
+	}
+	return stage.CuratedEnv()
+}

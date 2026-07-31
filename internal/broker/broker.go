@@ -194,6 +194,25 @@ type Broker struct {
 	// watch) and the task completes exactly as it does today (D7).
 	CIWatch bool
 
+	// CIPollInterval and CIWatchTimeout bound the CI watch (config
+	// `ci.poll_interval` / `ci.watch_timeout`). Zero means the ciwatch.go
+	// defaults. CIWatchTimeout is applied as an ABSOLUTE deadline anchored to
+	// the marker's persisted creation stamp, so a restart never extends a
+	// watch. Both are ignored when CIWatch is false.
+	CIPollInterval time.Duration
+	CIWatchTimeout time.Duration
+
+	// OnCIObserved, when set, receives every TERMINAL CI observation the
+	// watcher records, immediately before the marker is deleted. It is the
+	// clean seam the queue-state/audit surfacing hangs off (B1 task 3) so the
+	// watcher never has to reach into the queue itself. nil = observations are
+	// logged only.
+	//
+	// Implementations MUST be idempotent: a crash between the hook firing and
+	// the marker's removal replays the same observation on the next boot (see
+	// concludeCIWatch for why that direction is the safe one).
+	OnCIObserved func(CIObservation)
+
 	// PolicyFields/PolicyHash are the daemon's effective policy as resolved by
 	// config.Explain at boot, stashed here so GET /admin/policy can report what
 	// brokerd actually loaded — read-only, no recomputation on request. Set
@@ -235,6 +254,12 @@ type Broker struct {
 	// VM (task-<id> or verify-<id>). nil in production -> forceDeleteContainer.
 	// Tests inject a fake to observe which containers get deleted.
 	deleteContainer func(name string) error
+	// checksFn seams the host-side CI check read. nil in production ->
+	// remote.Checks. Tests inject a script so the watcher never shells out to
+	// gh. ciEnvFn seams the curated env the same call runs with (nil ->
+	// stage.CuratedEnv), so a unit test never reads the host environment.
+	checksFn func(env []string, owner, repo string, number int) (remote.CheckSummary, error)
+	ciEnvFn  func() []string
 
 	// MaxConcurrent caps how many tasks may be in any non-terminal state at
 	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
@@ -261,6 +286,18 @@ type Broker struct {
 	queueOnce sync.Once
 	queueTick time.Duration
 	now       func() int64
+
+	// CI watch (increment B, ciwatch.go). ciStop ends the watch goroutine;
+	// ciOnce builds it lazily, mirroring queueOnce. There is no wake channel
+	// and no in-memory list: the watcher's only state is the durable
+	// <id>.ci.json markers it re-reads every pass, which is what makes boot
+	// resume free. It holds NO concurrency slot (D4).
+	// ciDone is closed when the watch goroutine returns. Nothing in production
+	// waits on it — shutdown must never block behind an in-flight gh call —
+	// but it makes teardown deterministic for tests.
+	ciStop chan struct{}
+	ciDone chan struct{}
+	ciOnce sync.Once
 
 	pendingMu sync.Mutex
 	pending   map[string]chan gateReply // task_id -> approval channel

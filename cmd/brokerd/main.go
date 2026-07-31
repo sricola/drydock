@@ -605,6 +605,17 @@ func main() {
 	// reconciled queue.
 	b.StartDispatcher()
 
+	// Host-side CI observation (increment B). Started only when the watch is
+	// enabled, so a stock install runs no extra goroutine and makes no gh call
+	// on a timer. There is no separate resume step: the watcher's first pass
+	// reads the durable <id>.ci.json markers off disk, so a watch that survived
+	// a restart is picked up here with its ORIGINAL absolute deadline. It holds
+	// no concurrency slot and keeps no stage (D4), so it can never starve
+	// dispatch — which is why it is safe to start it alongside the dispatcher.
+	if b.CIWatch {
+		b.StartCIWatch()
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)
 	// Durable queue (orchestration increment A): detached submit, list, cancel.
