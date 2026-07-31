@@ -139,7 +139,14 @@ func (tr *taskRun) recordGlobalUsage() {
 	if b == nil || b.GlobalLedger == nil {
 		return
 	}
-	now := b.nowMs()
+	// THE CORRECTED INSTANT, not the raw wall clock, and this is the write half
+	// of globalcap.go's clock discussion. Every WRITE reaches pruneLocked, which
+	// DELETES from memory and from the durable file; stamping an entry with a
+	// clock that has jumped forward hands the prune cutoff the jump and wipes
+	// the whole record. The store guards itself as well (globalledger.go's
+	// writeNowLocked), but the two must agree on "now" or an entry's timestamp
+	// and the window it is queried against are measured from different origins.
+	now := b.ceilingNowMs()
 	e := GlobalEntry{
 		Kind:      GlobalEntryTask,
 		TaskID:    tr.id,

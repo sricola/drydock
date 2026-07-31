@@ -62,13 +62,21 @@ func writeStats(w io.Writer, dir string, since time.Duration, by string, asJSON 
 		}
 		rep.Groups, rep.GroupBy = groups, by
 	}
+	// OFF MEANS ABSENT, in JSON exactly as in the text rendering. renderCeiling
+	// already suppresses a disabled ceiling; without the same rule here a stock
+	// install's `stats --json` grew a global_ceiling object full of zeroes for a
+	// feature it has not enabled, which reads as "configured, at zero" rather
+	// than "not configured".
+	if ceiling != nil && !ceiling.Enabled {
+		ceiling = nil
+	}
 	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		// stats.Report is embedded (not nested) so every existing key keeps its
 		// exact position in the object and any consumer parsing today's shape is
 		// unaffected; global_ceiling is additive and omitted when the daemon
-		// could not be asked.
+		// could not be asked, or when neither limb is configured.
 		return enc.Encode(struct {
 			stats.Report
 			GlobalCeiling *ceilingStatus `json:"global_ceiling,omitempty"`

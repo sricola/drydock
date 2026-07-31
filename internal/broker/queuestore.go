@@ -142,6 +142,24 @@ type QueueItem struct {
 	// linkCIRetryChild only, first-writer-wins, onto an item that is already
 	// terminal — see ciretryloop.go.
 	RetryTaskID string `json:"retry_task_id,omitempty"`
+	// CIRetryDeferred says the bounded-retry decision for this item's observed
+	// CI failure has NOT been made yet, because the global usage ceiling could
+	// not be MEASURED at the moment it was asked (a ledger that could not be
+	// read, a store not yet opened, an agent that would not resolve).
+	//
+	// It exists because that decision is a ONE-SHOT: applyCIObservation runs it
+	// exactly once per observation and the crash-window replay guard returns
+	// before it on every later pass. Treating "I could not tell" as "no retry"
+	// therefore destroyed the chain permanently over a fault that usually clears
+	// in seconds — the same conflation the dispatcher carefully avoids
+	// (queue.go's `unmeasured` branch parks rather than drops), and the opposite
+	// of what docs/configuration.md and docs/THREAT_MODEL.md promise about a
+	// transient fault never destroying unattended work.
+	//
+	// While it is set the replay guard falls THROUGH to the retry decision, so
+	// the next watch tick re-asks. RetryTaskID remains the enqueue-once flag, so
+	// re-asking can never mint a second child.
+	CIRetryDeferred bool `json:"ci_retry_deferred,omitempty"`
 }
 
 // queueIDRE matches newID's output shape (32 lowercase hex chars). Validated

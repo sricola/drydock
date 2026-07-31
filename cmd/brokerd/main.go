@@ -649,7 +649,12 @@ func main() {
 	// install reads no traces and writes nothing. On a read failure it degrades
 	// the ledger rather than failing open, which globalcap.go turns into a
 	// refusal on every enforced limb (G2).
-	reconcileGlobalLedger(b, time.Now().UnixMilli())
+	// b.CeilingNowMs(), not time.Now(): this sweep is the ledger's other WRITER,
+	// and a write reaches pruneLocked, which deletes. It measures against the
+	// same jump-corrected instant the enforcement path does. (It is also what
+	// bounds the timestamp reconciliation is allowed to stamp an entry with —
+	// see reconcileEntryFromAudit.)
+	reconcileGlobalLedger(b, b.CeilingNowMs())
 
 	// Resume any tasks that were awaiting approval when the previous brokerd
 	// shut down. Called after the broker is fully wired but before Serve.

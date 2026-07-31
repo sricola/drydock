@@ -20,9 +20,19 @@ const glID = "0123456789abcdef0123456789abcde0"
 
 func glTaskID(n int) string { return fmt.Sprintf("%032x", n+1) }
 
+// mustOpenGL opens a ledger that TRUSTS THE nowMs IT IS HANDED — the write
+// clock's monotonic guard is off (OpenGlobalLedgerWithClock's nil mono).
+//
+// That is what a test driving time synthetically needs: these tests record at
+// T and then compact or query at T+1e12 on purpose, and the production guard
+// would correctly call that a forward clock jump and refuse to let the window
+// advance. The guard itself is covered by the tests that inject a monotonic
+// source and move the two apart deliberately — see
+// TestGlobalLedgerWriteClockGuard* — not by leaving it armed here, where it
+// would only make the rolling window untestable.
 func mustOpenGL(t *testing.T, root string, window time.Duration, nowMs int64) *GlobalLedger {
 	t.Helper()
-	l, err := OpenGlobalLedger(root, window, nowMs)
+	l, err := OpenGlobalLedgerWithClock(root, window, nowMs, nil)
 	if err != nil {
 		t.Fatalf("OpenGlobalLedger: %v", err)
 	}
@@ -1237,5 +1247,76 @@ func TestGlobalLedgerDecodeRejectsUnusableSpendFigures(t *testing.T) {
 	line, _ := json.Marshal(good)
 	if _, ok := decodeGlobalEntry(line); !ok {
 		t.Error("a well-formed checkpoint did not decode")
+	}
+}
+
+// TestGlobalLedgerFoldCarriesStartsUnknown is the I1 failure the file header
+// argues this store defends against, found INSIDE the defence.
+//
+// A destroyed region that took its separating newlines with it is quarantined
+// as ONE tombstone standing for an unknown number of entries, and marked
+// StartsUnknown so the start limb refuses rather than believing a count it
+// cannot justify. In TOTAL mode that tombstone is eventually FOLDED into a
+// checkpoint — and the checkpoint had nowhere to carry the flag, so the fold
+// silently converted "I do not know how many starts these bytes were" into
+// "exactly one", wrote that to disk, and the limb stopped refusing. Forever:
+// total mode never ages anything out.
+func TestGlobalLedgerFoldCarriesStartsUnknown(t *testing.T) {
+	root := t.TempDir()
+	const T = int64(1_700_000_000_000)
+	l := mustOpenGL(t, root, 0, T) // total mode
+	for n := 0; n < 10; n++ {
+		mustRecord(t, l, T+int64(n), glEntry(glTaskID(n), T+int64(n), 1))
+	}
+	// A damaged region holding two concatenated entries — the case StartsUnknown
+	// exists for.
+	f, err := os.OpenFile(l.Path(), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(f, `{"kind":"task","task_id":%q,"ended_at_ms":1}{"kind":"task","task_id":%q,"ended_at_ms":1}`+"\n",
+		glTaskID(500), glTaskID(501))
+	f.Close()
+
+	l2 := mustOpenGL(t, root, 0, T+100)
+	if u := l2.Usage(T + 100); !u.StartsDegraded {
+		t.Fatalf("precondition: a multi-entry damaged region must set StartsDegraded, got %+v", u)
+	}
+
+	// The install keeps running until the tombstone is pushed past the fold
+	// horizon.
+	for n := 1000; n < 1000+globalLedgerTotalKeep+10; n++ {
+		mustRecord(t, l2, T+int64(n), glEntry(glTaskID(n), T+int64(n), 1))
+	}
+	if err := l2.Compact(T + 999999); err != nil {
+		t.Fatal(err)
+	}
+	if u := l2.Usage(T + 999999); !u.StartsDegraded {
+		t.Errorf("FAIL-OPEN: folding erased StartsUnknown. starts=%d, and the start limb — the only bound on a "+
+			"subscription lane — stopped refusing over a region whose true start count is unknown", u.Starts)
+	}
+	// And it survives the restart, because the fold was written to disk.
+	l3 := mustOpenGL(t, root, 0, T+1_000_000)
+	if u := l3.Usage(T + 1_000_000); !u.StartsDegraded {
+		t.Errorf("the erased StartsUnknown was PERSISTED: after a restart starts=%d and the limb still does not refuse", u.Starts)
+	}
+}
+
+// A checkpoint's StartsUnknown is covered by its checksum, so it cannot be
+// cleared by a hand edit that leaves the rest of the line intact.
+func TestGlobalLedgerCheckpointStartsUnknownIsChecksummed(t *testing.T) {
+	cp := GlobalEntry{Kind: GlobalEntryCheckpoint, EndedAtMs: 1, Starts: 5, Src: GlobalSrcCompact, StartsUnknown: true}
+	cp.Sum = checkpointSum(cp)
+	cleared := cp
+	cleared.StartsUnknown = false
+	if cleared.Sum == checkpointSum(cleared) {
+		t.Error("clearing StartsUnknown left the checkpoint's checksum valid; the flag is outside the digest")
+	}
+	line, err := json.Marshal(cleared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decodeGlobalEntry(line); ok {
+		t.Error("a checkpoint with StartsUnknown cleared under the original checksum was accepted as data")
 	}
 }

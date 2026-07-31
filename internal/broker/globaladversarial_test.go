@@ -501,6 +501,65 @@ func TestGlobalCeiling_NoBrokerAuthoredRowCanSourceItsCostFromTheAgent(t *testin
 			})
 		}
 	}
+	// THE SECOND SHAPE, and the net used to miss it entirely: a broker-authored
+	// row built as a STRUCT LITERAL rather than an Fprintf format. The metrics
+	// row is one (metrics.go's audit.Metrics{Type: "metrics", Src: "broker",
+	// ..., CostUSD: ...}), and it carries a dollar figure into the same
+	// operator-facing surfaces. A net that matches only format strings is a net
+	// with a hole exactly the size of the next row someone writes idiomatically.
+	structFound := 0
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				lit, ok := n.(*ast.CompositeLit)
+				if !ok {
+					return true
+				}
+				var costField ast.Expr
+				isBroker := false
+				for _, el := range lit.Elts {
+					kv, ok := el.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+					key, ok := kv.Key.(*ast.Ident)
+					if !ok {
+						continue
+					}
+					if key.Name == "Src" {
+						if v, ok := literalString(kv.Value); ok && v == "broker" {
+							isBroker = true
+						}
+					}
+					if strings.Contains(key.Name, "CostUSD") || strings.Contains(key.Name, "USD") {
+						costField = kv.Value
+					}
+				}
+				if !isBroker || costField == nil {
+					return true
+				}
+				structFound++
+				expr := resolveToExpr(fn.Body, costField)
+				name := calleeName(expr)
+				if !allowed[name] {
+					t.Errorf("%s: a src:\"broker\" struct-literal row takes its dollar figure from %s, "+
+						"which is not the gateway lease. Allowed: tr.meteredCostUSD() or tr.grant.Spent(). "+
+						"Anything else can launder an agent-authored figure into a broker-stamped row (plan G4).",
+						fset.Position(lit.Pos()), describeExpr(expr))
+				}
+				return true
+			})
+		}
+	}
+	if structFound < 1 {
+		t.Errorf("matched no src:\"broker\" STRUCT-LITERAL rows carrying a dollar figure; metrics.go writes one, " +
+			"so the struct-literal half of the net has stopped working")
+	}
+
 	// Task 4 converted six synthetic rows plus appendBrokerResult. Fewer than
 	// that means the matcher stopped matching and the net is not catching
 	// anything.

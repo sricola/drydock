@@ -171,11 +171,26 @@ loopback-guarded TCP wrap; nothing here is reachable from a sandbox VM) and by
 
 ### What the ceiling does not cover
 
-The USD limb can only count dollars the broker measured. It under-counts when:
+The USD limb can only count dollars the broker measured. The list below is the
+set known today; it is **not exhaustive**, because any response shape whose
+usage the broker cannot parse joins it. It under-counts when:
 
 - spend is metered **after** a task's broker result row (a late in-flight
   completion) — the same post-hoc bound `task_budget_usd` carries;
 - a response's usage block exceeds the **1 MiB parse buffer**;
+- a **streaming** response omits its usage block, or places it where the parse
+  does not reach;
+- the figure is **not a usable number** (NaN, infinite, negative). It is
+  sanitised to an untrusted **$0** rather than believed — a NaN in the total
+  would make the limb admit forever — and the entry does not raise the degraded
+  flag, so the total is quietly a lower bound;
+- a task is **resumed at the diff gate after a restart** and its previous
+  process's broker row did not survive;
+- an entry was recovered by **boot reconciliation**. A task killed between its
+  audit terminal and its ledger write is recovered from the audit trail, but a
+  task trace is an append-only file the agent's own stdout is copied into, so no
+  figure in it can be authenticated. Such an entry records the **start** exactly
+  and the dollars as **unknown**, every time;
 - the route is **batch-style** and usage is not in the proxied response at all.
   For the built-in vendors this is closed rather than open: the gateway's route
   allowlist deliberately omits `/v1/messages/batches` (F-03) and answers it
@@ -199,6 +214,16 @@ the gateway lease's own metering, recorded host-side; the ledger lives under
 written by anything inside a VM. An agent cannot inflate the ceiling to deny
 service, and it cannot deflate it to keep spending.
 
+**Nor does either limb read anything else out of a task trace.** That is the
+stronger form of the same rule and it is what boot reconciliation follows: a
+trace's *existence* under a broker-minted task id is a fact the broker
+established, and its *content* — including the `src` field a reader might filter
+on — is text the agent's stdout was copied into. So reconciliation counts the
+start and records the spend as unknown, and it takes the entry's timestamp from
+filesystem metadata rather than from a timestamp inside the file. Neither a
+forged cost nor a forged (or back-dated) timestamp can raise or lower either
+limb.
+
 The same rule now holds for every surface that *displays* spend. `drydock
 stats`, `drydock tasks` and the web UI history table read the broker-authored
 `src=="broker"` audit row; the web UI's **push-approval gate** shows the live
@@ -215,6 +240,13 @@ reset the ceiling would be the hole rather than the feature. The consequence is
 worth knowing before you set it: **an exhausted ceiling stays exhausted across
 reboots** until you raise a limb or remove the ledger file. brokerd warns at
 boot when a limb is armed in total mode.
+
+**Removing the ledger file requires stopping brokerd first.** The entries also
+live in memory, and the next compaction rewrites the file from memory — so
+deleting or hand-editing `<audit_root>/global/ledger.jsonl` under a running
+daemon does not clear anything; the file comes back with the same contents.
+Stop brokerd, remove the file, start it again. The same applies to repairing a
+damaged ledger to clear a degraded limb.
 
 ## Diff policy: caps, blocked paths, second-look
 

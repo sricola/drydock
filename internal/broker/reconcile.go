@@ -17,18 +17,38 @@ import (
 )
 
 // interruptedResultLine is the synthetic terminal event appended to a task
-// trace that a brokerd crash left without a result line. subtype "interrupted"
-// (distinct from "error") tells `drydock tasks` the daemon died under the task
-// rather than the task itself failing; duration_ms is 0 (death time unknown).
-const interruptedResultLine = `{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0}` + "\n"
+// trace that a brokerd crash left without a BROKER-AUTHORED result line.
+// subtype "interrupted" (distinct from "error") tells `drydock tasks` the
+// daemon died under the task rather than the task itself failing; duration_ms
+// is 0 (death time unknown).
+//
+// It carries src:"broker" because it IS broker-authored — the daemon wrote it —
+// and because TerminateStuckAudits' idempotency check is now "does a
+// broker-authored result row exist", which this row has to satisfy or every
+// boot would append another one.
+//
+// It also carries no_spend_info, which is the honest half: the daemon died
+// under this task, so its total_cost_usd of 0 is a placeholder and not a
+// measurement. LastBrokerResultFile skips rows marked that way, so this row can
+// neither shadow a real broker row beneath it nor be read as a trusted $0.
+const interruptedResultLine = `{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0,"src":"broker","no_spend_info":true}` + "\n"
 
-// TerminateStuckAudits scans auditRoot for <id>.jsonl traces with no terminal
-// result line — tasks that were running when a prior brokerd crashed — and
-// appends a synthetic "interrupted" result so `drydock tasks` resolves them
-// instead of showing "running?" forever. Idempotent: a trace that already has a
-// result line is left untouched. SAFE ONLY AT BOOT, when no task is live.
-// Returns the count terminated and the first error (per-file errors are
-// non-fatal).
+// TerminateStuckAudits scans auditRoot for <id>.jsonl traces with no
+// BROKER-AUTHORED terminal result line — tasks that were running when a prior
+// brokerd crashed — and appends a synthetic "interrupted" result so
+// `drydock tasks` resolves them instead of showing "running?" forever.
+// Idempotent: a trace that already has a broker result row is left untouched.
+// SAFE ONLY AT BOOT, when no task is live. Returns the count terminated and the
+// first error (per-file errors are non-fatal).
+//
+// THE src FILTER ON THE CHECK IS LOAD-BEARING, and it used to be absent. The
+// agent's stdout is copied into the trace verbatim, so an agent that printed
+// any {"type":"result"} line — every agent CLI does — suppressed this append.
+// A crashed task's trace then ended on the AGENT's row, which is what
+// seedAggregateFromAudit and every cost renderer read last. An agent that
+// printed {"type":"result","src":"broker","total_cost_usd":999999} at the start
+// of its run and then died left that as the whole story. See
+// audit.HasBrokerResultLine.
 func TerminateStuckAudits(auditRoot string) (int, error) {
 	entries, err := os.ReadDir(auditRoot)
 	if err != nil {
@@ -44,7 +64,7 @@ func TerminateStuckAudits(auditRoot string) (int, error) {
 			continue
 		}
 		path := filepath.Join(auditRoot, e.Name())
-		has, herr := audit.HasResultLine(path)
+		has, herr := audit.HasBrokerResultLine(path)
 		if herr != nil {
 			if firstErr == nil {
 				firstErr = herr

@@ -30,8 +30,13 @@ import (
 // it is trusted, temp + rename for whole-file writes, 0600 payload under a 0700
 // dir, O_NOFOLLOW on every open, an idempotent sweep of the stray ".tmp" a
 // crashed atomic write leaves, a tolerant scan that warns rather than failing
-// boot, and NO time.Now anywhere: every timestamp is caller-supplied through
+// boot, and NO WALL CLOCK anywhere: every timestamp is caller-supplied through
 // the broker's b.now/nowMs clock seam, so tests are deterministic.
+//
+// The one clock this file reads for itself is MONOTONIC, and it is a guard
+// rather than a source: it can only ever pull a caller-supplied instant
+// BACKWARDS, never mint one. See "THE WRITE CLOCK" below for why a store whose
+// writes delete things cannot take a caller's wall clock on trust.
 //
 // It diverges from the idiom in ONE place, deliberately: whole-file writes go
 // through writeLedgerFileDurable rather than internal/atomicfile, because
@@ -141,13 +146,19 @@ const (
 	// (see compactLocked), so compaction is amortized O(1) per entry.
 	globalLedgerMinCompactEntries = 512
 
-	// globalLedgerMaxCompactEntries is an absolute ceiling on the amortized
-	// compaction threshold. Without it, compactAt doubles off the surviving
-	// count without bound, so a ledger that legitimately grew large would go
-	// arbitrarily long between rewrites — and a rewrite is what makes a repair,
-	// a fold and a failed durable append heal. The ceiling keeps the file's
-	// worst-case size bounded while leaving compaction amortized O(1).
-	globalLedgerMaxCompactEntries = 1 << 16
+	// globalLedgerMaxCompactSlack bounds how many entries may accumulate ABOVE
+	// the surviving count before the next compaction fires. Without a bound,
+	// compactAt doubles off the survivors forever and a ledger that legitimately
+	// grew large would go arbitrarily long between rewrites — and a rewrite is
+	// what makes a repair, a fold and a failed durable append heal.
+	//
+	// It is deliberately SLACK rather than an absolute entry ceiling. An
+	// absolute ceiling has a cliff: the moment the surviving set reaches it,
+	// every append is over threshold and pays a full O(n) rewrite, so the
+	// amortization disappears precisely where the file is biggest. Bounding the
+	// headroom keeps a fixed number of cheap appends between rewrites at any
+	// size, which is amortized O(1) everywhere.
+	globalLedgerMaxCompactSlack = 1 << 16
 
 	// globalLedgerTotalKeep is how many entries total mode (window == 0) keeps
 	// individually addressable before folding older ones into a checkpoint.
@@ -262,6 +273,8 @@ type GlobalEntry struct {
 	// --- checkpoint-only (GlobalEntryCheckpoint) ---
 	// Starts/Damaged/UntrustedUSD carry the folded counts; USD carries the
 	// folded trustworthy sum. FoldedThroughMs is the newest EndedAtMs folded in.
+	// StartsUnknown (shared with the damaged kind below) rides along when any
+	// folded entry carried it — see foldTotalMode.
 	Starts          int     `json:"starts,omitempty"`
 	Damaged         int     `json:"damaged,omitempty"`
 	UntrustedUSD    float64 `json:"untrusted_usd,omitempty"`
@@ -276,19 +289,29 @@ type GlobalEntry struct {
 	// recoverCheckpointPrefix collapses them.
 	Sum string `json:"sum,omitempty"`
 
-	// --- damaged-only (GlobalEntryDamaged) ---
+	// --- damaged (GlobalEntryDamaged) and checkpoint ---
 	// Raw is the head of the unreadable line, preserved for forensics. It
 	// marshals as base64, so bytes that are not valid UTF-8 round-trip intact
-	// and re-reading a tombstone can never itself produce damage.
+	// and re-reading a tombstone can never itself produce damage. Damaged-only.
 	Raw []byte `json:"raw,omitempty"`
-	// StartsUnknown says this tombstone is NOT reliably worth exactly one task
-	// start — see damagedIsOneTaskStart. It is set when the destroyed bytes did
-	// not positively identify themselves as a single task line: they may have
-	// been a checkpoint (worth the whole folded history) or several entries
-	// whose separating newlines were destroyed (worth N starts). The start limb
-	// treats it as an "I don't know", which under G2 is a refusal — the only
-	// honest answer, since the alternative is to under-count the one limb that
-	// bounds a subscription lane.
+	// StartsUnknown says this entry is NOT reliably worth the exact start count
+	// it reports.
+	//
+	// On a TOMBSTONE it means the destroyed bytes did not positively identify
+	// themselves as a single task line (see damagedIsOneTaskStart): they may
+	// have been a checkpoint (worth the whole folded history) or several entries
+	// whose separating newlines were destroyed (worth N starts).
+	//
+	// On a CHECKPOINT it means at least one such tombstone was folded into it,
+	// so the checkpoint's own Starts is a lower bound too. This field is on the
+	// checkpoint for a reason that cost a fail-open: a fold with nowhere to put
+	// the flag SILENTLY CONVERTED a fail-closed "I don't know" into a definite,
+	// wrong, and now PERSISTED count, which is exactly the reset the whole
+	// tombstone mechanism exists to prevent. It is covered by checkpointSum.
+	//
+	// Either way the start limb treats it as an "I don't know", which under G2
+	// is a refusal — the only honest answer, since the alternative is to
+	// under-count the one limb that bounds a subscription lane.
 	StartsUnknown bool `json:"starts_unknown,omitempty"`
 }
 
@@ -444,6 +467,110 @@ type GlobalLedger struct {
 	// doubles off the surviving count after each run, so compaction is
 	// amortized O(1) per recorded entry.
 	compactAt int
+
+	// --- the WRITE clock's monotonic guard ---
+	//
+	// See writeNowLocked. mono is a seam ONLY so a test can drive the guard
+	// deterministically; production always gets the real monotonic reading
+	// installed by OpenGlobalLedger. A nil mono disables the guard, which is
+	// what a hand-built zero-value GlobalLedger gets — never a real one.
+	mono          func() int64
+	clockAnchored bool
+	clockWall     int64
+	clockMono     int64
+	clockSkew     int64
+}
+
+// ---------------------------------------------------------------------------
+// THE WRITE CLOCK, and why the ledger will not take one on trust.
+// ---------------------------------------------------------------------------
+//
+// globalcap.go corrects the QUERY clock for a forward wall-clock jump, and
+// documents why. That correction was necessary and not sufficient: every WRITE
+// — Record, RecordBatch, Compact — also carries a caller-supplied `now`, and a
+// write is where the ledger DESTROYS things. pruneLocked deletes every entry
+// older than now-window from memory AND from the file, so a single Record made
+// with a clock that has jumped forward by more than the window wipes the whole
+// durable record. The start limb, the only bound on a subscription lane, resets
+// to zero and the ceiling admits freely.
+//
+// pruneLocked's own defence — "anchor to the ledger's newest event" — cannot
+// close this on its own, because the entry being recorded IS the newest event:
+// it was just stamped with the jumped clock, so the anchor equals the jump and
+// the anchor is a no-op exactly when it is needed.
+//
+// So the ledger measures its own writes the way globalcap measures its own
+// reads: against MONOTONIC time, which no wall-clock change can move. It
+// anchors a (caller-wall, monotonic) pair at open and accumulates however much
+// the caller's clock has outrun monotonic time since. Two things follow, and
+// both are load-bearing:
+//
+//   - The PRUNE clock is the corrected instant, so a forward jump can never
+//     delete an entry that has not really aged out.
+//   - An entry's EndedAtMs is CLAMPED to the corrected instant, so no entry can
+//     be dated in the future — neither by a jumped clock nor by a caller that
+//     took the timestamp from somewhere it should not have. That keeps
+//     newestEventMs, which pruneLocked and boot reconciliation both anchor to,
+//     un-inflatable by entry content.
+//
+// The correction only ever moves the write clock BACKWARDS (skew is floored at
+// zero and never decreases), so its error direction is keeping entries longer
+// than the window — over-counting, the direction a ceiling is allowed to take.
+//
+// The residual is the same one globalcap documents: a clock change while brokerd
+// is DOWN is not detectable, because a monotonic reading does not survive a
+// restart. It is logged at open, not refused.
+
+// ledgerClockToleranceMs is how much caller-wall-vs-monotonic movement BETWEEN
+// TWO CONSECUTIVE WRITES is treated as drift rather than as a clock change. It
+// mirrors ceilingClockToleranceMs and is deliberately generous: the cost of
+// treating a jump as drift is a wiped ledger, while the cost of treating drift
+// as a jump is keeping entries slightly too long.
+const ledgerClockToleranceMs = ceilingClockToleranceMs
+
+// ledgerMonoMs is the default monotonic source: milliseconds since this
+// process's own anchor, immune to every wall-clock change.
+func ledgerMonoMs() int64 { return int64(time.Since(processStartMono) / time.Millisecond) }
+
+// writeNowLocked is the instant a MUTATING call measures against: the caller's
+// clock, less however far the caller's clock has jumped forward relative to
+// monotonic time since this handle was opened. See the discussion above.
+//
+// Callers must hold l.mu. A nil mono seam returns the caller's clock unchanged.
+func (l *GlobalLedger) writeNowLocked(nowMs int64) int64 {
+	if l.mono == nil {
+		return nowMs
+	}
+	mono := l.mono()
+	if !l.clockAnchored {
+		l.clockAnchored, l.clockWall, l.clockMono = true, nowMs, mono
+		return nowMs
+	}
+	// Measured against the PREVIOUS write, not a fixed anchor, and only a delta
+	// over the tolerance is accumulated — the same jump-vs-drift distinction
+	// globalcap.ceilingNowMs draws, for the same reason. A NEGATIVE delta is a
+	// backward wall jump and is deliberately not corrected: it moves the cutoff
+	// back and prunes less, which is the over-counting direction.
+	delta := (nowMs - l.clockWall) - (mono - l.clockMono)
+	l.clockWall, l.clockMono = nowMs, mono
+	if delta >= ledgerClockToleranceMs {
+		l.clockSkew += delta
+		slog.Warn("globalledger: the write clock jumped forward relative to monotonic time",
+			"path", l.path, "jump_ms", delta, "total_skew_ms", l.clockSkew,
+			"note", "the ledger's prune cutoff and entry timestamps are corrected by this amount so the jump cannot delete durable entries")
+	}
+	return nowMs - l.clockSkew
+}
+
+// clampEventMs holds the invariant "no entry is dated after the clock that
+// recorded it". A missing timestamp becomes the write clock; a future one is
+// pulled back to it. Both directions are the ledger refusing to let an entry's
+// own content set the anchor pruneLocked and reconcileFloorMs trust.
+func clampEventMs(endedAtMs, writeNowMs int64) int64 {
+	if endedAtMs <= 0 || endedAtMs > writeNowMs {
+		return writeNowMs
+	}
+	return endedAtMs
 }
 
 // GlobalLedgerPath is the ledger's location under an audit root. Exported so
@@ -468,6 +595,21 @@ func GlobalLedgerPath(auditRoot string) string {
 // into a refusal — a failed compaction does not make them untrustworthy, since
 // the in-memory state is complete either way.
 func OpenGlobalLedger(auditRoot string, window time.Duration, nowMs int64) (*GlobalLedger, error) {
+	return OpenGlobalLedgerWithClock(auditRoot, window, nowMs, ledgerMonoMs)
+}
+
+// OpenGlobalLedgerWithClock is OpenGlobalLedger with the write clock's
+// monotonic source injected. Production always wants OpenGlobalLedger, which
+// supplies the real one.
+//
+// A NIL mono DISABLES THE GUARD and makes the ledger trust the nowMs it is
+// handed. That is for tests that drive time synthetically — a test that records
+// at T and then compacts at T+1e12 is deliberately advancing the clock, and a
+// guard that called it a jump would make the rolling window untestable while
+// telling nobody anything. It is the same seam, and the same reasoning,
+// globalcap.ceilingNowMs already carries for the query clock. The guard itself
+// is covered by tests that inject a monotonic source and move the two apart.
+func OpenGlobalLedgerWithClock(auditRoot string, window time.Duration, nowMs int64, mono func() int64) (*GlobalLedger, error) {
 	if auditRoot == "" {
 		return nil, errors.New("globalledger: empty audit root")
 	}
@@ -475,13 +617,21 @@ func OpenGlobalLedger(auditRoot string, window time.Duration, nowMs int64) (*Glo
 		path:      GlobalLedgerPath(auditRoot),
 		byID:      map[string]struct{}{},
 		compactAt: globalLedgerMinCompactEntries,
+		// The write clock's monotonic guard, anchored on the first mutating
+		// call. See writeNowLocked: without it a forward wall-clock jump deletes
+		// the whole durable record on the next append.
+		mono: mono,
 	}
 	if window > 0 {
 		l.windowMs = window.Milliseconds()
 	}
 	dir := filepath.Dir(l.path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		l.loadErr = "the global ledger directory is unavailable: " + err.Error()
+		// PATH-FREE: this string is rendered into a 402 body for whoever
+		// submitted the task, and an *os.PathError carries the host's absolute
+		// audit-root layout. The wrapped error below, which goes to the
+		// operator's log, keeps the path.
+		l.loadErr = "the global ledger directory is unavailable: " + pathFreeErr(err)
 		return l, fmt.Errorf("globalledger: %w", err)
 	}
 	// MkdirAll only applies the mode to directories it CREATES, so a directory
@@ -505,6 +655,11 @@ func OpenGlobalLedger(auditRoot string, window time.Duration, nowMs int64) (*Glo
 	// caller gets it wrong.
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// Anchor the write clock's monotonic guard before anything can mutate. At
+	// open the skew is zero by construction, so this changes nothing here; it
+	// establishes the reference every later Record/RecordBatch/Compact is
+	// measured against.
+	nowMs = l.writeNowLocked(nowMs)
 
 	lines, truncated, err := readGlobalLedgerLines(l.path)
 	if err != nil {
@@ -513,7 +668,7 @@ func OpenGlobalLedger(auditRoot string, window time.Duration, nowMs int64) (*Glo
 		// submitting client, and the host's audit-root layout is not that
 		// client's business. The returned error, which goes to the operator's
 		// log, names the file.
-		l.loadErr = fmt.Sprintf("the global ledger could not be read (%v); usage is unknown", err)
+		l.loadErr = fmt.Sprintf("the global ledger could not be read (%s); usage is unknown", pathFreeErr(err))
 		return l, fmt.Errorf("globalledger: read %s: %w", l.path, err)
 	}
 	damaged := l.parseLocked(lines, nowMs)
@@ -688,9 +843,6 @@ func (l *GlobalLedger) Record(nowMs int64, e GlobalEntry) error {
 	if !queueIDRE.MatchString(e.TaskID) {
 		return fmt.Errorf("globalledger: invalid task id %q", e.TaskID)
 	}
-	if e.EndedAtMs <= 0 {
-		e.EndedAtMs = nowMs
-	}
 	if e.Src == "" {
 		e.Src = GlobalSrcTerminal
 	}
@@ -701,6 +853,12 @@ func (l *GlobalLedger) Record(nowMs int64, e GlobalEntry) error {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// The write clock, guarded against a forward wall-clock jump, and the entry
+	// clamped into it: an entry dated after the clock that recorded it would
+	// raise newestEventMs — the anchor pruneLocked trusts — and let one bad
+	// timestamp delete the durable record. See writeNowLocked.
+	nowMs = l.writeNowLocked(nowMs)
+	e.EndedAtMs = clampEventMs(e.EndedAtMs, nowMs)
 	if _, dup := l.byID[e.TaskID]; dup {
 		return nil
 	}
@@ -895,6 +1053,13 @@ func (l *GlobalLedger) UsageWithClaims(nowMs int64, claims map[string]struct{}, 
 			u.Damaged += e.Damaged
 			u.USD += e.USD
 			u.UntrustedUSD += e.UntrustedUSD
+			// A fold that swallowed an unidentifiable damaged region carries the
+			// flag; the folded Starts is then a lower bound and the start limb
+			// must keep refusing. Erasing it here would be the same fail-open
+			// the fold itself used to have, one layer down.
+			if e.StartsUnknown {
+				damagedUnknown++
+			}
 		}
 	}
 	switch {
@@ -956,6 +1121,10 @@ func (l *GlobalLedger) RecordBatch(nowMs int64, es []GlobalEntry) (int, error) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// Same guard as Record: boot reconciliation is the OTHER writer, and a
+	// forward wall-clock jump reaching pruneLocked through it wipes the durable
+	// record just as thoroughly. See writeNowLocked.
+	nowMs = l.writeNowLocked(nowMs)
 
 	var (
 		buf      bytes.Buffer
@@ -978,9 +1147,7 @@ func (l *GlobalLedger) RecordBatch(nowMs int64, es []GlobalEntry) (int, error) {
 			}
 			continue
 		}
-		if e.EndedAtMs <= 0 {
-			e.EndedAtMs = nowMs
-		}
+		e.EndedAtMs = clampEventMs(e.EndedAtMs, nowMs)
 		if e.Src == "" {
 			e.Src = GlobalSrcReconcile
 		}
@@ -1084,7 +1251,7 @@ func (l *GlobalLedger) Compact(nowMs int64) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.rewriteLocked(nowMs)
+	return l.rewriteLocked(l.writeNowLocked(nowMs))
 }
 
 func plural(n int, one, many string) string {
@@ -1247,6 +1414,39 @@ func usableUSD(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0
 }
 
+// pathFreeErr renders err WITHOUT the filesystem path it may carry.
+//
+// Every degrade reason in the ceiling ends up in a 402 body for whoever
+// submitted the task — globalcap.go says so in three places and then this file
+// handed it an *os.PathError, whose Error() is "open /Users/.../audit/global/
+// ledger.jsonl: permission denied". A refusal is exactly the moment a prober
+// goes looking, and the host's audit-root layout is not the submitting client's
+// business. The operator still gets the path: every caller logs it separately
+// and the wrapped error returned alongside keeps it.
+// PathFreeError is pathFreeErr for callers outside this package. Boot
+// reconciliation (cmd/brokerd) builds a Degrade reason out of a ReadDir error,
+// and that reason travels the same route into a 402 body.
+func PathFreeError(err error) string { return pathFreeErr(err) }
+
+func pathFreeErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return pe.Op + ": " + pe.Err.Error()
+	}
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		return le.Op + ": " + le.Err.Error()
+	}
+	var se *os.SyscallError
+	if errors.As(err, &se) {
+		return se.Syscall + ": " + se.Err.Error()
+	}
+	return err.Error()
+}
+
 // checkpointSum is the checkpoint's self-checksum: a digest over exactly the
 // fields whose loss cannot be reconstructed from anything else in the file. It
 // deliberately excludes Sum itself and excludes nothing that carries a count.
@@ -1257,11 +1457,11 @@ func usableUSD(v float64) bool {
 // accidental collision impossible in practice.
 func checkpointSum(e GlobalEntry) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "drydock-global-checkpoint-v1\x00%d\x00%d\x00%d\x00%d\x00%s\x00%s\x00%s",
+	fmt.Fprintf(h, "drydock-global-checkpoint-v2\x00%d\x00%d\x00%d\x00%d\x00%s\x00%s\x00%s\x00%t",
 		e.EndedAtMs, e.FoldedThroughMs, e.Starts, e.Damaged,
 		strconv.FormatFloat(e.USD, 'x', -1, 64),
 		strconv.FormatFloat(e.UntrustedUSD, 'x', -1, 64),
-		e.Src)
+		e.Src, e.StartsUnknown)
 	return hex.EncodeToString(h.Sum(nil)[:16])
 }
 
@@ -1504,8 +1704,17 @@ func (l *GlobalLedger) rewriteLocked(nowMs int64) error {
 	// ...but not without bound. Doubling forever would let a ledger that grew
 	// large go arbitrarily long between rewrites, and a rewrite is what makes a
 	// repair, a fold and a failed durable append heal.
-	if l.compactAt > globalLedgerMaxCompactEntries {
-		l.compactAt = globalLedgerMaxCompactEntries
+	//
+	// The bound is SLACK ABOVE THE SURVIVORS, not an absolute count, and that
+	// distinction is the difference between amortized O(1) and a cliff. An
+	// absolute ceiling means that once the surviving set reaches it, every
+	// single append is over threshold and triggers a full O(n) rewrite —
+	// compaction degrades to quadratic exactly where the file is largest.
+	// Bounding the HEADROOM instead keeps a fixed number of appends between
+	// rewrites however large the ledger grows, so the amortized cost stays
+	// constant and the file stays bounded by survivors+slack.
+	if cap := len(kept) + globalLedgerMaxCompactSlack; l.compactAt > cap {
+		l.compactAt = cap
 	}
 	return nil
 }
@@ -1582,16 +1791,24 @@ func (l *GlobalLedger) pruneLocked(nowMs int64) []GlobalEntry {
 	if l.windowMs <= 0 {
 		return foldTotalMode(l.entries, nowMs)
 	}
-	// Pruning is DESTRUCTIVE, so its clock is the EARLIER of the caller's now
-	// and the ledger's own newest event. A clock that jumps backwards already
-	// moves the cutoff back and prunes less (over-counting, the safe
-	// direction); a clock that jumps FORWARD — an NTP correction, a
-	// misconfigured host — would otherwise age out the entire durable record in
-	// one pass and silently reset the ceiling to zero. Anchoring to the newest
-	// recorded event means a forward jump can only ever delete entries that the
-	// ledger's own history already says are old. Queries still use the caller's
-	// raw now: reading a smaller in-window number is recoverable, deleting the
-	// record is not.
+	// Pruning is DESTRUCTIVE, so it gets TWO defences and needs both.
+	//
+	// The first is upstream and is the real one: nowMs here has already been
+	// through writeNowLocked, so a caller's forward wall-clock jump has been
+	// subtracted out against monotonic time, and every entry's EndedAtMs has
+	// been clamped to that same corrected instant. Without it this anchor is a
+	// no-op exactly when it matters — the entry being recorded IS the newest
+	// event, so a jumped clock sets the anchor to the jump.
+	//
+	// The second is the anchor below: the cutoff is measured from the EARLIER of
+	// the corrected now and the ledger's own newest event, so a stale entry set
+	// loaded from a file written by an earlier process (whose monotonic anchor
+	// is gone) can still only be aged out by its own history. A clock that jumps
+	// backwards needs no defence: it moves the cutoff back and prunes less,
+	// which is the over-counting direction.
+	//
+	// Queries still use the caller's raw now: reading a smaller in-window number
+	// is recoverable, deleting the record is not.
 	pruneNow := nowMs
 	if ev := newestEventMs(l.entries); ev > 0 && ev < pruneNow {
 		pruneNow = ev
@@ -1649,11 +1866,22 @@ func foldTotalMode(entries []GlobalEntry, nowMs int64) []GlobalEntry {
 		case GlobalEntryDamaged:
 			cp.Starts++
 			cp.Damaged++
+			// The fold must CARRY the "I don't know", not erase it. A tombstone
+			// marked StartsUnknown stands for an unread region that may have
+			// been a whole checkpoint or several entries; scoring it as exactly
+			// one start and dropping the flag turns a fail-closed refusal into a
+			// definite, wrong count — and the fold is written to disk, so the
+			// error is permanent. The flag propagates instead, and the start
+			// limb keeps refusing until an operator repairs the file.
+			cp.StartsUnknown = cp.StartsUnknown || e.StartsUnknown
 		case GlobalEntryCheckpoint:
 			cp.Starts += e.Starts
 			cp.Damaged += e.Damaged
 			cp.USD += e.USD
 			cp.UntrustedUSD += e.UntrustedUSD
+			// Folding a checkpoint into a checkpoint carries the flag onward for
+			// the same reason: total mode folds repeatedly, forever.
+			cp.StartsUnknown = cp.StartsUnknown || e.StartsUnknown
 		}
 		if e.EndedAtMs > cp.FoldedThroughMs {
 			cp.FoldedThroughMs = e.EndedAtMs

@@ -942,3 +942,83 @@ func TestCIRetry_NegativeAttemptCannotLengthenTheChain(t *testing.T) {
 		t.Fatalf("a negative seed attempt produced %d retries, want exactly %d", n, maxAttempts)
 	}
 }
+
+// TestCIRetry_AnUnmeasurableCeilingParksTheDecisionRatherThanDroppingIt.
+//
+// The retry decision runs EXACTLY ONCE per observation — applyCIObservation's
+// replay guard returns before it on every later pass — so "the ceiling could
+// not be evaluated" being treated as "no retry" destroyed the chain
+// permanently, over a fault that usually clears in seconds. The dispatcher
+// already splits park-from-drop on exactly this bit (queue.go); this is the
+// same split, on the other side of the same decision.
+func TestCIRetry_AnUnmeasurableCeilingParksTheDecisionRatherThanDroppingIt(t *testing.T) {
+	b := retryBroker(t, 3)
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	obs, parentID := failedObs(b, it), it.ID
+	b.GlobalMaxTasks = 100 // a limb is enforced...
+	b.GlobalLedger = nil   // ...and there is no store, so it cannot be measured
+
+	if recorded := b.applyCIObservation(obs); recorded {
+		t.Error("an unmeasurable ceiling reported the observation as fully recorded; concludeCIWatch would drop the marker")
+	}
+	it, err := readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !it.CIRetryDeferred {
+		t.Fatal("the parent was not marked deferred; the next tick would short-circuit on the replay guard and the chain is gone")
+	}
+	if it.RetryTaskID != "" {
+		t.Errorf("a retry was enqueued while the ceiling could not be evaluated: %s", it.RetryTaskID)
+	}
+
+	// The fault clears, the watch re-applies the SAME observation, and the retry
+	// is enqueued after all.
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+	if recorded := b.applyCIObservation(obs); !recorded {
+		t.Error("the re-asked observation still reports not-recorded")
+	}
+	it, err = readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.RetryTaskID == "" {
+		t.Fatal("the deferred retry was never enqueued once the ceiling became measurable")
+	}
+	if it.CIRetryDeferred {
+		t.Error("the deferred flag was not cleared once the decision was made")
+	}
+
+	// ...and re-asking a third time cannot mint a second child.
+	first := it.RetryTaskID
+	b.applyCIObservation(obs)
+	again, _ := readQueueItem(b.AuditRoot, parentID)
+	if again.RetryTaskID != first {
+		t.Errorf("a replay repointed the parent at a second child: %s -> %s", first, again.RetryTaskID)
+	}
+}
+
+// The MEASURED refusal keeps its existing behaviour: over the limb is a real
+// condition with a remedy that arrives on its own schedule, and an unattended
+// retry that waits hours for it lands at a gate nobody is at.
+func TestCIRetry_AMeasuredCeilingRefusalStillEndsTheChain(t *testing.T) {
+	b := retryBroker(t, 3)
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	obs, parentID := failedObs(b, it), it.ID
+	b.GlobalMaxTasks = 1
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 5, 1, b.nowMs()) // over the limb
+
+	if recorded := b.applyCIObservation(obs); !recorded {
+		t.Error("a MEASURED over-limb refusal parked; it must conclude")
+	}
+	it, err := readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.CIRetryDeferred {
+		t.Error("a measured refusal set the deferred flag")
+	}
+	if it.RetryTaskID != "" {
+		t.Errorf("a retry was enqueued over an exhausted limb: %s", it.RetryTaskID)
+	}
+}

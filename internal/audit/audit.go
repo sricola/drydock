@@ -37,6 +37,19 @@ type Result struct {
 	// is untrusted, so financial controls (the aggregate-cap seed) trust only
 	// Src=="broker" cost, never a CLI-emitted total_cost_usd.
 	Src string `json:"src"`
+	// NoSpendInfo marks a broker-authored row that TERMINATES a task without
+	// having METERED it: TerminateStuckAudits' synthetic `interrupted` line,
+	// written at boot for a trace a crash left unfinished. The daemon died under
+	// that task, so its total_cost_usd of 0 is a placeholder, not a measurement.
+	//
+	// It exists because that row carries src:"broker" (it is broker-authored,
+	// and TerminateStuckAudits' idempotency check needs it to — see
+	// HasBrokerResultLine) and would otherwise be the LAST broker row in the
+	// trace, which is exactly what LastBrokerResultFile answers with. A resumed
+	// task's spend recovery would then read a trusted $0 where the honest answer
+	// is "unknown", deflating the global USD limb. LastBrokerResultFile skips
+	// rows carrying this instead.
+	NoSpendInfo bool `json:"no_spend_info,omitempty"`
 }
 
 type Meta struct {
@@ -402,10 +415,32 @@ func CostIsAgentReported(m Meta, rows TailRows) bool {
 // which labels an agent-reported number as such instead of passing it off as
 // measured.
 
-// HasResultLine reports whether path's tail contains a parsed
-// {"type":"result",...} line. Returns (false, nil) when no result is
+// HasBrokerResultLine reports whether path's tail contains a parsed
+// {"type":"result",...,"src":"broker"} line. Returns (false, nil) when none is
 // present; returns (false, err) when the file cannot be read.
-func HasResultLine(path string) (bool, error) {
+//
+// THE src FILTER IS THE POINT, and this reader used to answer the weaker
+// question ("is there a result line of any authorship"). Its one caller is
+// TerminateStuckAudits, which appends the synthetic `interrupted` terminal to a
+// trace a brokerd crash left unfinished — and skips a trace that already has
+// one. The agent's stdout is copied into the trace verbatim, so an agent that
+// printed ANY result line suppressed that append. That is not merely cosmetic:
+//
+//   - the honest `interrupted` row is what stops seedAggregateFromAudit from
+//     re-seeding the per-vendor aggregate cap out of an agent-authored
+//     total_cost_usd, because it lands last and carries 0;
+//   - and it is what stops `drydock tasks` / `drydock stats` / the web UI from
+//     rendering a forged src:"broker" figure as MEASURED spend, with no
+//     agent-reported mark.
+//
+// An agent CAN still forge src:"broker" and suppress the append — nothing in an
+// agent-writable file is authenticated. What the filter buys is that the
+// forgery must now be the LAST broker-looking row to survive, and the honest
+// synthetic row is appended after it in every case where one is appended at
+// all, so last-wins readers see the truth. The global ceiling does not rely on
+// any of this: it stopped reading trace content entirely (see
+// cmd/brokerd/globalreconcile.go).
+func HasBrokerResultLine(path string) (bool, error) {
 	f, err := OpenRead(path)
 	if err != nil {
 		return false, err
@@ -415,8 +450,17 @@ func HasResultLine(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	_, ok, err := scanTailForResult(f, info.Size())
-	return ok, err
+	lines, err := tailLines(f, info.Size())
+	if err != nil {
+		return false, err
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		var x Result
+		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" && x.Src == "broker" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // taskLine is the {"type":"drydock_task",...} invocation record.
@@ -632,14 +676,21 @@ type CIObservation struct {
 //   - The agent's stdout is untrusted, so a CLI-emitted total_cost_usd must
 //     never reach a spend control (G4). LastResult can return one.
 //   - TerminateStuckAudits appends a synthetic {"subtype":"interrupted"} row
-//     with NO src and total_cost_usd:0 to a trace a crash left unterminated.
-//     A "last result must be src==broker" check (seedAggregateFromAudit's)
-//     therefore sees that row, rejects it, and the crashed task's REAL
-//     broker-metered spend — sitting in the broker row just above it —
-//     becomes invisible. Scanning back to the last broker row finds it.
+//     to a trace a crash left unterminated. That row is broker-authored but it
+//     METERED NOTHING, so its total_cost_usd:0 is a placeholder. It is marked
+//     no_spend_info and SKIPPED here, so a real broker row beneath it is still
+//     found and a trace with nothing but the marker answers ok=false ("we do
+//     not know what it cost") rather than a trusted zero.
 //
 // The window and last-wins semantics are LastResultFile's exactly; only the
-// src filter differs, and it mirrors LastMetricsFile's own src=="broker" one.
+// src filter and the no_spend_info skip differ, and the src filter mirrors
+// LastMetricsFile's own src=="broker" one.
+//
+// IT IS NOT A TRUST BOUNDARY BY ITSELF. src is a self-declared string in a file
+// the agent's stdout is copied into, so a compromised CLI can print a row this
+// returns. Callers that must not be influenced by an agent — the global usage
+// ceiling's boot reconciliation — do not use it at all. What it is good for is
+// preferring the broker's own figure where BOTH exist, which is the normal case.
 func LastBrokerResultFile(f *os.File) (Result, bool) {
 	info, err := f.Stat()
 	if err != nil {
@@ -651,7 +702,7 @@ func LastBrokerResultFile(f *os.File) (Result, bool) {
 	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		var x Result
-		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" && x.Src == "broker" {
+		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" && x.Src == "broker" && !x.NoSpendInfo {
 			return x, true
 		}
 	}
@@ -731,7 +782,12 @@ func LastRowsFile(f *os.File) TailRows {
 			if !out.HasResult {
 				out.Result, out.HasResult = x, true
 			}
-			if !out.HasBroker && x.Src == "broker" {
+			// NoSpendInfo is skipped for the SAME reason LastBrokerResultFile
+			// skips it: the synthetic `interrupted` terminal is broker-authored
+			// but metered nothing, so treating it as the last broker row would
+			// both shadow a real figure beneath it and render a crashed task's
+			// unknown spend as a measured $0.00 in every cost column.
+			if !out.HasBroker && x.Src == "broker" && !x.NoSpendInfo {
 				out.Broker, out.HasBroker = x, true
 			}
 			continue

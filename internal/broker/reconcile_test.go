@@ -82,8 +82,11 @@ func TestTerminateStuckAudits_SubstringInPayloadIsNotAResult(t *testing.T) {
 func TestTerminateStuckAudits_LeavesCompletedTraceUntouched(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "task-c.jsonl")
+	// src:"broker" — the check is now "is there a BROKER-authored result row",
+	// so an agent-authored one no longer suppresses the honest synthetic
+	// terminal. See audit.HasBrokerResultLine.
 	body := `{"type":"stream_event"}` + "\n" +
-		`{"type":"result","subtype":"success","is_error":false}` + "\n"
+		`{"type":"result","subtype":"success","is_error":false,"src":"broker"}` + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +136,7 @@ func TestTerminateStuckAudits_LargeTraceWithResultIsLeftAlone(t *testing.T) {
 	for b.Len() < 64*1024 {
 		b.WriteString(`{"type":"stream_event","delta":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}` + "\n")
 	}
-	b.WriteString(`{"type":"result","subtype":"success","is_error":false}` + "\n")
+	b.WriteString(`{"type":"result","subtype":"success","is_error":false,"src":"broker"}` + "\n")
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -992,5 +995,118 @@ func TestRunQueued_EgressDenyCancelsNotDeadLetter(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&agentRuns); got != 0 {
 		t.Errorf("agent ran %d times for an egress-denied task, want 0", got)
+	}
+}
+
+// TestTerminateStuckAudits_AnAgentResultRowDoesNotSuppressTheHonestTerminal.
+//
+// The idempotency check used to be "does this trace hold a result line", and a
+// task trace is a file the agent's own stdout is copied into. EVERY agent CLI
+// prints a {"type":"result"} line, so in practice the check was always
+// satisfied by the agent and the synthetic terminal was almost never appended
+// to a real crashed run. A crashed task's trace therefore ended on the AGENT's
+// row — the row seedAggregateFromAudit reads for the per-vendor cap reseed, and
+// the row every cost renderer shows.
+//
+// The check is now "does this trace hold a BROKER-AUTHORED result row", so the
+// honest terminal lands after the agent's, and last-wins readers see the truth.
+//
+// THE RESIDUAL IS STATED IN THE SUBTEST BELOW and is not fixable at this layer:
+// `src` is a self-declared string in an agent-writable file, so an agent that
+// forges src:"broker" still suppresses this. That is exactly why the global
+// usage ceiling stopped reading trace content altogether rather than trying to
+// authenticate it (cmd/brokerd/globalreconcile.go).
+func TestTerminateStuckAudits_AnAgentResultRowDoesNotSuppressTheHonestTerminal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0123456789abcdef0123456789abcdef.jsonl")
+	body := `{"type":"drydock_meta","subscription":false}` + "\n" +
+		`{"type":"drydock_task","agent":"claude"}` + "\n" +
+		// The agent's own result row, claiming a clean finish and a cost.
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"total_cost_usd":999999,"num_turns":1}` + "\n" +
+		`{"type":"stream_event"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := TerminateStuckAudits(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("terminated %d traces, want 1: an agent-printed result row suppressed the honest synthetic terminal", n)
+	}
+	assertLastLineInterrupted(t, path)
+
+	// The honest row is broker-authored (so the check stays idempotent) but
+	// carries no spend information, so it can neither be read as a trusted $0
+	// nor shadow a REAL broker row beneath it.
+	res, ok := audit.LastBrokerResult(path)
+	if ok {
+		t.Errorf("LastBrokerResult returned %+v; the synthetic terminal must not be read as a metered figure", res)
+	}
+	// Running it again adds nothing.
+	before, _ := os.ReadFile(path)
+	if n2, err := TerminateStuckAudits(dir); err != nil || n2 != 0 {
+		t.Fatalf("second sweep = (%d,%v), want (0,nil)", n2, err)
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Error("the sweep is not idempotent: a second boot appended another terminal")
+	}
+}
+
+// A REAL broker result row beneath the synthetic terminal is still found: the
+// synthetic row is skipped, not treated as the last word on spend. This is what
+// keeps a resumed task's own metered figure recoverable.
+func TestTerminateStuckAudits_SyntheticTerminalDoesNotShadowARealBrokerRow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0123456789abcdef0123456789abcdee.jsonl")
+	body := `{"type":"result","subtype":"success","is_error":false,"total_cost_usd":4.25,"num_turns":1,"src":"broker"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Force the synthetic terminal on regardless (this is the shape ResumeAwaiting
+	// produces when it gives up on a gate whose stage is gone).
+	if err := appendLine(path, interruptedResultLine); err != nil {
+		t.Fatal(err)
+	}
+	res, ok := audit.LastBrokerResult(path)
+	if !ok || res.TotalCostUSD != 4.25 {
+		t.Errorf("LastBrokerResult = (%+v,%v), want the real 4.25 row beneath the synthetic terminal", res, ok)
+	}
+}
+
+// TestTerminateStuckAudits_AForgedSrcBrokerRowIsAKNOWNRESIDUAL pins the limit
+// of the layer above, so nobody reads the src filter as a trust boundary.
+//
+// `src` is a self-declared string in a file the agent's stdout is copied into,
+// so an agent that prints src:"broker" is indistinguishable from the broker. It
+// therefore still suppresses the synthetic terminal, and it can still reach
+// seedAggregateFromAudit's per-vendor cap reseed and the cost columns in
+// `drydock tasks` / `drydock stats` / the web UI (where it renders WITHOUT the
+// agent-reported "?" mark, because by construction it claims not to be
+// agent-reported).
+//
+// The blast radius is bounded and it is fail-CLOSED: an inflated per-vendor
+// aggregate cap refuses tasks, it does not admit them. The GLOBAL ceiling's two
+// limbs are unaffected in either direction — it does not read this file — which
+// is asserted directly in
+// cmd/brokerd:TestReconcile_ForgedBrokerRowCannotRaiseTheUSDLimb.
+//
+// The real fix is to stop the broker sharing a byte stream with the agent (a
+// broker-only sidecar for metered spend). Documented in docs/THREAT_MODEL.md.
+func TestTerminateStuckAudits_AForgedSrcBrokerRowIsAKNOWNRESIDUAL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0123456789abcdef0123456789abcdea.jsonl")
+	body := `{"type":"result","subtype":"success","is_error":false,"total_cost_usd":999999,"num_turns":1,"src":"broker"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := TerminateStuckAudits(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("terminated %d, want 0 — if this now terminates, the residual documented above has been "+
+			"closed and both this test and docs/THREAT_MODEL.md should say so", n)
 	}
 }

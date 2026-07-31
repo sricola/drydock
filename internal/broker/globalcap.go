@@ -418,6 +418,16 @@ const ceilingClockToleranceMs = 2000
 // calling a deliberate advance a "jump" would make the ledger's window untestable
 // while telling the operator nothing. Production installs inject neither seam
 // and get the real pair.
+// CeilingNowMs is ceilingNowMs for callers outside this package — cmd/brokerd's
+// boot reconciliation, which is the ledger's other WRITER and must measure
+// against the same corrected instant the enforcement path does. Calling it also
+// ANCHORS the correction, which is why the ceiling's wiring calls it once at
+// configuration time: an anchor taken lazily on the first admission would treat
+// a jump that happened between boot and that admission as ordinary elapsed
+// time, and every entry a previous process recorded would fall out of the
+// window unnoticed.
+func (b *Broker) CeilingNowMs() int64 { return b.ceilingNowMs() }
+
 func (b *Broker) ceilingNowMs() int64 {
 	now := b.nowMs()
 	if b.now != nil && b.mono == nil {

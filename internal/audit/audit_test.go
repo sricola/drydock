@@ -198,39 +198,39 @@ func TestLastRowsFile_FindsEveryTerminalRowInOnePass(t *testing.T) {
 	}
 }
 
-// --- HasResultLine ---
+// --- HasBrokerResultLine ---
 
-func TestHasResultLine_Present(t *testing.T) {
+func TestHasBrokerResultLine_Present(t *testing.T) {
 	p, _ := writeJSONL(t,
 		`{"type":"stream_event"}`,
-		`{"type":"result","subtype":"success","is_error":false}`,
+		`{"type":"result","subtype":"success","is_error":false,"src":"broker"}`,
 	)
-	has, err := HasResultLine(p)
+	has, err := HasBrokerResultLine(p)
 	if err != nil || !has {
-		t.Errorf("HasResultLine = (%v,%v), want (true,nil)", has, err)
+		t.Errorf("HasBrokerResultLine = (%v,%v), want (true,nil)", has, err)
 	}
 }
 
-func TestHasResultLine_Absent(t *testing.T) {
+func TestHasBrokerResultLine_Absent(t *testing.T) {
 	p, _ := writeJSONL(t, `{"type":"stream_event"}`)
-	has, err := HasResultLine(p)
+	has, err := HasBrokerResultLine(p)
 	if err != nil || has {
-		t.Errorf("HasResultLine = (%v,%v), want (false,nil)", has, err)
+		t.Errorf("HasBrokerResultLine = (%v,%v), want (false,nil)", has, err)
 	}
 }
 
-func TestHasResultLine_SubstringInPayloadNotCounted(t *testing.T) {
+func TestHasBrokerResultLine_SubstringInPayloadNotCounted(t *testing.T) {
 	// A line whose text payload contains "type":"result" must NOT be mistaken
 	// for a real terminal result line.
 	p, _ := writeJSONL(t, `{"type":"stream_event","text":"emitted {\"type\":\"result\"} as text"}`)
-	has, err := HasResultLine(p)
+	has, err := HasBrokerResultLine(p)
 	if err != nil || has {
-		t.Errorf("HasResultLine with substring-only = (%v,%v), want (false,nil)", has, err)
+		t.Errorf("HasBrokerResultLine with substring-only = (%v,%v), want (false,nil)", has, err)
 	}
 }
 
-func TestHasResultLine_MissingFile(t *testing.T) {
-	_, err := HasResultLine("/nonexistent/path/task.jsonl")
+func TestHasBrokerResultLine_MissingFile(t *testing.T) {
+	_, err := HasBrokerResultLine("/nonexistent/path/task.jsonl")
 	if err == nil {
 		t.Error("expected error for missing file, got nil")
 	}
@@ -306,20 +306,20 @@ func TestTaskAgent(t *testing.T) {
 	}
 }
 
-// TestHasResultLine_RefusesSymlink verifies audit reads use O_NOFOLLOW: a
+// TestHasBrokerResultLine_RefusesSymlink verifies audit reads use O_NOFOLLOW: a
 // planted symlink in the audit dir can't redirect the outcome read.
-func TestHasResultLine_RefusesSymlink(t *testing.T) {
+func TestHasBrokerResultLine_RefusesSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "t.jsonl")
-	if err := os.WriteFile(target, []byte(`{"type":"result","subtype":"success"}`+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte(`{"type":"result","subtype":"success","src":"broker"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "l.jsonl")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := HasResultLine(link); err == nil {
-		t.Error("HasResultLine should refuse a symlinked audit path (O_NOFOLLOW)")
+	if _, err := HasBrokerResultLine(link); err == nil {
+		t.Error("HasBrokerResultLine should refuse a symlinked audit path (O_NOFOLLOW)")
 	}
 }
 
@@ -423,4 +423,62 @@ func TestOutcomeWithMetrics_RendersDeniedAndCancelledAsThemselves(t *testing.T) 
 	if got := OutcomeWithMetrics(r, true, Meta{}, Metrics{Outcome: "pushed"}, true); got != "ok (4 turns)" {
 		t.Errorf("pushed = %q, want %q", got, "ok (4 turns)")
 	}
+}
+
+// The synthetic `interrupted` terminal is broker-authored — TerminateStuckAudits
+// writes it, and its idempotency check needs src:"broker" to see it — but the
+// daemon died under that task without metering anything, so its
+// total_cost_usd:0 is a placeholder. Every reader that answers "what did the
+// broker meter" must skip it, or a crashed task reads as a measured $0.00 and a
+// real broker row beneath it is shadowed.
+func TestNoSpendInfoRowIsNeverTheBrokerMeteredFigure(t *testing.T) {
+	const synthetic = `{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0,"src":"broker","no_spend_info":true}`
+
+	t.Run("alone: there is no broker-metered figure", func(t *testing.T) {
+		p, _ := writeJSONL(t, `{"type":"stream_event"}`, synthetic)
+		f, err := OpenRead(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if res, ok := LastBrokerResultFile(f); ok {
+			t.Errorf("LastBrokerResultFile = (%+v,true), want ok=false", res)
+		}
+		if rows := LastRowsFile(f); rows.HasBroker {
+			t.Errorf("TailRows.HasBroker = true off the synthetic terminal (%+v)", rows.Broker)
+		}
+		// It is still a result row, so the outcome column resolves.
+		f.Seek(0, 0)
+		if rows := LastRowsFile(f); !rows.HasResult || rows.Result.Subtype != "interrupted" {
+			t.Errorf("the synthetic terminal did not resolve the outcome: %+v", rows.Result)
+		}
+	})
+
+	t.Run("above a real broker row: the real one still wins", func(t *testing.T) {
+		p, _ := writeJSONL(t,
+			`{"type":"result","subtype":"success","is_error":false,"total_cost_usd":4.25,"num_turns":1,"src":"broker"}`,
+			synthetic)
+		f, err := OpenRead(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		res, ok := LastBrokerResultFile(f)
+		if !ok || res.TotalCostUSD != 4.25 {
+			t.Errorf("LastBrokerResultFile = (%+v,%v), want the 4.25 row beneath the synthetic terminal", res, ok)
+		}
+		f.Seek(0, 0)
+		if rows := LastRowsFile(f); !rows.HasBroker || rows.Broker.TotalCostUSD != 4.25 {
+			t.Errorf("TailRows.Broker = %+v (has=%v), want the 4.25 row", rows.Broker, rows.HasBroker)
+		}
+	})
+
+	// ...and TerminateStuckAudits' idempotency check DOES see it, or every boot
+	// would append another one.
+	t.Run("HasBrokerResultLine still sees it", func(t *testing.T) {
+		p, _ := writeJSONL(t, `{"type":"stream_event"}`, synthetic)
+		if has, err := HasBrokerResultLine(p); err != nil || !has {
+			t.Errorf("HasBrokerResultLine = (%v,%v), want (true,nil): the sweep would not be idempotent", has, err)
+		}
+	})
 }

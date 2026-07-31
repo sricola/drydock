@@ -185,7 +185,27 @@ func (b *Broker) applyCIObservation(obs CIObservation) bool {
 	// already durable at this point, so a crash between the two can only lose a
 	// child, never duplicate one. Nothing here can change the terminal that was
 	// just written.
-	retryID, retryDetail := b.maybeEnqueueCIRetry(obs, qs)
+	retryID, retryDetail, park := b.maybeEnqueueCIRetry(obs, qs)
+	if park {
+		// THE DECISION HAS NOT BEEN MADE. The global ceiling could not be
+		// MEASURED — a fault, not a verdict — and this decision runs once per
+		// observation, so recording "no retry" now would destroy the chain over
+		// something that usually clears before the next tick. Mark the parent
+		// deferred (durable, VM-unwritable) and return NOT-RECORDED so
+		// concludeCIWatch keeps the marker and the next pass re-asks. No
+		// observation row is written: there is nothing to say yet, and a row per
+		// tick would be noise in the operator's trace.
+		// Logged on the TRANSITION only: a ceiling that is unmeasurable for a
+		// lasting reason (an unreadable ledger file) re-parks on every watch
+		// tick, and a line per tick would bury the one that matters.
+		if b.setCIRetryDeferred(obs.TaskID, true) {
+			slog.Warn("ci retry: deferring the bounded-retry decision; the global ceiling could not be evaluated",
+				"task_id", obs.TaskID, "reason", retryDetail)
+		}
+		return false
+	}
+	// The decision is made either way now, so the deferral (if any) is over.
+	b.setCIRetryDeferred(obs.TaskID, false)
 	b.appendCIObservationRow(obs, qs, retryID, retryDetail)
 	return persisted
 }
@@ -202,7 +222,17 @@ func (b *Broker) recordCIQueueTerminal(obs CIObservation, to QueueState, lastErr
 		return "", false, true // synchronous task: no queue item, nothing to move
 	}
 	if cur.State == to && cur.CIState == string(obs.State) {
-		return to, true, true // already applied; a crash-window replay
+		if !cur.CIRetryDeferred {
+			return to, true, true // already applied; a crash-window replay
+		}
+		// The terminal is already durable, but the bounded-retry decision was
+		// PARKED because the global usage ceiling could not be measured. That is
+		// the one case where a repeat pass must NOT short-circuit: the decision
+		// runs once per observation, and short-circuiting it here is what turned
+		// a transient fault into a permanently destroyed retry chain. Report it
+		// as recorded-and-not-a-replay so the caller re-asks; RetryTaskID is
+		// still the enqueue-once flag, so re-asking cannot mint a second child.
+		return cur.State, false, true
 	}
 	// The observation's own Detail (why the watch ended without a conclusion:
 	// a give-up count, a lost marker, a disabled watch) is strictly more

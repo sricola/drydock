@@ -34,37 +34,82 @@ import (
 // hand an operator a way to reset the ceiling by clearing the audit dir.
 //
 // ---------------------------------------------------------------------------
-// WHAT IT DOES BETTER THAN seedAggregateFromAudit, the sibling boot sweep.
+// THE RULE THIS FILE IS BUILT AROUND: A TRACE'S EXISTENCE IS BROKER-OBSERVED.
+// ITS CONTENT IS NOT.
 // ---------------------------------------------------------------------------
 //
-// seedAggregateFromAudit reseeds the per-vendor aggregate cap from the same
-// directory, and it has three weaknesses this must not inherit:
+// <audit_root>/<id>.jsonl is CREATED BY THE BROKER, under a 32-hex task id the
+// broker minted, in a directory nothing in a VM can reach. That a file is there
+// is therefore a fact the broker established: a task with that id ran. It is
+// exact, it cannot be forged from inside a sandbox, and it is the fact the
+// task-start limb — the only bound on a subscription lane (G1/G7) — is measured
+// on.
 //
-//  1. IT KEYS ON FILE MTIME for both its window cutoff AND the timestamp it
-//     seeds with. mtime is when the file was last TOUCHED, not when the task
-//     ran — the CI work already had to paper over that with
-//     appendPreservingMTime. Here the entry timestamp is the BROKER-AUTHORED
-//     ended_at_ms on the metrics row (added for exactly this). mtime survives
-//     only as (a) a cheap, SOUND pre-filter — a trace last written before the
-//     floor cannot describe a task that ended after it — and (b) a last resort
-//     for a trace written before ended_at_ms existed, where nothing better is
-//     recoverable. It is never preferred over a broker-authored instant.
+// EVERYTHING INSIDE THE FILE IS A DIFFERENT MATTER. The agent's stdout is copied
+// into that same trace verbatim (broker.go's io.MultiWriter), so every byte past
+// the broker-written header lines is attacker-supplied text. Both fields a scan
+// could filter on — `type` and `src` — are part of that text. ciqueue.go says so
+// in as many words and refuses to build a typed reader over it for exactly this
+// reason. A financial control that reads a src:"broker" row out of the tail is
+// reading a self-declared string:
 //
-//  2. IT RETURNS SILENTLY ON A ReadDir ERROR, which fails OPEN: the cap is
-//     seeded from nothing and admits freely. For a ceiling that is backwards
+//   - an agent that prints {"type":"result","src":"broker","total_cost_usd":
+//     999999} once, at the START of its run, and then arranges to be killed,
+//     leaves that row as the only broker-looking result in the trace. Boot
+//     reconciliation used to copy it into the ledger's TRUSTED USD limb, where
+//     one task then refused every task start on the install, across all vendors
+//     and both auth modes, until it aged out — forever, in total mode. The
+//     deflating direction worked identically.
+//   - the same forgery in a {"type":"metrics","src":"broker"} row controlled
+//     ended_at_ms, and therefore WHERE in the rolling window the entry landed.
+//     Future-dated, it parked spend in the window for a year. BACK-dated, the
+//     entry fell below the lookback floor and THE START VANISHED — an agent in
+//     an unattended retry loop could make every crashed start invisible to the
+//     limb that is supposed to bound it.
+//
+// So the rule here is absolute, and the structural test in
+// globalreconcile_test.go pins it: NO TRUSTED DOLLAR FIGURE AND NO TIMESTAMP
+// COMES FROM TRACE CONTENT. This sweep does not read the trace tail at all. It
+// reads only the two BROKER-WRITTEN HEADER LINES (drydock_meta and
+// drydock_task, both emitted before the agent process exists, so their position
+// makes them broker-authored) for the lane's identity, and it takes its
+// timestamp from filesystem metadata the sandbox cannot touch.
+//
+// WHAT THAT COSTS, stated plainly rather than hidden: a task killed between its
+// audit terminal and its ledger write really did have a broker-metered figure in
+// its trace, and we are now declining to believe it. Every reconciled entry is
+// therefore recorded with USD 0 and USDTrusted false — "we know a task ran, we
+// do not know what it cost" — so the USD limb under-counts by that task's spend.
+// The bound is small (at most the tasks in flight at the crash, which is
+// max_concurrent_tasks) and the START limb counts every one of them exactly,
+// which is precisely the backstop G7 names.
+//
+// WHAT IT DELIBERATELY DOES NOT DO IS DEGRADE THE USD LIMB FOR THIS. Degrade is
+// sticky for the daemon's life, so degrading on every reconciled entry would
+// mean any crash with a task in flight refuses every subsequent start until an
+// operator restarts — an unattended install bricked by an ordinary crash, which
+// is a worse failure than a bounded under-count that the start limb already
+// covers. It is logged loudly instead, and named as a residual in
+// docs/THREAT_MODEL.md. (A ReadDir failure still degrades: there the sweep
+// cannot enumerate the STARTS either, and that is the limb with no backstop.)
+//
+// A future increment can recover the dollars honestly by having the broker
+// write its metered figure somewhere the sandbox cannot append to — a sidecar
+// under the ledger's own 0700 directory, say — rather than by re-trusting the
+// trace.
+//
+// ---------------------------------------------------------------------------
+// THE OTHER TWO THINGS IT DOES BETTER THAN seedAggregateFromAudit.
+// ---------------------------------------------------------------------------
+//
+//  1. IT DOES NOT RETURN SILENTLY ON A ReadDir ERROR, which fails OPEN: the cap
+//     is seeded from nothing and admits freely. For a ceiling that is backwards
 //     (G2). A read failure here DEGRADES the ledger instead, which globalcap.go
 //     turns into a refusal on every enforced limb — "I don't know" means "no".
 //
-//  3. IT SKIPS ROWS WITH NO src, including TerminateStuckAudits' synthetic
-//     `interrupted` line — so a task the daemon crashed under has its REAL
-//     broker-metered spend (sitting in the broker row just above) rendered
-//     invisible. This scans back to the last src=="broker" row
-//     (audit.LastBrokerResult), so the crash case is exactly the case it reads
-//     correctly.
-//
-// G4 is absolute here too: the recovered USD comes only from a broker-authored
-// result row. audit.TotalCost is never consulted — it does not filter Src and
-// would let an agent-printed total_cost_usd deflate the ceiling.
+//  2. IT COUNTS A TRACE IT CANNOT READ AT ALL. seedAggregateFromAudit skips it;
+//     here the file's existence under a valid task id is already the whole of
+//     the start-limb evidence, so an unreadable trace still records a start.
 //
 // ---------------------------------------------------------------------------
 // THE CASES IT HAS TO HANDLE.
@@ -72,13 +117,8 @@ import (
 //
 //	a task in the audit but not the ledger  -> ADDED (the whole point)
 //	a ledger entry with no audit trace      -> LEFT ALONE (see above)
-//	a task that was running at the crash    -> ADDED. pruneOrphanTasks ran
-//	                                           TerminateStuckAudits first, so
-//	                                           the trace has an honest terminal;
-//	                                           its start counts, and its dollars
-//	                                           are recorded as UNTRUSTED when no
-//	                                           broker row survives, rather than
-//	                                           invented.
+//	a task that was running at the crash    -> ADDED, start counted exactly,
+//	                                           dollars recorded as unknown.
 //	a task resumed at the diff gate         -> ADDED here, and resumePush's own
 //	                                           terminal write later is deduped by
 //	                                           task id. This is what converges
@@ -91,7 +131,11 @@ import (
 //	                                           event, so a forward jump cannot
 //	                                           push the whole window into the
 //	                                           future and make the sweep add
-//	                                           nothing. See reconcileFloorMs.
+//	                                           nothing. See reconcileFloorMs. The
+//	                                           caller passes the jump-corrected
+//	                                           instant (b.CeilingNowMs), which is
+//	                                           also the upper clamp on every
+//	                                           timestamp this sweep stamps.
 //	total-mode replay                       -> BOUNDED. See reconcileFloorMs.
 
 const (
@@ -155,10 +199,12 @@ func reconcileGlobalLedger(b *broker.Broker, nowMs int64) {
 		// The reason is PATH-FREE on purpose: it becomes GlobalUsage's degrade
 		// reason, which globalcap.go renders into a 402 body for whoever
 		// submitted the task. The operator gets the audit root from the log line
-		// below; the submitting client does not need the host's layout.
+		// below; the submitting client does not need the host's layout. An
+		// *os.PathError's Error() is the host's absolute layout, so it is
+		// stripped rather than interpolated.
 		l.Degrade(fmt.Sprintf(
-			"the global ledger could not be reconciled at boot: the audit directory could not be read (%v), so recorded usage is a lower bound",
-			err))
+			"the global ledger could not be reconciled at boot: the audit directory could not be read (%s), so recorded usage is a lower bound",
+			broker.PathFreeError(err)))
 		slog.Warn("global ledger: boot reconciliation could not read the audit directory; the ceiling will refuse enforced limbs",
 			"audit_root", b.AuditRoot, "err", err)
 		return
@@ -167,7 +213,6 @@ func reconcileGlobalLedger(b *broker.Broker, nowMs int64) {
 	var (
 		batch      []broker.GlobalEntry
 		unreadable int
-		untrusted  int
 	)
 	for _, de := range dir {
 		if de.IsDir() || !strings.HasSuffix(de.Name(), ".jsonl") {
@@ -201,9 +246,6 @@ func reconcileGlobalLedger(b *broker.Broker, nowMs int64) {
 		if e.EndedAtMs <= floor {
 			continue // outside the lookback: it cannot affect either limb
 		}
-		if !e.USDTrusted && e.Metered {
-			untrusted++
-		}
 		batch = append(batch, e)
 	}
 
@@ -217,19 +259,25 @@ func reconcileGlobalLedger(b *broker.Broker, nowMs int64) {
 			slog.Warn("global ledger: boot reconciliation could not durably write every recovered entry; they are counted in memory",
 				"added", added, "err", rerr)
 		}
-		slog.Info("global ledger: boot reconciliation recovered task terminals missing from the ledger",
-			"added", added, "scanned_missing", len(batch), "usd_untrusted", untrusted, "path", l.Path())
+		// EVERY recovered entry is usd_untrusted by construction — see this
+		// file's header. The count is the size of the USD limb's known blind
+		// spot for this boot, and it is logged rather than degraded because the
+		// start limb already counts all of them exactly.
+		slog.Warn("global ledger: boot reconciliation recovered task starts missing from the ledger; their spend is UNKNOWN and is not counted against global_budget_usd",
+			"added", added, "scanned_missing", len(batch), "usd_untrusted", added,
+			"note", "a task killed between its audit terminal and its ledger write leaves only agent-writable evidence of what it spent; the task-start limb counts it exactly",
+			"path", l.Path())
 	}
 	if unreadable > 0 {
-		// Each unreadable trace was still recorded as a START above (never
-		// under-count the limb that bounds subscription mode), but its dollars
-		// are unknowable, so say so out loud rather than letting the USD limb
-		// quietly report a smaller number than the truth.
-		// Path-free for the same reason as above; the log line names the root.
-		l.Degrade(fmt.Sprintf(
-			"the global ledger could not be fully reconciled at boot: %d audit trace(s) could not be read, so their spend is unknown and recorded usage is a lower bound",
-			unreadable))
-		slog.Warn("global ledger: boot reconciliation could not read some audit traces; the ceiling will refuse enforced limbs",
+		// An unreadable trace is NOT a degradation here, and that is a change
+		// worth stating. Under the rule in this file's header, reading a trace
+		// contributes NOTHING to either limb — the start comes from the file's
+		// existence and the dollars are recorded as unknown either way — so a
+		// trace we could not open leaves us in exactly the state a trace we
+		// could open leaves us in. Degrading on it would refuse every task start
+		// for the daemon's life over a permissions glitch on one file, while
+		// telling the operator nothing the log line below does not.
+		slog.Warn("global ledger: boot reconciliation could not read some audit traces; their starts are still counted, their lane is recorded as unknown",
 			"count", unreadable, "audit_root", b.AuditRoot)
 	}
 }
@@ -276,18 +324,70 @@ func reconcileFloorMs(l *broker.GlobalLedger, nowMs int64) int64 {
 	return floor
 }
 
+// reconcileEventMs is the instant a reconciled entry is stamped with, and it is
+// the ONLY timestamp source this file has.
+//
+// It is filesystem metadata, CLAMPED AT BOTH ENDS. mtime is not a great answer
+// to "when did this task run" — it is when the file was last written — but it
+// has the one property the ceiling actually requires: nothing inside a sandbox
+// can set it. The agent can cause an append (which moves mtime forward, to
+// roughly now), and that is the whole of its influence. It cannot back-date a
+// trace to slip a start below the lookback floor, and it cannot future-date one
+// to park spend in the window for a year. An `ended_at_ms` read out of the
+// trace could do both, and did.
+//
+// The clamps:
+//
+//	mtime <= 0 (Info() failed)  -> nowMs. Counting it in-window over-counts,
+//	                               which is the direction G3 requires.
+//	mtime > nowMs               -> nowMs. A trace dated after the (already
+//	                               jump-corrected) clock is a clock artefact or
+//	                               a filesystem with its own clock; nothing may
+//	                               be dated into the future, which is the same
+//	                               invariant GlobalLedger.clampEventMs enforces
+//	                               one layer down.
+//
+// There is no lower clamp toward the floor on purpose: a genuinely old trace
+// SHOULD fall out of the lookback, and the caller drops it there.
+func reconcileEventMs(mtimeMs, nowMs int64) int64 {
+	if mtimeMs <= 0 || mtimeMs > nowMs {
+		return nowMs
+	}
+	return mtimeMs
+}
+
 // reconcileEntryFromAudit builds the ledger entry for one audit trace.
 //
+// It records A START AND NOTHING ELSE THAT ANY LIMB IS MEASURED ON. USD is 0 and
+// USDTrusted is false unconditionally, the timestamp comes from filesystem
+// metadata, and the only bytes read out of the file are the two broker-written
+// header lines — see this file's header for why, and
+// TestReconcile_NeverSourcesATrustedValueFromTraceContent for the structural
+// pin.
+//
 // ok is false when there is nothing to record. readable is false when the trace
-// could not be read at all — in which case ok is still TRUE and a start-only
-// entry is returned, because the file's existence under a valid task id is
-// itself evidence that a task ran, and dropping it would under-count the limb
-// that bounds subscription mode. The caller degrades the USD side separately.
+// could not be opened — in which case ok is still TRUE and the entry is
+// returned anyway, because the file's existence under a valid task id is itself
+// the evidence, and dropping it would under-count the limb that bounds
+// subscription mode.
 func reconcileEntryFromAudit(b *broker.Broker, path, id string, mtimeMs, nowMs int64) (e broker.GlobalEntry, ok, readable bool) {
 	e = broker.GlobalEntry{
-		Kind:   broker.GlobalEntryTask,
-		TaskID: id,
-		Src:    broker.GlobalSrcReconcile,
+		Kind:      broker.GlobalEntryTask,
+		TaskID:    id,
+		Src:       broker.GlobalSrcReconcile,
+		EndedAtMs: reconcileEventMs(mtimeMs, nowMs),
+		// "unknown", never the trace's own outcome: `type` and `src` are
+		// attacker-supplied text, so an outcome read from the tail is the
+		// agent's claim about how its own task ended. It affects no limb, but it
+		// lands in a durable operator-facing artifact and there is no honest
+		// version of it here — a task the ledger never heard about is a task
+		// whose ending we did not observe.
+		Outcome: "unknown",
+		// THE DOLLARS ARE UNKNOWN, ALWAYS. Not "recovered from a broker row if
+		// one survives" — there is no way to tell a broker row from an agent
+		// row inside an agent-writable file. See the file header.
+		USD:        0,
+		USDTrusted: false,
 	}
 	// O_NOFOLLOW: a planted <id>.jsonl -> elsewhere must not feed the ceiling
 	// substituted numbers, the same rule every other audit read follows.
@@ -296,44 +396,23 @@ func reconcileEntryFromAudit(b *broker.Broker, path, id string, mtimeMs, nowMs i
 		if os.IsNotExist(oerr) {
 			return e, false, true // raced a prune; there is nothing to read
 		}
-		e.EndedAtMs = mtimeMs
-		if e.EndedAtMs <= 0 {
-			e.EndedAtMs = nowMs
-		}
-		e.Outcome = "unknown"
-		// Metered is left false and USDTrusted false: we know a task started,
-		// and we know nothing at all about its dollars.
+		// The lane is unknown; the start still counts. Metered stays false,
+		// which keeps this entry out of the USD limb entirely.
 		return e, true, false
 	}
 	defer f.Close()
 
+	// THE ONLY TWO READS, and both are position-authenticated rather than
+	// src-authenticated: drydock_meta is the first line of the trace and
+	// drydock_task is within the first four, and BOTH are written by the broker
+	// before the agent process exists. Nothing the agent appends can reach them,
+	// because an append can only add lines at the end.
 	meta := audit.ReadMetaFile(f)
 	agent := audit.TaskAgentFile(f)
 	if agent == "" {
 		agent = b.DefaultAgent
 	}
-	m, hasMetrics := audit.LastMetricsFile(f)
-	res, hasBrokerResult := audit.LastBrokerResultFile(f)
-
-	// The vendor on the metrics row is broker-authored and records what the
-	// task ACTUALLY resolved to; re-resolving the agent name is the fallback for
-	// a trace with no metrics row, and it can disagree with history if the
-	// operator has since changed agents.
-	vendor := m.Vendor
-	if vendor == "" {
-		vendor, _ = provider.VendorForAgent(agent)
-	}
-
-	// THE TIMESTAMP, broker-authored first. mtime is the last resort only —
-	// see this file's header on seedAggregateFromAudit's weakness.
-	switch {
-	case hasMetrics && m.EndedAtMs > 0:
-		e.EndedAtMs = m.EndedAtMs
-	case mtimeMs > 0:
-		e.EndedAtMs = mtimeMs
-	default:
-		e.EndedAtMs = nowMs
-	}
+	vendor, _ := provider.VendorForAgent(agent)
 
 	e.Agent = agent
 	e.Vendor = vendor
@@ -344,26 +423,8 @@ func reconcileEntryFromAudit(b *broker.Broker, path, id string, mtimeMs, nowMs i
 	// Same signal the live terminal path and writeBrief use, plus the trace's
 	// own recorded auth mode: a subscription run meters at $0 by construction
 	// however the CURRENT config is written, and this trace may predate a
-	// config change.
+	// config change. It is informational on a reconciled entry — USDTrusted is
+	// false either way, so this steers no limb.
 	e.Metered = vendor != "" && !b.UnmeteredVendors[vendor] && !meta.Subscription
-	// G4: BROKER-AUTHORED COST ONLY. Never audit.TotalCost, which returns the
-	// last result row of any authorship. A trace with no broker row (a genuine
-	// mid-run kill) yields an untrusted $0: the start still counts, and the
-	// dollars are declared unknown rather than invented. G7 names the
-	// task-start limb as the backstop for precisely this.
-	if hasBrokerResult && res.TotalCostUSD > 0 {
-		e.USD = res.TotalCostUSD
-		e.USDTrusted = e.Metered
-	} else if hasBrokerResult {
-		e.USDTrusted = e.Metered // a broker-authored, believable zero
-	}
-	switch {
-	case hasMetrics && m.Outcome != "":
-		e.Outcome = m.Outcome
-	case hasBrokerResult && res.Subtype != "":
-		e.Outcome = res.Subtype
-	default:
-		e.Outcome = "unknown"
-	}
 	return e, true, true
 }

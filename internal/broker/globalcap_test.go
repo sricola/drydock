@@ -965,18 +965,28 @@ func TestGlobalCap_CIRetryGateRefuses(t *testing.T) {
 // TestGlobalCap_CIRetryGateFailsClosed: the gate refuses when it cannot
 // evaluate the ceiling, and is inert when both limbs are off.
 func TestGlobalCap_CIRetryGateFailsClosed(t *testing.T) {
-	t.Run("unreadable ledger with a limb on refuses", func(t *testing.T) {
+	// An unreadable ledger is a FAULT, not a verdict, so the decision PARKS.
+	// It used to be recorded as "no retry", which — because the decision runs
+	// once per observation — destroyed the chain permanently over a condition
+	// that is usually transient. The dispatcher already draws this line
+	// (queue.go's `unmeasured` branch); the retry gate now draws the same one.
+	t.Run("unreadable ledger with a limb on parks rather than refusing", func(t *testing.T) {
 		b := retryBroker(t, 3)
 		b.GlobalBudgetUSD = 50
 		b.GlobalLedger = plantUnreadableLedger(t, b.AuditRoot, 24*time.Hour)
 		it := seedTaskAwaitingCI(t, b, baseTask())
-		b.applyCIObservation(failedObs(b, it))
+		if recorded := b.applyCIObservation(failedObs(b, it)); recorded {
+			t.Error("the observation reported itself fully recorded; the watch would drop the marker and the chain with it")
+		}
 		if _, ok := childOf(t, b, it.ID); ok {
 			t.Fatal("a retry was enqueued against an unreadable ceiling")
 		}
-		row, ok := ciAuditRow(t, b, it.ID)
-		if !ok || !strings.Contains(row.RetryDetail, "global ceiling") {
-			t.Errorf("retry_detail = %q, want the ceiling's refusal", row.RetryDetail)
+		if !queueItemState(t, b, it.ID).CIRetryDeferred {
+			t.Error("the parent was not marked ci_retry_deferred, so the next tick would short-circuit and lose the chain")
+		}
+		// No verdict yet, so no observation row claiming one.
+		if row, ok := ciAuditRow(t, b, it.ID); ok && row.RetryDetail != "" {
+			t.Errorf("retry_detail = %q recorded while the decision is still parked", row.RetryDetail)
 		}
 	})
 	t.Run("both limbs off retries as it does today", func(t *testing.T) {
@@ -1200,6 +1210,135 @@ func TestGlobalCap_AForwardClockJumpCannotZeroTheLimbs(t *testing.T) {
 			t.Error("a backward clock jump admitted a task; it can only over-count")
 		}
 	})
+
+	// THE CASE THE SUBTESTS ABOVE ALL MISSED, and it was the whole exploit: they
+	// only ever QUERY after the jump. The query path was corrected; the WRITE
+	// path was not, and a write is where entries are DELETED.
+	//
+	// A task terminals after the jump. recordGlobalUsage stamps its entry and
+	// drives the amortized compaction, compaction calls pruneLocked, and
+	// pruneLocked deletes everything older than now-window from memory AND FROM
+	// THE FILE. pruneLocked's "anchor to the ledger's newest event" defence is
+	// defeated by the entry that was just written with the jumped clock: it IS
+	// the newest event. One terminal after an NTP correction wiped the durable
+	// record and reset the start limb — the only bound on a subscription lane —
+	// to zero.
+	t.Run("a terminal recorded after the jump cannot delete the durable record", func(t *testing.T) {
+		b, wall, mono := newBroker(t)
+		before := b.GlobalLedger.Usage(b.ceilingNowMs())
+		if before.Starts != 10 {
+			t.Fatalf("precondition: seeded starts = %d, want 10", before.Starts)
+		}
+		durableBefore := len(rawLines(t, b.GlobalLedger.Path()))
+
+		wall.advance(48 * time.Hour) // NTP correction / VM resumed from a snapshot
+		mono.advance(time.Second)
+
+		// One more task ends, exactly as the lifecycle's deferred
+		// recordGlobalUsage does it.
+		tr := &taskRun{b: b, id: newID(), agentName: "claude", taskVendor: "anthropic", outcome: "pushed"}
+		tr.recordGlobalUsage()
+
+		after := b.GlobalLedger.Usage(b.ceilingNowMs())
+		durableAfter := len(rawLines(t, b.GlobalLedger.Path()))
+		if after.Starts != before.Starts+1 {
+			t.Errorf("starts = %d after a terminal recorded under a jumped clock, want %d: the ceiling lost durably "+
+				"recorded task starts to a wall-clock jump", after.Starts, before.Starts+1)
+		}
+		if durableAfter < durableBefore {
+			t.Errorf("the durable ledger went from %d lines to %d: a forward clock jump DELETED entries from disk",
+				durableBefore, durableAfter)
+		}
+		if blocked, _ := b.globalCeilingExceeded("claude"); !blocked {
+			t.Error("FAIL-OPEN: the ceiling admitted after a terminal was recorded under a jumped clock")
+		}
+	})
+
+	// The same hole through the OTHER writer. Boot reconciliation records a
+	// batch, and RecordBatch drives the same compaction.
+	t.Run("a batch recorded after the jump cannot delete the durable record", func(t *testing.T) {
+		b, wall, mono := newBroker(t)
+		wall.advance(48 * time.Hour)
+		mono.advance(time.Second)
+		n, err := b.GlobalLedger.RecordBatch(b.ceilingNowMs(), []GlobalEntry{
+			{Kind: GlobalEntryTask, TaskID: newID(), EndedAtMs: b.ceilingNowMs(), Metered: true},
+		})
+		if err != nil || n != 1 {
+			t.Fatalf("RecordBatch = (%d,%v)", n, err)
+		}
+		if u := b.GlobalLedger.Usage(b.ceilingNowMs()); u.Starts != 11 {
+			t.Errorf("starts = %d after a reconcile batch under a jumped clock, want 11", u.Starts)
+		}
+	})
+
+	// An entry may never be DATED after the clock that recorded it, whatever the
+	// caller passes. That is what keeps newestEventMs — the anchor pruneLocked
+	// and reconcileFloorMs both trust — un-inflatable by entry content.
+	t.Run("an entry cannot be dated into the future", func(t *testing.T) {
+		b, _, _ := newBroker(t)
+		now := b.ceilingNowMs()
+		aYearOn := now + (365 * 24 * time.Hour).Milliseconds()
+		if err := b.GlobalLedger.Record(now, GlobalEntry{
+			Kind: GlobalEntryTask, TaskID: newID(), EndedAtMs: aYearOn, Metered: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := b.GlobalLedger.Usage(now).NewestMs; got > now {
+			t.Errorf("newest recorded event = %d, which is after the write clock %d", got, now)
+		}
+	})
+}
+
+// TestGlobalLedgerWriteClockGuardCorrectsAForwardJump covers the store's own
+// half of the defence directly — the layer that holds even for a caller that
+// hands Record a raw wall clock.
+func TestGlobalLedgerWriteClockGuardCorrectsAForwardJump(t *testing.T) {
+	root := t.TempDir()
+	const window = time.Hour
+	wall, mono := &testClock{}, &testClock{}
+	wall.set(capNow)
+	mono.set(0)
+	l, err := OpenGlobalLedgerWithClock(root, window, wall.now(), mono.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		if err := l.Record(wall.now(), GlobalEntry{
+			Kind: GlobalEntryTask, TaskID: newID(), EndedAtMs: wall.now(), Metered: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The wall clock jumps a year; a second of real time passes.
+	wall.advance(365 * 24 * time.Hour)
+	mono.advance(time.Second)
+	if err := l.Compact(wall.now()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rawLines(t, l.Path())); n != 20 {
+		t.Errorf("the durable ledger holds %d lines after a compaction under a year-long forward jump, want 20", n)
+	}
+	if u := l.Usage(capNow); u.Starts != 20 {
+		t.Errorf("starts = %d, want 20", u.Starts)
+	}
+
+	// ...and REAL elapsed time still moves the write clock, so the guard has
+	// corrected the jump rather than frozen the ledger. Two real hours pass and
+	// one more task terminals; the twenty entries from before the jump are now
+	// genuinely outside the one-hour window and compaction reclaims them.
+	wall.advance(2 * time.Hour)
+	mono.advance(2 * time.Hour)
+	if err := l.Record(wall.now(), GlobalEntry{
+		Kind: GlobalEntryTask, TaskID: newID(), EndedAtMs: wall.now(), Metered: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Compact(wall.now()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rawLines(t, l.Path())); n != 1 {
+		t.Errorf("%d lines after two REAL hours under a one-hour window, want 1; the guard froze the window", n)
+	}
 }
 
 // A claim released only while a limb happens to be on is a claim leaked

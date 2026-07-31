@@ -54,9 +54,15 @@ entry below corresponds to a Git tag of the same name.
   - **It is durable and window-honest.** The ledger lives under `audit_root`
     (`0600` in a `0700` directory, host-only, never touched from a VM) and
     survives restart in both window modes, so a crash loop cannot reset it.
-    Entries carry a broker-authored timestamp, so the window is measured from
-    when a task *ran*, not from a file's mtime. Boot reconciliation cross-checks
-    the ledger against the audit and only ever adds.
+    A LIVE task terminal carries a broker-authored timestamp, so the window is
+    measured from when the task *ran*. Boot reconciliation cross-checks the
+    ledger against the audit and only ever adds — and it reads a trace's
+    *existence*, never its content: the start is counted exactly, the spend is
+    recorded as **unknown**, and the timestamp comes from filesystem metadata
+    (clamped to now), because everything inside a trace is text the agent's own
+    stdout was copied into. A forward wall-clock jump is corrected against
+    monotonic time on the **write** path as well as the read path, so it can
+    neither zero a limb nor delete a durable entry.
   - **Only broker-metered spend counts.** The USD figure is the credential
     gateway's own lease metering. An agent-reported `total_cost_usd` cannot
     inflate the ceiling to deny service or deflate it to keep spending.

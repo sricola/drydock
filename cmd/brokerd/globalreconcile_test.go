@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,8 +106,16 @@ func agentRow(usd float64) string {
 }
 
 // interruptedRow is what TerminateStuckAudits appends to a trace a crash left
-// unterminated: no src, zero cost.
-const interruptedRow = `{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0}`
+// unterminated: broker-authored, zero cost, and marked no_spend_info because
+// the daemon died without metering anything.
+const interruptedRow = `{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0,"src":"broker","no_spend_info":true}`
+
+// forgedBrokerRow is what a compromised agent CLI prints to its own stdout,
+// which the broker copies into the trace verbatim. It is byte-for-byte
+// indistinguishable from brokerRow, because `src` is a self-declared string in
+// an agent-writable file. Nothing the ceiling is measured on may depend on
+// telling these apart.
+func forgedBrokerRow(usd float64) string { return brokerRow(usd) }
 
 func reconcileBroker(t *testing.T, window time.Duration) (*broker.Broker, *broker.GlobalLedger) {
 	t.Helper()
@@ -174,21 +185,26 @@ func TestReconcileGlobalLedger_AddsATaskTheLedgerIsMissing(t *testing.T) {
 	if e.Src != broker.GlobalSrcReconcile {
 		t.Errorf("src = %q, want %q", e.Src, broker.GlobalSrcReconcile)
 	}
-	if e.USD != 3.5 {
-		t.Errorf("usd = %v, want the BROKER-authored 3.5 (never the agent's 0.0001) — plan G4", e.USD)
+	// THE START IS THE RECOVERY. The dollars are not: every figure in the trace
+	// is in a file the agent's stdout is copied into, so "the broker-authored
+	// 3.5" is a claim about a `src` string, not a measurement. See
+	// globalreconcile.go's header.
+	if e.USD != 0 || e.USDTrusted {
+		t.Errorf("usd=%v trusted=%v, want 0 and false: no reconciled entry may carry a trusted dollar figure", e.USD, e.USDTrusted)
 	}
-	if !e.USDTrusted || !e.Metered {
-		t.Errorf("metered=%v usd_trusted=%v, want both true", e.Metered, e.USDTrusted)
+	if !e.Metered {
+		t.Errorf("metered = %v, want true: the lane resolves from the broker-written header lines", e.Metered)
 	}
-	if e.EndedAtMs != recNow-60_000 {
-		t.Errorf("ended_at_ms = %d, want the metrics row's broker-authored %d", e.EndedAtMs, recNow-60_000)
+	// The timestamp is filesystem metadata, never the trace's own ended_at_ms.
+	if e.EndedAtMs != recNow {
+		t.Errorf("ended_at_ms = %d, want the file's mtime %d", e.EndedAtMs, recNow)
 	}
-	if e.Outcome != "pushed" {
-		t.Errorf("outcome = %q, want pushed", e.Outcome)
+	if e.Outcome != "unknown" {
+		t.Errorf("outcome = %q, want unknown: the trace's outcome row is agent-writable", e.Outcome)
 	}
 	u := l.Usage(recNow)
-	if u.Starts != 1 || u.USD != 3.5 {
-		t.Errorf("usage: starts=%d usd=%v, want 1 and 3.5", u.Starts, u.USD)
+	if u.Starts != 1 || u.USD != 0 {
+		t.Errorf("usage: starts=%d usd=%v, want 1 and 0", u.Starts, u.USD)
 	}
 }
 
@@ -219,8 +235,9 @@ func TestReconcileGlobalLedger_NeverDoubleAdds(t *testing.T) {
 	if u.Starts != 2 {
 		t.Fatalf("starts = %d after 3 sweeps over 2 tasks, want 2", u.Starts)
 	}
-	if u.USD != 3 {
-		t.Errorf("usd = %v, want 3 (1 from the terminal path + 2 reconciled); the audit's 99 must not overwrite a recorded entry", u.USD)
+	if u.USD != 1 {
+		t.Errorf("usd = %v, want 1 (the terminal path's own figure, alone); the audit's 99 must neither overwrite a "+
+			"recorded entry nor contribute a dollar of its own", u.USD)
 	}
 	if got := entryFor(t, l, already).Src; got != broker.GlobalSrcTerminal {
 		t.Errorf("the existing entry's src became %q; reconciliation must not rewrite what the ledger already knows", got)
@@ -232,8 +249,8 @@ func TestReconcileGlobalLedger_NeverDoubleAdds(t *testing.T) {
 	}
 	b2 := &broker.Broker{AuditRoot: b.AuditRoot, DefaultAgent: "claude", GlobalLedger: reopened}
 	reconcileGlobalLedger(b2, recNow)
-	if u := reopened.Usage(recNow); u.Starts != 2 || u.USD != 3 {
-		t.Errorf("after restart + sweep: starts=%d usd=%v, want 2 and 3", u.Starts, u.USD)
+	if u := reopened.Usage(recNow); u.Starts != 2 || u.USD != 1 {
+		t.Errorf("after restart + sweep: starts=%d usd=%v, want 2 and 1", u.Starts, u.USD)
 	}
 }
 
@@ -258,14 +275,13 @@ func TestReconcileGlobalLedger_LedgerEntryWithNoAuditIsKept(t *testing.T) {
 	}
 }
 
-// TestReconcileGlobalLedger_CrashedTaskKeepsItsMeteredSpend is the
-// seedAggregateFromAudit weakness, fixed. A task the daemon died under gets a
-// synthetic `interrupted` row appended by TerminateStuckAudits — no src, zero
-// cost — which lands AFTER the broker's own metered row. A "last result row must
-// be src==broker" check therefore sees the interrupted row, rejects it, and the
-// task's real spend becomes invisible. The sweep scans back to the last broker
-// row instead, so the crash case is exactly the case it reads correctly.
-func TestReconcileGlobalLedger_CrashedTaskKeepsItsMeteredSpend(t *testing.T) {
+// TestReconcileGlobalLedger_CrashedTaskCountsAStartWithUnknownSpend is the
+// crash case, and it is where the honest answer costs something. The trace
+// really does hold a broker-written figure — but a trace is an append-only file
+// the agent's stdout flows into, so "broker-written" is not a property the
+// reader can verify. The start is recovered exactly; the dollars are declared
+// unknown rather than believed.
+func TestReconcileGlobalLedger_CrashedTaskCountsAStartWithUnknownSpend(t *testing.T) {
 	b, l := reconcileBroker(t, 24*time.Hour)
 	id := taskID(t)
 	writeTrace(t, b.AuditRoot, id, trace{
@@ -276,12 +292,17 @@ func TestReconcileGlobalLedger_CrashedTaskKeepsItsMeteredSpend(t *testing.T) {
 	reconcileGlobalLedger(b, recNow)
 
 	e := entryFor(t, l, id)
-	if e.USD != 4.25 || !e.USDTrusted {
-		t.Errorf("usd=%v trusted=%v, want 4.25 and true: the interrupted row must not hide the broker-metered spend behind it",
-			e.USD, e.USDTrusted)
+	if e.USD != 0 || e.USDTrusted {
+		t.Errorf("usd=%v trusted=%v, want 0 and false", e.USD, e.USDTrusted)
 	}
 	if l.Usage(recNow).Starts != 1 {
 		t.Error("the crashed task was not counted as a start")
+	}
+	// And the USD limb is not degraded by it: the start limb is the backstop
+	// (G7), and degrading on every crash-recovered task would refuse every start
+	// for the daemon's life after an ordinary crash.
+	if l.LoadError() != "" {
+		t.Errorf("a reconciled entry degraded the ledger: %s", l.LoadError())
 	}
 }
 
@@ -316,24 +337,28 @@ func TestReconcileGlobalLedger_NoBrokerRowIsAStartWithUnknownSpend(t *testing.T)
 
 // ---- timestamps ----
 
-// TestReconcileGlobalLedger_UsesTheBrokerAuthoredTimestampNotMtime pins the
-// improvement over seedAggregateFromAudit, which keys on mtime for BOTH its
-// cutoff and its entry timestamp.
-func TestReconcileGlobalLedger_UsesTheBrokerAuthoredTimestampNotMtime(t *testing.T) {
+// TestReconcileGlobalLedger_TimestampIsFilesystemMetadataNotTraceContent is the
+// inversion of what this file used to assert, and the inversion is the fix.
+//
+// Preferring the trace's own `ended_at_ms` looked like an improvement over
+// seedAggregateFromAudit's mtime — a broker-authored instant beats a file
+// timestamp — right up until you notice the row carrying it is in an
+// agent-writable file. It gave an agent a dial on WHERE in the rolling window
+// its entry landed, in both directions. mtime is a worse measurement of when a
+// task ran and a far better one of what the ceiling can rely on: nothing in a
+// sandbox can set it.
+func TestReconcileGlobalLedger_TimestampIsFilesystemMetadataNotTraceContent(t *testing.T) {
 	b, l := reconcileBroker(t, time.Hour)
 
-	// (1) A task that RAN two days ago but whose file was touched a second ago
-	//     (a CI observation row, a `touch`, a backup restore). mtime says
-	//     in-window; the broker-authored instant says otherwise, and the
-	//     broker-authored instant wins.
-	stale := taskID(t)
-	writeTrace(t, b.AuditRoot, stale, trace{
+	// A trace whose metrics row claims the task ran two days ago while the file
+	// itself was written a second ago. The claim is ignored.
+	claimsOld := taskID(t)
+	writeTrace(t, b.AuditRoot, claimsOld, trace{
 		rows:      []string{brokerRow(100)},
 		endedAtMs: recNow - (48 * time.Hour).Milliseconds(),
 		mtime:     time.UnixMilli(recNow),
 		outcome:   "pushed",
 	})
-	// (2) A task that ran a minute ago, in window.
 	fresh := taskID(t)
 	writeTrace(t, b.AuditRoot, fresh, trace{
 		rows:      []string{brokerRow(2)},
@@ -345,25 +370,23 @@ func TestReconcileGlobalLedger_UsesTheBrokerAuthoredTimestampNotMtime(t *testing
 	reconcileGlobalLedger(b, recNow)
 
 	u := l.Usage(recNow)
-	if u.Starts != 1 || u.USD != 2 {
-		t.Fatalf("starts=%d usd=%v, want 1 and 2: only the task that actually RAN in the window may count", u.Starts, u.USD)
+	if u.Starts != 2 {
+		t.Fatalf("starts=%d, want 2: an ended_at_ms claiming to be outside the window must not hide a start", u.Starts)
 	}
-	if e := entryFor(t, l, fresh); e.EndedAtMs != recNow-60_000 {
-		t.Errorf("ended_at_ms = %d, want the broker-authored %d, not the file's mtime %d",
-			e.EndedAtMs, recNow-60_000, recNow)
+	if u.USD != 0 {
+		t.Errorf("usd = %v, want 0: no reconciled entry carries a trusted figure", u.USD)
 	}
-	for _, e := range ledgerLines(t, l) {
-		if e.TaskID == stale {
-			t.Error("a task whose broker-authored end time is outside the window was reconciled in on mtime alone")
+	for _, id := range []string{claimsOld, fresh} {
+		if e := entryFor(t, l, id); e.EndedAtMs != recNow {
+			t.Errorf("ended_at_ms = %d, want the file's mtime %d", e.EndedAtMs, recNow)
 		}
 	}
 }
 
-// TestReconcileGlobalLedger_MTimeIsTheLastResortForAPreUpgradeTrace: a trace
-// written before ended_at_ms existed has no broker-authored instant at all.
-// mtime is then the only signal there is, and using it is honest — but it must
-// be the fallback, never the preference (asserted above).
-func TestReconcileGlobalLedger_MTimeIsTheLastResortForAPreUpgradeTrace(t *testing.T) {
+// TestReconcileGlobalLedger_MTimeIsTheTimestampForAPreUpgradeTrace: a trace
+// with no metrics row at all is now no different from any other — mtime was
+// always going to be the answer.
+func TestReconcileGlobalLedger_MTimeIsTheTimestampForAPreUpgradeTrace(t *testing.T) {
 	b, l := reconcileBroker(t, 24*time.Hour)
 	id := taskID(t)
 	writeTrace(t, b.AuditRoot, id, trace{
@@ -374,10 +397,10 @@ func TestReconcileGlobalLedger_MTimeIsTheLastResortForAPreUpgradeTrace(t *testin
 	reconcileGlobalLedger(b, recNow)
 	e := entryFor(t, l, id)
 	if e.EndedAtMs != recNow-120_000 {
-		t.Errorf("ended_at_ms = %d, want the mtime fallback %d", e.EndedAtMs, recNow-120_000)
+		t.Errorf("ended_at_ms = %d, want the mtime %d", e.EndedAtMs, recNow-120_000)
 	}
-	if e.USD != 1.5 {
-		t.Errorf("usd = %v, want 1.5", e.USD)
+	if e.USD != 0 || e.USDTrusted {
+		t.Errorf("usd=%v trusted=%v, want 0 and false", e.USD, e.USDTrusted)
 	}
 }
 
@@ -477,8 +500,8 @@ func TestReconcileGlobalLedger_TotalModeLookbackIsBounded(t *testing.T) {
 		t.Fatalf("starts = %d, want 2 (the seeded entry + the recoverable one); anything older than the ledger's "+
 			"oldest addressable entry must not be replayed in total mode", u.Starts)
 	}
-	if u.USD != 11 {
-		t.Errorf("usd = %v, want 11", u.USD)
+	if u.USD != 10 {
+		t.Errorf("usd = %v, want 10 (the seeded entry alone; a reconciled entry contributes no dollars)", u.USD)
 	}
 	for _, e := range ledgerLines(t, l) {
 		if e.TaskID == old {
@@ -533,8 +556,10 @@ func TestReconcileGlobalLedger_UnreadableAuditDirDegradesRatherThanFailsOpen(t *
 	if le == "" {
 		t.Fatal("the ledger was not degraded after the audit directory could not be read; the ceiling would admit freely")
 	}
-	if !strings.Contains(le, notADir) {
-		t.Errorf("degrade reason %q does not name the directory it could not read", le)
+	// PATH-FREE: this reason is rendered into a 402 body for whoever submitted
+	// the task. The operator gets the path from the log line instead.
+	if strings.Contains(le, notADir) {
+		t.Errorf("degrade reason leaks the host's audit path into a client-facing 402 body: %q", le)
 	}
 	if u := l.Usage(recNow); !u.Degraded {
 		t.Error("Usage does not report Degraded after the reconcile failed to read the audit")
@@ -553,11 +578,18 @@ func TestReconcileGlobalLedger_MissingAuditDirIsBenign(t *testing.T) {
 	}
 }
 
-// TestReconcileGlobalLedger_UnreadableTraceCountsAStartAndDegrades: the
+// TestReconcileGlobalLedger_UnreadableTraceCountsAStartWithoutDegrading: the
 // per-trace version. The file's existence under a valid task id is itself
 // evidence a task ran, so the START is recorded (never under-count the limb
 // that bounds subscription mode) while the dollars are declared unknown.
-func TestReconcileGlobalLedger_UnreadableTraceCountsAStartAndDegrades(t *testing.T) {
+//
+// It does NOT degrade, and that is a deliberate change. Reading a trace now
+// contributes nothing to either limb — the start comes from the file's
+// existence and the dollars are unknown either way — so one unreadable trace
+// leaves the ceiling in exactly the state a readable one does. Degrading would
+// refuse every task start for the daemon's life over a permissions glitch on a
+// single file.
+func TestReconcileGlobalLedger_UnreadableTraceCountsAStartWithoutDegrading(t *testing.T) {
 	b, l := reconcileBroker(t, 24*time.Hour)
 	id := taskID(t)
 	// A symlinked trace: every audit read is O_NOFOLLOW, so this is unreadable
@@ -579,8 +611,8 @@ func TestReconcileGlobalLedger_UnreadableTraceCountsAStartAndDegrades(t *testing
 	if u := l.Usage(recNow); u.Starts != 1 {
 		t.Errorf("starts = %d, want 1: an unreadable trace is still evidence that a task ran", u.Starts)
 	}
-	if l.LoadError() == "" {
-		t.Error("the ledger was not degraded after a trace could not be read; the USD limb would silently report a lower bound as fact")
+	if l.LoadError() != "" {
+		t.Errorf("one unreadable trace degraded the ledger for the daemon's life: %s", l.LoadError())
 	}
 }
 
@@ -630,8 +662,8 @@ func TestReconcileGlobalLedger_IgnoresWhatIsNotATaskTrace(t *testing.T) {
 		}
 	}
 	reconcileGlobalLedger(b, recNow)
-	if u := l.Usage(recNow); u.Starts != 1 || u.USD != 1 {
-		t.Errorf("starts=%d usd=%v, want 1 and 1: only <32-hex>.jsonl is a task trace", u.Starts, u.USD)
+	if u := l.Usage(recNow); u.Starts != 1 || u.USD != 0 {
+		t.Errorf("starts=%d usd=%v, want 1 and 0: only <32-hex>.jsonl is a task trace", u.Starts, u.USD)
 	}
 	// The ledger's own subdirectory must never be mistaken for one either.
 	if l.LoadError() != "" {
@@ -665,8 +697,8 @@ func TestReconcileGlobalLedger_BulkRecoveryIsDurable(t *testing.T) {
 	if u.Damaged != 0 {
 		t.Errorf("%d damaged entries after reopening a batch-written ledger, want 0", u.Damaged)
 	}
-	if u.USD != float64(n)*0.5 {
-		t.Errorf("usd = %v, want %v", u.USD, float64(n)*0.5)
+	if u.USD != 0 {
+		t.Errorf("usd = %v, want 0: a reconciled entry never carries a trusted figure", u.USD)
 	}
 }
 
@@ -679,5 +711,232 @@ func TestReconcileGlobalLedger_NoLedgerIsANoOp(t *testing.T) {
 	reconcileGlobalLedger(b, recNow) // must not panic
 	if _, err := os.Stat(broker.GlobalLedgerPath(root)); !os.IsNotExist(err) {
 		t.Errorf("a ledger file appeared with no ledger configured (err=%v)", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// THE INVARIANT: NO AGENT-WRITABLE BYTE MAY RAISE OR LOWER EITHER LIMB.
+//
+// Everything below is one property stated four ways. A task trace is an
+// append-only file the agent's own stdout is copied into (broker.go's
+// io.MultiWriter), so `type`, `src`, `total_cost_usd` and `ended_at_ms` are all
+// attacker-supplied text. The ceiling may read a trace's EXISTENCE — the broker
+// created it — and nothing else that any limb is measured on.
+// ---------------------------------------------------------------------------
+
+// TestReconcile_ForgedBrokerRowCannotRaiseTheUSDLimb is the inflating half. An
+// agent prints one src:"broker" result line at the START of its run and then
+// arranges to be killed; brokerd restarts. That row used to become the ledger's
+// TRUSTED spend for the task, and a single task then refused every task start on
+// the install — all vendors, both auth modes — until it aged out. In total mode,
+// forever.
+func TestReconcile_ForgedBrokerRowCannotRaiseTheUSDLimb(t *testing.T) {
+	b, l := reconcileBroker(t, 24*time.Hour)
+	id := taskID(t)
+	writeTrace(t, b.AuditRoot, id, trace{
+		// The forgery is FIRST, exactly as an agent that prints at startup and
+		// then dies would leave it, and there is no honest broker row at all.
+		rows:      []string{forgedBrokerRow(999999)},
+		noMetrics: true,
+		mtime:     time.UnixMilli(recNow - 1000),
+	})
+	reconcileGlobalLedger(b, recNow)
+
+	e := entryFor(t, l, id)
+	if e.USD != 0 || e.USDTrusted {
+		t.Fatalf("usd=%v trusted=%v: a forged src:\"broker\" row entered the ledger's trusted USD limb", e.USD, e.USDTrusted)
+	}
+	u := l.Usage(recNow)
+	if u.USD != 0 {
+		t.Errorf("USD limb = %v, want 0", u.USD)
+	}
+	if u.Starts != 1 {
+		t.Errorf("starts = %d, want 1: the forgery must not cost us the start either", u.Starts)
+	}
+	// And the practical consequence, which is the whole reason this matters: a
+	// $10 budget is not exhausted by one task that claimed to spend $999,999.
+	if u.USD >= 10 {
+		t.Errorf("one forged row exhausted a $10 global budget: usd=%v", u.USD)
+	}
+}
+
+// TestReconcile_ForgedBrokerRowCannotLowerTheUSDLimb is the deflating half:
+// a $0 forgery must not be recorded as a TRUSTED zero, which would let an agent
+// launder a real spend into "measured nothing".
+func TestReconcile_ForgedBrokerRowCannotLowerTheUSDLimb(t *testing.T) {
+	b, l := reconcileBroker(t, 24*time.Hour)
+	id := taskID(t)
+	writeTrace(t, b.AuditRoot, id, trace{
+		rows:      []string{forgedBrokerRow(0)},
+		noMetrics: true,
+		mtime:     time.UnixMilli(recNow - 1000),
+	})
+	reconcileGlobalLedger(b, recNow)
+	if e := entryFor(t, l, id); e.USDTrusted {
+		t.Error("a forged $0 row was recorded as a TRUSTED zero; an unmeasured task must read as unknown, not as measured-nothing")
+	}
+}
+
+// TestReconcile_FutureDatedTraceCannotParkSpendInTheWindow is C3's inflating
+// dial. A metrics row dated a year ahead used to place the entry a year into
+// the future, where a 24h rolling window can never age it out.
+func TestReconcile_FutureDatedTraceCannotParkSpendInTheWindow(t *testing.T) {
+	b, l := reconcileBroker(t, 24*time.Hour)
+	id := taskID(t)
+	aYearOn := recNow + (365 * 24 * time.Hour).Milliseconds()
+	writeTrace(t, b.AuditRoot, id, trace{
+		rows:      []string{forgedBrokerRow(500000)},
+		endedAtMs: aYearOn,
+		mtime:     time.UnixMilli(recNow - 1000),
+		outcome:   "pushed",
+	})
+	reconcileGlobalLedger(b, recNow)
+
+	e := entryFor(t, l, id)
+	if e.EndedAtMs > recNow {
+		t.Fatalf("ended_at_ms = %d, which is after now (%d): an agent-supplied timestamp placed an entry in the future",
+			e.EndedAtMs, recNow)
+	}
+	if u := l.Usage(recNow); u.USD != 0 {
+		t.Errorf("USD limb = %v, want 0", u.USD)
+	}
+	// It ages out on schedule, like any other entry.
+	if u := l.Usage(recNow + (25 * time.Hour).Milliseconds()); u.Starts != 0 {
+		t.Errorf("starts = %d a day and an hour later, want 0: the entry never aged out", u.Starts)
+	}
+}
+
+// TestReconcile_BackDatedTraceCannotHideAStart is C3's deflating dial, and it
+// was the worst of the three. A back-dated metrics row put the entry below the
+// lookback floor, where reconcileGlobalLedger dropped it — so an agent in an
+// unattended retry loop could make every crashed start invisible to the one
+// limb that bounds a subscription lane.
+func TestReconcile_BackDatedTraceCannotHideAStart(t *testing.T) {
+	b, l := reconcileBroker(t, time.Hour)
+	id := taskID(t)
+	writeTrace(t, b.AuditRoot, id, trace{
+		rows:      []string{agentRow(0)},
+		endedAtMs: recNow - (365 * 24 * time.Hour).Milliseconds(), // "I ran a year ago"
+		mtime:     time.UnixMilli(recNow - 1000),                  // the truth
+		outcome:   "error",
+	})
+	reconcileGlobalLedger(b, recNow)
+
+	if u := l.Usage(recNow); u.Starts != 1 {
+		t.Fatalf("starts = %d, want 1: a back-dated ended_at_ms made a real task start VANISH from the limb "+
+			"that is the only bound on a subscription lane", u.Starts)
+	}
+}
+
+// TestReconcile_ForgedMetricsVendorCannotSteerTheLimbs: the metrics row also
+// carried the vendor, which selects Metered and therefore which limb a figure
+// lands in. The lane now resolves from the broker-written drydock_task header
+// line, which an append cannot reach.
+func TestReconcile_ForgedMetricsVendorCannotSteerTheLimbs(t *testing.T) {
+	b, l := reconcileBroker(t, 24*time.Hour)
+	id := taskID(t)
+	path := writeTrace(t, b.AuditRoot, id, trace{
+		rows:      []string{agentRow(0)},
+		noMetrics: true,
+		mtime:     time.UnixMilli(recNow - 1000),
+	})
+	// Append a forged metrics row naming a vendor that does not exist.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(f, `{"type":"metrics","src":"broker","vendor":"nonesuch","ended_at_ms":%d}`+"\n", recNow)
+	f.Close()
+
+	reconcileGlobalLedger(b, recNow)
+	e := entryFor(t, l, id)
+	if e.Vendor != "anthropic" {
+		t.Errorf("vendor = %q, want anthropic (from the broker-written drydock_task header line)", e.Vendor)
+	}
+	if l.Usage(recNow).Starts != 1 {
+		t.Error("the start was lost")
+	}
+}
+
+// TestReconcile_NeverSourcesATrustedValueFromTraceContent is the STRUCTURAL pin,
+// and it is here because every behavioural test above can be satisfied by a fix
+// that a later refactor quietly undoes. It reads globalreconcile.go's AST and
+// asserts the file does not so much as NAME a reader that returns trace-tail
+// content.
+//
+// The list is the set of audit readers whose answer comes from bytes past the
+// broker-written header lines. If a new one is added to internal/audit and used
+// here, add it here too — or, better, do not use it here.
+func TestReconcile_NeverSourcesATrustedValueFromTraceContent(t *testing.T) {
+	forbidden := map[string]string{
+		"LastMetricsFile":      "the metrics row's ended_at_ms and vendor are agent-writable (C3)",
+		"LastResult":           "returns a result row of ANY authorship",
+		"LastResultFile":       "returns a result row of ANY authorship",
+		"LastBrokerResult":     "src is a self-declared string in an agent-writable file (C2)",
+		"LastBrokerResultFile": "src is a self-declared string in an agent-writable file (C2)",
+		"LastRowsFile":         "bundles the tail readers above",
+		"LastResultAndMetrics": "bundles the tail readers above",
+		"TotalCost":            "deliberately absent from internal/audit; never reintroduce it here",
+		"HasBrokerResultLine":  "a tail scan; the sweep must not branch on trace content at all",
+		"scanTailForResult":    "a tail scan",
+		"AllowedSrcCostFile":   "any future tail reader belongs on this list",
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "globalreconcile.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		why, bad := forbidden[sel.Sel.Name]
+		if !bad {
+			return true
+		}
+		pos := fset.Position(sel.Pos())
+		t.Errorf("globalreconcile.go:%d calls %s: %s.\n"+
+			"Boot reconciliation may read a trace's EXISTENCE and its broker-written header lines, "+
+			"never its tail. See this file's header.", pos.Line, sel.Sel.Name, why)
+		return true
+	})
+
+	// The other half of the same rule, stated over the values rather than the
+	// readers: nothing in this file may set USDTrusted to true.
+	ast.Inspect(f, func(n ast.Node) bool {
+		as, ok := n.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		key, ok := as.Key.(*ast.Ident)
+		if !ok || key.Name != "USDTrusted" {
+			return true
+		}
+		if lit, ok := as.Value.(*ast.Ident); !ok || lit.Name != "false" {
+			pos := fset.Position(as.Pos())
+			t.Errorf("globalreconcile.go:%d sets USDTrusted to something other than the literal false; "+
+				"a reconciled entry's dollars are unknown by construction", pos.Line)
+		}
+		return true
+	})
+	for _, node := range []ast.Node{f} {
+		ast.Inspect(node, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for i, lhs := range as.Lhs {
+				sel, ok := lhs.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "USDTrusted" {
+					continue
+				}
+				if id, ok := as.Rhs[i].(*ast.Ident); !ok || id.Name != "false" {
+					pos := fset.Position(as.Pos())
+					t.Errorf("globalreconcile.go:%d assigns a non-literal-false to USDTrusted", pos.Line)
+				}
+			}
+			return true
+		})
 	}
 }

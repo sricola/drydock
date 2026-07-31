@@ -55,6 +55,14 @@ func applyGlobalCeiling(b *broker.Broker, cfg *config.Config) {
 			"err", err, "audit_root", cfg.AuditRoot)
 	}
 	b.GlobalLedger = lg
+	// ANCHOR THE CLOCK CORRECTION NOW, at the same instant the ledger anchored
+	// its own. ceilingNowMs takes its (wall, monotonic) reference on its first
+	// call, and every later forward jump is measured against it. Left to anchor
+	// lazily on the first admission, a jump between boot and that admission
+	// would read as ordinary elapsed time — and every entry a previous process
+	// recorded would silently fall out of the rolling window. The return value
+	// is deliberately unused; the side effect is the point.
+	_ = b.CeilingNowMs()
 
 	slog.Info("global usage ceiling enabled",
 		"global_budget_usd", cfg.GlobalBudgetUSD,

@@ -509,18 +509,42 @@ What it does, precisely:
   and whether either number is degraded.
 
 **What it does NOT cover.** The USD limb can only count dollars the broker
-actually measured, so it under-counts in exactly these cases:
+actually measured. The list below is the set known today and is **not claimed to
+be exhaustive** — it is a metering surface, and any future response shape whose
+usage the broker cannot parse joins it:
 
 - **Spend metered after a task's broker result row** — a request still in flight
   when the task terminates. The same post-hoc bound `task_budget_usd` carries.
 - **Responses whose usage block exceeds the 1 MiB parse buffer.** Beyond that
   the usage is not read and the request meters at $0.
+- **Streaming responses that omit a usage block**, or place it where the
+  broker's parse does not reach. Nothing is metered for such a request.
+- **A non-finite or negative figure.** A NaN, an infinity or a negative
+  `total_cost_usd` is sanitised to an UNTRUSTED $0 rather than believed — a NaN
+  in the running total would make `usage.USD >= budget` false forever and the
+  limb would admit without bound. The start is still counted, but the entry does
+  **not** raise the degraded flag, so the USD limb is quietly a lower bound.
+- **A RESUMED task with no surviving broker row.** A task resumed at the diff
+  gate after a restart ran its agent in a previous process, whose lease is gone.
+  Where that process's own broker-authored row did not survive, the spend is
+  recorded as unknown rather than invented.
+- **Every BOOT-RECONCILED entry.** A task killed between its audit terminal and
+  its ledger write is recovered from the audit trail — but a task trace is an
+  append-only file the agent's own stdout is copied into, so no figure in it can
+  be authenticated. Reconciliation therefore records the START exactly and the
+  dollars as **unknown**, for every such task, and deliberately does not raise
+  the degraded flag: degrading is sticky for the daemon's life, so doing it on
+  every crash-recovered task would refuse every subsequent start after an
+  ordinary crash. The blind spot is bounded by the tasks in flight at the crash.
+  Closing it properly means the broker recording its metered figure somewhere a
+  sandbox cannot append to — a broker-only sidecar — rather than re-trusting the
+  trace.
 - **Batch-style routes on an `openai_compat` lane**, where usage is not in the
   response the broker proxies at all. For the built-in vendors this is *closed*
   rather than open: the gateway's route allowlist deliberately omits
   `/v1/messages/batches` (F-03) and answers it `403`, so it is never proxied and
-  never spends. `openai_compat` vendors carry no route allowlist, which is a
-  separately filed gap, and a batch-style route there would meter nothing.
+  never spends. `openai_compat` vendors carry no route allowlist — unlike the
+  built-in vendors, which do — and a batch-style route there would meter nothing.
 - **`openai_compat` lanes configured with no `prices`**, which meter at **$0 by
   construction** — there is no rate table to price tokens against.
 - **Subscription lanes**, where there is no USD to meter at all.
@@ -549,12 +573,44 @@ Residual, stated without softening:
   by at most `max_concurrent_tasks × task_budget_usd`. The task limb is **hard**
   — the start is claimed in the same critical section as the check, so
   concurrent admissions cannot race through it.
+- **A task RESUMED at the diff-approval gate after a restart is invisible to the
+  start limb until it terminates.** It was admitted in a previous process, so
+  this one holds no in-flight claim for it and its ledger entry does not exist
+  yet. The number of such tasks is bounded by how many were parked at the gate
+  when the previous process died, and none of them can spend — a resume replays
+  a diff a previous process already produced and paid for, and never runs an
+  agent or mints a lease. Boot reconciliation converges the count.
 - A wall-clock jump **forward** would move a rolling window past every recorded
-  entry. In-process jumps are detected against monotonic time and corrected; a
-  clock change made while brokerd is **down** is not detectable (a monotonic
-  reading does not survive a reboot) and is logged loudly at open rather than
-  refused, because refusing it would also refuse every legitimately idle
-  install.
+  entry, and — worse — a jump that reached the ledger's WRITE path would delete
+  the durable record, because pruning drops everything older than
+  `now - window` from the file as well as from memory. Both the query clock and
+  the write clock are now measured against monotonic time and corrected, and no
+  entry may be dated later than the clock that recorded it, so a jump can
+  neither zero a limb nor delete an entry. A clock change made while brokerd is
+  **down** is still not detectable (a monotonic reading does not survive a
+  reboot); it is logged loudly at open rather than refused, because refusing it
+  would also refuse every legitimately idle install.
+- **Clock-skew correction only ever grows.** The accumulated forward-jump
+  correction is floored at zero and never decreases, so repeated back-and-forth
+  clock moves widen the effective window each time. That is the over-counting
+  direction — entries are kept longer than the configured window, never shorter
+  — but an install whose clock is moved repeatedly will refuse on entries an
+  operator expects to have aged out. The remedy is a restart, which re-anchors.
+- **A documented remedy usually needs a restart.** The ledger's entries live in
+  memory as well as on disk and the next compaction rewrites the file from
+  memory, so removing or hand-editing `<audit_root>/global/ledger.jsonl` under a
+  RUNNING daemon does not clear a limb — the file comes back. Stop brokerd,
+  then remove the file.
+- **`drydock tasks` / `drydock stats` cost columns are not the ceiling.** They
+  read the trace's `src=="broker"` result row, and `src` is a self-declared
+  string in a file the agent's stdout is copied into. An agent that forges one
+  can inflate a displayed figure and can also suppress the synthetic
+  `interrupted` terminal a crash would otherwise get, which reaches the
+  per-vendor `aggregate_budget_usd` restart seed. The blast radius is
+  fail-CLOSED (an inflated per-vendor cap refuses tasks, it does not admit
+  them), and the GLOBAL ceiling is unaffected in either direction because it
+  reads no trace content at all. The real fix is the broker-only sidecar named
+  above.
 - `global_window: 0` (total mode) never ages anything out, and unlike
   `aggregate_window: 0` it is durable — an exhausted ceiling stays exhausted
   across restarts until an operator raises a limb or removes the ledger file.
