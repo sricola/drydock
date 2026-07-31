@@ -252,6 +252,75 @@ func TestRunInspect_RendersSetup(t *testing.T) {
 	}
 }
 
+// The dependency-cache line renders inside the setup block when the brief
+// carries cache evidence: status plus the 12-hex key prefix for an active
+// cache. Broker-observed facts only — the key prefix comes from the brief,
+// never from anything the agent wrote.
+func TestRunInspect_RendersSetupCache(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	b := writeTestBrief(t, dir, id)
+	b.Setup = trustbrief.SetupEvidence{
+		Status:  trustbrief.SetupPassed,
+		Network: "egress-allowlisted",
+		Cache:   &trustbrief.SetupCache{Status: trustbrief.CacheHit, Key: "4aa1a73e6b02", Hit: true},
+		Commands: []trustbrief.SetupCommand{
+			{Argv: []string{"npm", "ci"}, Status: trustbrief.VerifyCmdPassed, DurationMs: 1200},
+		},
+	}
+	if err := trustbrief.Write(dir, id, b); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if !strings.Contains(out, "cache    hit · key 4aa1a73e6b02") {
+		t.Errorf("inspect output missing the cache evidence line:\n%s", out)
+	}
+	su, ca := strings.Index(out, "setup    "), strings.Index(out, "cache    ")
+	if su < 0 || ca < 0 || ca < su {
+		t.Errorf("cache line must render inside the setup block (setup@%d cache@%d):\n%s", su, ca, out)
+	}
+}
+
+// A cache disabled for cause (no lockfile) renders its status alone — there
+// is no key to show, and fabricating one would misstate the evidence. A
+// brief with no cache evidence at all renders no cache line.
+func TestRunInspect_RendersSetupCacheDisabledAndAbsent(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AUDIT_ROOT", dir)
+	id := "0123456789abcdef0123456789abcdef"
+	b := writeTestBrief(t, dir, id)
+	b.Setup = trustbrief.SetupEvidence{
+		Status:  trustbrief.SetupPassed,
+		Network: "egress-allowlisted",
+		Cache:   &trustbrief.SetupCache{Status: trustbrief.CacheDisabledNoLockfile},
+		Commands: []trustbrief.SetupCommand{
+			{Argv: []string{"npm", "ci"}, Status: trustbrief.VerifyCmdPassed, DurationMs: 1200},
+		},
+	}
+	if err := trustbrief.Write(dir, id, b); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() { runInspect([]string{id}) })
+	if !strings.Contains(out, "cache    disabled: no lockfile") {
+		t.Errorf("inspect output missing the disabled-cache line:\n%s", out)
+	}
+	if strings.Contains(out, "· key") {
+		t.Errorf("a disabled cache must not render a key:\n%s", out)
+	}
+
+	// No cache evidence at all (nil pointer): no cache line.
+	b.Setup.Cache = nil
+	if err := trustbrief.Write(dir, id, b); err != nil {
+		t.Fatal(err)
+	}
+	out = captureStdout(t, func() { runInspect([]string{id}) })
+	if strings.Contains(out, "cache    ") {
+		t.Errorf("a brief without cache evidence rendered a cache line:\n%s", out)
+	}
+}
+
 // A timed-out or errored setup command has no meaningful exit code: render
 // its status word, never a fabricated "exit 0" (same rule as verification).
 func TestRunInspect_RendersSetupTimedOut(t *testing.T) {

@@ -9,6 +9,32 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Persistent per-repo dependency cache (opt-in).** `cache: true` in a
+  repo's execution profile reuses setup's dependency downloads (npm, Go
+  modules, pip, cargo) across tasks: a host-side, content-addressed store
+  under `cache_root` (bounded by `cache_quota_gb`, default 20 GiB,
+  LRU-evicted; env `DRYDOCK_CACHE_ROOT` / `DRYDOCK_CACHE_QUOTA_GB`) is
+  mounted at `/deps`, with entries keyed by repo identity + lockfile
+  digests + setup commands + sandbox image + architecture — no cross-repo
+  sharing ever, and no cache at all for a repo without a lockfile (an
+  unpinned dependency set has no stable content identity to cache under;
+  the brief records `disabled: no lockfile`). Setup VMs mount the entry
+  **read-write**; the agent VM's mount is strictly **read-only**, so
+  agent-run code can never poison dependencies later tasks consume — the
+  threat model's A7 claim (agent-writable state never persists) is
+  unchanged, now stated with the cache as its one documented,
+  trusted-setup-produced exception and enforced by the new
+  `TestRedteam_A7Cache_*` red-team tests (`make redteam-vm`). Eviction
+  never removes an entry a live task has mounted, and `cache_quota_gb`
+  joins the [security-defaults table](https://sricola.github.io/drydock/docs/security-defaults.html).
+  The trust brief's setup block records the evidence
+  (`hit`/`miss`/`disabled: no lockfile` + the entry's key prefix) and
+  `drydock inspect` renders it as a `cache` line. The cache is a speedup,
+  never a correctness dependency: a miss re-fetches through squid; note
+  that an agent installing a package the cache lacks may hit the
+  read-only `/deps` (keep dependency installs in setup, or leave caching
+  off for such repos).
+
 - **GitHub issue ingestion + a plan-mode scope gate.** `drydock submit
   --issue <url>` turns a GitHub issue into the task instruction: the issue
   is fetched **host-side** via your authenticated `gh` (curated environment,
@@ -42,8 +68,8 @@ entry below corresponds to a Git tag of the same name.
   setup installs is exactly what the agent sees. The commands live in host
   config only (the sandboxed agent can never edit its own setup phase), each
   is a self-contained argv (shell state does not carry between commands),
-  and there is no persistent cache yet (the per-task stage is wiped at
-  cleanup). Setup VMs get squid-only egress — allowlisted registries are
+  and the per-task stage is wiped at cleanup (repos can opt into the
+  persistent dependency cache above). Setup VMs get squid-only egress — allowlisted registries are
   reachable, but no model gateway and **no credentials**: any command
   failure, timeout, or infra error ends the task with the new outcome
   `setup_failed` while the agent VM has never booted and no API bearer was

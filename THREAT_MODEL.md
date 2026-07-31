@@ -206,6 +206,33 @@ up.
 written by one task is absent in the next) plus the host-side
 `TestCleanup_*` stage tests.
 
+**The one persistence exception — the dependency cache — is not agent
+state.** Repos that opt in (`profiles.repos.<key>.cache: true`) get a
+persistent dependency cache mounted at `/deps`. It does not weaken the
+claim above, because nothing the agent writes can enter it: entries are
+produced only by the trusted setup phase (host-configured commands running
+with no credentials, before the agent VM exists), the mount into the
+**agent** VM always carries `readonly` (`runner.BuildRunArgs`), and the
+store is host-managed and content-addressed — each entry is keyed by repo
+identity + lockfile digests + setup-command digest + sandbox image +
+architecture (`internal/depcache`), so entries are isolated per key and
+two repos never share one, even with identical lockfiles (and a repo
+without a lockfile gets no cache at all). Entries hold only package
+payloads (npm/Go/pip/cargo caches); credentials live in the VM's
+ephemeral HOME and never touch `/deps`. Operational caveat, not a
+security one: with `/deps` read-only in the agent VM, a package manager
+that tries to write its cache mid-agent-run (e.g. installing a package
+the cache does not carry) hits a read-only filesystem error — the cache
+is a speedup, never a correctness dependency; a miss (or caching off)
+simply re-fetches through squid.
+
+**Verified by** `TestRedteam_A7Cache_AgentCannotWriteReadOnlyCache` (the
+production agent argv carries the readonly `/deps` mount; in-VM write
+attempts as root and as the dropped agent user are all rejected and the
+host cache dir stays empty) and `TestRedteam_A7Cache_DistinctKeysIsolate`
+(distinct keys — including two repos with identical lockfiles — resolve
+to distinct entry dirs; a marker under one is invisible under the other).
+
 ### A8. Agent floods /work to exhaust host disk
 
 A task's `/work` is bounded twice (F-04). On macOS the stage root is a

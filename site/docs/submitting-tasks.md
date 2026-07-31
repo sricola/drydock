@@ -152,8 +152,14 @@ the agent starts** — what setup installs is exactly what the agent sees.
 They live in host config only, so the sandboxed agent can never edit its own
 setup phase. Setup VMs get egress through the squid proxy (registries on
 your allowlist are reachable) but **no model gateway and no credentials**.
-There is **no persistent cache yet**: the per-task workspace is wiped at
-cleanup, so setup runs from scratch on every task. Each command is a
+Repos that opt in with `cache: true` (see
+[Configuration](configuration.html#persistent-dependency-cache-opt-in-per-repo))
+reuse dependency downloads across tasks: setup VMs populate a host-side,
+content-addressed cache mounted at `/deps` — read-write in setup, strictly
+**read-only** in the agent VM, keyed per repo + lockfile (no cross-repo
+sharing, and no cache at all for a repo without a lockfile). Without the
+opt-in the per-task workspace is wiped at cleanup and setup runs from
+scratch on every task. Each command is a
 self-contained argv in its own VM run — shell state (`cd`, exports,
 virtualenv activation) does not carry between commands.
 
@@ -168,7 +174,9 @@ broken workspace costs you $0 of model budget.
 While it runs, the task shows a `setting_up` stage — between `preparing` and
 `running` — in the submit stream, `drydock status`, and the web UI. The
 evidence lands in the trust brief (`drydock inspect <id>`): overall status,
-the setup VMs' egress posture, per-command exit codes and durations. The
+the setup VMs' egress posture, the dependency-cache line when the repo opts
+in (`hit`/`miss`/`disabled: no lockfile` plus the cache entry's key prefix
+— all broker-observed), per-command exit codes and durations. The
 commands' combined output is kept (display-only, size-capped, never parsed)
 at `~/.drydock/audit/<id>.setup.log`.
 

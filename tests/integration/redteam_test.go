@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"drydock/internal/depcache"
 	"drydock/internal/gateway"
 	"drydock/internal/gwcreds"
 	"drydock/internal/provider"
@@ -316,6 +317,139 @@ func TestRedteam_A7_NoStatePersistsBetweenTasks(t *testing.T) {
 	}
 	if !strings.Contains(out, "absent") {
 		t.Errorf("expected the marker to be absent in a fresh VM; got:\n%s", out)
+	}
+}
+
+// A7 (cache sub-clause) — the persistent dependency cache is mounted
+// READ-ONLY into the agent VM, so agent-run code can never poison entries
+// that later tasks consume. We build the EXACT agent argv the broker uses
+// (runner.BuildRunArgs with CacheDir set), assert it carries the readonly
+// /deps mount, then swap ONLY the in-VM command for a probe — every mount,
+// env, cap, and network flag stays exactly as production builds it. The
+// probe attempts the write as root AND as the dropped agent user (touch,
+// shell redirect, mkdir); every attempt must be rejected and the host
+// cache dir must stay empty afterwards.
+func TestRedteam_A7Cache_AgentCannotWriteReadOnlyCache(t *testing.T) {
+	requireContainer(t)
+	cacheDir := t.TempDir()
+	spec := runner.Spec{
+		TaskID:     "redteam-a7cache",
+		Network:    "drydock-egress",
+		ImageRef:   sandboxImage(),
+		StageDir:   t.TempDir(),
+		PromptFile: "/work/.task/prompt.md",
+		CacheDir:   cacheDir,
+		MemoryGB:   4,
+		CPUs:       4,
+	}
+	args := runner.BuildRunArgs(spec)
+
+	// Production trace: the agent argv must carry the readonly /deps mount.
+	roMount := "type=bind,source=" + cacheDir + ",target=/deps,readonly"
+	imgAt := -1
+	foundRO := false
+	for i, a := range args {
+		if a == roMount {
+			foundRO = true
+		}
+		if a == spec.ImageRef && imgAt < 0 {
+			imgAt = i
+		}
+	}
+	if !foundRO {
+		t.Fatalf("A7 CACHE BREACH: BuildRunArgs argv lacks the readonly /deps mount %q:\n%v", roMount, args)
+	}
+	if imgAt < 0 {
+		t.Fatalf("image ref %q not found in argv:\n%v", spec.ImageRef, args)
+	}
+
+	probe := `
+echo "ROOT-TOUCH: $(touch /deps/poison-root 2>/dev/null && echo succeeded || echo denied)"
+/usr/local/bin/drop-agent bash -c '
+  echo "WHOAMI: $(id -un)"
+  echo "AGENT-TOUCH: $(touch /deps/poison 2>/dev/null && echo succeeded || echo denied)"
+  echo "AGENT-REDIR: $({ echo x > /deps/poison2; } 2>/dev/null && echo succeeded || echo denied)"
+  echo "AGENT-MKDIR: $(mkdir /deps/poisondir 2>/dev/null && echo succeeded || echo denied)"
+'
+`
+	runArgs := append(append([]string{}, args[:imgAt]...),
+		"--entrypoint", "/bin/bash", spec.ImageRef, "-lc", probe)
+	out := containerRun(t, runArgs...)
+
+	if !strings.Contains(out, "WHOAMI: agent") {
+		t.Fatalf("expected the probe to run as the dropped agent user:\n%s", out)
+	}
+	for _, want := range []string{
+		"ROOT-TOUCH: denied",
+		"AGENT-TOUCH: denied",
+		"AGENT-REDIR: denied",
+		"AGENT-MKDIR: denied",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("A7 CACHE BREACH: expected %q — the readonly /deps mount must reject the write:\n%s", want, out)
+		}
+	}
+	// And the host side agrees: nothing materialized in the cache dir.
+	ents, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 0 {
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		t.Errorf("A7 CACHE BREACH: host cache dir gained entries after the probe: %v", names)
+	}
+}
+
+// A7 (cache sub-clause, isolation leg) — distinct cache keys resolve to
+// distinct entry dirs, and content written under one key is invisible under
+// another. Uses the real depcache key + store, with two repos carrying
+// IDENTICAL lockfile digests: RepoKey is a key component, so they still get
+// different keys — no cross-repo sharing is possible. Host-side (no VM
+// needed), but it lives beside its sibling so `make redteam-vm` runs the
+// whole A7 cache claim together.
+func TestRedteam_A7Cache_DistinctKeysIsolate(t *testing.T) {
+	store := &depcache.Store{Root: filepath.Join(t.TempDir(), "cache")}
+	locks := []string{"package-lock.json:" + strings.Repeat("ab", 32)}
+	k1, err := depcache.ComputeKey(depcache.Key{
+		RepoKey: "github.com/victim/app", LockDigests: locks,
+		Arch: runtime.GOARCH, ImageRef: "drydock-sandbox:latest",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, err := depcache.ComputeKey(depcache.Key{
+		RepoKey: "github.com/attacker/app", LockDigests: locks,
+		Arch: runtime.GOARCH, ImageRef: "drydock-sandbox:latest",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k1 == k2 {
+		t.Fatalf("A7 CACHE BREACH: two different repos with identical lockfiles computed the same cache key %s", k1)
+	}
+	d1, err := store.Dir(k1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := store.Dir(k2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 == d2 {
+		t.Fatalf("A7 CACHE BREACH: distinct keys resolved to the same entry dir %s", d1)
+	}
+	marker := filepath.Join(d1, "npm", "poison.tgz")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(d2, "npm", "poison.tgz")); !os.IsNotExist(err) {
+		t.Errorf("A7 CACHE BREACH: marker written under key %.12s is visible under key %.12s (stat err=%v)", k1, k2, err)
 	}
 }
 

@@ -29,6 +29,8 @@ func TestSecurityClaimsNoDrift(t *testing.T) {
 		{"site/docs/quickstart.md", "budget-capped token", "same as README (F-02)"},
 		{"THREAT_MODEL.md", "budget-capped bearer", "same bound applies to the bearer description (F-02)"},
 		{"docs/ROADMAP.md", "every external input is pinned", "apt and npm transitive graphs still float at image build (F-09)"},
+		{"site/docs/configuration.md", "no persistent cache yet", "the opt-in dependency cache landed (profiles.repos.*.cache + cache_root/cache_quota_gb)"},
+		{"site/docs/submitting-tasks.md", "no persistent cache yet", "the opt-in dependency cache landed (profiles.repos.*.cache + cache_root/cache_quota_gb)"},
 	}
 	for _, f := range forbidden {
 		b, err := os.ReadFile(filepath.Join(root, f.file))
