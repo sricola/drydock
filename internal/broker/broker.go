@@ -288,6 +288,38 @@ type Broker struct {
 	// the pre-check. Wired to the gateway's AggregateExceeded by brokerd.
 	AggregateExceeded func(vendor string) bool
 
+	// GlobalBudgetUSD and GlobalMaxTasks are the two limbs of the GLOBAL usage
+	// ceiling (globalcap.go, plan G1). Unlike AggregateExceeded above they are
+	// cross-vendor, cross-auth-mode, durable and FAIL-CLOSED, and they refuse a
+	// task START at all three admission points (POST /tasks, the dispatcher,
+	// the CI-retry gate) — never a running task (G5).
+	//
+	// GlobalBudgetUSD bounds windowed broker-metered spend; GlobalMaxTasks
+	// bounds windowed task STARTS, which is the limb that reaches subscription
+	// lanes where USD is meaningless. BOTH DEFAULT TO 0 = OFF, and with both
+	// off the ceiling is inert: nothing is locked, no agent is resolved and the
+	// ledger is never read, so a stock install behaves exactly as it did
+	// before. Config (`global_budget_usd` / `global_max_tasks`) lands in Task 4;
+	// until then brokerd leaves them zero, as it did with CIWatch before B1.
+	GlobalBudgetUSD float64
+	GlobalMaxTasks  int
+
+	// GlobalLedger is the durable rolling-window store both limbs are measured
+	// against (globalledger.go). nil with a limb enabled is itself a refusal:
+	// a configured ceiling with no store to measure it is the "I don't know"
+	// G2 defines as "no". Entries are written by Task 3's task-terminal path.
+	GlobalLedger *GlobalLedger
+
+	// capMu guards capInFlight, the set of task ids this process has ADMITTED
+	// past the ceiling but whose ledger entry has not landed yet. It exists
+	// because the ledger is only written at task terminal, so without it N
+	// concurrent admissions would all read the same pre-state and all pass one
+	// limb — see the ordering discussion at the top of globalcap.go. The check
+	// and the claim happen in one capMu critical section, which is what makes
+	// the task-start limb overshoot-free.
+	capMu       sync.Mutex
+	capInFlight map[string]struct{}
+
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
 	// drive HandleTask without a git clone or a container run.
@@ -702,6 +734,22 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// The GLOBAL usage ceiling (globalcap.go). It runs ALONGSIDE the per-vendor
+	// pre-check above, never instead of it: both answer and the stricter answer
+	// wins, so an install that has not enabled the ceiling gets byte-identical
+	// behavior — including the per-vendor 402's exact wording, which is why the
+	// order is vendor-first. Unlike that check this one FAILS CLOSED (G2), and
+	// unlike it, it CLAIMS the start: the ledger is only written at terminal, so
+	// without a claim taken in the same critical section as the check, N
+	// concurrent submissions would all pass one limb. Released on every exit
+	// path by the defer below, which fires after runLifecycle's own defers (and
+	// so after Task 3's terminal write).
+	if blocked, why := b.admitGlobalStart(taskID, t.Agent); blocked {
+		http.Error(w, why, http.StatusPaymentRequired)
+		return
+	}
+	defer b.releaseGlobalStart(taskID)
 
 	sw := newStream(w)
 	sw.emit(map[string]any{"event": "accepted", "task_id": taskID, "repo": t.RepoRef})

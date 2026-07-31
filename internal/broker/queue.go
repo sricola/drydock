@@ -197,13 +197,17 @@ func (b *Broker) dispatchPass() {
 // all under one queueMu hold, so an item can never be taken twice and a
 // racing cancelQueued can never cancel a dispatched item.
 //
+// Two spend bounds are applied, in order: the per-vendor aggregate cap
+// (vendorExceeded, fail-open, unchanged) and then the GLOBAL usage ceiling
+// (globalcap.go, fail-closed). Both run and the stricter answer wins.
+//
 // A spend-parked item is skipped in place: it stays queued with Attempts
 // untouched (parking is not an attempt) and later items may overtake it.
 // When no slot is available the pass ends — the semaphore is global, so no
 // other item could dispatch either; the next tick/wake retries.
 //
 // A spend-capped BROKER-INITIATED CI RETRY (Task.RetryOf != "") is DROPPED
-// instead, to dead_letter. See dropSpendCappedRetryLocked.
+// instead, to dead_letter, by either bound. See dropSpendCappedRetryLocked.
 func (b *Broker) takeDispatchable() (QueueItem, bool) {
 	// Shutdown latch (BeginQueueDrain). Checked here rather than only in the
 	// dispatch loop because a pass can already be mid-flight when the signal
@@ -231,13 +235,35 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 			// still says `queued`, which the next boot's ResumeQueue re-loads
 			// and re-drops — self-healing, and in the safe direction (an item
 			// that does not run).
-			b.dropSpendCappedRetryLocked(it)
+			b.dropSpendCappedRetryLocked(it, aggregateCapDropReason)
+			b.queue = append(b.queue[:i], b.queue[i+1:]...)
+			i--
+			continue
+		}
+		// The GLOBAL usage ceiling (globalcap.go), applied AFTER the per-vendor
+		// cap so an install with the ceiling off records exactly what it
+		// records today. Same park-vs-drop split, for the same reason: a human
+		// asked for their item and may raise the cap or wait out the window,
+		// while an unattended retry parked at a ceiling would dispatch hours
+		// later against a base that has moved on. Only the reason text differs,
+		// and it differs because it must be accurate — it names the limb that
+		// tripped and the current headroom.
+		//
+		// This is admitGlobalStart, not the bare check: it CLAIMS the start, so
+		// a synchronous POST /tasks racing this pass cannot pass the same limb.
+		// Every path below that fails to dispatch releases the claim.
+		if blocked, why := b.admitGlobalStart(it.ID, it.Task.Agent); blocked {
+			if it.Task.RetryOf == "" {
+				continue // ceiling-parked: stays queued, next tick re-checks
+			}
+			b.dropSpendCappedRetryLocked(it, "dropped before dispatch: "+why+globalCeilingDropTail)
 			b.queue = append(b.queue[:i], b.queue[i+1:]...)
 			i--
 			continue
 		}
 		if !b.acquireSlot() {
-			return QueueItem{}, false // cap reached; retry next tick/wake
+			b.releaseGlobalStart(it.ID) // it is not starting after all
+			return QueueItem{}, false   // cap reached; retry next tick/wake
 		}
 		fresh, err := b.setQueueStateLocked(it.ID, QueuePreparing, nil)
 		if err != nil {
@@ -245,6 +271,7 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 			// item queued for the next pass rather than running it with a
 			// state file that still says "queued".
 			slog.Warn("queue: dispatch transition failed", "task_id", it.ID, "err", err)
+			b.releaseGlobalStart(it.ID)
 			b.releaseSlot()
 			return QueueItem{}, false
 		}
@@ -254,10 +281,24 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 	return QueueItem{}, false
 }
 
-// dropSpendCappedRetryLocked terminates a queued CI-retry child that the
-// aggregate spend cap caught BEFORE it could dispatch. Caller holds queueMu and
-// drops the in-memory copy regardless of what this returns; the failure of a
-// durable write must not turn into a re-decide on every dispatch pass.
+// aggregateCapDropReason is the per-vendor cap's drop text, unchanged from
+// before the global ceiling existed so an install without the ceiling reads
+// exactly what it read yesterday.
+const aggregateCapDropReason = "dropped before dispatch: the aggregate vendor spend cap was exhausted, and a broker-initiated ci retry is refused rather than parked — an unattended retry that dispatches hours later would land on a base that has moved on, at a diff gate nobody is waiting at"
+
+// globalCeilingDropTail closes a global-ceiling drop. The ceiling's own reason
+// (which limb, what headroom) comes first and this explains the DECISION, so
+// the operator gets the measurement and the policy in one line.
+const globalCeilingDropTail = " A broker-initiated ci retry is refused rather than parked — an unattended retry that dispatches hours later would land on a base that has moved on, at a diff gate nobody is waiting at."
+
+// dropSpendCappedRetryLocked terminates a queued CI-retry child that a spend
+// bound — the per-vendor aggregate cap or the global ceiling — caught BEFORE it
+// could dispatch. why is the caller's already-composed reason, so each bound
+// records what actually stopped the item rather than a generic message.
+//
+// Caller holds queueMu and drops the in-memory copy regardless of what this
+// returns; the failure of a durable write must not turn into a re-decide on
+// every dispatch pass.
 //
 // WHY DROP RATHER THAN PARK, given the dispatcher parks every other item.
 // ciretryloop.go's gate 7 already refuses to ENQUEUE a retry against an
@@ -278,8 +319,7 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 // dead_letter, not cancelled: nobody cancelled it. It is the queue's existing
 // "did not reach a clean finish" terminal, it is visibly not a success in every
 // surface that renders an item, and last_error says exactly what happened.
-func (b *Broker) dropSpendCappedRetryLocked(it QueueItem) {
-	const why = "dropped before dispatch: the aggregate vendor spend cap was exhausted, and a broker-initiated ci retry is refused rather than parked — an unattended retry that dispatches hours later would land on a base that has moved on, at a diff gate nobody is waiting at"
+func (b *Broker) dropSpendCappedRetryLocked(it QueueItem, why string) {
 	if _, err := b.setQueueStateLocked(it.ID, QueueDeadLetter, func(q *QueueItem) {
 		q.LastError = why
 	}); err != nil {
@@ -362,6 +402,13 @@ func (b *Broker) setQueueStateLocked(id string, to QueueState, mut func(*QueueIt
 // KEPT for `drydock queue list` history (a later prune sweep cleans it).
 func (b *Broker) runQueued(it QueueItem) {
 	defer b.queueRunning.Done() // paired with dispatchPass's Add
+	// Paired with takeDispatchable's admitGlobalStart. Registered here so it
+	// fires on EVERY exit path, including the shutdown-at-the-gate and
+	// CI-owns-the-terminal early returns — a leaked claim is a permanent unit
+	// of ceiling. It runs after runLifecycle has returned, so Task 3's terminal
+	// ledger write has already landed; the tally keys on ledger presence, so
+	// the order is not load-bearing either way (globalcap.go).
+	defer b.releaseGlobalStart(it.ID)
 	defer b.releaseSlot()
 	t := it.Task
 	// Rooted at Background like every task context: cancellation comes from

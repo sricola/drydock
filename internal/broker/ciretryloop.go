@@ -31,8 +31,11 @@ import (
 //	   broker-owned "this decision was already made" flag.
 //	6. THE BOUND. Attempt < ci.max_attempts, where Attempt is the HIGHER of the
 //	   persisted Task's and the marker-derived observation's (fail-closed).
-//	7. THE AGGREGATE SPEND CAP.
-//	8. BuildRetryTask ACCEPTS. Every refusal it returns is a refusal.
+//	7. THE AGGREGATE SPEND CAP. Per-vendor, api_key-only, in-memory, fail-open.
+//	8. THE GLOBAL USAGE CEILING. Cross-vendor, cross-auth-mode, durable and
+//	   fail-closed (globalcap.go). It is the only gate here that bounds a
+//	   subscription lane, and the only one that refuses when it cannot measure.
+//	9. BuildRetryTask ACCEPTS. Every refusal it returns is a refusal.
 //
 // ---------------------------------------------------------------------------
 // CRASH WINDOWS (D6). The bound lives in the PERSISTED Task and its mirror on
@@ -175,6 +178,28 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (string, 
 	if b.vendorExceeded(parent.Agent) {
 		return "", "no retry: the aggregate vendor spend cap is exhausted; refused rather than parked because a ci retry is broker-initiated and unattended"
 	}
+	// Gate 8 — THE GLOBAL USAGE CEILING (globalcap.go, plan G1/G2). It is a
+	// different bound from gate 7, not a stronger version of it: gate 7 is
+	// per-vendor, api_key-mode-only, in-memory and FAIL-OPEN, so on a
+	// subscription install — the likeliest unattended configuration, and the
+	// one B2 made spend money in — it is inert by construction. The ceiling's
+	// task-start limb counts an event the broker itself causes, so it bounds
+	// that install; and it REFUSES rather than admits when it cannot measure.
+	//
+	// Placed AFTER gate 7 so an install that has not enabled the ceiling
+	// records exactly the reason it records today, and BEFORE the diff read and
+	// BuildRetryTask so no work is done for a retry that cannot start.
+	//
+	// A CHECK, not a claim: enqueuing is not starting. The child becomes an
+	// ordinary queued item and the dispatcher re-asks — and does claim — when
+	// it actually dispatches. Refusing here is the same choice gate 7 makes and
+	// for the same reason (an unattended item parked at a ceiling dispatches
+	// hours later at a gate nobody is waiting at), and the dispatcher's own
+	// drop enforces it again for the far commoner case where the ceiling
+	// exhausts in the gap between this decision and dispatch.
+	if blocked, why := b.globalCeilingExceeded(parent.Agent); blocked {
+		return "", "no retry: " + why
+	}
 
 	// The prior attempt's diff crosses over as capped TEXT only (D2). Read with
 	// the same O_NOFOLLOW defense as the resume path: a planted
@@ -188,7 +213,7 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (string, 
 			"task_id", obs.TaskID, "err", derr)
 	}
 
-	// Gate 8. Every refusal BuildRetryTask returns is a refusal: a plan-only
+	// Gate 9. Every refusal BuildRetryTask returns is a refusal: a plan-only
 	// parent, an instruction that leaves no room for the CI evidence, a
 	// malformed identity. None of them may be read as "retry allowed".
 	child, err := BuildRetryTask(RetryRequest{

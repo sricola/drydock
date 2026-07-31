@@ -427,6 +427,31 @@ func (l *GlobalLedger) Path() string {
 	return l.path
 }
 
+// LoadError reports why the durable file could not be read IN FULL, or "" when
+// it was. It exists because GlobalUsage.Degraded deliberately conflates two
+// different losses, and the ceiling (globalcap.go) has to tell them apart to
+// gate its refusal PER LIMB:
+//
+//   - A QUARANTINED LINE sets Degraded but not this: the tombstone still counts
+//     as one task start, so the Starts limb has lost nothing and must keep
+//     working. Only the USD figure became a lower bound.
+//   - BYTES WE NEVER READ (a symlinked path, an I/O error, a file over the
+//     read cap) set this: the starts inside them are missing from the count
+//     too, so BOTH limbs are lower bounds and both must refuse.
+//
+// Without the distinction the ceiling would either brick a task-limb-only
+// deployment on one corrupt byte, or admit freely against a ledger it could not
+// open at all. A nil store answers with a non-empty reason: unavailable is the
+// strongest form of unreadable.
+func (l *GlobalLedger) LoadError() string {
+	if l == nil {
+		return "the global ledger is unavailable; usage cannot be determined"
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.loadErr
+}
+
 // WindowMs is the configured rolling window in milliseconds; 0 is total mode.
 // Boot reconciliation reads it to bound how far back it has to look: outside
 // the window an audited task cannot affect either limb.
