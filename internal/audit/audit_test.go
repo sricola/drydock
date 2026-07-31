@@ -225,6 +225,20 @@ func TestOutcome_PushFailed(t *testing.T) {
 	}
 }
 
+// TestOutcome_QueueVocabulary pins the display strings for the queue's
+// broker-observed terminal states: "completed" renders as-is (an explicit
+// case documenting the vocabulary, like "planned") and "dead_letter" renders
+// with the underscore replaced ("dead-letter"), matching the push_failed /
+// setup_failed convention.
+func TestOutcome_QueueVocabulary(t *testing.T) {
+	if got := Outcome(Result{Type: "result", Subtype: "completed"}, true, Meta{}); got != "completed" {
+		t.Errorf("completed = %q, want completed", got)
+	}
+	if got := Outcome(Result{Type: "result", Subtype: "dead_letter"}, true, Meta{}); got != "dead-letter" {
+		t.Errorf("dead_letter = %q, want dead-letter", got)
+	}
+}
+
 func TestOutcome_DeniedAndPushed(t *testing.T) {
 	if got := Outcome(Result{Type: "result", Subtype: "denied"}, true, Meta{}); got != "denied" {
 		t.Errorf("denied = %q, want denied", got)

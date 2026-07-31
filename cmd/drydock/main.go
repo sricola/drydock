@@ -26,6 +26,7 @@ Setup:
 Tasks:
   drydock submit <flags>         POST a new task; blocks until approval/completion
   drydock plan <issue-url>       plan-only run from a GitHub issue (= submit --issue <url> --plan)
+  drydock queue add|list|cancel  durable queue: enqueue now (same flags as submit), run unattended when a slot frees
   drydock tasks                  list recent runs (id, age, duration, cost, outcome)
   drydock stats   <flags>        aggregate run metrics (--since DUR [--by DIM] [--json])
   drydock logs    <id> [-f]      print (or follow) the task's stream-json audit log
@@ -86,6 +87,7 @@ var subHelp = map[string]string{
 	"auth":    "auth claude|codex [--status] — bootstrap Claude or ChatGPT/Codex subscription creds into ~/.drydock/.",
 	"submit":  "POST a new task; see `drydock submit -h` for the full flag list.",
 	"plan":    "<issue-url> [submit flags] — plan-only run from a GitHub issue: sugar for `drydock submit --issue <url> --plan`. Review the plan, then re-run without --plan to implement.",
+	"queue":   "add|list|cancel — durable task queue. `queue add` takes submit's flags and returns immediately; items survive brokerd restarts and run unattended when a concurrency slot frees.",
 	"ui":      "--port N --open --no-token — run the loopback web UI (token-gated, 127.0.0.1 only).",
 	"policy":  "explain — show the resolved effective policy with each value's source; flags daemon divergence.",
 	"version": "print drydock version.",
@@ -129,6 +131,9 @@ func main() {
 	case "plan":
 		consumeHelpFlag(cmd, subArgs)
 		runPlan(subArgs)
+	case "queue":
+		consumeHelpFlag(cmd, subArgs)
+		runQueue(subArgs)
 	case "status":
 		consumeHelpFlag(cmd, subArgs)
 		runStatus()

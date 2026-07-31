@@ -158,6 +158,33 @@ func TestOutcomeFor_PreOutcomeFieldFallsBackToResultRow(t *testing.T) {
 	}
 }
 
+// queuedFixture is a queued task's audit file: stage_ms.queued records the
+// time the task waited on the durable queue before dispatch.
+const queuedFixture = `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"drydock_task","agent":"claude"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":60000,"total_cost_usd":0.10,"num_turns":4,"src":"broker"}
+{"type":"metrics","src":"broker","task_id":"ID","agent":"claude","vendor":"anthropic","auth":"api_key","repo":"github.com/o/r","outcome":"pushed","stage_ms":{"queued":1500,"preparing":5000,"running":60000,"pushing":800},"egress_gate_wait_ms":0,"approval_gate_wait_ms":30000,"requests":4,"diff_files":2,"diff_bytes":512,"cost_usd":0.10,"widen_requested":0,"widen_outcome":"none"}
+`
+
+// TestSummarize_QueueWaitPercentiles: stage_ms.queued aggregates into the
+// queue-wait percentiles; a task that never sat on the queue (no queued key,
+// i.e. every synchronous task) is excluded from the sample set rather than
+// dragging the percentiles toward zero — same rule as the gate waits.
+func TestSummarize_QueueWaitPercentiles(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	writeAudit(t, dir, "q1", queuedFixture, now.Add(-1*time.Hour))
+	writeAudit(t, dir, "sync1", newFormat, now.Add(-1*time.Hour))
+	samples, _, _ := Collect(dir, time.Time{})
+	s := Summarize(samples)
+	if s.QueueWaitSamples != 1 {
+		t.Fatalf("QueueWaitSamples = %d, want 1 (synchronous task excluded)", s.QueueWaitSamples)
+	}
+	if s.QueueWaitP50Ms != 1500 || s.QueueWaitP95Ms != 1500 {
+		t.Errorf("queue wait p50/p95 = %d/%d, want 1500/1500", s.QueueWaitP50Ms, s.QueueWaitP95Ms)
+	}
+}
+
 func TestGroupBy_Dimensions(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()

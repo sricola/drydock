@@ -61,6 +61,10 @@ func (tr *taskRun) appendMetrics() {
 	if !tr.taskStart.IsZero() && !tr.runEnd.IsZero() {
 		m.StageMs.Running = tr.runEnd.Sub(tr.taskStart).Milliseconds()
 	}
+	// Queued is set only on the dispatcher path (runQueued): time from
+	// enqueue to dispatch. Synchronous /tasks tasks leave it 0, and
+	// omitempty keeps their row shape exactly as before the queue existed.
+	m.StageMs.Queued = tr.queuedMs
 	m.StageMs.Setup = tr.setupDur.Milliseconds()
 	m.StageMs.Verifying = tr.verifyDur.Milliseconds()
 	m.StageMs.Pushing = tr.pushDur.Milliseconds()

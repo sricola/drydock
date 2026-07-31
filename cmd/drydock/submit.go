@@ -44,8 +44,46 @@ type repeatedFlag []string
 func (r *repeatedFlag) String() string     { return strings.Join(*r, ",") }
 func (r *repeatedFlag) Set(v string) error { *r = append(*r, v); return nil }
 
-func runSubmit(args []string) {
-	fs := flag.NewFlagSet("drydock submit", flag.ExitOnError)
+// submitUsageIntro/-Outro are `drydock submit`'s usage prose around the shared
+// flag defaults. `drydock queue add` has its own pair (queue.go); the flag
+// surface between the intro and outro is the SAME builder for both.
+const submitUsageIntro = `Usage: drydock submit [flags]
+
+POST a task to the running brokerd. Blocks until the agent run completes
+and (unless --auto-approve) you approve or deny the diff in another shell.
+
+Flags:
+`
+
+const submitUsageOutro = `
+Examples:
+  drydock submit --repo git@github.com:o/r --instruction "fix the test"
+  drydock submit --repo git@github.com:o/r --instruction-file ./task.md
+  echo "do thing" | drydock submit --repo git@github.com:o/r -
+  drydock submit --issue https://github.com/o/r/issues/42
+  drydock submit --issue https://github.com/o/r/issues/42 --plan
+  drydock submit --repo git@gitlab.mycorp.com:g/p --platform gitlab \
+                 --egress-extra internal.example.com:443 --auto-approve
+
+Connection: respects BROKER_SOCKET / BROKER_ADDR (same as the other
+admin subcommands). Default is the per-uid socket discovered via
+sockpath.Default().`
+
+// parseSubmitRequest parses `drydock submit`'s argv into the ready-to-POST
+// taskRequest (plus the --json/--quiet output flags).
+func parseSubmitRequest(args []string) (taskRequest, bool, bool) {
+	return parseTaskRequest("drydock submit", submitUsageIntro, submitUsageOutro, args)
+}
+
+// parseTaskRequest is the single flag->taskRequest builder shared by
+// `drydock submit` and `drydock queue add`: one flag surface, one issue-
+// ingestion path, one instruction resolution — the two commands can never
+// drift. name labels the FlagSet (error prefixes); intro/outro are the
+// command-specific usage prose around the shared flag defaults. Exits(2) on
+// flag/usage errors and dies on ingestion errors, exactly as submit always
+// has. Returns the request plus the --json and --quiet flag values.
+func parseTaskRequest(name, usageIntro, usageOutro string, args []string) (taskRequest, bool, bool) {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	var (
 		repo        = fs.String("repo", "", "repo ref (https/git/ssh URL; required)")
 		instruction = fs.String("instruction", "", "what the agent should do (use - or omit to read stdin)")
@@ -64,27 +102,9 @@ func runSubmit(args []string) {
 	)
 	fs.Var(&egress, "egress-extra", "extra egress host:port[,port] (repeatable)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, `Usage: drydock submit [flags]
-
-POST a task to the running brokerd. Blocks until the agent run completes
-and (unless --auto-approve) you approve or deny the diff in another shell.
-
-Flags:
-`)
+		fmt.Fprint(os.Stderr, usageIntro)
 		fs.PrintDefaults()
-		fmt.Fprintln(os.Stderr, `
-Examples:
-  drydock submit --repo git@github.com:o/r --instruction "fix the test"
-  drydock submit --repo git@github.com:o/r --instruction-file ./task.md
-  echo "do thing" | drydock submit --repo git@github.com:o/r -
-  drydock submit --issue https://github.com/o/r/issues/42
-  drydock submit --issue https://github.com/o/r/issues/42 --plan
-  drydock submit --repo git@gitlab.mycorp.com:g/p --platform gitlab \
-                 --egress-extra internal.example.com:443 --auto-approve
-
-Connection: respects BROKER_SOCKET / BROKER_ADDR (same as the other
-admin subcommands). Default is the per-uid socket discovered via
-sockpath.Default().`)
+		fmt.Fprintln(os.Stderr, usageOutro)
 	}
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
@@ -102,7 +122,7 @@ sockpath.Default().`)
 		instr, *repo = got, repoRef
 	} else {
 		if *repo == "" {
-			fmt.Fprintln(os.Stderr, "drydock submit: --repo is required (or pass --issue to derive it)")
+			fmt.Fprintln(os.Stderr, name+": --repo is required (or pass --issue to derive it)")
 			fs.Usage()
 			os.Exit(2)
 		}
@@ -121,7 +141,7 @@ sockpath.Default().`)
 		die("--egress-extra: %v", err)
 	}
 
-	req := taskRequest{
+	return taskRequest{
 		RepoRef:     *repo,
 		Instruction: instr,
 		EgressExtra: extras,
@@ -133,9 +153,13 @@ sockpath.Default().`)
 		Draft:       *draft,
 		PlanOnly:    *plan,
 		IssueURL:    *issueURL,
-	}
+	}, *jsonOut, *quiet
+}
+
+func runSubmit(args []string) {
+	req, jsonOut, quiet := parseSubmitRequest(args)
 	if os.Getenv("BROKER_ADDR") == "" {
-		adapter := remote.AdapterFor(*repo, *platform)
+		adapter := remote.AdapterFor(req.RepoRef, req.Platform)
 		if err := adapter.Available(); err != nil {
 			fmt.Fprintf(os.Stderr,
 				"⚠ %s CLI unavailable on this host (%v): the task will run and push a branch, but the PR won't open automatically. Fix it (e.g. 'gh auth login') and open the PR manually, or pass --platform none.\n",
@@ -143,7 +167,7 @@ sockpath.Default().`)
 		}
 	}
 
-	if err := postSubmit(req, *jsonOut, *quiet); err != nil {
+	if err := postSubmit(req, jsonOut, quiet); err != nil {
 		die("%v", err)
 	}
 }

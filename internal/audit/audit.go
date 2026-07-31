@@ -47,8 +47,12 @@ type Meta struct {
 
 // StageMs is the per-stage wall-clock breakdown of a metrics row. Setup and
 // Verifying are omitempty so rows written before those stages existed (and
-// tasks that never run them) keep their exact prior shape.
+// tasks that never run them) keep their exact prior shape; Queued (time from
+// enqueue to dispatch, queued tasks only) is omitempty for the same reason —
+// a synchronous POST /tasks task never sat on the queue and its row keeps
+// its exact prior shape.
 type StageMs struct {
+	Queued    int64 `json:"queued,omitempty"`
 	Preparing int64 `json:"preparing"`
 	Setup     int64 `json:"setup,omitempty"`
 	Running   int64 `json:"running"`
@@ -289,6 +293,15 @@ func outcomeString(key string, r Result, m Meta) string {
 		// stopped — nothing was verified or pushed. Displayed as-is (matches
 		// the raw-subtype default; the explicit case documents the vocabulary).
 		s = "planned"
+	case "dead_letter":
+		// Queue terminal: the queued task exhausted its run without a clean
+		// finish and was parked as undeliverable (Increment B adds retry).
+		s = "dead-letter"
+	case "completed":
+		// Queue terminal: the queued task finished cleanly (pushed, no_diff,
+		// or planned). Displayed as-is; the explicit case documents the
+		// broker-observed queue vocabulary alongside dead_letter.
+		s = "completed"
 	case "ok":
 		if r.NumTurns > 0 {
 			unit := "turns"

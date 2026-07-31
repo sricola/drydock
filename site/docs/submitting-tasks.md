@@ -61,6 +61,53 @@ diff is still captured beside the audit log for your review, and
 `drydock retry <id>` of a plan run re-plans (it never silently escalates to
 an implementing run).
 
+## Queue (durable, unattended)
+
+`drydock submit` blocks your shell until the task finishes (and until you
+approve the diff). `drydock queue add` takes the **same flags** — `--issue`,
+`--plan`, `--instruction-file`, `--egress-extra`, all of it — but returns the
+moment brokerd has durably persisted the task:
+
+```bash
+drydock queue add --repo git@github.com:o/r --instruction "fix the flaky test"
+drydock queue add --issue https://github.com/o/r/issues/42 --auto-approve
+
+drydock queue list           # ID / STATE / AGE / ATTEMPTS / REPO
+drydock queue cancel <id>    # dequeue a waiting item, or kill it if running
+```
+
+Each item moves through a broker-enforced state machine:
+
+```
+queued → preparing → running → verifying → awaiting_review → completed
+                                                           ↘ dead_letter
+        (cancelled is reachable from every non-terminal state)
+```
+
+- **Same lifecycle, same gates.** A dispatched item runs the exact code path
+  a synchronous submit runs — setup profiles, verification, the diff-approval
+  gate (unless `--auto-approve`), diff policy. Nothing is weaker because it
+  was queued.
+- **Shared concurrency cap.** Queued and synchronous tasks draw from the one
+  `max_concurrent` pool; the dispatcher never over-commits it.
+- **Spend-ceiling parking.** When a vendor's aggregate spend cap is
+  exhausted, that vendor's items stay `queued` — parked, not failed, and a
+  park never counts as an attempt. They dispatch when the spend window
+  slides.
+- **Survives restarts.** Queue items are atomically-written files in the
+  audit dir. At boot, brokerd re-dispatches anything still `queued`, resumes
+  items parked at the approval gate, and **never re-runs** an item that was
+  mid-flight when the daemon died — an interrupted `running`/`verifying`
+  item is dead-lettered (with its audit trail intact) rather than executed a
+  second time.
+- **Terminals.** A clean finish (pushed, no-diff, or a plan) lands
+  `completed`; any failure lands `dead_letter` with the reason in
+  `last_error`. Terminal items stay in `drydock queue list` as history.
+
+A queued task's terminal metrics row records the wait as `stage_ms.queued`
+(enqueue → dispatch); `drydock stats` aggregates it as the queue-wait
+p50/p95 line. Synchronous tasks omit the field entirely.
+
 ## Push-credential preflight
 
 Before the sandbox boots, drydock runs `git push --dry-run` against your repo
@@ -285,6 +332,8 @@ drydock logs <id> [-f]     # stream-json audit (use -f to follow)
 drydock stats [--since 30d] [--by agent|vendor|repo|day|week] [--json]
                            # aggregate run metrics across tasks
 drydock kill <id>          # cancel the in-flight task (VM down + gate unblocked)
+drydock queue add|list|cancel
+                           # durable unattended queue (see Queue above)
 drydock doctor [--repo <path>]
                            # smoke-test the sandbox setup, or preflight a local
                            # repo with --repo (no API spend, no container)
@@ -333,8 +382,9 @@ JSON: one event per line, in the order they happened. Separately, the live
 with a `ts` field (RFC 3339); that timestamp is on the submit stream only,
 not persisted into the audit file. The audit file ends with a
 broker-authored row, `{"type":"metrics","src":"broker"}`, holding stage
-durations (`stage_ms.preparing`, `.setup`, `.running`, `.verifying` —
-`.setup`/`.verifying` omitted when the task never ran those stages — and
+durations (`stage_ms.queued`, `.preparing`, `.setup`, `.running`,
+`.verifying` — `.queued`/`.setup`/`.verifying` omitted when the task never
+ran those stages, so a synchronous submit's row has no `queued` at all — and
 `.pushing`; the stages partition the task's wall-clock, so `preparing` ends
 where `setup` begins), egress/approval gate waits, the
 admitted request count, spend, the terminal `outcome` (`pushed`, `denied`,

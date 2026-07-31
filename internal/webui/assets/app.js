@@ -195,7 +195,7 @@ function paintBody(rec, t){
   } else { rec.liveEl.textContent = ""; }
   if (t.stage === "awaiting_egress") rec.el.append(egressGate(t));
   else if (t.stage === "awaiting_approval") rec.el.append(pushGate(t));
-  if (["setting_up","running","verifying","pushing","awaiting_egress","awaiting_approval"].includes(t.stage))
+  if (["queued","setting_up","running","verifying","pushing","awaiting_egress","awaiting_approval"].includes(t.stage))
     rec.el.append(el("div", { class: "actions" }, dangerButton("Kill", () => act("kill", t.id), t.id + ":kill:card")));
 }
 
@@ -256,12 +256,15 @@ async function renderFinishedStrip(container, liveIDs){
   for (const it of recent){
     // outcome_key is the stable machine classification (audit.OutcomeKeyWithMetrics):
     // "ok" covers both a real push and a no-diff run (unchanged operator
-    // muscle memory) and is the ONLY key that earns a checkmark. Everything
-    // else (denied, cancelled, interrupted, running, or any unexpected
-    // passthrough key) gets the neutral glyph by default: a green checkmark
-    // must never be the fallback for a key this code doesn't recognize.
-    const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed";
-    const isOk = it.outcome_key === "ok";
+    // muscle memory); "completed" is the queue's clean-finish terminal —
+    // those two are the ONLY keys that earn a checkmark. "dead_letter" (a
+    // queued task parked as undeliverable) joins error/push_failed as red.
+    // Everything else (denied, cancelled, interrupted, running, or any
+    // unexpected passthrough key) gets the neutral glyph by default: a green
+    // checkmark must never be the fallback for a key this code doesn't
+    // recognize.
+    const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed" || it.outcome_key === "dead_letter";
+    const isOk = it.outcome_key === "ok" || it.outcome_key === "completed";
     // Color via class, not a style attribute: the strict CSP (default-src
     // 'self', no style-src 'unsafe-inline') blocks inline style attributes.
     const icon = isErr
@@ -274,9 +277,10 @@ async function renderFinishedStrip(container, liveIDs){
       el("code", { class: "tid", text: shortId(it.id) }),
       el("span", { class: "age", text: fmtAgeFromUnix(it.mtime_unix) }));
     if (isErr){
-      const r = el("span", { class: "reason", text: "error" });
+      const lbl = it.outcome_key === "dead_letter" ? "dead-letter" : "error";
+      const r = el("span", { class: "reason", text: lbl });
       row.append(r);
-      failureReason(it.id).then(reason => { if (reason) r.textContent = "error · " + reason; });
+      failureReason(it.id).then(reason => { if (reason) r.textContent = lbl + " · " + reason; });
     } else {
       row.append(el("span", { class: "outcome", text: it.outcome }));
     }
@@ -337,7 +341,7 @@ setInterval(() => {
 }, 1000);
 
 function stageBadge(stage) {
-  const label = { awaiting_egress: "egress?", setting_up: "setting up", running: "running", verifying: "verifying", awaiting_approval: "review?", pushing: "pushing" }[stage] || stage;
+  const label = { queued: "queued", awaiting_egress: "egress?", setting_up: "setting up", running: "running", verifying: "verifying", awaiting_approval: "review?", pushing: "pushing" }[stage] || stage;
   return el("span", { class: "badge stage-" + stage, text: label });
 }
 
