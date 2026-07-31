@@ -219,3 +219,75 @@ func TestPercentile_Exact(t *testing.T) {
 		t.Errorf("p50(empty)=%d, want 0", p)
 	}
 }
+
+// --- G4: the spend total is BROKER-OBSERVED ---
+
+// THE DEFECT, stated as a test: a task's agent prints its own result line with
+// whatever total_cost_usd it likes. buildSample used to take the last result
+// row of ANY src, so that number went straight into Sample.CostUSD and
+// Summarize summed it into SpendUSD — the figure `drydock stats` prints as
+// "spend: $X total". An agent could inflate or deflate the operator's spend
+// report at will.
+//
+// After the fix the forged number is not in SpendUSD at all. It is not silently
+// dropped either: a trace with NO broker row still has its figure carried, in
+// AgentReportedUSD, where the renderer labels it.
+func TestSummarize_AgentReportedCostIsNeverBrokerSpend(t *testing.T) {
+	const meta = `{"type":"drydock_meta","subscription":false,"sensitive":false}` + "\n" +
+		`{"type":"drydock_task","agent":"claude"}` + "\n"
+	forged := `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"total_cost_usd":9999.99,"num_turns":1}` + "\n"
+	brokered := `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"total_cost_usd":1.50,"num_turns":1,"src":"broker"}` + "\n"
+
+	dir := t.TempDir()
+	now := time.Now()
+	// A real task: the broker metered $1.50, and the agent then claimed $9999.99
+	// AFTER it — the ordering that used to win, since the read was last-wins.
+	writeAudit(t, dir, "real", meta+brokered+forged, now.Add(-time.Hour))
+	// A task with no broker row at all (still running, or killed before its
+	// terminal): all we have is the agent's claim.
+	writeAudit(t, dir, "agentonly", meta+forged, now.Add(-time.Hour))
+
+	samples, _, _ := Collect(dir, time.Time{})
+	if len(samples) != 2 {
+		t.Fatalf("collected %d samples, want 2", len(samples))
+	}
+	s := Summarize(samples)
+
+	if s.SpendUSD != 1.50 {
+		t.Errorf("SpendUSD = %v, want exactly 1.50 — only the src==\"broker\" figure may be summed", s.SpendUSD)
+	}
+	if s.AgentReportedTasks != 1 || s.AgentReportedUSD != 9999.99 {
+		t.Errorf("agent-reported = $%v over %d task(s), want $9999.99 over 1 — the number must be carried, not dropped",
+			s.AgentReportedUSD, s.AgentReportedTasks)
+	}
+	for _, sm := range samples {
+		if sm.ID == "real" && (sm.CostUSD != 1.50 || sm.HasAgentReportedUSD) {
+			t.Errorf("real task: CostUSD=%v agentReported=%v, want 1.50/false", sm.CostUSD, sm.HasAgentReportedUSD)
+		}
+		if sm.ID == "agentonly" && (sm.CostUSD != 0 || !sm.HasAgentReportedUSD) {
+			t.Errorf("agent-only task: CostUSD=%v agentReported=%v, want 0/true", sm.CostUSD, sm.HasAgentReportedUSD)
+		}
+	}
+}
+
+// A subscription lane meters no dollars at all, so an agent-reported figure
+// there is not even a candidate: the task counts as unmetered and contributes
+// nothing to either total.
+func TestSummarize_UnmeteredLaneIgnoresAgentReportedCost(t *testing.T) {
+	dir := t.TempDir()
+	writeAudit(t, dir, "sub", `{"type":"drydock_meta","subscription":true,"sensitive":false}`+"\n"+
+		`{"type":"drydock_task","agent":"claude"}`+"\n"+
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"total_cost_usd":500,"num_turns":1}`+"\n",
+		time.Now().Add(-time.Hour))
+	s := Summarize(mustCollect(t, dir))
+	if s.SpendUSD != 0 || s.AgentReportedUSD != 0 || s.AgentReportedTasks != 0 || s.UnmeteredTasks != 1 {
+		t.Errorf("summary = spend $%v / agent $%v over %d / unmetered %d, want 0/0/0/1",
+			s.SpendUSD, s.AgentReportedUSD, s.AgentReportedTasks, s.UnmeteredTasks)
+	}
+}
+
+func mustCollect(t *testing.T, dir string) []Sample {
+	t.Helper()
+	samples, _, _ := Collect(dir, time.Time{})
+	return samples
+}

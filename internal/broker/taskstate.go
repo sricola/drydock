@@ -37,6 +37,28 @@ type TaskState struct {
 	// SecondLook lists the diff-policy second-look categories the approver
 	// must acknowledge, populated while the task waits at the approval gate.
 	SecondLook []string `json:"second_look,omitempty"`
+	// SpentUSD / SpentSrc are the task's BROKER-METERED spend, published when
+	// it enters the diff-approval gate (setSpend). They exist for one reason:
+	// the web UI used to render the spend at the push gate by scraping the live
+	// audit jsonl for ANY total_cost_usd — including the agent's own, which is
+	// untrusted text from inside the VM. That put a number a compromised agent
+	// controls directly beside a human security decision (plan G4).
+	//
+	// SpentSrc says where the figure came from, and the UI renders it rather
+	// than a bare number:
+	//
+	//	"broker"    — the gateway lease's own metering. Trustworthy.
+	//	"unmetered" — a subscription lane, or an openai_compat lane with no
+	//	              prices: there is no USD to meter, so SpentUSD is 0 by
+	//	              construction rather than by measurement.
+	//	""          — not known (the gate was reached without a lease, e.g. a
+	//	              task resumed after a restart whose previous process left
+	//	              no broker result row).
+	//
+	// Both omitempty, so a task that never reaches the gate serialises exactly
+	// as it did before these fields existed.
+	SpentUSD float64 `json:"spent_usd,omitempty"`
+	SpentSrc string  `json:"spent_src,omitempty"`
 }
 
 const instructionSnippetMax = 140
@@ -193,6 +215,41 @@ func (b *Broker) setSecondLook(id string, acks []string) {
 	if t, ok := b.tasks[id]; ok {
 		t.SecondLook = acks
 	}
+}
+
+// setSpend publishes a task's BROKER-METERED spend on its live state so the
+// approval surfaces can show it without reading the agent's stdout. See
+// TaskState.SpentUSD for why that distinction is load-bearing.
+func (b *Broker) setSpend(id string, usd float64, src string) {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	if t, ok := b.tasks[id]; ok {
+		t.SpentUSD, t.SpentSrc = usd, src
+	}
+}
+
+// publishGateSpend computes and publishes this task's spend for the diff gate.
+// It reads the same broker-observed figure the ledger records — never
+// audit.TotalCost, never the agent's result line — and marks a lane that
+// carries no USD metering at all as "unmetered" rather than reporting its $0 as
+// a measurement.
+func (tr *taskRun) publishGateSpend() {
+	b := tr.b
+	if b == nil {
+		return
+	}
+	// The same signal writeBrief and the ledger key on, so the gate, the brief
+	// and the ceiling can never disagree about whether a lane meters.
+	if tr.taskVendor == "" || b.UnmeteredVendors[tr.taskVendor] {
+		b.setSpend(tr.id, 0, "unmetered")
+		return
+	}
+	usd, trusted := tr.brokerMeteredSpendUSD()
+	if !trusted || !usableUSD(usd) || usd < 0 {
+		b.setSpend(tr.id, 0, "")
+		return
+	}
+	b.setSpend(tr.id, usd, "broker")
 }
 
 func (b *Broker) unregisterTask(id string) {

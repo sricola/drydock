@@ -340,31 +340,67 @@ func outcomeString(key string, r Result, m Meta) string {
 	return s
 }
 
-// Cost formats the cost column. Subscription runs show the literal word; a
-// task with no result line shows "-".
-func Cost(m Meta, r Result, ok bool) string {
-	if !ok {
+// AgentReportedCostMark is appended to a cost that came from the AGENT's own
+// result line rather than from a broker-authored one. It is a single character
+// so it fits the CLI's narrow COST column; callers that render a table print
+// AgentReportedCostLegend beneath it when any row carries the mark.
+const AgentReportedCostMark = "?"
+
+// AgentReportedCostLegend explains the mark. Kept next to it so a renderer
+// cannot show one without the other drifting into a different wording.
+const AgentReportedCostLegend = "? = agent-reported cost; the broker did not meter this task (still running, or it ended before a broker terminal row was written)"
+
+// Cost formats the cost column from BROKER-OBSERVED spend (G4).
+//
+// The number shown is the src=="broker" result row's total_cost_usd — the
+// gateway lease's own figure, which the broker parses out of proxied response
+// bodies. Anything the AGENT printed to its stdout is untrusted: a compromised
+// CLI can emit any total_cost_usd it likes, and a spend column that renders it
+// as fact is a lie an operator makes decisions on.
+//
+// It is NOT silently zeroed when only an agent-reported figure exists — a task
+// that is still running has no broker terminal row yet, and blanking a real
+// number there would trade one dishonesty for another. Such a value is rendered
+// with AgentReportedCostMark instead, so it is visible AND visibly unverified.
+//
+//	no result row at all   -> "-"
+//	subscription lane      -> "subscription"   (there is no USD to meter)
+//	broker-authored row    -> "$0.0731"
+//	agent-reported only    -> "$0.0731?"
+func Cost(m Meta, rows TailRows) string {
+	if !rows.HasResult && !rows.HasBroker {
 		return "-"
 	}
 	if m.Subscription {
 		return "subscription"
 	}
-	return fmt.Sprintf("$%.4f", r.TotalCostUSD)
+	if rows.HasBroker {
+		return fmt.Sprintf("$%.4f", rows.Broker.TotalCostUSD)
+	}
+	return fmt.Sprintf("$%.4f%s", rows.Result.TotalCostUSD, AgentReportedCostMark)
 }
 
-// TotalCost returns total_cost_usd from the last result line in path.
-// Returns 0 when no result line is present or the file cannot be read.
-func TotalCost(path string) float64 {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return 0
-	}
-	r, ok := LastResult(path, fi.Size())
-	if !ok {
-		return 0
-	}
-	return r.TotalCostUSD
+// CostIsAgentReported reports whether Cost's answer for these rows is an
+// agent-reported figure — i.e. whether a renderer should print
+// AgentReportedCostLegend. False for a subscription lane and for a trace with
+// no result row at all: neither shows a number.
+func CostIsAgentReported(m Meta, rows TailRows) bool {
+	return rows.HasResult && !rows.HasBroker && !m.Subscription
 }
+
+// TotalCost is DELIBERATELY ABSENT. It used to return total_cost_usd from the
+// last result line of a path WITHOUT filtering Src, which made it a
+// ready-to-hand way to read an agent-authored number and treat it as spend —
+// and it was used that way in ten places, including the ones that wrote the
+// value straight back into a row stamped src:"broker" (see G4 in
+// docs/superpowers/plans/2026-07-31-global-ceiling.md, and
+// broker.taskRun.meteredCostUSD, which replaced every one of them).
+//
+// Anything that needs a task's spend from a trace wants LastBrokerResult /
+// LastBrokerResultFile — the src=="broker" row, whose total_cost_usd is the
+// gateway lease's own figure. Anything that wants to DISPLAY a cost wants Cost,
+// which labels an agent-reported number as such instead of passing it off as
+// measured.
 
 // HasResultLine reports whether path's tail contains a parsed
 // {"type":"result",...} line. Returns (false, nil) when no result is
@@ -653,43 +689,67 @@ func LastMetricsFile(f *os.File) (Metrics, bool) {
 	return Metrics{}, false
 }
 
-// LastResultAndMetricsFile finds the final {"type":"result",...} row AND the
-// final broker-authored {"type":"metrics",...} row in a single tail read of
-// f, instead of the two independent Stat+Seek+16KB reads LastResultFile and
-// LastMetricsFile each perform. Same tail window and last-wins semantics as
-// each of those; callers that want both rows (handleHistory, tasks.go
-// summarize) should prefer this over calling both single-row functions. The
-// existing single-row functions stay for callers that only need one.
-func LastResultAndMetricsFile(f *os.File) (Result, bool, Metrics, bool) {
+// TailRows is every terminal row a display path needs from ONE tail read of a
+// trace. It exists so a caller can distinguish the last result row (which may
+// be the AGENT's, and is what the outcome classifiers key on) from the last
+// BROKER-authored result row (the only trustworthy source of spend, G4) without
+// paying a second Stat+Seek+16KB read per file — these are directory-listing
+// paths (`drydock tasks`, the web UI's history) that touch every trace.
+type TailRows struct {
+	// Result is the last {"type":"result",...} row of ANY src. Outcome
+	// classification uses it: the broker's own terminal row is normally last,
+	// and where it is absent the agent's own line is still the best available
+	// description of how the run ended.
+	Result    Result
+	HasResult bool
+	// Broker is the last result row with src=="broker". Financial displays use
+	// THIS one and nothing else.
+	Broker    Result
+	HasBroker bool
+	// Metrics is the last broker-authored {"type":"metrics",...} row.
+	Metrics    Metrics
+	HasMetrics bool
+}
+
+// LastRowsFile fills a TailRows from a single tail read of f (same 16KB window
+// and last-wins semantics as the single-row functions). Callers that want more
+// than one terminal row should prefer it over calling several of them.
+func LastRowsFile(f *os.File) TailRows {
+	var out TailRows
 	info, err := f.Stat()
 	if err != nil {
-		return Result{}, false, Metrics{}, false
+		return out
 	}
 	lines, err := tailLines(f, info.Size())
 	if err != nil {
-		return Result{}, false, Metrics{}, false
+		return out
 	}
-	var (
-		res   Result
-		resOK bool
-		m     Metrics
-		mOK   bool
-	)
-	for i := len(lines) - 1; i >= 0 && (!resOK || !mOK); i-- {
+	for i := len(lines) - 1; i >= 0 && (!out.HasResult || !out.HasBroker || !out.HasMetrics); i-- {
 		line := lines[i]
-		if !resOK {
-			var x Result
-			if json.Unmarshal(line, &x) == nil && x.Type == "result" {
-				res, resOK = x, true
-				continue
+		var x Result
+		if json.Unmarshal(line, &x) == nil && x.Type == "result" {
+			if !out.HasResult {
+				out.Result, out.HasResult = x, true
 			}
+			if !out.HasBroker && x.Src == "broker" {
+				out.Broker, out.HasBroker = x, true
+			}
+			continue
 		}
-		if !mOK {
-			var x Metrics
-			if json.Unmarshal(line, &x) == nil && x.Type == "metrics" && x.Src == "broker" {
-				m, mOK = x, true
+		if !out.HasMetrics {
+			var m Metrics
+			if json.Unmarshal(line, &m) == nil && m.Type == "metrics" && m.Src == "broker" {
+				out.Metrics, out.HasMetrics = m, true
 			}
 		}
 	}
-	return res, resOK, m, mOK
+	return out
+}
+
+// LastResultAndMetricsFile finds the final {"type":"result",...} row AND the
+// final broker-authored {"type":"metrics",...} row in a single tail read of f.
+// A thin projection of LastRowsFile, kept for callers that need only these two.
+func LastResultAndMetricsFile(f *os.File) (Result, bool, Metrics, bool) {
+	r := LastRowsFile(f)
+	return r.Result, r.HasResult, r.Metrics, r.HasMetrics
 }

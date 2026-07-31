@@ -487,6 +487,12 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 	// Registered after the Sync/Close defer above, so it runs before them
 	// (LIFO): the metrics row lands as the last line, matching the live path.
 	defer tr.appendMetrics()
+	// The resumed task re-poses the same human diff gate, so it needs the same
+	// broker-metered spend published on its live state as the live path does
+	// (G4). tr.resumed makes brokerMeteredSpendUSD recover the figure from the
+	// PREVIOUS process's src=="broker" result row; where there is none it
+	// publishes "unknown" rather than a $0 that would read as measured.
+	tr.publishGateSpend()
 	if c, ok := st.(interface{ Cleanup() error }); ok {
 		defer func() {
 			if !tr.keepStage {
@@ -526,7 +532,7 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		// task's real spend still seeds the aggregate ledger.
 		fmt.Fprintf(logf,
 			`{"type":"result","subtype":%q,"is_error":false,"duration_ms":0,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-			subtype, audit.TotalCost(tr.auditPath))
+			subtype, tr.meteredCostUSD())
 		b.finalizeQueuedResume(id, tr.outcome)
 		return
 	}

@@ -20,9 +20,9 @@ the fragment and sends it as a bearer token on every API call.
 
 ## What's in it
 
-- **Board**: every live task as a card. Running tasks show turn count, cost,
-  and the current action; a task awaiting you floats to the top with a prominent
-  approval block.
+- **Board**: every live task as a card. Running tasks show turn count, a live
+  cost estimate and the current action; a task awaiting you floats to the top
+  with a prominent approval block showing its **broker-metered** spend.
 - **Review**: open a task for its **Diff** and **Logs** (the agent transcript)
   in tabs. **Approve push** stays disabled until you've opened the diff, the
   same review-before-approve gate as the CLI; **Deny** takes a confirm. `Esc` or
@@ -37,6 +37,24 @@ the fragment and sends it as a bearer token on every API call.
   board's "Just finished" rail marks the same split with an icon: ✓ for
   pushed/ok/no-diff, ✕ for error/push failed, and a neutral `∅` for
   denied/cancelled (neither succeeded nor failed: the task just didn't run).
+
+### Where the cost figures come from
+
+Two different numbers, deliberately labelled differently.
+
+The **push gate** shows `spent: $X (broker-metered)` — the credential gateway's
+own metering, computed host-side from the proxied response bodies. That is the
+figure to make an approval decision on. Where the lane carries no USD metering
+at all (subscription, or an `openai_compat` lane with no `prices`) it says so
+rather than showing `$0.00`, and where the broker has no figure — a task resumed
+after a restart whose previous process left no terminal row — it says `unknown`
+rather than inventing one.
+
+The **running card's** `~$0.05` is parsed from the agent's own output stream and
+is an estimate, marked with `~`. The agent's stdout is untrusted text, so it is
+useful as a progress signal and is never presented as measured spend. The
+history table follows the same rule: a cost the broker measured is plain, and a
+cost that exists only because an agent reported it carries a `?`.
 
 On the board, when exactly one task is at a gate: `R` review · `A` approve · `D`
 deny. `⌘/Ctrl+Enter` submits the form; `?` lists the shortcuts.

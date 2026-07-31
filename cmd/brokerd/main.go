@@ -604,6 +604,14 @@ func main() {
 	if cfg.AggregateBudgetUSD > 0 {
 		b.AggregateExceeded = gw.AggregateExceeded
 	}
+	// The GLOBAL USAGE CEILING (plan Task 4): both limbs and the durable ledger,
+	// from config. Called here rather than folded into the Broker literal so ONE
+	// function owns the whole wiring — the limbs and the store must arm together,
+	// and a literal that set the limbs while a separate call opened the store
+	// could drift into "configured but unmeasured". It must run before the
+	// dispatcher and the HTTP listener start (further down): the ceiling reads
+	// the limbs unsynchronized, boot-set, like MaxConcurrent.
+	applyGlobalCeiling(b, cfg)
 	brk = b // expose to the shutdown handler
 
 	// Boot eviction sweep over the dependency cache: bring it back within
@@ -697,6 +705,9 @@ func main() {
 	mux.HandleFunc("GET /admin/pending", b.HandlePending)
 	mux.HandleFunc("GET /admin/tasks", b.HandleTasks)
 	mux.HandleFunc("GET /admin/policy", b.HandlePolicy)
+	// Global usage ceiling headroom (plan G6). Live rather than boot-frozen:
+	// it is the one part of the ceiling that moves while the daemon runs.
+	mux.HandleFunc("GET /admin/ceiling", b.HandleCeiling)
 	mux.HandleFunc("GET /healthz", b.HandleHealth)
 
 	srv = hardenedServer(brokerHandler(cfg, mux))

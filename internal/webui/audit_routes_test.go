@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"drydock/internal/audit"
 	"drydock/internal/trustbrief"
 )
 
@@ -18,7 +19,7 @@ func auditServer(t *testing.T) *Server {
 	os.WriteFile(filepath.Join(dir, id+".diff"), []byte("diff --git a b\n+line\n"), 0o600)
 	os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(
 		`{"type":"drydock_meta","subscription":false,"sensitive":false}`+"\n"+
-			`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":0.05,"num_turns":3}`+"\n"), 0o600)
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":0.05,"num_turns":3,"src":"broker"}`+"\n"), 0o600)
 	os.WriteFile(filepath.Join(dir, id+".widen.json"), []byte(`[{"host":"x.test","ports":[443]}]`), 0o600)
 	trustbrief.Write(dir, id, trustbrief.Brief{SchemaVersion: 1, TaskID: id})
 	return &Server{AuditRoot: dir, Token: "secret"}
@@ -28,7 +29,7 @@ func TestDiffAndLogsAndWiden(t *testing.T) {
 	s := auditServer(t)
 	id := "0123456789abcdef0123456789abcdef"
 	logsWant := `{"type":"drydock_meta","subscription":false,"sensitive":false}` + "\n" +
-		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":0.05,"num_turns":3}` + "\n"
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":0.05,"num_turns":3,"src":"broker"}` + "\n"
 	for _, tc := range []struct{ path, want string }{
 		{"/api/diff/" + id, "diff --git a b\n+line\n"},
 		{"/api/widen/" + id, `[{"host":"x.test","ports":[443]}]`},
@@ -160,5 +161,52 @@ func TestBriefSymlinkRejected(t *testing.T) {
 	}
 	if rec := do(t, s, "GET", "/api/brief/"+id, "127.0.0.1:7878", "Bearer secret"); rec.Code != http.StatusNotFound {
 		t.Errorf("symlinked brief = %d, want 404", rec.Code)
+	}
+}
+
+// G4: the history table's cost column must be BROKER-OBSERVED. A trace whose
+// only result row is the AGENT's — the row an in-VM CLI writes to its own
+// stdout — must not be presented as a measured figure: it is still shown (the
+// number exists) but marked, and CostAgentReported says so to the UI.
+func TestHistory_AgentReportedCostIsMarked(t *testing.T) {
+	dir := t.TempDir()
+	id := "0123456789abcdef0123456789abcdef"
+	os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(
+		`{"type":"drydock_meta","subscription":false,"sensitive":false}`+"\n"+
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":9999.99,"num_turns":3}`+"\n"), 0o600)
+	s := &Server{AuditRoot: dir, Token: "secret"}
+	rec := do(t, s, "GET", "/api/history", "127.0.0.1:7878", "Bearer secret")
+	var items []HistoryItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %+v", items)
+	}
+	if !items[0].CostAgentReported {
+		t.Error("CostAgentReported = false for a trace with no broker result row")
+	}
+	if !strings.HasSuffix(items[0].Cost, audit.AgentReportedCostMark) {
+		t.Errorf("Cost = %q, want the agent-reported mark %q appended", items[0].Cost, audit.AgentReportedCostMark)
+	}
+}
+
+// And the converse, which is the actual defense: a broker row present alongside
+// a forged agent row renders the BROKER's number, whichever came last.
+func TestHistory_ForgedAgentCostCannotDisplaceTheBrokerFigure(t *testing.T) {
+	dir := t.TempDir()
+	id := "0123456789abcdef0123456789abcdef"
+	os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(
+		`{"type":"drydock_meta","subscription":false,"sensitive":false}`+"\n"+
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":2.5,"num_turns":3,"src":"broker"}`+"\n"+
+			`{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"total_cost_usd":0.0001,"num_turns":3}`+"\n"), 0o600)
+	s := &Server{AuditRoot: dir, Token: "secret"}
+	rec := do(t, s, "GET", "/api/history", "127.0.0.1:7878", "Bearer secret")
+	var items []HistoryItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Cost != "$2.5000" || items[0].CostAgentReported {
+		t.Fatalf("history item = %+v, want the broker-metered $2.5000 unmarked", items)
 	}
 }

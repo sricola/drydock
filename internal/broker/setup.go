@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"drydock/internal/audit"
 	"drydock/internal/repokey"
 	"drydock/internal/runner"
 	"drydock/internal/trustbrief"
@@ -121,7 +120,7 @@ func (tr *taskRun) runSetup() bool {
 		// Synthetic audit result row mirrors runVerify's verify_failed pattern
 		// (last-wins, src:"broker", carrying metered cost — zero here, since
 		// no bearer ever existed inside a VM).
-		cost := audit.TotalCost(tr.auditPath)
+		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
 			`{"type":"result","subtype":"setup_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 			time.Since(tr.taskStart).Milliseconds(), cost)

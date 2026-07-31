@@ -107,6 +107,24 @@ func (b *Broker) HandlePolicy(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleCeiling returns the GLOBAL USAGE CEILING's headroom (plan G6): the
+// configured limbs, what has been used against them in the current window, the
+// degraded flags, and the verdict a task start would receive right now. Wire as
+// GET /admin/ceiling.
+//
+// Read-only and mutation-free, like HandlePolicy — but unlike HandlePolicy it
+// is LIVE rather than boot-frozen, because headroom is the one thing about the
+// ceiling that changes while the daemon runs. Same auth story as every other
+// /admin/* route (the 0600 unix socket, or the loopback-guarded TCP wrap);
+// nothing here is reachable from a sandbox VM, which matters because the body
+// states exactly how much budget is left.
+//
+// With the ceiling off it answers {"enabled":false} without opening or reading
+// anything — the off-by-default identity holds on this surface too.
+func (b *Broker) HandleCeiling(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, b.GlobalCeilingStatus())
+}
+
 // HandleKill cancels the per-task context, which aborts the container run
 // (if still in flight) and the push-gate wait (if at the approval gate).
 // Returns 204 on success, 404 if no such live task. The corresponding

@@ -111,6 +111,13 @@ let pollTimer = null;
 // --- live running progress: parse the agent's stream-json to count turns,
 // track cost, and label the current action. claude emits assistant/tool_use
 // events; other agents only yield total_cost_usd (so turns/action stay 0/null).
+//
+// EVERYTHING THIS PARSES IS AGENT-AUTHORED TEXT, including the running cost —
+// the broker has no reason to write a per-turn figure into the stream, so this
+// number is whatever the CLI printed. It is fine as a liveness/progress hint
+// and it is rendered with a "~" so it never reads as measured spend. The
+// broker-metered figure appears at the push gate (spentLabel), which is the
+// only place a person is making a decision about it (plan G4).
 function base(p){ return p ? p.split("/").pop() : ""; }
 function actionLabel(tu){
   const f = (tu.input && (tu.input.file_path || tu.input.path)) || "";
@@ -189,7 +196,7 @@ function paintBody(rec, t){
   rec.el.classList.toggle("gate-host", t.stage.startsWith("awaiting"));
   if (t.stage === "running"){
     const p = t._prog || {};
-    const parts = ["claude", p.turns ? p.turns + " turns" : "", p.cost != null ? "$" + p.cost.toFixed(2) : "", p.action || ""].filter(Boolean);
+    const parts = ["claude", p.turns ? p.turns + " turns" : "", p.cost != null ? "~$" + p.cost.toFixed(2) : "", p.action || ""].filter(Boolean);
     rec.liveEl.textContent = parts.join(" · ");
     rec.el.append(el("div", { class: "bar" }, el("i", {})));
   } else { rec.liveEl.textContent = ""; }
@@ -385,9 +392,7 @@ function pushGate(t) {
   const title = el("div", { class: "gate-title", text: "Push awaiting review" });
   if ((t.second_look || []).length) title.append(" ", el("span", { class: "brief-chip warn", text: "second-look" }));
   const box = el("div", { class: "gate push dominant" }, title);
-  const cost = el("span", { class: "cost", text: "spent: …" });
-  box.append(cost);
-  spentSoFar(t.id).then(s => (cost.textContent = s));
+  box.append(el("span", { class: "cost", text: spentLabel(t) }));
   const approveBtn = el("button", { class: "ok", disabled: "", onclick: () => act("approve", t.id) }, "Approve push");
   box.append(el("div", { class: "actions" },
     el("button", { onclick: () => { openReview(t.id); approveBtn.removeAttribute("disabled"); } }, "Review diff"),
@@ -397,18 +402,40 @@ function pushGate(t) {
   return box;
 }
 
-// spentSoFar parses the latest total_cost_usd from the live jsonl (best-effort).
-async function spentSoFar(id) {
-  try {
-    const res = await api("GET", "/api/logs/" + id);
-    const text = await res.text();
-    let cost = null;
-    for (const line of text.split("\n")) {
-      const i = line.indexOf('"total_cost_usd"');
-      if (i >= 0) { try { const o = JSON.parse(line); if (typeof o.total_cost_usd === "number") cost = o.total_cost_usd; } catch (_) {} }
-    }
-    return cost === null ? "spent: (not reported)" : "spent: $" + cost.toFixed(4);
-  } catch (_) { return "spent: —"; }
+// costCell renders a history row's cost. The broker-authored figure renders
+// plain; one that exists only because the AGENT reported it arrives from
+// /api/history already carrying audit.AgentReportedCostMark ("?") and sets
+// cost_agent_reported, so it gets a hover title spelling out what the mark
+// means. Shown, but never shown as measured (plan G4).
+function costCell(it) {
+  const td = el("td", { text: it.cost });
+  if (it.cost_agent_reported) {
+    td.className = "muted";
+    td.title = "agent-reported cost; the broker did not meter this task";
+  }
+  return td;
+}
+
+// spentLabel renders the BROKER-METERED spend at the push gate, from the
+// broker's own task state (`spent_usd`/`spent_src` on /api/tasks).
+//
+// This replaced spentSoFar, which fetched /api/logs/<id> and took the last
+// total_cost_usd it could find on ANY line. That file is the task's audit
+// stream, and the AGENT's stdout is copied into it verbatim — so a compromised
+// CLI could print {"type":"result","total_cost_usd":0.0001} and that number was
+// what got rendered, in the "spent" slot, immediately beside the Approve
+// button. An untrusted figure next to a human security decision is exactly the
+// display plan G4 calls out; the broker's gateway lease is the only spend
+// figure that means anything, and it is now published on the task state
+// (broker.taskRun.publishGateSpend) so this function has nothing to parse.
+//
+// It never renders a bare "$0.00": a lane with no USD metering and a lane the
+// broker could not measure are different facts, and both are different from
+// "this task spent nothing".
+function spentLabel(t) {
+  if (t.spent_src === "broker") return "spent: $" + Number(t.spent_usd || 0).toFixed(4) + " (broker-metered)";
+  if (t.spent_src === "unmetered") return "spent: n/a — subscription lane, no USD metering";
+  return "spent: unknown — not broker-metered";
 }
 
 // act performs approve/deny/kill with optimistic feedback + immediate re-poll.
@@ -908,7 +935,7 @@ async function renderHistory() {
       el("td", {}, el("code", { onclick: () => navigator.clipboard && navigator.clipboard.writeText(it.id), title: "copy", text: it.id.slice(0, 12) })),
       el("td", { text: fmtAgeFromUnix(it.mtime_unix) }),
       el("td", { text: it.has_duration ? fmtDurMs(it.duration_ms) : "-" }),
-      el("td", { text: it.cost }),
+      costCell(it),
       el("td", { text: it.outcome }));
     row.onclick = () => openReview(it.id, true); // read-only diff/logs for past tasks
     table.append(row);

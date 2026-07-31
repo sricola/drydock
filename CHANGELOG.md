@@ -9,6 +9,67 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **A global, durable, fail-closed usage ceiling (`global_budget_usd`,
+  `global_max_tasks`, `global_window`; opt-in, OFF by default).** The first
+  spend bound in drydock that is neither per-task nor per-vendor: it bounds the
+  daemon as a whole, across every vendor and both auth modes, over one rolling
+  window (default `24h`).
+
+  It exists because bounded CI retry made drydock spend money unattended and
+  nothing global stopped a retry storm. `aggregate_budget_usd` is per-vendor (so
+  with N vendors the real ceiling is N × the configured number),
+  `api_key`-mode-only, in memory, and fail-open at every broker-side check —
+  and in **subscription mode there was no cross-task bound at all**, only
+  per-task limits plus `max_concurrent_tasks`. There is one now.
+
+  **Two limbs, because not every lane has dollars to measure.**
+  `global_budget_usd` counts cumulative **broker-metered** USD across all
+  vendors. `global_max_tasks` counts cumulative **task starts**, which works
+  everywhere because it counts an event the broker itself causes — it is what
+  bounds subscription mode, and the backstop for every case where the dollar
+  figure can be under-reported (usage past the 1 MiB parse buffer, batch-style
+  routes, `openai_compat` lanes with no `prices` that meter at $0 by
+  construction). Retries and their parents count alike.
+
+  What is true of it, stated as invariants:
+
+  - **It fails CLOSED**, unlike every existing spend check. An unreadable,
+    corrupt or absent ledger, or an agent that will not resolve, **refuses** the
+    task start. For a ceiling, "I don't know" must mean "no".
+    `aggregate_budget_usd` keeps its current behavior; the two coexist and the
+    stricter answer wins.
+  - **It refuses task STARTS and never kills a running task.** `POST /tasks`
+    returns **402** with the reason and the current headroom; a human-submitted
+    queue item **parks** and dispatches when the window rolls; an automatic CI
+    retry over the cap is **dropped** to `dead_letter` rather than parked, while
+    one the ceiling could not *measure* parks instead, so a transient fault
+    never destroys unattended work.
+  - **It is durable and window-honest.** The ledger lives under `audit_root`
+    (`0600` in a `0700` directory, host-only, never touched from a VM) and
+    survives restart in both window modes, so a crash loop cannot reset it.
+    Entries carry a broker-authored timestamp, so the window is measured from
+    when a task *ran*, not from a file's mtime. Boot reconciliation cross-checks
+    the ledger against the audit and only ever adds.
+  - **Only broker-metered spend counts.** The USD figure is the credential
+    gateway's own lease metering. An agent-reported `total_cost_usd` cannot
+    inflate the ceiling to deny service or deflate it to keep spending.
+  - **Headroom is visible**: `GET /admin/ceiling` and a new section in
+    `drydock stats` report spend and starts against each limb, the window,
+    in-flight starts not yet recorded, and whether either number is degraded.
+  - **`global_max_tasks` must be at least `max_concurrent_tasks`.** The pair is
+    refused at load: a limb below the concurrency width can never fill the slots
+    you configured, and at runtime that is indistinguishable from a wedged
+    daemon.
+  - **`global_window: 0` is total mode** — nothing ages out, and unlike
+    `aggregate_window: 0` it is durable, so an exhausted ceiling survives a
+    restart until an operator raises a limb or removes the ledger. brokerd warns
+    at boot.
+
+  Both limbs default to `0`. A stock install creates no ledger file, runs no
+  extra boot scan, and takes byte-identical admission paths. `THREAT_MODEL.md`
+  N4 documents the coverage and the non-coverage; the generated security-defaults
+  table gains a row per key.
+
 - **Bounded automatic retry on an observed CI failure (orchestration increment
   B2, opt-in, off by default).** With `ci.max_attempts > 0`, an **observed**
   check failure on a pushed PR now enqueues a retry. A retry is a **NEW task**
@@ -405,6 +466,32 @@ entry below corresponds to a Git tag of the same name.
   docs cover the config block, the advisory/required semantics, and restart
   behavior (no mid-verify resume; re-verify only via `drydock retry`); the
   security-defaults page gains the verify-timeout row.
+
+### Fixed
+
+- **Operator-facing spend is now broker-observed everywhere (threat model N4).**
+  `audit.TotalCost` read the last `total_cost_usd` in a task's audit trace
+  **without filtering `src`**, and the agent's stdout is copied into that trace
+  verbatim — so a number an in-VM agent printed could reach an operator as
+  though the broker had measured it. Three consequences, all fixed:
+
+  - The web UI's **push-approval gate** rendered exactly that untrusted figure
+    beside the Approve button. It now shows the broker's own lease metering,
+    published on the task state, and distinguishes "no USD metering on this
+    lane" from "not measured" instead of printing a bare `$0.00`.
+  - `drydock stats` summed it into the **spend total**. The total is now
+    broker-metered only; a figure that exists solely because an agent reported
+    it is listed separately and labelled, never dropped silently.
+  - Worst of the three: the broker's own synthetic terminal rows (`planned`,
+    `policy_blocked`, `push_failed`, `verify_failed`, the resumed terminal)
+    copied that number into a row stamped `src:"broker"` — **laundering** it
+    into the one field the aggregate-cap restart seed, boot reconciliation and
+    every downstream `src=="broker"` filter trust. Every one of those rows now
+    carries the gateway lease's figure, and `audit.TotalCost` has been removed
+    outright so the shortcut cannot come back.
+
+  `drydock tasks` and the web UI history table likewise read the broker row, and
+  mark an agent-reported cost as such rather than presenting it as measured.
 
 ## v0.6.7 (2026-07-28)
 

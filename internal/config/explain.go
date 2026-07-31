@@ -345,6 +345,20 @@ func provenanceTable() []fieldDesc {
 		{name: "AggregateWindow", yamlKey: "aggregate_window", envVar: "DRYDOCK_AGGREGATE_WINDOW",
 			guardedEnv: envDurationNonNegative("DRYDOCK_AGGREGATE_WINDOW"),
 			value:      func(c *Config) string { return renderDur(c.AggregateWindow) }},
+		// The global usage ceiling: one row per limb plus its window. Each guard
+		// MIRRORS applyEnvOverrides exactly — a mismatch here does not change
+		// enforcement, it makes `drydock policy explain` attribute a financial
+		// control to the wrong layer, which is worse than a wrong value because
+		// the operator stops looking.
+		{name: "GlobalBudgetUSD", yamlKey: "global_budget_usd", envVar: "DRYDOCK_GLOBAL_BUDGET_USD",
+			guardedEnv: envFloatNonNegative("DRYDOCK_GLOBAL_BUDGET_USD"),
+			value:      func(c *Config) string { return renderFloat(c.GlobalBudgetUSD) }},
+		{name: "GlobalMaxTasks", yamlKey: "global_max_tasks", envVar: "DRYDOCK_GLOBAL_MAX_TASKS",
+			guardedEnv: envIntNonNegative("DRYDOCK_GLOBAL_MAX_TASKS"),
+			value:      func(c *Config) string { return renderInt(c.GlobalMaxTasks) }},
+		{name: "GlobalWindow", yamlKey: "global_window", envVar: "DRYDOCK_GLOBAL_WINDOW",
+			guardedEnv: envDurationNonNegative("DRYDOCK_GLOBAL_WINDOW"),
+			value:      func(c *Config) string { return renderDur(c.GlobalWindow) }},
 		{name: "PushMaxRetries", yamlKey: "push_max_retries", envVar: "DRYDOCK_PUSH_MAX_RETRIES",
 			guardedEnv: envIntNonNegative("DRYDOCK_PUSH_MAX_RETRIES"),
 			value:      func(c *Config) string { return renderInt(c.PushMaxRetries) }},

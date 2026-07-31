@@ -1113,7 +1113,7 @@ func (tr *taskRun) runLifecycle() {
 		tr.outcome = "no_diff"
 		sw.emit(map[string]any{"event": "result", "outcome": "no_diff",
 			"task_id": taskID, "duration_ms": time.Since(tr.taskStart).Milliseconds(),
-			"cost_usd": audit.TotalCost(tr.auditPath)})
+			"cost_usd": tr.meteredCostUSD()})
 		return
 	}
 
@@ -1154,7 +1154,7 @@ func (tr *taskRun) finishPlanned(diff string) {
 	b.writeBrief(tr, diff)
 	// Synthetic audit result row mirrors runVerify's verify_failed pattern
 	// (last-wins over the agent's own success row, carrying metered cost).
-	cost := audit.TotalCost(tr.auditPath)
+	cost := tr.meteredCostUSD()
 	fmt.Fprintf(tr.logf,
 		`{"type":"result","subtype":"planned","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 		time.Since(tr.taskStart).Milliseconds(), cost)
@@ -1540,7 +1540,7 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	// row mirrors runVerify's verify_failed pattern (last-wins over the
 	// agent's own success row, carrying metered cost).
 	if blocked, reason := tr.checkDiffCaps(facts, diff); blocked {
-		cost := audit.TotalCost(tr.auditPath)
+		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
 			`{"type":"result","subtype":"policy_blocked","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 			time.Since(tr.taskStart).Milliseconds(), cost)
@@ -1560,6 +1560,11 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	// second-look is a human-gate aid, and the hard enforcement that even
 	// auto-approve cannot bypass is checkDiffCaps above.
 	tr.requiredAcks = requiredAcks(facts, b.DiffPolicy)
+	// Publish the BROKER-METERED spend before the stage flips to StagePending,
+	// so the first poll that sees the gate already sees the number (plan G4).
+	// The web UI's push gate renders this instead of scraping the live jsonl for
+	// whatever total_cost_usd the agent last printed.
+	tr.publishGateSpend()
 	b.setStage(tr.id, StagePending)
 	// Bridge the gate entry into the durable queue state for a queued task
 	// (running -> awaiting_review). nil on the synchronous and resume paths.
@@ -1640,7 +1645,7 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		// Nothing landed on the remote (single-ref push is atomic). Record a
 		// terminal push_failed result in the audit (carrying the metered cost so
 		// cost + the aggregate-cap seed stay correct) and stream the reason.
-		cost := audit.TotalCost(tr.auditPath)
+		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
 			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 			time.Since(tr.taskStart).Milliseconds(), cost)
@@ -1684,7 +1689,7 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		"task_id": tr.id, "branch": branch, "platform": adapter.Name(),
 		"pr_opened": prErr == nil, "push_attempts": attempts,
 		"files": files, "insertions": insertions, "deletions": deletions,
-		"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": audit.TotalCost(tr.auditPath)}
+		"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": tr.meteredCostUSD()}
 	if prErr != nil {
 		ev["pr_error"] = safeErr(prErr)
 		ev["pr_hint"] = "branch '" + branch + "' was pushed; open a PR manually (" + adapter.Name() + ")"

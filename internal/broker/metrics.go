@@ -29,8 +29,14 @@ import (
 // or quota failure, the disk/push preflights, an unresolvable agent, a mint
 // failure) is still a real task START and must be counted. See
 // globalrecord.go, which defers its write on runLifecycle's first line
-// instead. CostUSD below is likewise display-only and deliberately unused by
-// the ceiling: audit.TotalCost does not filter Src (G4).
+// instead.
+//
+// CostUSD below is display-only and deliberately unused by the ceiling, which
+// carries its own figure on the ledger entry. It is nonetheless BROKER-OBSERVED
+// (tr.meteredCostUSD, i.e. the gateway lease): it used to be audit.TotalCost,
+// which does not filter Src, so an agent-printed total_cost_usd could land in a
+// row stamped src:"broker" (G4). A display value is still a value an operator
+// reads, and a broker-stamped row must not carry an agent's number.
 func (tr *taskRun) appendMetrics() {
 	if tr.logf == nil {
 		return
@@ -52,7 +58,7 @@ func (tr *taskRun) appendMetrics() {
 		ApprovalGateWaitMs: tr.approvalGateWait.Milliseconds(),
 		DiffFiles:          tr.diffFiles,
 		DiffBytes:          tr.diffBytes,
-		CostUSD:            audit.TotalCost(tr.auditPath),
+		CostUSD:            tr.meteredCostUSD(),
 		WidenRequested:     len(tr.egressExtra),
 		WidenOutcome:       tr.widenOutcome,
 	}

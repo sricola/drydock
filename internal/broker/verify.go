@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"drydock/internal/audit"
 	"drydock/internal/repokey"
 	"drydock/internal/runner"
 	"drydock/internal/trustbrief"
@@ -112,7 +111,7 @@ func (tr *taskRun) runVerify(diff string) bool {
 		b.writeBrief(tr, diff)
 		// Synthetic audit result row mirrors finishPush's push_failed pattern
 		// (last-wins over the agent's own success row, carrying metered cost).
-		cost := audit.TotalCost(tr.auditPath)
+		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
 			`{"type":"result","subtype":"verify_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 			time.Since(tr.taskStart).Milliseconds(), cost)
@@ -349,7 +348,7 @@ func (tr *taskRun) verifiedTreeGuard() bool {
 			err = fmt.Errorf("staged tree %s != verified tree %s", h, tr.verify.TreeSHA)
 		}
 	}
-	cost := audit.TotalCost(tr.auditPath)
+	cost := tr.meteredCostUSD()
 	fmt.Fprintf(tr.logf,
 		`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 		time.Since(tr.taskStart).Milliseconds(), cost)

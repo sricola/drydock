@@ -194,6 +194,38 @@ func (tr *taskRun) recordGlobalUsage() {
 	}
 }
 
+// meteredCostUSD is the task's broker-observed spend for DISPLAY and for the
+// broker's own audit rows: brokerMeteredSpendUSD without the trust flag.
+//
+// It exists because of a G4 hole that was worse than the two the plan names.
+// Every synthetic broker result row — `planned`, `policy_blocked`,
+// `push_failed`, `verify_failed`, `setup_failed`, the resumed terminal — used
+// to fill its total_cost_usd from audit.TotalCost, which reads the last result
+// line WITHOUT filtering Src. On any path where the agent's own result line was
+// the last one, an agent-authored number was copied into a row stamped
+// src:"broker" — LAUNDERING it. That row is what the aggregate-cap restart seed
+// reads, what boot reconciliation reads, what a resumed task's spend is
+// recovered from, and now what `drydock stats` and `drydock tasks` read. A
+// src=="broker" filter downstream is worth nothing if the broker itself will
+// copy an agent's number into a broker row, so the fix has to be here, at the
+// writer.
+//
+// The figure is the gateway lease's, snapshotted while it was alive
+// (captureLeaseSpend), or — for a task resumed after a restart — the PREVIOUS
+// process's own src=="broker" row. A terminal that never minted a lease records
+// 0, which is not an estimate: nothing could have spent.
+func (tr *taskRun) meteredCostUSD() float64 {
+	usd, _ := tr.brokerMeteredSpendUSD()
+	if !usableUSD(usd) || usd < 0 {
+		// The same sanitisation recordGlobalUsage applies: a figure parsed out
+		// of a proxied response body is not automatically a number that can be
+		// printed into JSON. A non-finite value would make the audit row
+		// unparseable for every later reader.
+		return 0
+	}
+	return usd
+}
+
 // brokerMeteredSpendUSD answers "what did the BROKER meter for this task, and
 // do we believe it?" — the only spend question the ceiling is allowed to ask.
 // It never reads audit.TotalCost (G4); see the file header.

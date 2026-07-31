@@ -225,6 +225,47 @@ type Config struct {
 	// total since brokerd boot (session cap, no time decay, resets on restart).
 	AggregateWindow time.Duration `yaml:"aggregate_window"`
 
+	// GlobalBudgetUSD is the GLOBAL usage ceiling's dollar limb: cumulative
+	// BROKER-METERED USD across ALL vendors and both auth modes over
+	// GlobalWindow. 0 (the default) disables it.
+	//
+	// It is deliberately not a second AggregateBudgetUSD. That one is
+	// PER-VENDOR (so with N vendors the real bound is N × the number written
+	// here), api_key-mode-only, in-memory, and fail-OPEN at every broker-side
+	// check. This one is cross-vendor, durable across restarts, and fail-CLOSED:
+	// when the ledger cannot be read the task start is refused rather than
+	// admitted. Both may be set; the stricter answer wins.
+	//
+	// Only spend the broker itself metered off a proxied response body counts —
+	// never an agent-reported total_cost_usd. A lane that carries no metering
+	// (subscription, or an openai_compat lane with no prices) contributes $0 to
+	// this limb BY CONSTRUCTION, which is why GlobalMaxTasks exists.
+	GlobalBudgetUSD float64 `yaml:"global_budget_usd"`
+	// GlobalMaxTasks is the GLOBAL usage ceiling's event limb: cumulative TASK
+	// STARTS across all vendors and both auth modes over GlobalWindow. 0 (the
+	// default) disables it. Retries and their parents count alike.
+	//
+	// This is the limb that actually bounds SUBSCRIPTION mode, where there is no
+	// enforceable USD figure at all, and it is the backstop for every metering
+	// gap GlobalBudgetUSD has (see THREAT_MODEL.md N4): it counts an event the
+	// broker itself causes, so it cannot be under-reported by a parse failure, a
+	// missing price table, or a response whose usage block never arrived.
+	//
+	// It must be at least MaxConcurrent — a ceiling that cannot fit one full
+	// dispatch pass is refused at load rather than silently starving the queue.
+	GlobalMaxTasks int `yaml:"global_max_tasks"`
+	// GlobalWindow is the rolling window BOTH global limbs are measured over.
+	// Default 24h.
+	//
+	// 0 means TOTAL mode: nothing ever ages out. Unlike AggregateWindow: 0,
+	// which is in-memory and resets to zero on every restart, this one is
+	// DURABLE — the ledger under AuditRoot survives a reboot on purpose (a crash
+	// loop that reset the ceiling would be the hole, not the feature). The
+	// consequence is worth stating plainly: in total mode an exhausted ceiling
+	// stays exhausted until the operator raises the limb or removes the ledger
+	// file. brokerd warns at boot when a limb is armed in total mode.
+	GlobalWindow time.Duration `yaml:"global_window"`
+
 	// PushMaxRetries retries a transient (network) push failure this many times
 	// with exponential backoff. 0 disables transient retry.
 	PushMaxRetries int `yaml:"push_max_retries"`
@@ -344,6 +385,9 @@ func Defaults() *Config {
 		MaxRequestCostUSD:    0,
 		AggregateBudgetUSD:   0,
 		AggregateWindow:      24 * time.Hour,
+		GlobalBudgetUSD:      0, // explicit: the global ceiling's USD limb ships OFF
+		GlobalMaxTasks:       0, // explicit: the global ceiling's task limb ships OFF
+		GlobalWindow:         24 * time.Hour,
 		PushMaxRetries:       3,
 		PushRetryBackoff:     time.Second,
 		PushFreshBranchTries: 2,
@@ -547,6 +591,21 @@ func (c *Config) applyEnvOverrides() {
 			c.AggregateWindow = d
 		}
 	}
+	if v := os.Getenv("DRYDOCK_GLOBAL_BUDGET_USD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			c.GlobalBudgetUSD = f
+		}
+	}
+	if v := os.Getenv("DRYDOCK_GLOBAL_MAX_TASKS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.GlobalMaxTasks = n
+		}
+	}
+	if v := os.Getenv("DRYDOCK_GLOBAL_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			c.GlobalWindow = d
+		}
+	}
 	if v := os.Getenv("DRYDOCK_PUSH_MAX_RETRIES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			c.PushMaxRetries = n
@@ -746,6 +805,32 @@ func (c *Config) validate() error {
 	if c.AggregateWindow < 0 {
 		return fmt.Errorf("config: aggregate_window must be >= 0, got %v", c.AggregateWindow)
 	}
+	if c.GlobalBudgetUSD < 0 {
+		return fmt.Errorf("config: global_budget_usd must be >= 0, got %v", c.GlobalBudgetUSD)
+	}
+	if c.GlobalMaxTasks < 0 {
+		return fmt.Errorf("config: global_max_tasks must be >= 0, got %d", c.GlobalMaxTasks)
+	}
+	if c.GlobalWindow < 0 {
+		return fmt.Errorf("config: global_window must be >= 0, got %v", c.GlobalWindow)
+	}
+	// The CROSS-FIELD check for the global ceiling, which neither range check
+	// above can catch: `global_max_tasks: 1` and `max_concurrent_tasks: 2` are
+	// each individually legal and TOGETHER they are self-contradicting. The
+	// ceiling refuses a task START, so a limb below the concurrency width means
+	// the daemon can never fill the slots the operator asked for — and, once the
+	// window's allowance is spent, every later item PARKS in the queue until the
+	// window rolls (24h by default; forever in total mode).
+	//
+	// That symptom is indistinguishable at runtime from a wedged daemon, which
+	// is exactly why it is refused at LOAD, the same reasoning the ci.watch_timeout
+	// / ci.poll_interval pair is refused on. The remedy is named in the message
+	// because both directions are legitimate: an operator who really does want
+	// one task per window should say so with max_concurrent_tasks too.
+	if c.GlobalMaxTasks > 0 && c.GlobalMaxTasks < c.MaxConcurrent {
+		return fmt.Errorf("config: global_max_tasks (%d) is below max_concurrent_tasks (%d); the global ceiling refuses task STARTS, so this pair can never fill the concurrency you configured and every task past the %d-th parks in the queue until global_window rolls. Raise global_max_tasks to at least %d, or lower max_concurrent_tasks to %d if you really want %d task start(s) per window",
+			c.GlobalMaxTasks, c.MaxConcurrent, c.GlobalMaxTasks, c.MaxConcurrent, c.GlobalMaxTasks, c.GlobalMaxTasks)
+	}
 	if c.PushMaxRetries < 0 {
 		return fmt.Errorf("config: push_max_retries must be >= 0, got %d", c.PushMaxRetries)
 	}
@@ -878,6 +963,20 @@ cache_quota_gb:         20             # total disk bound (GiB) for the persiste
 max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)
+
+# --- Global usage ceiling (opt-in; OFF by default) ---
+# Two limbs over one rolling window, either of which refuses a task START
+# (never kills a running task). Unlike aggregate_budget_usd these are
+# CROSS-VENDOR, cross-auth-mode, DURABLE across restarts (the ledger lives
+# under audit_root), and FAIL-CLOSED: a ledger that cannot be read refuses
+# rather than admits. Both may be set alongside aggregate_budget_usd; the
+# stricter answer wins. Only BROKER-METERED spend counts — an agent-reported
+# total_cost_usd never reaches either limb. See THREAT_MODEL.md N4 for what
+# the USD limb does and does not cover, and why the task limb is its backstop.
+global_budget_usd:      0              # cumulative broker-metered USD across ALL vendors over global_window; 0 = disabled
+global_max_tasks:       0              # cumulative TASK STARTS across all vendors and both auth modes over global_window; 0 = disabled. This is the limb that bounds subscription mode. Must be >= max_concurrent_tasks when set
+global_window:          24h            # rolling window for BOTH global limbs; 0s = total, nothing ages out (DURABLE — unlike aggregate_window it survives restart, so an exhausted ceiling stays exhausted until you raise a limb or remove the ledger)
+
 push_max_retries:       3              # retry a transient (network) push failure N times with backoff; 0 = no retry
 push_retry_backoff:     1s             # base delay for push retry backoff (doubles each retry)
 push_fresh_branch_tries: 2             # on a branch-name collision, try agent/<id>-2, -3, ...; 0 = no fresh-branch retry
