@@ -1,17 +1,23 @@
 package broker
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"drydock/internal/audit"
 	"drydock/internal/config"
+	"drydock/internal/egress"
 	"drydock/internal/remote"
 )
 
@@ -582,5 +588,409 @@ func TestResumePush_ShutdownKeepsStage(t *testing.T) {
 	// The gate marker must still be present (left for next boot).
 	if _, err := os.Stat(gateMarkerPath(dir, "shutid")); err != nil {
 		t.Errorf("gate marker must survive shutdown, got err: %v", err)
+	}
+}
+
+// ---- ResumeQueue: boot resume of the durable task queue (Task 3) ----
+
+// queueTestID returns a valid 32-hex queue id built from one repeated rune, so
+// each fixture item in these tests has a distinct, readable id.
+func queueTestID(r rune) string { return strings.Repeat(string(r), 32) }
+
+// countingAgent returns a runAgent fake that counts invocations and writes a
+// successful terminal result — the probe every ResumeQueue test uses to prove
+// whether a task's VM was (or was NOT) booted.
+func countingAgent(runs *int64) func(context.Context, []string, io.Writer, io.Writer) error {
+	return func(_ context.Context, _ []string, stdout, _ io.Writer) error {
+		atomic.AddInt64(runs, 1)
+		fmt.Fprintln(stdout, `{"type":"result","subtype":"success"}`)
+		return nil
+	}
+}
+
+// writeQueueFixture persists a queue item in the given state, as a prior
+// brokerd life would have left it.
+func writeQueueFixture(t *testing.T, b *Broker, id string, state QueueState) QueueItem {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	it := QueueItem{
+		ID:           id,
+		Task:         Task{RepoRef: "https://github.com/o/r.git", Instruction: "do x", AutoApprove: true},
+		State:        state,
+		EnqueuedAtMs: now,
+		UpdatedAtMs:  now,
+	}
+	if state != QueueQueued {
+		it.StartedAtMs = now
+		it.Attempts = 1
+	}
+	if err := writeQueueItem(b.AuditRoot, it); err != nil {
+		t.Fatalf("writeQueueItem(%s): %v", id, err)
+	}
+	return it
+}
+
+// TestResumeQueue_QueuedItemRedispatched: a still-`queued` item (provably never
+// dispatched) survives a restart and is re-dispatched by the new life's
+// dispatcher — exactly once, even when ResumeQueue itself runs twice
+// (idempotency: the re-append dedupes by id against the in-memory queue).
+func TestResumeQueue_QueuedItemRedispatched(t *testing.T) {
+	var agentRuns int64
+	b := queueBroker(t, 2, countingAgent(&agentRuns))
+	id := queueTestID('a')
+	writeQueueFixture(t, b, id, QueueQueued)
+
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue (second run): %v", err)
+	}
+	b.queueMu.Lock()
+	n := len(b.queue)
+	b.queueMu.Unlock()
+	if n != 1 {
+		t.Fatalf("in-memory queue holds %d copies after two ResumeQueue runs, want 1", n)
+	}
+
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+	waitForQueueState(t, b, id, QueueCompleted)
+	if got := atomic.LoadInt64(&agentRuns); got != 1 {
+		t.Errorf("agent ran %d times for one resumed queued item, want exactly 1", got)
+	}
+
+	// A third ResumeQueue after the item went terminal must not resurrect it.
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue after terminal: %v", err)
+	}
+	b.queueMu.Lock()
+	n = len(b.queue)
+	b.queueMu.Unlock()
+	if n != 0 {
+		t.Errorf("terminal item re-entered the in-memory queue (len=%d), want 0", n)
+	}
+}
+
+// TestResumeQueue_RunningItemDeadLettersNeverReRuns is THE crux test: an item
+// that was `running` when the previous brokerd died may have spent budget or
+// pushed — it must NEVER be re-dispatched (no second VM). ResumeQueue instead
+// reconciles it to dead_letter ("interrupted by restart"), and the fake agent
+// proves no dispatch ever happens.
+func TestResumeQueue_RunningItemDeadLettersNeverReRuns(t *testing.T) {
+	var agentRuns int64
+	b := queueBroker(t, 2, countingAgent(&agentRuns))
+	id := queueTestID('b')
+	writeQueueFixture(t, b, id, QueueRunning)
+	// The audit trace the crashed life left behind: no terminal result line
+	// (the daemon died under the task).
+	if err := os.WriteFile(filepath.Join(b.AuditRoot, id+".jsonl"),
+		[]byte(`{"type":"stream_event"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	it := queueItemState(t, b, id)
+	if it.State != QueueDeadLetter {
+		t.Fatalf("running-at-boot item state = %q, want dead_letter (never re-run)", it.State)
+	}
+	if it.LastError != "interrupted by restart" {
+		t.Errorf("LastError = %q, want %q", it.LastError, "interrupted by restart")
+	}
+
+	// Even with the dispatcher running, no second VM may ever boot.
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt64(&agentRuns); got != 0 {
+		t.Fatalf("agent ran %d times for an interrupted running item — a second VM was booted", got)
+	}
+}
+
+// TestResumeQueue_PreparingAndVerifyingDeadLetterUniformly pins the carried
+// fix-3 decision: preparing/verifying items at boot dead-letter uniformly —
+// even a stranded `preparing` whose audit trace shows a SUCCESS terminal (the
+// failed preparing->running persist case). preparing->completed is
+// deliberately not a legal transition; the honest, never-re-run terminal is
+// dead_letter "interrupted by restart".
+func TestResumeQueue_PreparingAndVerifyingDeadLetterUniformly(t *testing.T) {
+	var agentRuns int64
+	b := queueBroker(t, 2, countingAgent(&agentRuns))
+	prepID, verID := queueTestID('c'), queueTestID('d')
+	writeQueueFixture(t, b, prepID, QueuePreparing)
+	writeQueueFixture(t, b, verID, QueueVerifying)
+	// The stranded-preparing case: the task actually finished (success
+	// terminal on the trace) but the preparing->running persist failed.
+	if err := os.WriteFile(filepath.Join(b.AuditRoot, prepID+".jsonl"),
+		[]byte(`{"type":"result","subtype":"success","is_error":false}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	for _, id := range []string{prepID, verID} {
+		it := queueItemState(t, b, id)
+		if it.State != QueueDeadLetter || it.LastError != "interrupted by restart" {
+			t.Errorf("item %s = (%q, %q), want (dead_letter, interrupted by restart)", id, it.State, it.LastError)
+		}
+	}
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt64(&agentRuns); got != 0 {
+		t.Fatalf("agent ran %d times for interrupted items, want 0", got)
+	}
+}
+
+// TestResumeQueue_AwaitingReviewDefersToResumeAwaiting: an awaiting_review
+// item whose gate marker survived is owned by ResumeAwaiting (the marker
+// drives the headless gate re-drive); ResumeQueue must leave it untouched and
+// never re-dispatch it. Without a marker the gate can never be re-posed
+// (ResumeAwaiting's fail-safe dropped it), so the item dead-letters honestly.
+func TestResumeQueue_AwaitingReviewDefersToResumeAwaiting(t *testing.T) {
+	t.Run("marker survives: untouched, not re-dispatched", func(t *testing.T) {
+		var agentRuns int64
+		b := queueBroker(t, 2, countingAgent(&agentRuns))
+		id := queueTestID('e')
+		before := writeQueueFixture(t, b, id, QueueAwaitingReview)
+		if err := writeGateMarker(b.AuditRoot, id, gateMarker{RepoRef: "https://github.com/o/r.git", Agent: "claude"}); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := b.ResumeQueue(b.StageRoot); err != nil {
+			t.Fatalf("ResumeQueue: %v", err)
+		}
+		after := queueItemState(t, b, id)
+		if after.State != QueueAwaitingReview || after.UpdatedAtMs != before.UpdatedAtMs {
+			t.Errorf("awaiting_review item modified: state=%q updated=%d, want untouched (%q, %d)",
+				after.State, after.UpdatedAtMs, before.State, before.UpdatedAtMs)
+		}
+		b.StartDispatcher()
+		defer b.StopDispatcher()
+		time.Sleep(50 * time.Millisecond)
+		if got := atomic.LoadInt64(&agentRuns); got != 0 {
+			t.Fatalf("agent ran %d times for an awaiting_review item, want 0 (ResumeAwaiting owns it)", got)
+		}
+	})
+	t.Run("marker gone: dead-lettered honestly", func(t *testing.T) {
+		b := queueBroker(t, 2, countingAgent(new(int64)))
+		id := queueTestID('f')
+		writeQueueFixture(t, b, id, QueueAwaitingReview) // deliberately NO gate marker
+		if err := b.ResumeQueue(b.StageRoot); err != nil {
+			t.Fatalf("ResumeQueue: %v", err)
+		}
+		it := queueItemState(t, b, id)
+		if it.State != QueueDeadLetter || it.LastError != "interrupted by restart" {
+			t.Errorf("marker-less awaiting_review item = (%q, %q), want (dead_letter, interrupted by restart)", it.State, it.LastError)
+		}
+	})
+}
+
+// TestResumeQueue_RunningWithGateMarkerHandsToResumeAwaiting: a `running`
+// record whose gate marker survived proves the task actually reached the gate
+// (the awaiting_review persist raced the crash). ResumeQueue must move it to
+// awaiting_review — deferring to ResumeAwaiting's re-drive — instead of
+// dead-lettering a task whose completed work is resumable.
+func TestResumeQueue_RunningWithGateMarkerHandsToResumeAwaiting(t *testing.T) {
+	var agentRuns int64
+	b := queueBroker(t, 2, countingAgent(&agentRuns))
+	id := queueTestID('9')
+	writeQueueFixture(t, b, id, QueueRunning)
+	if err := writeGateMarker(b.AuditRoot, id, gateMarker{RepoRef: "https://github.com/o/r.git", Agent: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	if it := queueItemState(t, b, id); it.State != QueueAwaitingReview {
+		t.Fatalf("running-with-marker item state = %q, want awaiting_review (gate marker owns the resume)", it.State)
+	}
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt64(&agentRuns); got != 0 {
+		t.Fatalf("agent ran %d times, want 0 (no second VM)", got)
+	}
+}
+
+// TestResumeQueue_TerminalItemsUntouched: completed/dead_letter/cancelled
+// records are history for `drydock queue list` — ResumeQueue leaves them
+// byte-identical and never re-enqueues them.
+func TestResumeQueue_TerminalItemsUntouched(t *testing.T) {
+	b := queueBroker(t, 2, countingAgent(new(int64)))
+	fixtures := map[string]QueueState{
+		queueTestID('1'): QueueCompleted,
+		queueTestID('2'): QueueDeadLetter,
+		queueTestID('3'): QueueCancelled,
+	}
+	before := map[string]QueueItem{}
+	for id, st := range fixtures {
+		before[id] = writeQueueFixture(t, b, id, st)
+	}
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	for id := range fixtures {
+		if got := queueItemState(t, b, id); !reflect.DeepEqual(got, before[id]) {
+			t.Errorf("terminal item %s modified:\n got %+v\nwant %+v", id, got, before[id])
+		}
+	}
+	b.queueMu.Lock()
+	n := len(b.queue)
+	b.queueMu.Unlock()
+	if n != 0 {
+		t.Errorf("terminal items re-entered the in-memory queue (len=%d), want 0", n)
+	}
+}
+
+// TestRunQueued_ShutdownAtGateStaysNonTerminal is the carried-fix-1 test: a
+// queued task shut down while parked at the diff-approval gate keeps its gate
+// marker (gatePushMarked leaves it on gateShutdown) and WILL be resumed and
+// pushed by the next boot's ResumeAwaiting — so the queue record must stay
+// non-terminal (awaiting_review), never `cancelled`. The second half proves
+// the full round trip: the next life resumes the gate, an approve pushes, and
+// the gate resolution finalizes the queue record to completed with no second
+// agent run.
+func TestRunQueued_ShutdownAtGateStaysNonTerminal(t *testing.T) {
+	var agentRuns int64
+	b := queueBroker(t, 2, countingAgent(&agentRuns))
+	// AutoApprove deliberately false: the task must park at the human gate.
+	id, err := b.Enqueue(Task{RepoRef: "https://github.com/o/r.git", Instruction: "do x"})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+	waitForQueueState(t, b, id, QueueAwaitingReview)
+
+	// brokerd shutdown while the task waits at the gate.
+	b.CancelAll()
+	if !waitFor(5*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, live := b.tasks[id]
+		b.pendingMu.Unlock()
+		return !live
+	}) {
+		t.Fatal("queued task never unregistered after shutdown")
+	}
+
+	it := queueItemState(t, b, id)
+	if it.State != QueueAwaitingReview {
+		t.Fatalf("shutdown-at-gate item state = %q, want awaiting_review (non-terminal: the next boot resumes it)", it.State)
+	}
+	if _, err := os.Stat(gateMarkerPath(b.AuditRoot, id)); err != nil {
+		t.Fatalf("gate marker must survive shutdown for the next boot: %v", err)
+	}
+
+	// ---- next boot: ResumeAwaiting re-drives the gate; approve pushes and
+	// finalizes the queue record. No agent re-run.
+	stageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stageRoot, id, "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, id, "work")}
+	b2 := &Broker{AuditRoot: b.AuditRoot, StageRoot: stageRoot,
+		reopenStage: func(string) (taskStage, error) { return fs, nil },
+		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
+	b2.ResumeAwaiting(stageRoot)
+	if err := b2.ResumeQueue(stageRoot); err != nil {
+		t.Fatalf("ResumeQueue (second life): %v", err)
+	}
+	// ResumeQueue must not have touched the awaiting_review record or
+	// re-enqueued it (b2 has no runAgent: a dispatch would nil-panic).
+	b2.queueMu.Lock()
+	n := len(b2.queue)
+	b2.queueMu.Unlock()
+	if n != 0 {
+		t.Fatalf("awaiting_review item re-entered the in-memory queue (len=%d), want 0", n)
+	}
+	if !waitFor(2*time.Second, func() bool {
+		b2.pendingMu.Lock()
+		_, ok := b2.pending[id]
+		b2.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("resumed task never reached the approval gate in the second life")
+	}
+	b2.pendingMu.Lock()
+	ch := b2.pending[id]
+	b2.pendingMu.Unlock()
+	ch <- gateReply{ok: true}
+
+	waitForQueueState(t, b2, id, QueueCompleted)
+	if !fs.pushed.Load() {
+		t.Error("approve after resume should have pushed the surviving branch")
+	}
+	if got := atomic.LoadInt64(&agentRuns); got != 1 {
+		t.Errorf("agent ran %d times across both lives, want exactly 1 (never re-run)", got)
+	}
+}
+
+// TestRunQueued_KillAtGateCancels guards the other half of carried fix 1: a
+// GENUINE kill at the gate (not a shutdown) is a real terminal — the gate
+// marker is removed and the queue record lands `cancelled`.
+func TestRunQueued_KillAtGateCancels(t *testing.T) {
+	b := queueBroker(t, 2, countingAgent(new(int64)))
+	id, err := b.Enqueue(Task{RepoRef: "https://github.com/o/r.git", Instruction: "do x"})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+	waitForQueueState(t, b, id, QueueAwaitingReview)
+
+	killReq := httptest.NewRequest("POST", "/admin/kill/"+id, nil)
+	killReq.SetPathValue("id", id)
+	killRec := httptest.NewRecorder()
+	b.HandleKill(killRec, killReq)
+	if killRec.Code != http.StatusNoContent {
+		t.Fatalf("kill code=%d, want 204", killRec.Code)
+	}
+
+	waitForQueueState(t, b, id, QueueCancelled)
+	if _, err := os.Stat(gateMarkerPath(b.AuditRoot, id)); !os.IsNotExist(err) {
+		t.Errorf("gate marker should be removed after a genuine kill, stat err=%v", err)
+	}
+}
+
+// TestRunQueued_EgressDenyCancelsNotDeadLetter is the carried-fix-2 test: a
+// deliberate human DENY at the egress-widening gate is a cancellation (like
+// the diff-gate deny), not a system failure — the queue record must land
+// `cancelled` with no misleading LastError, and the agent must never run.
+func TestRunQueued_EgressDenyCancelsNotDeadLetter(t *testing.T) {
+	var agentRuns int64
+	b := queueBroker(t, 2, countingAgent(&agentRuns)) // egress.Config{} -> widening gate ON (fail-closed default)
+	id, err := b.Enqueue(Task{RepoRef: "https://github.com/o/r.git", Instruction: "do x", AutoApprove: true,
+		EgressExtra: []egress.Domain{{Host: "example.com", Ports: []int{443}}}})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+
+	// Wait for the task to park at the egress gate, then deny it.
+	if !waitFor(5*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, ok := b.pending[id]
+		b.pendingMu.Unlock()
+		return ok
+	}) {
+		t.Fatal("queued task never reached the egress gate")
+	}
+	b.pendingMu.Lock()
+	ch := b.pending[id]
+	b.pendingMu.Unlock()
+	ch <- gateReply{ok: false}
+
+	waitForQueueState(t, b, id, QueueCancelled)
+	it := queueItemState(t, b, id)
+	if it.LastError != "" {
+		t.Errorf("egress-denied item LastError = %q, want empty (a deny is not a failure)", it.LastError)
+	}
+	if got := atomic.LoadInt64(&agentRuns); got != 0 {
+		t.Errorf("agent ran %d times for an egress-denied task, want 0", got)
 	}
 }

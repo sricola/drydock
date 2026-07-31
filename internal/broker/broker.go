@@ -913,6 +913,14 @@ func (tr *taskRun) runEgressGate() bool {
 			tr.sw.emit(map[string]any{"event": "result", "outcome": "cancelled", "task_id": tr.id})
 			return false
 		}
+		// A deliberate human deny is a cancellation of the task, not a system
+		// failure: record outcome "denied" so a queued task's terminal maps to
+		// `cancelled` (mirroring the diff-gate deny) instead of dead_letter
+		// with a misleading "see the audit log" LastError (no audit log exists
+		// yet at the egress gate). No metrics/audit side effect: this abort
+		// happens before the audit log opens, so the only reader of the
+		// outcome is runQueued's terminal mapping.
+		tr.outcome = "denied"
 		tr.sw.emit(errorEvent(tr.id, "egress widening denied", ""))
 		return false
 	}

@@ -126,6 +126,131 @@ func (b *Broker) ResumeAwaiting(stageRoot string) {
 	}
 }
 
+// ResumeQueue reconciles the durable queue records left by a prior brokerd
+// life. THE invariant: an item that already left `queued` may have spent
+// budget, run an agent VM, or pushed — it is NEVER re-dispatched. Only a
+// still-`queued` item (provably never started) re-enters the in-memory queue.
+// Per state:
+//
+//   - queued: re-appended to the in-memory queue for the dispatcher, deduped
+//     by id, so running ResumeQueue twice can never double-enqueue.
+//   - preparing/running/verifying: dead_letter "interrupted by restart",
+//     uniformly. TerminateStuckAudits (earlier in boot) already gave any
+//     crashed trace an honest `interrupted` terminal; we do NOT try to infer
+//     "it actually finished" from a success line on the trace — the agent's
+//     own success row proves nothing about the un-run verify/gate/push half,
+//     and preparing→completed is deliberately not a legal transition. The
+//     crux is: never re-run, always reach a terminal. (Increment B may turn
+//     some of these into bounded retries.) Exception: a record whose
+//     diff-approval gate marker survived provably reached the gate (its
+//     awaiting_review persist raced the crash), so it is handed to
+//     ResumeAwaiting by moving it to awaiting_review instead.
+//   - awaiting_review: untouched when its gate marker survives —
+//     ResumeAwaiting owns the re-drive (call it BEFORE ResumeQueue), and the
+//     resumed gate's resolution writes the terminal via finalizeQueuedResume.
+//     With no marker the gate can never be re-posed (ResumeAwaiting's
+//     fail-safe dropped it and wrote an interrupted audit line), so the item
+//     dead-letters honestly.
+//   - terminal (completed/dead_letter/cancelled): untouched — history for
+//     `drydock queue list`.
+//
+// stageRoot is accepted for signature parity with ResumeAwaiting (and for
+// future increments that reconcile against the stage); this sweep decides
+// purely from the queue records and gate markers. Call StartDispatcher after
+// this returns so the dispatcher's first pass sees a reconciled queue.
+func (b *Broker) ResumeQueue(stageRoot string) error {
+	items, err := listQueueItems(b.AuditRoot)
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	markers := ListGateMarkers(b.AuditRoot)
+	b.initQueueChans()
+	deadLetter := func(id string) {
+		if _, err := b.setQueueState(id, QueueDeadLetter, func(q *QueueItem) {
+			q.LastError = "interrupted by restart"
+		}); err != nil {
+			slog.Warn("queue resume: could not dead-letter interrupted item", "task_id", id, "err", err)
+		}
+	}
+	requeued := 0
+	for _, it := range items {
+		switch it.State {
+		case QueueQueued:
+			b.queueMu.Lock()
+			dup := false
+			for i := range b.queue {
+				if b.queue[i].ID == it.ID {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				b.queue = append(b.queue, it)
+				requeued++
+			}
+			b.queueMu.Unlock()
+		case QueuePreparing, QueueRunning, QueueVerifying:
+			if _, marked := markers[it.ID]; marked {
+				// Reached the gate; the awaiting_review persist raced the crash.
+				// Defer to ResumeAwaiting's re-drive. Falls through to dead_letter
+				// only if the transition is invalid (a marker against `preparing`
+				// is contradictory evidence; fail toward the honest terminal).
+				if _, err := b.setQueueState(it.ID, QueueAwaitingReview, nil); err == nil {
+					slog.Info("queue resume: gate-marked item handed to awaiting-review resume", "task_id", it.ID)
+					continue
+				}
+			}
+			deadLetter(it.ID)
+		case QueueAwaitingReview:
+			if _, marked := markers[it.ID]; marked {
+				continue // ResumeAwaiting re-drives the gate; its resolution finalizes the record
+			}
+			deadLetter(it.ID)
+		default:
+			// Terminal — history. (An unknown state also lands here: with no
+			// valid outgoing transition it cannot be moved, and it can never
+			// dispatch because takeDispatchable only takes QueueQueued.)
+		}
+	}
+	if requeued > 0 {
+		slog.Info("queue resume: re-enqueued surviving queued items", "count", requeued)
+		select {
+		case b.queueWake <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+// finalizeQueuedResume bridges a resumed gate's resolution back onto the
+// durable queue record. A queue-driven task shut down at the diff-approval
+// gate stays awaiting_review across the restart (runQueued deliberately
+// writes no terminal on gateShutdown); when ResumeAwaiting's resumePush later
+// resolves the gate, this maps the resolution onto the queue file exactly as
+// runQueued's own terminal mapping would have. No-op for tasks with no queue
+// file (the synchronous POST /tasks path — resumePush serves both).
+func (b *Broker) finalizeQueuedResume(id, outcome string) {
+	if _, err := readQueueItem(b.AuditRoot, id); err != nil {
+		return // not a queue-driven task
+	}
+	to, lastErr := queueTerminal(outcome, false)
+	if outcome == "" {
+		// A resumed gate with no outcome is the approval-timeout auto-deny
+		// (resumePush already wrote the `interrupted` result row); name that
+		// instead of queueTerminal's generic pre-audit-abort message.
+		to, lastErr = QueueDeadLetter, "interrupted"
+	}
+	if _, err := b.setQueueState(id, to, func(q *QueueItem) {
+		q.LastError = lastErr
+	}); err != nil {
+		slog.Warn("queue: could not persist resumed terminal state",
+			"task_id", id, "state", string(to), "err", err)
+	}
+}
+
 // readDiffNoFollow reads the persisted review diff, refusing symlinks —
 // O_NOFOLLOW parity with persistDiff's write side, so a planted
 // <id>.diff -> elsewhere can't feed the resumed gate substituted bytes.
@@ -225,7 +350,9 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		fmt.Fprintf(logf,
 			`{"type":"result","subtype":%q,"is_error":false,"duration_ms":0,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
 			subtype, audit.TotalCost(tr.auditPath))
+		b.finalizeQueuedResume(id, tr.outcome)
 		return
 	}
 	tr.finishPush(files, insertions, deletions)
+	b.finalizeQueuedResume(id, tr.outcome)
 }

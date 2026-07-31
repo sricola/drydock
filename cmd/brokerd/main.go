@@ -585,6 +585,26 @@ func main() {
 	// 404, and the task is never lost because its marker persists.
 	b.ResumeAwaiting(cfg.StageRoot)
 
+	// Resume the durable task queue — AFTER pruneOrphanTasks (which ran
+	// TerminateStuckAudits, giving every crashed trace an honest terminal)
+	// and AFTER ResumeAwaiting (so ResumeQueue's gate-marker check reflects
+	// the markers ResumeAwaiting's fail-safe branches just dropped). Only
+	// still-`queued` items re-enter the dispatcher; anything that had already
+	// left `queued` is reconciled to a terminal, never re-dispatched — it may
+	// have spent budget or pushed. awaiting_review items stay owned by
+	// ResumeAwaiting above, whose gate resolution finalizes their record.
+	// Stage coordination: pruneOrphanTasks' keep-map already protects every
+	// gate-marked stage — the only non-terminal queue states with a stage
+	// worth keeping are gate-marked (awaiting_review) ones; `queued` items
+	// have no stage yet, and preparing/running/verifying items dead-letter
+	// here, so reaping their stages was correct.
+	if err := b.ResumeQueue(cfg.StageRoot); err != nil {
+		slog.Warn("queue resume failed; surviving queued items may not dispatch until the next restart", "err", err)
+	}
+	// Start the dispatcher only now, so its first pass sees a fully
+	// reconciled queue.
+	b.StartDispatcher()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)
 	mux.HandleFunc("POST /admin/approve/{id}", b.HandleApprove)
@@ -899,7 +919,12 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 	// a task here, so every leftover provably belongs to a dead prior life.
 	// Stages with a live gate marker must NOT be reaped: they belong to
 	// awaiting-approval tasks that survived the prior shutdown and will be
-	// resumed by ResumeAwaiting below.
+	// resumed by ResumeAwaiting below. This same keep-map covers the queue's
+	// boot resume (ResumeQueue): the only non-terminal queue items whose stage
+	// must survive are the gate-marked (awaiting_review) ones kept here —
+	// still-`queued` items have no stage yet, and interrupted
+	// preparing/running/verifying items are dead-lettered at resume, so
+	// reaping their stages is correct.
 	keep := map[string]bool{}
 	for id := range broker.ListGateMarkers(auditRoot) {
 		keep[id] = true

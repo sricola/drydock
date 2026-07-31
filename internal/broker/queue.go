@@ -271,6 +271,24 @@ func (b *Broker) runQueued(it QueueItem) {
 	}
 	tr.runLifecycle()
 
+	// Shutdown at the diff-approval gate is a pause, not a terminal:
+	// gatePushMarked kept the gate marker and the item is already durably
+	// awaiting_review, so the next boot's ResumeAwaiting re-drives the gate
+	// headlessly and its resolution writes the real terminal (via
+	// finalizeQueuedResume) — which may be a PUSH. Writing `cancelled` here
+	// would permanently contradict that. Scoped tightly: only a shutdown
+	// cause (a genuine kill is errTaskKilled and still terminal-cancels),
+	// with no lifecycle outcome, for an item that actually reached the gate —
+	// a mid-run or egress-gate shutdown has no resumable marker and falls
+	// through to the terminal mapping as before.
+	if tr.outcome == "" && context.Cause(ctx) == errShutdown {
+		if cur, err := readQueueItem(b.AuditRoot, it.ID); err == nil && cur.State == QueueAwaitingReview {
+			slog.Info("queue: shutdown at the approval gate; item stays awaiting_review for boot resume",
+				"task_id", it.ID)
+			return
+		}
+	}
+
 	to, lastErr := queueTerminal(tr.outcome, ctx.Err() != nil)
 	if _, err := b.setQueueState(it.ID, to, func(q *QueueItem) {
 		q.LastError = lastErr
