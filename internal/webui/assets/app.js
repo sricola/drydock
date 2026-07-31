@@ -434,7 +434,12 @@ function costCell(it) {
 // "this task spent nothing".
 function spentLabel(t) {
   if (t.spent_src === "broker") return "spent: $" + Number(t.spent_usd || 0).toFixed(4) + " (broker-metered)";
-  if (t.spent_src === "unmetered") return "spent: n/a — subscription lane, no USD metering";
+  // "unmetered" is TWO lanes, not one: a subscription lane, and an
+  // openai_compat lane configured with no prices. Naming only the first was
+  // wrong on the second — an operator on an unpriced lane was told they were on
+  // a subscription. Both are $0 by construction rather than by measurement,
+  // which is the fact that matters at an approval gate.
+  if (t.spent_src === "unmetered") return "spent: n/a — no USD metering on this lane (subscription, or no prices configured)";
   return "spent: unknown — not broker-metered";
 }
 

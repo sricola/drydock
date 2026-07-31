@@ -28,18 +28,25 @@ entry below corresponds to a Git tag of the same name.
   everywhere because it counts an event the broker itself causes — it is what
   bounds subscription mode, and the backstop for every case where the dollar
   figure can be under-reported (usage past the 1 MiB parse buffer, batch-style
-  routes, `openai_compat` lanes with no `prices` that meter at $0 by
-  construction). Retries and their parents count alike.
+  routes on an `openai_compat` lane, `openai_compat` lanes with no `prices` that
+  meter at $0 by construction). Retries and their parents count alike.
 
   What is true of it, stated as invariants:
 
-  - **It fails CLOSED**, unlike every existing spend check. An unreadable,
-    corrupt or absent ledger, or an agent that will not resolve, **refuses** the
-    task start. For a ceiling, "I don't know" must mean "no".
+  - **It fails CLOSED, per limb**, unlike every existing spend check. A ledger
+    that cannot be read *at all*, or an agent that will not resolve, **refuses**
+    the task start on both limbs. A corrupt *line* refuses the **USD** limb
+    only — it is quarantined rather than dropped and still counts as one task
+    start, so the start count stays complete while the spend total becomes a
+    lower bound; refusing both there would let one bad byte brick an install
+    that is not using the dollar limb. An **absent** ledger admits: an install
+    that has never run a task has provably spent nothing. For a ceiling, "I
+    don't know" must mean "no" — but empty is a fact, not an unknown.
     `aggregate_budget_usd` keeps its current behavior; the two coexist and the
     stricter answer wins.
   - **It refuses task STARTS and never kills a running task.** `POST /tasks`
-    returns **402** with the reason and the current headroom; a human-submitted
+    returns **402** with the reason (the limb, both numbers, the window, and
+    the headroom or the in-flight split); a human-submitted
     queue item **parks** and dispatches when the window rolls; an automatic CI
     retry over the cap is **dropped** to `dead_letter` rather than parked, while
     one the ceiling could not *measure* parks instead, so a transient fault
@@ -476,14 +483,17 @@ entry below corresponds to a Git tag of the same name.
   though the broker had measured it. Three consequences, all fixed:
 
   - The web UI's **push-approval gate** rendered exactly that untrusted figure
-    beside the Approve button. It now shows the broker's own lease metering,
-    published on the task state, and distinguishes "no USD metering on this
-    lane" from "not measured" instead of printing a bare `$0.00`.
+    beside the Approve button — it fetched the task's log stream and took the
+    last `total_cost_usd` on any line. It now shows the broker's own gateway
+    lease metering, published onto the task state at gate entry so the page has
+    nothing to parse, and distinguishes "no USD metering on this lane" from
+    "not measured" instead of printing a bare `$0.00`.
   - `drydock stats` summed it into the **spend total**. The total is now
     broker-metered only; a figure that exists solely because an agent reported
     it is listed separately and labelled, never dropped silently.
-  - Worst of the three: the broker's own synthetic terminal rows (`planned`,
-    `policy_blocked`, `push_failed`, `verify_failed`, the resumed terminal)
+  - Worst of the three: six of the broker's own synthetic terminal rows
+    (`planned`, `policy_blocked`, `push_failed`, `verify_failed`,
+    `setup_failed`, and the resumed terminal)
     copied that number into a row stamped `src:"broker"` — **laundering** it
     into the one field the aggregate-cap restart seed, boot reconciliation and
     every downstream `src=="broker"` filter trust. Every one of those rows now
@@ -492,6 +502,10 @@ entry below corresponds to a Git tag of the same name.
 
   `drydock tasks` and the web UI history table likewise read the broker row, and
   mark an agent-reported cost as such rather than presenting it as measured.
+  A structural test now pins the class shut: every `src:"broker"` result row in
+  `internal/broker` is parsed out of the package and its `total_cost_usd` must
+  come from the gateway lease, so a new terminal path cannot reintroduce the
+  laundering.
 
 ## v0.6.7 (2026-07-28)
 

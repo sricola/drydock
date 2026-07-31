@@ -470,8 +470,11 @@ It has **two limbs**, either of which refuses a task start:
 What it does, precisely:
 
 - **It refuses task STARTS. It never kills a running task.** The three admission
-  points are `POST /tasks` (which returns **402** with the reason and the
-  current headroom), the queue dispatcher, and the CI-retry gate. At the
+  points are `POST /tasks` (which returns **402** with the reason — the limb,
+  both numbers and the window, plus the remaining headroom on the USD limb and
+  the recorded-versus-in-flight split on the task limb; a refusal the ceiling
+  could not *evaluate* names the enforced limb and the fault instead, since
+  there are no numbers to give), the queue dispatcher, and the CI-retry gate. At the
   dispatcher a human-submitted item **parks** (it stays `queued`, its attempt
   count untouched, and it dispatches when the window rolls); a **retry** over
   the cap is **dropped** to `dead_letter` rather than parked, because an
@@ -480,12 +483,23 @@ What it does, precisely:
   it measured and refused — parks instead, so a transient fault does not destroy
   unattended work. Money already spent is already spent; terminating in-flight
   work would create half-finished trees for no saving.
-- **It fails CLOSED.** This is the deliberate break with every existing spend
-  check. If the durable ledger cannot be read, is corrupt, or the agent cannot
-  be resolved, the start is **refused**. For a ceiling, "I don't know" must mean
-  "no" — an unattended loop that cannot be measured is exactly the thing to
-  stop. `aggregate_budget_usd` keeps its existing fail-open behavior; the two
-  coexist and the stricter answer wins.
+- **It fails CLOSED, per limb.** This is the deliberate break with every
+  existing spend check: for a ceiling, "I don't know" must mean "no". If the
+  durable ledger **cannot be read at all** — a symlink where the file should be,
+  a permission failure, a file past the read cap — or the agent cannot be
+  resolved, the start is **refused on both limbs**. A **corrupt line** refuses
+  the **USD** limb only: it is quarantined rather than dropped and still counts
+  as exactly one task **start** (the line exists because a task ran), so the
+  start count stays complete while the spend total becomes a lower bound.
+  Refusing both there would let one bad byte brick an install that is not using
+  the dollar limb — permanently, in total mode. Damage that cannot be identified
+  as a single entry (a destroyed checkpoint, which carries a whole folded
+  history, or a region that took its line breaks with it) refuses **both**,
+  because the start count is then a lower bound too. An **absent** ledger
+  admits: an install that has never run a task has provably spent nothing and
+  started nothing, and empty is a fact rather than an unknown.
+  `aggregate_budget_usd` keeps its existing fail-open behavior; the two coexist
+  and the stricter answer wins.
 - **It is durable.** The ledger lives under `audit_root` (host-only, `0600` in a
   `0700` directory, never read or written by anything in a VM) and survives
   restart in both window modes. A crash loop cannot reset it, which is a hole
@@ -501,8 +515,12 @@ actually measured, so it under-counts in exactly these cases:
   when the task terminates. The same post-hoc bound `task_budget_usd` carries.
 - **Responses whose usage block exceeds the 1 MiB parse buffer.** Beyond that
   the usage is not read and the request meters at $0.
-- **Batch-style routes** (`/v1/messages/batches` and equivalents) where usage is
-  not in the response the broker proxies at all.
+- **Batch-style routes on an `openai_compat` lane**, where usage is not in the
+  response the broker proxies at all. For the built-in vendors this is *closed*
+  rather than open: the gateway's route allowlist deliberately omits
+  `/v1/messages/batches` (F-03) and answers it `403`, so it is never proxied and
+  never spends. `openai_compat` vendors carry no route allowlist, which is a
+  separately filed gap, and a batch-style route there would meter nothing.
 - **`openai_compat` lanes configured with no `prices`**, which meter at **$0 by
   construction** — there is no rate table to price tokens against.
 - **Subscription lanes**, where there is no USD to meter at all.
@@ -552,13 +570,15 @@ host-only and reads only broker-metered spend, which is claim **A1**'s property,
 not a new one), but non-evadability of a budget is not a containment boundary.
 Its enforcement is pinned by the generated
 [security defaults](https://sricola.github.io/drydock/docs/security-defaults.html)
-table, which now carries a row per limb naming the test that enforces it.
+table, which now carries a row per limb naming the tests that enforce it.
 
 **Operator-facing spend is broker-observed.** Related, and worth stating here
 because it is a trust property rather than a bound: every surface that shows a
-dollar figure — `drydock stats`, `drydock tasks`, the web UI's history table and
-its **push-approval gate** — now reads the broker-authored `src=="broker"` audit
-row, which carries the gateway lease's own metering. The agent's stdout is
+dollar figure now shows one the broker produced. `drydock stats`, `drydock
+tasks` and the web UI's history table read the broker-authored `src=="broker"`
+audit row, which carries the gateway lease's own metering; the web UI's
+**push-approval gate** shows the live lease figure the broker publishes onto the
+task state at gate entry, so it parses nothing at all. The agent's stdout is
 copied verbatim into the audit stream, so a `total_cost_usd` it printed is
 untrusted text; it is still displayed where it is the only figure that exists
 (a task with no broker terminal row yet), but it is explicitly marked as

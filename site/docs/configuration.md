@@ -95,8 +95,12 @@ The ceiling refuses task **starts**. It never kills a running task: the money is
 already spent, and terminating in-flight work would leave half-finished trees
 for no saving.
 
-- **`drydock submit` / `POST /tasks`** → **HTTP 402** with the reason, which
-  names the limb, both numbers, the window and the remaining headroom.
+- **`drydock submit` / `POST /tasks`** → **HTTP 402** with the reason. An
+  over-cap refusal names the limb, both numbers and the window — the USD one
+  also gives the remaining headroom, the task one gives how many starts are
+  recorded versus still in flight. A refusal the ceiling could not *evaluate*
+  names the limb that is enforced and what went wrong instead, since there are
+  no numbers to report.
 - **A queued item at the dispatcher** → it **parks**. It stays `queued` with its
   attempt count untouched and dispatches on its own once the window rolls or an
   in-flight task finishes.
@@ -107,9 +111,28 @@ for no saving.
   *measure* — as opposed to one it measured and refused — **parks** instead, so
   a transient fault never destroys unattended work.
 
-Fail-closed means an unreadable, corrupt or absent ledger **refuses** rather
-than admits. The refusal text says which limb is enforced and what clears it;
-in total mode it says plainly that the condition does not age out on its own.
+Fail-closed means the ceiling **refuses** whenever it cannot answer, and it is
+gated **per limb** — which is deliberate, not a weakness:
+
+- A ledger that **cannot be read at all** (a symlink where the file should be,
+  a permission failure, a file past the read cap) refuses **both** limbs: the
+  starts we never read are missing from the count as surely as the dollars.
+- A **corrupt line** refuses the **USD** limb only. The line is quarantined, not
+  dropped, and it still counts as one task **start** — it exists because a task
+  ran — so the start count is complete while the spend total is a lower bound.
+  Refusing both here would let one bad byte brick an install that is not even
+  using the dollar limb, permanently in total mode. Damage that cannot be
+  identified as a single entry (a destroyed checkpoint, or a region that took
+  its line breaks with it) refuses **both**, because then the start count really
+  is a lower bound too.
+- An **agent that will not resolve** refuses.
+- An **absent** ledger admits, and that is not a hole: an install that has never
+  run a task has provably spent nothing and started nothing. Empty is a fact,
+  not an "I don't know". (Deleting the ledger is therefore also how an operator
+  clears an exhausted total-mode ceiling — see below.)
+
+The refusal text says which limb is enforced and what clears it; in total mode
+it says plainly that the condition does not age out on its own.
 
 ### Reading the headroom
 
@@ -133,9 +156,11 @@ comparing against.
 
 Extra lines appear when they apply:
 
-- `DEGRADED: …` — a number above is a **lower bound**, not a measurement, which
-  is also why the ceiling is refusing. Ledger damage that could not be read is
-  reported rather than silently rounded down.
+- `DEGRADED: …` — a number above is a **lower bound**, not a measurement.
+  Ledger damage that could not be read is reported rather than silently rounded
+  down. It is why the limb that number belongs to refuses — *when that limb is
+  armed*: with only `global_max_tasks` set you can see a degraded **spend**
+  total and no refusal, because the start count is unaffected.
 - `BLOCKED: …` — the exact refusal a task start would receive right now,
   produced by the enforcement path itself rather than recomputed.
 
@@ -151,8 +176,12 @@ The USD limb can only count dollars the broker measured. It under-counts when:
 - spend is metered **after** a task's broker result row (a late in-flight
   completion) — the same post-hoc bound `task_budget_usd` carries;
 - a response's usage block exceeds the **1 MiB parse buffer**;
-- the route is **batch-style** (`/v1/messages/batches` and friends) and usage is
-  not in the proxied response at all;
+- the route is **batch-style** and usage is not in the proxied response at all.
+  For the built-in vendors this is closed rather than open: the gateway's route
+  allowlist deliberately omits `/v1/messages/batches` (F-03) and answers it
+  `403`, so it is never proxied. The gap is on **`openai_compat`** lanes, whose
+  route allowlist is unrestricted — a batch-style route there is proxied and
+  meters nothing;
 - an `openai_compat` lane is configured with **no `prices`**, so it meters at
   **$0 by construction**;
 - the lane is **subscription**, where there is no USD to meter.
@@ -170,11 +199,13 @@ the gateway lease's own metering, recorded host-side; the ledger lives under
 written by anything inside a VM. An agent cannot inflate the ceiling to deny
 service, and it cannot deflate it to keep spending.
 
-The same rule now holds for every surface that *displays* spend — `drydock
-stats`, `drydock tasks`, the web UI history table and its push-approval gate all
-read the broker-authored audit row. Where the only figure that exists is one the
-agent reported (a task still running, say), it is shown but explicitly marked as
-agent-reported, and never added to a spend total.
+The same rule now holds for every surface that *displays* spend. `drydock
+stats`, `drydock tasks` and the web UI history table read the broker-authored
+`src=="broker"` audit row; the web UI's **push-approval gate** shows the live
+gateway lease's own figure, published on the task state by the broker at gate
+entry, so there is nothing for it to parse at all. Where the only figure that
+exists is one the agent reported (a task still running, say), it is shown but
+explicitly marked as agent-reported, and never added to a spend total.
 
 ### `global_window: 0` (total mode)
 
