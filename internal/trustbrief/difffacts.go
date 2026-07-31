@@ -66,6 +66,31 @@ const (
 	FlagSubmodule  = "submodule-gitlink"
 )
 
+// lockfileNames is the canonical list of lockfile base names, the single
+// source of truth for "what is a lockfile" — classifyPath flags these in
+// review diffs, and internal/depcache (via LockfileNames) hashes exactly
+// this set into the dependency-cache key. Keeping one list means a file the
+// cache key pins is always one the Trust Brief flags, and vice versa.
+var lockfileNames = []string{
+	"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "go.sum",
+	"Cargo.lock", "Gemfile.lock", "poetry.lock", "uv.lock", "composer.lock",
+}
+
+// LockfileNames returns a copy of the known lockfile base names.
+func LockfileNames() []string {
+	return append([]string(nil), lockfileNames...)
+}
+
+// isLockfileName reports whether base is a known lockfile base name.
+func isLockfileName(base string) bool {
+	for _, n := range lockfileNames {
+		if base == n {
+			return true
+		}
+	}
+	return false
+}
+
 // DiffFacts is the broker-computed structural summary of the review diff.
 type DiffFacts struct {
 	SHA256       string       `json:"sha256"`
@@ -387,11 +412,11 @@ func classifyPath(p string, add func(kind, path string)) {
 	case "package.json", "go.mod", "requirements.txt", "pyproject.toml",
 		"Cargo.toml", "Gemfile", "pom.xml", "build.gradle", "build.gradle.kts":
 		add(FlagDependency, p)
-	case "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "go.sum",
-		"Cargo.lock", "Gemfile.lock", "poetry.lock", "uv.lock", "composer.lock":
-		add(FlagLockfile, p)
 	case ".gitattributes", ".gitmodules":
 		add(FlagGitMeta, p)
+	}
+	if isLockfileName(base) {
+		add(FlagLockfile, p)
 	}
 	if strings.HasPrefix(p, ".githooks/") {
 		add(FlagGitMeta, p)
