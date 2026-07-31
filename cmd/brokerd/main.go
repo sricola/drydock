@@ -618,6 +618,31 @@ func main() {
 		"task_budget_usd", cfg.TaskBudgetUSD,
 		"default_model", cfg.DefaultModel)
 
+	// Reconcile the GLOBAL USAGE CEILING's durable ledger against the audit
+	// trail (plan G3). Placement is load-bearing in both directions:
+	//
+	//   AFTER pruneOrphanTasks, which ran TerminateStuckAudits — so every trace
+	//   a crash left unterminated already carries its honest `interrupted`
+	//   terminal and the sweep sees a self-describing audit dir. (It does not
+	//   DEPEND on that row: unlike seedAggregateFromAudit it scans back to the
+	//   last src=="broker" row, so a crashed task's real metered spend is
+	//   visible through the synthetic line rather than hidden by it.)
+	//
+	//   BEFORE ResumeAwaiting, ResumeQueue and StartDispatcher — the dispatcher
+	//   is the first thing in this process that can START a task, and a start
+	//   admitted against an under-counted ledger is exactly the hole the ceiling
+	//   exists to close. Running it here also converges globalcap.go's one
+	//   documented residual: a task resumed at the diff gate was admitted in a
+	//   PREVIOUS process, so this one holds no in-flight claim for it, and its
+	//   ledger entry is the only thing that makes it visible to the ceiling.
+	//   ResumeAwaiting's own terminal write later is deduped by task id.
+	//
+	// It is a no-op until b.GlobalLedger is set from config (Task 4), so a stock
+	// install reads no traces and writes nothing. On a read failure it degrades
+	// the ledger rather than failing open, which globalcap.go turns into a
+	// refusal on every enforced limb (G2).
+	reconcileGlobalLedger(b, time.Now().UnixMilli())
+
 	// Resume any tasks that were awaiting approval when the previous brokerd
 	// shut down. Called after the broker is fully wired but before Serve.
 	// Resumed tasks re-register as pending shortly after boot (asynchronously,

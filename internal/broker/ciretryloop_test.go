@@ -502,8 +502,17 @@ func TestCIRetry_ChildReposesTheHumanGate(t *testing.T) {
 
 	// It is a NORMAL queued task: it took a slot, ran, and is now blocked at
 	// the gate with a durable gate marker and a persisted diff for the human.
-	if _, err := os.Stat(gateMarkerPath(b.AuditRoot, child.ID)); err != nil {
-		t.Fatalf("the retry did not pose the human diff gate (no gate marker): %v", err)
+	//
+	// The marker is POLLED for, not stat'ed once. awaiting_review is persisted
+	// by runQueued's onAwaitingReview hook, which fires on the way INTO
+	// gatePushMarked — i.e. strictly before the marker it writes exists. Reading
+	// the durable state as a signal that the marker has landed is a race, and it
+	// is the reason this test was intermittently failing before the wait.
+	if !waitFor(2*time.Second, func() bool {
+		_, err := os.Stat(gateMarkerPath(b.AuditRoot, child.ID))
+		return err == nil
+	}) {
+		t.Fatal("the retry did not pose the human diff gate (no gate marker)")
 	}
 	if _, err := os.Stat(filepath.Join(b.AuditRoot, child.ID+".diff")); err != nil {
 		t.Fatalf("the retry did not persist a diff for review: %v", err)

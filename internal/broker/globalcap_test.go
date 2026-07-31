@@ -724,12 +724,29 @@ func TestGlobalCap_DispatcherNeverExceedsTheStartLimb(t *testing.T) {
 		t.Fatalf("%d tasks ran concurrently against a global_max_tasks of %d", got, limb)
 	}
 	close(release)
-	// With Task 3 not yet recording terminals the ledger stays empty, so each
-	// finished task frees its claim and the rest drain — which is the correct
-	// Task-2-only behavior: the limb bounds STARTS THAT HAVE NOT BEEN
-	// ACCOUNTED FOR YET, and nothing has been accounted for.
-	for _, id := range ids {
+	// UPDATED BY TASK 3, and the change is the point. Task 2 asserted here that
+	// the rest of the queue DRAINED once the first two finished, because nothing
+	// recorded terminals and the ledger stayed empty — so the limb only ever
+	// bounded starts that had not been accounted for yet. Now that the terminal
+	// path records (globalrecord.go), those two starts are durable and IN
+	// WINDOW, so a global_max_tasks of 2 is genuinely exhausted for the next 24
+	// hours: the first two complete and the remaining four PARK. That is the
+	// cumulative, windowed bound the plan actually asks for (G1), and it is the
+	// property this test now pins.
+	for _, id := range ids[:limb] {
 		waitForQueueState(t, b, id, QueueCompleted)
+	}
+	if !waitFor(2*time.Second, func() bool { return b.GlobalLedger.Usage(capNow).Starts == limb }) {
+		t.Fatalf("the ledger recorded %d starts after %d terminals; the terminal path must record exactly one entry per task",
+			b.GlobalLedger.Usage(capNow).Starts, limb)
+	}
+	// Give the dispatcher many more passes to misbehave against an exhausted
+	// ceiling; the remaining items must stay queued, not dispatch and not drop.
+	time.Sleep(80 * time.Millisecond)
+	for _, id := range ids[limb:] {
+		if got := queueItemState(t, b, id).State; got != QueueQueued {
+			t.Fatalf("item %s state = %q, want queued: the recorded starts exhaust global_max_tasks", id, got)
+		}
 	}
 	if got := maxSeen.Load(); got > limb {
 		t.Fatalf("peak concurrency %d exceeded the limb %d", got, limb)

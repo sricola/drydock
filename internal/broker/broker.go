@@ -669,6 +669,31 @@ type taskRun struct {
 	// directory survives a brokerd shutdown and can be resumed at next boot.
 	// Set by pushAndOpenPR and resumePush when gatePushMarked returns gateShutdown.
 	keepStage bool
+
+	// --- global usage ceiling (globalrecord.go, plan Task 3) ---
+
+	// leaseSpentUSD is this task's BROKER-METERED spend, snapshotted off the
+	// gateway lease by captureLeaseSpend the instant the agent run ends —
+	// while the lease is still alive, since `defer grant.Revoke()` fires
+	// before the ledger write and grant.Spent() answers 0 on a revoked lease.
+	// leaseCaptured distinguishes "the lease metered zero" from "no lease
+	// existed", which are different facts about a $0 task. Written and read
+	// only on the single task goroutine.
+	leaseSpentUSD float64
+	leaseCaptured bool
+	// resumed marks a taskRun driven by resumePush — a task whose agent ran in
+	// a PREVIOUS brokerd life and which therefore has no lease in this process.
+	// Its broker-metered spend is recovered from the previous process's own
+	// src:"broker" result row instead.
+	resumed bool
+	// attempt and retryOf mirror Task's same-named bounded-retry fields, for
+	// the ledger entry only: they let an operator see WHICH retry chain
+	// consumed the ceiling. The counting itself treats a retry and its parent
+	// identically (G1). Set on the QUEUED path only, where BuildRetryTask is
+	// the sole writer — the HTTP surface's copies are caller-supplied text and
+	// have no business in a durable broker artifact.
+	attempt int
+	retryOf string
 }
 
 // errTaskTerminated signals that a lifecycle method has already emitted the
@@ -791,6 +816,19 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 // revoke, cache release, metrics row, audit sync/close) fire when it returns,
 // which on both paths is immediately before the caller's own defers.
 func (tr *taskRun) runLifecycle() {
+	// THE GLOBAL CEILING'S TERMINAL WRITE, and it is deliberately the FIRST
+	// statement in this function. Every terminal path out of the task lifecycle
+	// — the five in runSandbox, setup.go's two, verify.go's two, the synthetic
+	// planned/policy_blocked/push_failed rows, and every early abort BEFORE the
+	// audit log even opens — returns through this defer, so "every terminal
+	// records" is structural rather than a list someone has to remember to
+	// update. A path that skipped it would under-count the ceiling, which is the
+	// one direction G2/G3 forbid. See globalrecord.go for why it is not folded
+	// into the deferred appendMetrics below (that one starts at the audit-log
+	// open and misses every pre-audit terminal, all of which are real task
+	// starts) and for the LIFO ordering this produces. No-op with no ledger.
+	defer tr.recordGlobalUsage()
+
 	b, taskID, sw := tr.b, tr.id, tr.sw
 
 	// Egress widening: block at the same kind of human-driven gate as the
@@ -1275,6 +1313,14 @@ func (tr *taskRun) runSandbox(args []string) error {
 	defer sizeGuard.stop()
 	err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf))
 	tr.runEnd = time.Now()
+	// Snapshot the gateway lease's broker-metered spend HERE, before any of the
+	// branches below and before `defer grant.Revoke()` can tear the lease down
+	// (a revoked lease reports 0, so reading it from the terminal ledger write
+	// would silently record $0 for every task). This is the one instant the
+	// figure is both FINAL and READABLE: the agent VM is the only VM a bearer is
+	// ever injected into, so nothing can spend before it starts or after it
+	// exits. See globalrecord.go's G4 discussion.
+	tr.captureLeaseSpend()
 	if err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.

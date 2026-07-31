@@ -606,6 +606,145 @@ func (l *GlobalLedger) Usage(nowMs int64) GlobalUsage {
 	return u
 }
 
+// ---------------------------------------------------------------------------
+// Task 3 additions: the batched write, the reconcile anchor, and the external
+// degrade. All three are ADDITIVE — nothing above changes shape — and each
+// exists for one specific need of recording + boot reconciliation.
+// ---------------------------------------------------------------------------
+
+// RecordBatch durably records many task entries with ONE fsync, for boot
+// reconciliation.
+//
+// It exists because Record fsyncs per call (~4ms): correct for one call per
+// task terminal, ruinous for a boot sweep that may add thousands of entries
+// recovered from the audit. This takes the lock once, marshals every accepted
+// entry into a single buffer, and issues exactly one open/write/fsync — the
+// same durability guarantee as N Records, at the cost of one.
+//
+// Semantics are Record's, per entry: the Kind defaults to task and only task
+// entries are accepted, an invalid task id is rejected, a missing EndedAtMs is
+// filled from nowMs, a duplicate TaskID is silently skipped (idempotent
+// replay), and an entry whose durable write fails STAYS IN MEMORY rather than
+// being dropped — losing a real task because the disk was full is the one
+// direction G2/G3 forbid.
+//
+// It returns how many entries were newly recorded and the first error. A
+// per-entry validation error does NOT abort the batch: one malformed record
+// must not stop the rest of a reconciliation from being counted.
+func (l *GlobalLedger) RecordBatch(nowMs int64, es []GlobalEntry) (int, error) {
+	if l == nil {
+		return 0, errors.New("globalledger: nil ledger")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var (
+		buf      bytes.Buffer
+		added    int
+		firstErr error
+	)
+	for _, e := range es {
+		if e.Kind == "" {
+			e.Kind = GlobalEntryTask
+		}
+		if e.Kind != GlobalEntryTask {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("globalledger: RecordBatch only accepts task entries, got %q", e.Kind)
+			}
+			continue
+		}
+		if !queueIDRE.MatchString(e.TaskID) {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("globalledger: invalid task id %q", e.TaskID)
+			}
+			continue
+		}
+		if e.EndedAtMs <= 0 {
+			e.EndedAtMs = nowMs
+		}
+		if e.Src == "" {
+			e.Src = GlobalSrcReconcile
+		}
+		e.Raw = nil
+		if _, dup := l.byID[e.TaskID]; dup {
+			continue
+		}
+		payload, err := json.Marshal(e)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		buf.Write(payload)
+		buf.WriteByte('\n')
+		l.entries = append(l.entries, e)
+		l.byID[e.TaskID] = struct{}{}
+		added++
+	}
+	if added == 0 {
+		return 0, firstErr
+	}
+	if err := l.appendBytesLocked(buf.Bytes()); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := l.compactLocked(nowMs, false); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return added, firstErr
+}
+
+// NewestEventMs is the newest REAL event time the ledger holds, ignoring the
+// window and ignoring quarantine tombstones (whose timestamps are repair-time
+// stamps, not events).
+//
+// Boot reconciliation uses it as its lookback ANCHOR, for the mirror image of
+// the reason pruneLocked uses it as a pruning anchor. Pruning is destructive,
+// so it must not trust a clock that jumped FORWARD; reconciliation is purely
+// additive, so its risk is the opposite — a forward-jumped clock would put the
+// whole lookback window in the future and the sweep would silently ADD NOTHING,
+// which is the under-count G3 forbids. Anchoring both to the ledger's own
+// newest event keeps the two consistent: the reconcile never skips a task that
+// compaction has not already deleted.
+func (l *GlobalLedger) NewestEventMs() int64 {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return newestEventMs(l.entries)
+}
+
+// Degrade marks the ledger's numbers as a lower bound because a caller OUTSIDE
+// this file could not read something the totals depend on — specifically, boot
+// reconciliation failing to read the audit trail it cross-checks against (G3).
+//
+// It sets the same signal a failed load sets (LoadError), so globalcap.go
+// refuses on BOTH limbs: a reconcile that could not enumerate the audit does
+// not know how many starts it is missing, not just how many dollars. Under G2
+// that "I don't know" must mean "no" — but only for a limb actually being
+// enforced, which globalcap.go already gates, so an install with the ceiling
+// off is unaffected.
+//
+// It is STICKY and first-wins, exactly like a load error: the bytes do not come
+// back, and the first reason is the root cause rather than a later symptom. Its
+// side effect on compaction is deliberate and inherited, not incidental — a
+// degraded store never rewrites itself, because rewriting from an incomplete
+// picture would turn "we could not see everything" into "this is everything".
+//
+// An empty reason is ignored: degrading with nothing to tell the operator would
+// be a refusal with no explanation.
+func (l *GlobalLedger) Degrade(reason string) {
+	if l == nil || reason == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.loadErr == "" {
+		l.loadErr = reason
+	}
+}
+
 // Compact prunes and rewrites the durable file now. Callers do not need it —
 // Record compacts on an amortized schedule and OpenGlobalLedger compacts at
 // boot — but boot reconciliation and tests want it explicit.
@@ -760,6 +899,33 @@ func (l *GlobalLedger) appendLocked(e GlobalEntry) error {
 	}
 	defer f.Close()
 	if _, err := f.Write(append(payload, '\n')); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+// appendBytesLocked appends already-marshalled, newline-terminated lines in ONE
+// open/write/fsync. It is appendLocked's bulk twin (same flags, same 0600, same
+// O_NOFOLLOW, same fsync) and exists for RecordBatch, whose whole point is that
+// a boot sweep of thousands of recovered entries costs one fsync rather than
+// thousands. Deliberately left as a separate function rather than folded into
+// appendLocked: the single-entry path is the hot, crash-critical one and is not
+// worth disturbing for the sake of four shared lines.
+//
+// The crash signature is identical to appendLocked's — a torn TRAILING line,
+// which the boot scan quarantines rather than drops — because a partial write
+// can only truncate the buffer's tail. Interior lines that made it to disk are
+// whole JSON objects.
+func (l *GlobalLedger) appendBytesLocked(lines []byte) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(lines); err != nil {
 		return err
 	}
 	return f.Sync()

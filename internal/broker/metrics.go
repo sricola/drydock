@@ -21,6 +21,16 @@ import (
 // registered later run first, so it still precedes the log Sync/Close
 // pair). Cost is re-read from the audit's own last result row so live and
 // resume paths agree with the displayed cost.
+//
+// NOTE for the global usage ceiling: this hook runs on every exit path FROM
+// THE AUDIT-LOG OPEN ONWARD, and returns immediately when tr.logf is nil.
+// That is why the ceiling's durable ledger write is NOT folded in here —
+// every terminal before the audit log exists (a denied egress widen, a clone
+// or quota failure, the disk/push preflights, an unresolvable agent, a mint
+// failure) is still a real task START and must be counted. See
+// globalrecord.go, which defers its write on runLifecycle's first line
+// instead. CostUSD below is likewise display-only and deliberately unused by
+// the ceiling: audit.TotalCost does not filter Src (G4).
 func (tr *taskRun) appendMetrics() {
 	if tr.logf == nil {
 		return
@@ -28,8 +38,14 @@ func (tr *taskRun) appendMetrics() {
 	m := audit.Metrics{
 		Type: "metrics", Src: "broker", TaskID: tr.id,
 		Agent: tr.agentName, Vendor: tr.taskVendor,
-		Auth:               "api_key",
-		Outcome:            tr.outcome,
+		Auth:    "api_key",
+		Outcome: tr.outcome,
+		// The one BROKER-AUTHORED absolute instant in the whole trace. Boot
+		// reconciliation (cmd/brokerd) reads it so the ceiling's rolling
+		// window is computed from when the task RAN, instead of falling back
+		// to the file's mtime the way seedAggregateFromAudit still does.
+		// Taken from the b.now clock seam, like every other broker timestamp.
+		EndedAtMs:          tr.b.nowMs(),
 		Repo:               trustbrief.RedactRepoRef(tr.repoRef),
 		Model:              tr.model,
 		EgressGateWaitMs:   tr.egressGateWait.Milliseconds(),

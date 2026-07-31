@@ -459,11 +459,31 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		draft: m.Draft, agentName: m.Agent, st: st, logf: logf,
 		auditPath: filepath.Join(b.AuditRoot, id+".jsonl"),
 		taskStart: time.UnixMilli(m.TaskStartMs),
+		// This task's agent ran in a PREVIOUS brokerd life, so there is no
+		// lease here to meter it. recordGlobalUsage reads that as "recover the
+		// broker-metered figure from the previous process's own src:"broker"
+		// result row" rather than as a measured $0. See globalrecord.go.
+		resumed: true,
 	}
 	tr.subscription = audit.ReadMeta(tr.auditPath).Subscription
 	if v, ok := provider.VendorForAgent(m.Agent); ok {
 		tr.taskVendor = v
 	}
+	// THE GLOBAL CEILING'S TERMINAL WRITE for the resume path. resumePush is
+	// the ONLY task terminal that does not run through taskRun.runLifecycle
+	// (which defers the same call on its FIRST line), so it needs its own, and
+	// it is registered here — immediately after tr exists and before any exit
+	// from this function — so every path out of the resumed gate records:
+	// approve, deny, timeout, kill, push_failed, and the shutdown re-park.
+	//
+	// This is also what closes globalcap.go's documented residual: a task
+	// resumed at the diff gate was admitted in a PREVIOUS process, so this one
+	// holds no in-flight claim for it and the ledger entry is the only thing
+	// that makes it visible to the ceiling. The shutdown re-park records too,
+	// deliberately — the task already ran and its spend is already real, and
+	// GlobalLedger.Record is idempotent on task id, so the next boot's re-drive
+	// resolves the same task without counting it twice. No-op with no ledger.
+	defer tr.recordGlobalUsage()
 	// Registered after the Sync/Close defer above, so it runs before them
 	// (LIFO): the metrics row lands as the last line, matching the live path.
 	defer tr.appendMetrics()

@@ -77,7 +77,20 @@ type Metrics struct {
 	// "policy_blocked" (auto-approved pushes fold into "pushed": the
 	// auto/gated distinction isn't surfaced separately). Empty on pre-v0.6.7
 	// rows; see OutcomeKeyWithMetrics.
-	Outcome            string  `json:"outcome,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
+	// EndedAtMs is the BROKER-AUTHORED unix-millis instant this row was
+	// written — i.e. when the broker observed the task reach its terminal.
+	// It exists because the audit trace otherwise carries no absolute time at
+	// all (result rows carry only duration_ms), which forced every consumer
+	// that needed one to key on the FILE'S MTIME. seedAggregateFromAudit still
+	// does, and the CI work already had to paper over it with
+	// appendPreservingMTime; the global ceiling's boot reconciliation
+	// (cmd/brokerd) uses this field instead so a rolling window is computed
+	// from when the task RAN rather than from when the file happened to be
+	// touched last. omitempty, so a trace written before this field existed
+	// keeps its exact prior shape and reads back as 0 ("unknown") — callers
+	// must have a fallback for that case, never treat 0 as the epoch.
+	EndedAtMs          int64   `json:"ended_at_ms,omitempty"`
 	Repo               string  `json:"repo"`
 	Model              string  `json:"model,omitempty"`
 	StageMs            StageMs `json:"stage_ms"`
@@ -571,6 +584,53 @@ type CIObservation struct {
 // (broker.QueueItem.CIState plus its terminal state), which nothing inside the
 // VM can write. Render the row from the raw trace if you want to show it; do
 // not build a typed reader that invites branching on it.
+
+// LastBrokerResultFile finds the final BROKER-AUTHORED {"type":"result"} row
+// in f's tail — the last row with src=="broker" — rather than the last result
+// row of any authorship. ok=false when the trace has none.
+//
+// It exists because LastResult answers a DISPLAY question ("what is this
+// task's outcome?") while financial controls ask a different one ("what did
+// the broker itself meter?"), and the two diverge in a way that matters:
+//
+//   - The agent's stdout is untrusted, so a CLI-emitted total_cost_usd must
+//     never reach a spend control (G4). LastResult can return one.
+//   - TerminateStuckAudits appends a synthetic {"subtype":"interrupted"} row
+//     with NO src and total_cost_usd:0 to a trace a crash left unterminated.
+//     A "last result must be src==broker" check (seedAggregateFromAudit's)
+//     therefore sees that row, rejects it, and the crashed task's REAL
+//     broker-metered spend — sitting in the broker row just above it —
+//     becomes invisible. Scanning back to the last broker row finds it.
+//
+// The window and last-wins semantics are LastResultFile's exactly; only the
+// src filter differs, and it mirrors LastMetricsFile's own src=="broker" one.
+func LastBrokerResultFile(f *os.File) (Result, bool) {
+	info, err := f.Stat()
+	if err != nil {
+		return Result{}, false
+	}
+	lines, err := tailLines(f, info.Size())
+	if err != nil {
+		return Result{}, false
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		var x Result
+		if json.Unmarshal(lines[i], &x) == nil && x.Type == "result" && x.Src == "broker" {
+			return x, true
+		}
+	}
+	return Result{}, false
+}
+
+// LastBrokerResult is LastBrokerResultFile for a path, opened O_NOFOLLOW.
+func LastBrokerResult(path string) (Result, bool) {
+	f, err := OpenRead(path)
+	if err != nil {
+		return Result{}, false
+	}
+	defer f.Close()
+	return LastBrokerResultFile(f)
+}
 
 // LastMetricsFile finds the final broker-authored {"type":"metrics"} line by
 // reading only the file tail (same 16KB window as LastResultFile). ok=false

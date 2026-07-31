@@ -453,6 +453,14 @@ func (b *Broker) runQueued(it QueueItem) {
 		issueURL:    t.IssueURL,
 		taskAgent:   t.Agent,
 		queuedMs:    queuedMs,
+		// Carried onto the global-ledger entry so an operator can see WHICH
+		// bounded-retry chain consumed the ceiling. Taken from the durable
+		// QueueItem, whose only writer for these fields is the broker's own
+		// BuildRetryTask (HandleQueueAdd zeroes them), so nothing an HTTP caller
+		// supplied reaches the ledger. Counting is unaffected: a retry is a task
+		// start like any other (G1).
+		attempt: t.Attempt,
+		retryOf: t.RetryOf,
 	}
 	// Bridge the diff-approval gate entry into the durable queue state
 	// (running -> awaiting_review) so `drydock queue list` shows a queued
