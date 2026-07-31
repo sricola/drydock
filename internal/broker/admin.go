@@ -162,6 +162,14 @@ type queueItemView struct {
 	// watched / nothing observed", never "passed".
 	PRNumber int    `json:"pr_number,omitempty"`
 	CIState  string `json:"ci_state,omitempty"`
+	// RetryOf/RetryTaskID make a bounded CI-retry chain followable in BOTH
+	// directions from this endpoint: RetryOf is the parent this item retries,
+	// RetryTaskID the child its own observed CI failure enqueued. Both
+	// omitempty, so an item outside a chain — every item on a stock install,
+	// where ci.max_attempts is 0 — serialises to exactly its previous shape.
+	// Ids only; nothing about the instruction text is re-broadcast.
+	RetryOf     string `json:"retry_of,omitempty"`
+	RetryTaskID string `json:"retry_task_id,omitempty"`
 }
 
 // HandleQueueList returns every durable queue item (including terminals —
@@ -183,6 +191,8 @@ func (b *Broker) HandleQueueList(w http.ResponseWriter, r *http.Request) {
 			Attempts:     it.Attempts,
 			PRNumber:     it.PRNumber,
 			CIState:      it.CIState,
+			RetryOf:      it.Task.RetryOf,
+			RetryTaskID:  it.RetryTaskID,
 		})
 	}
 	writeJSON(w, out)

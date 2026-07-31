@@ -157,6 +157,14 @@ func applyCIConfig(b *broker.Broker, ci config.CIConfig) {
 	b.CIWatch = ci.Watch
 	b.CIPollInterval = ci.PollInterval
 	b.CIWatchTimeout = ci.WatchTimeout
+	// The bounded retry (B2). Deliberately NOT gated on ci.watch here: the
+	// broker's own decision path is only ever reached from a terminal CI
+	// OBSERVATION, and observations only exist when the watch is on, so a
+	// non-zero max_attempts with the watch off is already inert. Copying it
+	// unconditionally keeps this function a straight mapping — one place, no
+	// hidden condition — and `drydock policy explain` then reports the value
+	// the operator actually wrote.
+	b.CIMaxAttempts = ci.MaxAttempts
 }
 
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)

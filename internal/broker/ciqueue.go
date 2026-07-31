@@ -175,9 +175,18 @@ func (b *Broker) applyCIObservation(obs CIObservation) bool {
 	to, lastErr := ciQueueTerminal(obs.State)
 	qs, replay, persisted := b.recordCIQueueTerminal(obs, to, lastErr)
 	if replay {
+		// A crash-window replay. Returning HERE is what makes the bounded retry
+		// enqueue-once: the decision below never runs a second time for an
+		// observation whose terminal is already on the parent's record. See
+		// ciretryloop.go's crash-window analysis.
 		return true
 	}
-	b.appendCIObservationRow(obs, qs)
+	// The bounded retry (B2, D6), and note the ORDER: the parent's terminal is
+	// already durable at this point, so a crash between the two can only lose a
+	// child, never duplicate one. Nothing here can change the terminal that was
+	// just written.
+	retryID, retryDetail := b.maybeEnqueueCIRetry(obs, qs)
+	b.appendCIObservationRow(obs, qs, retryID, retryDetail)
 	return persisted
 }
 
@@ -260,7 +269,12 @@ func (b *Broker) recordCIQueueTerminal(obs CIObservation, to QueueState, lastErr
 // replayed through the concludeCIWatch crash window, which has no queue item to
 // dedup against. That is the right trade: the audit is a log, two identical
 // broker-authored rows are honest, and no reader branches on them.
-func (b *Broker) appendCIObservationRow(obs CIObservation, qs QueueState) {
+//
+// retryID/retryDetail carry the bounded-retry decision (B2). They are recorded
+// as EVIDENCE for an operator following a chain — the authoritative link is
+// QueueItem.RetryTaskID and the child's own Task.RetryOf, both broker-owned —
+// and, like every other field here, no reader may branch on them.
+func (b *Broker) appendCIObservationRow(obs CIObservation, qs QueueState, retryID, retryDetail string) {
 	path := filepath.Join(b.AuditRoot, obs.TaskID+".jsonl")
 	line, err := json.Marshal(audit.CIObservation{
 		Type:         "ci_observation",
@@ -275,6 +289,10 @@ func (b *Broker) appendCIObservationRow(obs CIObservation, qs QueueState) {
 		Failed:       obs.Summary.Failed,
 		Pending:      obs.Summary.Pending,
 		Detail:       safeStr(obs.Detail),
+		Attempt:      obs.Attempt,
+		RetryOf:      safeStr(obs.RetryOf),
+		RetryTaskID:  safeStr(retryID),
+		RetryDetail:  safeStr(retryDetail),
 		ObservedAtMs: obs.ObservedAtMs,
 	})
 	if err != nil {

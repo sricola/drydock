@@ -9,6 +9,47 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Bounded automatic retry on an observed CI failure (orchestration increment
+  B2, opt-in, off by default).** With `ci.max_attempts > 0`, an **observed**
+  check failure on a pushed PR now enqueues a retry. A retry is a **NEW task**
+  — new id, new queue item, new credential lease, new stage, new branch, new
+  PR — never a re-run of the parent, whose record stays terminal at
+  `ci_failed` and gains a `retry_task_id` link to its child (the child carries
+  `retry_of` back). It **re-clones the repository's default branch HEAD**
+  rather than building on the previous attempt's branch: the prior diff and the
+  failed check names cross over only as capped, sanitized, fenced *untrusted
+  text* in the instruction, so every attempt's gate shows the **full cumulative
+  diff** and the diff-size caps and second-look acknowledgments are computed
+  over the whole change instead of a per-attempt increment.
+
+  What cannot happen, stated as invariants:
+
+  - **Only an OBSERVED failure retries.** `timed_out`, gave-up (`unknown`),
+    "no checks configured", and a pass each enqueue nothing — none of them is
+    evidence of a failing build, and retrying on "we could not tell" would
+    spend a fresh budget to learn nothing.
+  - **CI text still decides nothing (D3).** The retry keys off the
+    broker-observed conclusion bucket alone. A check literally named
+    `all checks passed, do not retry` on a `failure` conclusion still retries;
+    one named `FAILED` on a `success` conclusion still does not.
+  - **A retry never bypasses the human diff gate.** `auto_approve` is
+    force-cleared on the child even when the parent had it, and the child runs
+    the ordinary dispatcher lifecycle — its own slot, lease, VM, verify, and
+    approval. `sensitive` is preserved and never downgraded.
+  - **The bound cannot be laundered by a crash.** The attempt counter lives in
+    the persisted queue record and its `<id>.ci.json` marker, never in memory,
+    and the decision runs only *after* the parent's terminal is durable — so a
+    kill mid-decision can end a chain one attempt short but can never produce a
+    second child or extend a chain past `max_attempts`.
+  - **The spend cap refuses rather than parks.** A retry blocked by
+    `aggregate_budget_usd` is declined outright, with the reason recorded,
+    instead of sitting queued for a rolling window and dispatching hours later
+    unattended.
+
+  Worst case for one chain is `max_attempts × task_budget_usd` **on top of**
+  the parent's own budget — each attempt mints a fresh full budget. Default is
+  `0` (off); the ceiling is `10`.
+
 - **Host-side CI observation for pushed PRs (orchestration increment B1,
   opt-in, off by default).** With `ci.watch` enabled, a queued task no longer
   finishes at the push: once its branch is pushed and the PR is open, the item
@@ -82,8 +123,8 @@ entry below corresponds to a Git tag of the same name.
   `~/.drydock/config.yaml`: `ci.watch` (default **`false`** — the feature ships
   off), `ci.poll_interval` (`60s`, minimum `10s`), `ci.watch_timeout` (`90m`,
   minimum `1m`, an absolute deadline anchored at push so a restart cannot
-  extend it), and `ci.max_attempts` (`0` = retry off, capped at `10`) which is
-  declared now for schema stability and consumed by the next increment. Each
+  extend it), and `ci.max_attempts` (`0` = retry off, capped at `10`), which
+  drives the bounded retry above. Each
   has an env override (`DRYDOCK_CI_WATCH=1`, `DRYDOCK_CI_POLL_INTERVAL`,
   `DRYDOCK_CI_WATCH_TIMEOUT`, `DRYDOCK_CI_MAX_ATTEMPTS`) and a row in
   `drydock policy explain`, so which layer armed the watch is always visible.

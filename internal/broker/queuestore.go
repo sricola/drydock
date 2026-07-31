@@ -125,6 +125,18 @@ type QueueItem struct {
 	// `completed` before its CI verdict exists. Empty means "no watch" — the
 	// stock, watch-disabled behavior — never "CI passed".
 	CIState string `json:"ci_state,omitempty"`
+	// RetryTaskID is the BOUNDED RETRY this item's observed CI failure enqueued
+	// (B2, D6): a NEW task with a new id, its own credential lease, and its own
+	// human diff gate — never a re-run of this one. It is the forward link an
+	// operator follows down a chain; the backward link is the child's own
+	// Task.RetryOf, written durably by Enqueue.
+	//
+	// It has a second, load-bearing job: it is the durable ENQUEUE-ONCE flag.
+	// The retry decision refuses outright when it is already set, so a crash
+	// that replays an observation cannot mint a second child. Written by
+	// linkCIRetryChild only, first-writer-wins, onto an item that is already
+	// terminal — see ciretryloop.go.
+	RetryTaskID string `json:"retry_task_id,omitempty"`
 }
 
 // queueIDRE matches newID's output shape (32 lowercase hex chars). Validated

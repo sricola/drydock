@@ -197,7 +197,7 @@ ci:
 | `watch` | `DRYDOCK_CI_WATCH=1` | `false` | Enable the host-side CI watch. Only the exact value `1` enables it via env |
 | `poll_interval` | `DRYDOCK_CI_POLL_INTERVAL` | `60s` | Watch tick. One GitHub API call per watched PR per tick; `0` = the built-in default, minimum `10s` |
 | `watch_timeout` | `DRYDOCK_CI_WATCH_TIMEOUT` | `90m` | Per-PR deadline, absolute and anchored at push, so a restart cannot extend it; `0` = the built-in default. Must exceed the dispatch floor `max(2 × poll_interval, 5m)` — a shorter window makes every watch dead-letter, so the pair is rejected at load |
-| `max_attempts` | `DRYDOCK_CI_MAX_ATTEMPTS` | `0` (off) | Bounded retry on an observed CI failure. **Not yet wired** — the key is declared so the schema is stable; the behavior ships in the next increment. Capped at `10` |
+| `max_attempts` | `DRYDOCK_CI_MAX_ATTEMPTS` | `0` (off) | Bounded retry on an **observed** CI failure. Counts retries, so `2` means at most two extra tasks in a chain. Each is a **new** task with a fresh full `task_budget_usd`, so one chain's worst case is `max_attempts × task_budget_usd` on top of the original. Capped at `10` |
 
 ### What the watch does, and what it does not
 
@@ -218,11 +218,29 @@ ci:
   nothing a repository's workflow prints can influence any decision. Check
   *names* are recorded (a repo's workflow file chooses them, so they are
   sanitized at ingestion) and they decide nothing.
-- **It does not retry.** `max_attempts` is declared but inert in this
-  release: a CI failure is recorded, never acted on. When retry ships, each
-  attempt is a **new** task with a **fresh full `task_budget_usd`**, so the
-  worst case for one chain is `max_attempts × task_budget_usd` on top of the
-  parent's own budget. That is why the default is `0` and the cap is `10`.
+- **It retries only when you ask it to, and only a bounded number of times.**
+  With `max_attempts: 0` (the default) a CI failure is recorded and never acted
+  on. Above `0`, an **observed** check failure enqueues one **new** task —
+  never a re-run of the old one — carrying the prior attempt's diff and the
+  failed check names forward as capped, fenced, untrusted text. Every other
+  ending (`timed_out`, gave-up, "no checks", and of course a pass) retries
+  **nothing**: they are not evidence of a failing build. Each attempt mints a
+  **fresh full `task_budget_usd`**, so the worst case for one chain is
+  `max_attempts × task_budget_usd` on top of the parent's own budget. That is
+  why the default is `0` and the cap is `10`.
+- **A retry never bypasses the diff gate.** The child is an ordinary queued
+  task: its own slot, its own credential lease, its own VM, its own verify, and
+  its own human approval — `auto_approve` is force-cleared on it even when the
+  parent had it set. It also re-clones the default branch rather than building
+  on the previous attempt's branch, so every attempt's gate shows the **full
+  cumulative** diff and the size caps and second-look acknowledgments are
+  computed over the whole change.
+- **The bound is on disk, so a crash cannot launder it.** The attempt counter
+  lives in the persisted queue record and its CI marker, never in memory. A
+  brokerd killed mid-decision can end a chain one attempt short; it can never
+  restart one, and it can never extend one past `max_attempts`. Follow a chain
+  with `retry_task_id` on the parent's queue record and `retry_of` on the
+  child's.
 - **It holds no concurrency slot and keeps no stage.** The watch is a
   separate bounded poll, so other tasks keep dispatching normally.
 - **It waits before believing a non-failing answer.** CI dispatch is

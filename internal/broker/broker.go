@@ -97,9 +97,11 @@ type Task struct {
 	// restart at zero and run forever.
 	//
 	// Client-submitted bodies may carry them — the fields are just JSON — but
-	// they buy nothing an attacker wants: a HIGHER Attempt only shortens the
-	// chain, and the retry decision (Task 6) reads the persisted queue item,
-	// never a value the agent VM can reach.
+	// they buy nothing an attacker wants: the retry decision reads the
+	// PERSISTED queue item, never a value the agent VM can reach, a HIGHER
+	// Attempt only shortens a chain, and a NEGATIVE one (the only direction
+	// that could lengthen one) is clamped to 0 where it is read. See
+	// ciretryloop.go's gate 6.
 	RetryOf string `json:"retry_of,omitempty"`
 	Attempt int    `json:"attempt,omitempty"`
 }
@@ -218,6 +220,21 @@ type Broker struct {
 	// watch. Both are ignored when CIWatch is false.
 	CIPollInterval time.Duration
 	CIWatchTimeout time.Duration
+
+	// CIMaxAttempts bounds the automatic retry chain an OBSERVED CI failure may
+	// start (config `ci.max_attempts`, D6). 0 — the default — is OFF: a CI
+	// failure terminates the item at `ci_failed` and nothing is enqueued, which
+	// is exactly B1's behavior.
+	//
+	// It counts RETRIES, matching Task.Attempt: an operator-submitted task is
+	// attempt 0, so a bound of N yields at most N extra tasks in a chain and a
+	// worst-case spend of N × task_budget_usd on top of the original. Each
+	// retry is a NEW task (D1) with a fresh full budget, a fresh lease, and its
+	// own human diff gate — nothing here can bypass that gate.
+	//
+	// The bound is enforced against the PERSISTED Task/marker (ciretryloop.go),
+	// never an in-memory counter, so a restart cannot launder it.
+	CIMaxAttempts int
 
 	// OnCIObserved, when set, receives every TERMINAL CI observation the
 	// watcher records, immediately before the marker is deleted. It is the
@@ -1625,6 +1642,22 @@ func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
 		State:       CIPending,
 		CreatedAtMs: now,
 		UpdatedAtMs: now,
+	}
+	// CARRY THE BOUNDED-RETRY CHAIN (D6). Without this the marker — and so
+	// every CIObservation derived from it — reports Attempt 0 for every link,
+	// each child restarts the chain at zero, and `Attempt < ci.max_attempts`
+	// NEVER BINDS: an infinite retry loop spending a fresh task_budget_usd per
+	// attempt, on a timer, unattended.
+	//
+	// The values come from the DURABLE QUEUE ITEM's Task and from nowhere else.
+	// That is the broker-owned record Enqueue wrote, so it cannot be laundered
+	// by a restart, by taskRun plumbing, or by a request body: a synchronous
+	// POST /tasks task has no queue item, reads zeros here, and cannot retry at
+	// all (ciretryloop.go gate 4). Read AFTER armCIWatch so it observes the same
+	// item the transition just wrote.
+	if it, rerr := readQueueItem(tr.b.AuditRoot, tr.id); rerr == nil {
+		m.Attempt = it.Task.Attempt
+		m.RetryOf = it.Task.RetryOf
 	}
 	if err := writeCIMarker(tr.b.AuditRoot, m); err != nil {
 		slog.Warn("ci watch: could not persist marker; this push will not be watched",
