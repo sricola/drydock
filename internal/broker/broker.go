@@ -1430,6 +1430,9 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 	req := remote.Request{
 		WorkDir: tr.st.WorkDir(), Branch: branch, Env: tr.st.PushEnv(),
 		Title: title, Body: body, Draft: tr.draft,
+		// RepoRef never reaches an argv; it is the host the PR-identity
+		// capture pins the URL gh prints against.
+		RepoRef: tr.repoRef,
 	}
 	// The capability path opens the PR with the SAME argv as OpenRequest and
 	// additionally reports its identity; it replaces (never supplements) the
@@ -1456,12 +1459,31 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 	// error"), and pr_number/pr_url appear only when the identity is actually
 	// known. No identity => the keys are absent and no marker exists, which is
 	// exactly today's behavior.
-	if pr.Number > 0 {
+	//
+	// prErr == nil is part of the guard, not decoration. An implementation that
+	// returned BOTH an error and a non-zero identity would otherwise emit a
+	// self-contradicting terminal event (pr_opened:false alongside pr_number:N)
+	// and start a watch on a PR the broker just reported it had failed to open.
+	// The error wins: it means the same thing OpenRequest's error means.
+	//
+	// pr_url is routed through safeStr even though parsePRURL rebuilds it from
+	// validated pieces — it is subprocess-derived text reflected to an operator
+	// terminal, and the caps/stripping cost nothing (defense in depth, same
+	// treatment pr_error and every other reflected string gets).
+	if prErr == nil && pr.Number > 0 {
 		ev["pr_number"] = pr.Number
-		ev["pr_url"] = pr.URL
+		ev["pr_url"] = safeStr(pr.URL)
+	}
+	// The terminal event is emitted BEFORE the marker is written, deliberately.
+	// A SIGKILL between the two then leaves a task with a terminal result row
+	// and no watch — the documented "no PR identity => no watch => the task
+	// completes exactly as it does today". The other order would leave a live
+	// marker for a task with no terminal row. (The boot scan tolerates either:
+	// a marker is self-describing and the watcher never reads the audit.)
+	tr.sw.emit(ev)
+	if prErr == nil && pr.Number > 0 {
 		tr.recordCIMarker(branch, pr)
 	}
-	tr.sw.emit(ev)
 }
 
 // recordCIMarker persists the <id>.ci.json watch marker for a landed push with
@@ -1470,12 +1492,27 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 // logged and cannot touch the outcome. The worst case is a task that completes
 // without a CI watch — the same as a task whose adapter reports no identity.
 func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
+	// A PR identity with no validated owner/repo cannot be watched: the watcher
+	// builds `gh --repo <owner>/<repo>` from these fields and is forbidden from
+	// re-deriving them by re-parsing the URL. Refuse to write a marker that
+	// could only ever conclude "unwatchable".
+	if pr.Owner == "" || pr.Repo == "" {
+		slog.Warn("ci watch: PR identity carries no validated owner/repo; this push will not be watched",
+			"task_id", tr.id, "branch", branch, "pr", pr.Number)
+		return
+	}
 	now := tr.b.nowMs()
 	m := ciMarker{
-		TaskID:   tr.id,
-		RepoRef:  tr.repoRef,
+		TaskID: tr.id,
+		// Redacted at write time, exactly as the Brief does (see the Brief's
+		// RepoRef): the marker is a durable artifact AND its contents reach a
+		// `gh --repo` argv, where an embedded clone credential would be visible
+		// in `ps` on the host.
+		RepoRef:  trustbrief.RedactRepoRef(tr.repoRef),
 		Branch:   branch,
 		PRNumber: pr.Number,
+		PROwner:  pr.Owner,
+		PRRepo:   pr.Repo,
 		PRURL:    pr.URL,
 		// State is what the broker has OBSERVED, and it has observed nothing
 		// yet — pending, never "passed by default".

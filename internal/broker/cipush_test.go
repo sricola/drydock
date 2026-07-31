@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -28,10 +29,20 @@ func (a *capturingAdapter) OpenRequestResult(r remote.Request) (remote.PullReque
 	a.resultCalls++
 	a.gotReq = r
 	a.opened = true
+	// NOTE: openCalls is deliberately NOT touched here. It counts OpenRequest
+	// only, so a test on the capability path can assert openCalls == 0 and
+	// actually witness a double open (two PRs) if one ever happens.
 	if a.onResult != nil {
 		a.onResult(r)
 	}
 	return a.pr, a.resultErr
+}
+
+// prIdentity is the shape a real capture produces: a validated owner/repo
+// alongside the number and URL.
+func prIdentity(n int, owner, repo string) remote.PullRequest {
+	return remote.PullRequest{Number: n, Owner: owner, Repo: repo,
+		URL: "https://github.com/" + owner + "/" + repo + "/pull/" + strconv.Itoa(n)}
 }
 
 const pushBody = `{"repo_ref":"https://github.com/o/r.git","instruction":"do x","agent":"claude","auto_approve":true}`
@@ -60,7 +71,7 @@ func TestFinishPush_CIWatchOn_WritesMarker(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
 	ad := &capturingAdapter{
 		fakeAdapter: fakeAdapter{name: "github"},
-		pr:          remote.PullRequest{Number: 42, URL: "https://github.com/o/r/pull/42"},
+		pr:          prIdentity(42, "o", "r"),
 	}
 	b := ciTestBroker(t, st, ad)
 	b.CIWatch = true
@@ -72,6 +83,15 @@ func TestFinishPush_CIWatchOn_WritesMarker(t *testing.T) {
 	}
 	if ad.resultCalls != 1 {
 		t.Errorf("OpenRequestResult calls = %d, want exactly 1 (never both paths — that would open two PRs)", ad.resultCalls)
+	}
+	// The capability path REPLACES OpenRequest. A separate counter is what
+	// makes this assertion able to fail: a shared `opened` flag could not.
+	if ad.openCalls != 0 {
+		t.Errorf("OpenRequest was ALSO called %d times on the capability path — that opens two PRs", ad.openCalls)
+	}
+	// The task's repo ref reaches the adapter as host-matching material.
+	if ad.gotReq.RepoRef != "https://github.com/o/r.git" {
+		t.Errorf("request RepoRef = %q, want the task's repo ref", ad.gotReq.RepoRef)
 	}
 	if term["pr_opened"] != true {
 		t.Errorf("pr_opened = %v, want true", term["pr_opened"])
@@ -91,6 +111,11 @@ func TestFinishPush_CIWatchOn_WritesMarker(t *testing.T) {
 	}
 	if m.TaskID != id || m.PRNumber != 42 || m.PRURL != "https://github.com/o/r/pull/42" {
 		t.Errorf("marker identity = %+v", m)
+	}
+	// The watch coordinate is stored as explicit VALIDATED fields, so the
+	// watcher never re-parses the URL to recover it.
+	if m.PROwner != "o" || m.PRRepo != "r" {
+		t.Errorf("marker pr_owner/pr_repo = %q/%q, want o/r", m.PROwner, m.PRRepo)
 	}
 	if m.Branch != "agent/"+id {
 		t.Errorf("marker branch = %q, want %q", m.Branch, "agent/"+id)
@@ -117,7 +142,7 @@ func TestFinishPush_CIWatchOff_IsTodaysPathExactly(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
 	ad := &capturingAdapter{
 		fakeAdapter: fakeAdapter{name: "github"},
-		pr:          remote.PullRequest{Number: 42, URL: "https://github.com/o/r/pull/42"},
+		pr:          prIdentity(42, "o", "r"),
 	}
 	b := ciTestBroker(t, st, ad) // CIWatch defaults to false
 
@@ -230,7 +255,7 @@ func TestFinishPush_MarkerWriteFailure_NeverFailsThePush(t *testing.T) {
 	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
 	ad := &capturingAdapter{
 		fakeAdapter: fakeAdapter{name: "github"},
-		pr:          remote.PullRequest{Number: 7, URL: "https://github.com/o/r/pull/7"},
+		pr:          prIdentity(7, "o", "r"),
 	}
 	b := ciTestBroker(t, st, ad)
 	b.CIWatch = true
@@ -278,7 +303,7 @@ func TestFinishPush_MarkerKeysOffReturnedBranch(t *testing.T) {
 	st := &collidingStage{fakeStage: &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}}
 	ad := &capturingAdapter{
 		fakeAdapter: fakeAdapter{name: "github"},
-		pr:          remote.PullRequest{Number: 99, URL: "https://github.com/o/r/pull/99"},
+		pr:          prIdentity(99, "o", "r"),
 	}
 	b := ciTestBroker(t, st, ad)
 	b.CIWatch = true
@@ -302,5 +327,170 @@ func TestFinishPush_MarkerKeysOffReturnedBranch(t *testing.T) {
 	}
 	if m.Branch != want {
 		t.Errorf("marker branch = %q, want the pushed branch %q", m.Branch, want)
+	}
+}
+
+// A capability that returns BOTH an error and a non-zero identity must be
+// treated as a failed open. Emitting pr_opened:false alongside pr_number:N
+// would be a self-contradicting terminal record, and starting a watch on a PR
+// the broker just reported it failed to open is worse than either half alone.
+func TestFinishPush_ErrorWithIdentity_IsAFailedOpen(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
+	ad := &capturingAdapter{
+		fakeAdapter: fakeAdapter{name: "github"},
+		pr:          prIdentity(42, "o", "r"), // a contradictory implementation
+		resultErr:   errors.New("gh: exit status 1"),
+	}
+	b := ciTestBroker(t, st, ad)
+	b.CIWatch = true
+
+	_, _, term := submit(b, pushBody)
+	if term["outcome"] != "pushed" {
+		t.Fatalf("outcome = %v, want pushed (the branch landed)", term["outcome"])
+	}
+	if term["pr_opened"] != false {
+		t.Errorf("pr_opened = %v, want false — the error wins", term["pr_opened"])
+	}
+	if _, ok := term["pr_number"]; ok {
+		t.Errorf("pr_number = %v present alongside pr_opened:false — the event contradicts itself", term["pr_number"])
+	}
+	if _, ok := term["pr_url"]; ok {
+		t.Error("pr_url must be absent when the open reported an error")
+	}
+	if files := markerFiles(t, b.AuditRoot); len(files) != 0 {
+		t.Errorf("a watch was started on a PR the broker reported it failed to open: %v", files)
+	}
+}
+
+// An embedded clone credential must never land in the durable marker — the
+// same rule the Brief enforces with RedactRepoRef, and doubly here because the
+// marker's contents become a `gh --repo` argv where userinfo is visible in `ps`.
+//
+// gitURLRef already refuses a credential-bearing repo_ref at the HTTP/queue
+// boundary, so this drives recordCIMarker directly — the same reason the Brief
+// redacts rather than trusting an upstream check, and the reason the redaction
+// belongs at the WRITE, where the durable bytes are produced.
+func TestFinishPush_MarkerRepoRefIsRedacted(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
+	ad := &capturingAdapter{
+		fakeAdapter: fakeAdapter{name: "github"},
+		pr:          prIdentity(42, "o", "r"),
+	}
+	b := ciTestBroker(t, st, ad)
+	b.CIWatch = true
+
+	id := "fedcba9876543210fedcba9876543210"
+	tr := &taskRun{b: b, id: id, repoRef: "https://alice:ghp_supersecret@github.com/o/r.git"}
+	tr.recordCIMarker("agent/"+id, prIdentity(42, "o", "r"))
+
+	m, err := readCIMarker(b.AuditRoot, id)
+	if err != nil {
+		t.Fatalf("readCIMarker: %v", err)
+	}
+	if strings.Contains(m.RepoRef, "ghp_supersecret") || strings.Contains(m.RepoRef, "alice") {
+		t.Errorf("marker repo_ref leaked the clone credential: %q", m.RepoRef)
+	}
+	if m.RepoRef != "https://github.com/o/r.git" {
+		t.Errorf("marker repo_ref = %q, want the redacted ref", m.RepoRef)
+	}
+	// Redaction must not break the host gate the watcher applies.
+	if !ciRefHostWatchable(m.RepoRef) {
+		t.Error("the redacted ref is no longer recognizable as a github.com repo")
+	}
+	// And the whole file, not just the field.
+	raw, err := os.ReadFile(filepath.Join(b.AuditRoot, id+".ci.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "ghp_supersecret") {
+		t.Errorf("the credential is present somewhere in the marker file: %s", raw)
+	}
+}
+
+// The fork case end to end: the task cloned myfork/proj, the PR was opened on
+// upstream/proj, and the marker records the PR's OWN owner/repo — that is
+// where the checks live, and it is what the watcher will query.
+func TestFinishPush_ForkPR_MarkerCarriesThePRsOwnRepo(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
+	ad := &capturingAdapter{
+		fakeAdapter: fakeAdapter{name: "github"},
+		pr:          prIdentity(8, "upstream", "proj"),
+	}
+	b := ciTestBroker(t, st, ad)
+	b.CIWatch = true
+
+	body := `{"repo_ref":"https://github.com/myfork/proj.git","instruction":"do x","agent":"claude","auto_approve":true}`
+	_, _, term := submit(b, body)
+	if term["outcome"] != "pushed" {
+		t.Fatalf("outcome = %v, want pushed", term["outcome"])
+	}
+	id, _ := term["task_id"].(string)
+	m, err := readCIMarker(b.AuditRoot, id)
+	if err != nil {
+		t.Fatalf("readCIMarker: %v", err)
+	}
+	if m.PROwner != "upstream" || m.PRRepo != "proj" {
+		t.Errorf("marker pr_owner/pr_repo = %q/%q, want the PR's own upstream/proj", m.PROwner, m.PRRepo)
+	}
+	if m.RepoRef != "https://github.com/myfork/proj.git" {
+		t.Errorf("marker repo_ref = %q, want the TASK's repo (both are recorded)", m.RepoRef)
+	}
+	// The watch queries the PR's repo, not the task's.
+	owner, repo := m.PROwner, m.PRRepo
+	if owner == "myfork" {
+		t.Error("the watch would query the fork, where the PR's checks do not live")
+	}
+	if !remote.ValidOwnerRepo(owner) || !remote.ValidOwnerRepo(repo) {
+		t.Errorf("marker owner/repo did not survive validation: %q/%q", owner, repo)
+	}
+}
+
+// pr_url is subprocess-derived text reflected to an operator terminal: it goes
+// through safeStr (control-character stripping + a length cap) like every other
+// reflected string, regardless of what upstream validation already did.
+func TestFinishPush_PRURLIsSanitizedInTheEvent(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
+	hostile := "https://github.com/o/r/pull/42\x1b[2J\x07" + strings.Repeat("A", 500)
+	ad := &capturingAdapter{
+		fakeAdapter: fakeAdapter{name: "github"},
+		pr:          remote.PullRequest{Number: 42, Owner: "o", Repo: "r", URL: hostile},
+	}
+	b := ciTestBroker(t, st, ad)
+	b.CIWatch = true
+
+	_, _, term := submit(b, pushBody)
+	got, _ := term["pr_url"].(string)
+	if got == hostile {
+		t.Fatal("pr_url was reflected raw")
+	}
+	if strings.ContainsAny(got, "\x1b\x07") {
+		t.Errorf("pr_url still carries control characters: %q", got)
+	}
+	if len(got) > 210 {
+		t.Errorf("pr_url is %d bytes, want it capped", len(got))
+	}
+}
+
+// An identity with no validated owner/repo cannot be watched — the watcher
+// builds its argv from those fields and may not re-derive them from the URL —
+// so no marker is written. The push still succeeds and still reports the PR.
+func TestFinishPush_IdentityWithoutOwnerRepo_NoMarker(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
+	ad := &capturingAdapter{
+		fakeAdapter: fakeAdapter{name: "github"},
+		pr:          remote.PullRequest{Number: 42, URL: "https://github.com/o/r/pull/42"},
+	}
+	b := ciTestBroker(t, st, ad)
+	b.CIWatch = true
+
+	_, _, term := submit(b, pushBody)
+	if term["outcome"] != "pushed" {
+		t.Fatalf("outcome = %v, want pushed", term["outcome"])
+	}
+	if term["pr_number"] != float64(42) {
+		t.Errorf("pr_number = %v, want 42 (the identity is still reported)", term["pr_number"])
+	}
+	if files := markerFiles(t, b.AuditRoot); len(files) != 0 {
+		t.Errorf("a marker was written with no watchable coordinate: %v", files)
 	}
 }

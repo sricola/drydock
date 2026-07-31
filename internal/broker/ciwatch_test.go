@@ -98,6 +98,15 @@ func seedMarker(t *testing.T, b *Broker, m ciMarker) ciMarker {
 	if m.PRNumber == 0 {
 		m.PRNumber = 42
 	}
+	// The validated PR coordinate finishPush captures. It defaults to the same
+	// owner/repo as the default RepoRef, but the two are independent fields —
+	// the fork test sets them apart deliberately.
+	if m.PROwner == "" {
+		m.PROwner = "o"
+	}
+	if m.PRRepo == "" {
+		m.PRRepo = "r"
+	}
 	if m.State == "" {
 		m.State = CIPending
 	}
@@ -576,32 +585,114 @@ func TestCIWatch_NonGitHubRefGivesUpHonestly(t *testing.T) {
 	}
 }
 
-// TestOwnerRepoFromRef pins the repo-ref parse across the spellings a task's
-// repo_ref can take.
-func TestOwnerRepoFromRef(t *testing.T) {
-	cases := []struct {
-		ref         string
-		owner, repo string
-		ok          bool
-	}{
-		{"https://github.com/o/r.git", "o", "r", true},
-		{"https://github.com/my-org/my.repo", "my-org", "my.repo", true},
-		{"git@github.com:o/r.git", "o", "r", true},
-		{"ssh://git@github.com/o/r.git", "o", "r", true},
-		{"https://GitHub.com/O/R.git", "O", "R", true},
-		{"https://github.com/o/r/", "o", "r", true},
-		{"https://gitlab.com/o/r.git", "", "", false},
-		{"https://github.mycorp.com/o/r.git", "", "", false},
-		{"https://github.com/o", "", "", false},
-		{"https://github.com/o/sub/r", "", "", false},
-		{"", "", "", false},
-		{"garbage", "", "", false},
+// TestCIRefHostWatchable pins the HOST gate across the spellings a task's
+// repo_ref can take. It answers only "is this a github.com repository?" — the
+// owner/repo the watch queries come from the marker's validated PR fields.
+func TestCIRefHostWatchable(t *testing.T) {
+	cases := map[string]bool{
+		"https://github.com/o/r.git":              true,
+		"https://github.com/my-org/my.repo":       true,
+		"git@github.com:o/r.git":                  true,
+		"ssh://git@github.com/o/r.git":            true,
+		"https://GitHub.com/O/R.git":              true,
+		"https://github.com/o/r/":                 true,
+		"https://alice:tok@github.com/o/r.git":    true, // redaction is not required for the gate
+		"https://gitlab.com/o/r.git":              false,
+		"https://github.mycorp.com/o/r.git":       false,
+		"https://github.com.attacker.net/o/r.git": false,
+		"https://github.com/o":                    false,
+		"https://github.com/o/sub/r":              false,
+		"":                                        false,
+		"garbage":                                 false,
 	}
-	for _, tc := range cases {
-		o, r, ok := ownerRepoFromRef(tc.ref)
-		if ok != tc.ok || o != tc.owner || r != tc.repo {
-			t.Errorf("ownerRepoFromRef(%q) = %q,%q,%v; want %q,%q,%v", tc.ref, o, r, ok, tc.owner, tc.repo, tc.ok)
+	for ref, want := range cases {
+		if got := ciRefHostWatchable(ref); got != want {
+			t.Errorf("ciRefHostWatchable(%q) = %v, want %v", ref, got, want)
 		}
+	}
+}
+
+// The watch queries the PR's OWN owner/repo, taken from the marker's validated
+// fields — never the task's repo ref, and never a re-parse of the PR URL. For a
+// fork-opened PR those differ, and the PR's repo is the one with the checks.
+func TestCIWatch_QueriesTheValidatedPRRepoNotTheTaskRepo(t *testing.T) {
+	type target struct{ owner, repo string }
+	got := make(chan target, 4)
+	b, obs, _ := watchBroker(t, func(_ []string, owner, repo string, _ int) (remote.CheckSummary, error) {
+		select {
+		case got <- target{owner, repo}:
+		default:
+		}
+		return passing(), nil
+	})
+	// The task cloned the fork; the PR was opened against the upstream. The
+	// PR URL is deliberately a THIRD value, so a watcher that re-parsed it
+	// instead of reading the validated fields would be caught too.
+	seedMarker(t, b, ciMarker{
+		RepoRef: "https://github.com/myfork/proj.git",
+		PROwner: "upstream", PRRepo: "proj",
+		PRURL: "https://github.com/decoy/decoy/pull/42",
+	})
+
+	b.StartCIWatch()
+	defer stopWatch(t, b)
+	if !waitFor(5*time.Second, func() bool { return obs.count() == 1 }) {
+		t.Fatal("the fork's PR was never watched")
+	}
+	select {
+	case tg := <-got:
+		if tg.owner != "upstream" || tg.repo != "proj" {
+			t.Fatalf("checks queried %s/%s, want the PR's own upstream/proj", tg.owner, tg.repo)
+		}
+	default:
+		t.Fatal("checks was never called")
+	}
+}
+
+// A marker with no validated PR owner/repo (an old or tampered file) is
+// unwatchable: the argv cannot be built from it, and guessing one from the URL
+// is exactly what the explicit fields exist to prevent. It concludes as unknown
+// without spending a gh call, and unknown is never a pass.
+func TestCIWatch_MarkerWithoutValidatedOwnerRepoGivesUpHonestly(t *testing.T) {
+	for _, bad := range [][2]string{
+		{"", "r"},         // a marker written before pr_owner/pr_repo existed
+		{"o", ""},         //
+		{"..", "r"},       // traversal
+		{"-evil", "r"},    // flag confusion
+		{"o", "a..b"},     // interior dot-dot
+		{"o/../x", "r"},   // an embedded path
+		{"o r", "r"},      // whitespace
+		{"o", "r --json"}, // argv smuggling
+	} {
+		t.Run(bad[0]+"|"+bad[1], func(t *testing.T) {
+			var polls int64
+			b, obs, _ := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+				atomic.AddInt64(&polls, 1)
+				return passing(), nil
+			})
+			// Written directly, NOT through seedMarker: the point is the exact
+			// bad value, and seedMarker fills empty fields with good defaults.
+			now := b.nowMs()
+			if err := writeCIMarker(b.AuditRoot, ciMarker{
+				TaskID: newID(), RepoRef: "https://github.com/o/r.git", Branch: "agent/x",
+				PRNumber: 42, PROwner: bad[0], PRRepo: bad[1],
+				PRURL: "https://github.com/o/r/pull/42",
+				State: CIPending, CreatedAtMs: now, UpdatedAtMs: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			b.StartCIWatch()
+			defer stopWatch(t, b)
+			if !waitFor(5*time.Second, func() bool { return obs.count() == 1 }) {
+				t.Fatal("an unwatchable marker was never concluded")
+			}
+			if got := obs.all()[0]; got.State != CIUnknown {
+				t.Fatalf("state = %q, want %q", got.State, CIUnknown)
+			}
+			if n := atomic.LoadInt64(&polls); n != 0 {
+				t.Errorf("gh was invoked %d times for a marker with no validated coordinate, want 0", n)
+			}
+		})
 	}
 }
 

@@ -44,6 +44,14 @@ type Request struct {
 	Title   string
 	Body    string
 	Draft   bool
+	// RepoRef is the task's repository reference, in any spelling
+	// repokey.Normalize canonicalizes. It NEVER reaches an argv — `gh pr
+	// create` is scoped by WorkDir, not by a --repo flag. Its single job is to
+	// supply the HOST that the PR-identity capture pins against: a URL printed
+	// by the vendor CLI is accepted as this task's PR only if its host equals
+	// this ref's host (see parsePRURL). Empty => no identity can be captured,
+	// which is the fail-closed direction.
+	RepoRef string
 }
 
 // Adapter opens a PR/MR for a freshly pushed branch. workDir is the staged
@@ -59,12 +67,25 @@ type Adapter interface {
 }
 
 // PullRequest is the identity of a PR/MR an adapter just opened: the platform's
-// number and its canonical URL. The zero value means "no PR identity was
-// observed" — it is missing evidence, never a claim that no PR exists and never
-// a claim that one does. Callers must treat the zero value as "cannot watch
-// this PR", not as a failure of the push that preceded it.
+// number, the repository the PR itself lives in, and its canonical URL. The
+// zero value means "no PR identity was observed" — it is missing evidence,
+// never a claim that no PR exists and never a claim that one does. Callers must
+// treat the zero value as "cannot watch this PR", not as a failure of the push
+// that preceded it.
+//
+// Owner/Repo are the AUTHORITATIVE coordinate for anything that reads the PR
+// (checks, comments, merges): `gh pr create` run from a fork opens the PR
+// against the UPSTREAM, so they legitimately differ from the task's own repo
+// ref. They are validated with validateOwnerRepo at capture time — the same
+// gate ParseIssueURL applies — so a caller may build a `gh --repo` argv from
+// them directly and must never re-derive them by re-parsing URL.
+//
+// A non-zero PullRequest always carries all three: Number > 0 and a validated
+// Owner/Repo. There is no "number but no repo" state.
 type PullRequest struct {
 	Number int
+	Owner  string
+	Repo   string
 	URL    string
 }
 
@@ -157,12 +178,19 @@ var runCLI = func(workDir string, env []string, name string, args ...string) err
 	return nil
 }
 
-// runCLIOutputIn is the capturing sibling of runCLI: same timeout, same
-// WaitDelay, same working directory, but it returns the command's STDOUT so a
-// caller can parse what the vendor CLI printed (runCLI's CombinedOutput
-// discards it into an error string, and mixing stderr chatter into the parse
-// would be unparseable anyway). On failure the captured stderr is folded into
-// the error instead.
+// prCaptureMaxBytes bounds the stdout captured from `gh pr create`. A real
+// pr-create prints a line or two; anything approaching this cap is not output
+// this code should be parsing at all. The bound is applied AT FETCH TIME by
+// cappedWriter (D3: "cap the read, don't read-then-truncate"), so a vendor CLI
+// that decides to stream megabytes cannot balloon the broker's memory.
+const prCaptureMaxBytes = 64 << 10
+
+// runCLIOutputIn is the capturing, work-tree-aware sibling of runCLI: same
+// timeout, same WaitDelay, same working directory, but it returns the command's
+// STDOUT so a caller can parse what the vendor CLI printed (runCLI's
+// CombinedOutput discards it into an error string, and mixing stderr chatter
+// into the parse would be unparseable anyway). On failure the captured,
+// sanitized stderr tail is folded into the error instead.
 //
 // It is distinct from issue.go's runCLIOutput, which hard-pins Dir to "" —
 // `gh issue view --repo ...` is scoped by a flag, whereas `gh pr create` is
@@ -170,23 +198,31 @@ var runCLI = func(workDir string, env []string, name string, args ...string) err
 // are not interchangeable; conflating them would run pr-create against the
 // broker's own cwd.
 //
+// It is CAPPED, like checks.go's runCLIOutputCapped and for the same reason:
+// stdout is buffered through a cappedWriter that accepts every byte the child
+// writes (so the child is never EPIPE'd into a misleading failure) but retains
+// at most limit of them. truncated reports that the cap was hit; a caller must
+// treat that as "no usable output", never as a partial result to parse.
+//
 // CodeQL-safety (identical contract to runCLI, see its comment): name is split
 // out of the variadic args and is a compile-time string literal at every call
 // site, and every user-influenced value appears only as the VALUE following a
 // flag — never as a bare positional and never as argv[0].
-var runCLIOutputIn = func(workDir string, env []string, name string, args ...string) ([]byte, error) {
+var runCLIOutputIn = func(workDir string, env []string, limit int, name string, args ...string) ([]byte, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteCLITimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = workDir
 	cmd.Env = env
 	cmd.WaitDelay = 5 * time.Second
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("%s: %w\n%s", name, err, exitErr.Stderr)
-		}
-		return nil, fmt.Errorf("%s: %w", name, err)
+	out := &cappedWriter{limit: limit}
+	errOut := &cappedWriter{limit: cliStderrMaxBytes}
+	cmd.Stdout = out
+	cmd.Stderr = errOut
+	if err := cmd.Run(); err != nil {
+		// The stderr tail is sanitized before it can reach an operator log; it
+		// is diagnostic prose only and nothing parses it.
+		return out.buf, out.over, fmt.Errorf("%s: %w\n%s", name, err, safeCLIError(string(errOut.buf)))
 	}
-	return out, nil
+	return out.buf, out.over, nil
 }

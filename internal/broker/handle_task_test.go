@@ -76,13 +76,19 @@ type fakeAdapter struct {
 	name    string
 	openErr error
 	opened  bool
-	gotReq  remote.Request
+	// openCalls counts OpenRequest calls SEPARATELY from the capability path's
+	// counter. capturingAdapter embeds this struct, so a single shared `opened`
+	// flag would be set by either path and could never witness a double open —
+	// which is precisely what the capability tests must be able to detect.
+	openCalls int
+	gotReq    remote.Request
 }
 
 func (a *fakeAdapter) Name() string     { return a.name }
 func (a *fakeAdapter) Available() error { return nil }
 func (a *fakeAdapter) OpenRequest(r remote.Request) error {
 	a.opened = true
+	a.openCalls++
 	a.gotReq = r
 	return a.openErr
 }

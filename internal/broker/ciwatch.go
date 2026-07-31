@@ -152,10 +152,18 @@ func (b *Broker) ciWatchLoop() {
 }
 
 // ciWatchPass polls every live marker once. Markers are processed
-// oldest-marker-first (ListCIMarkers' order) and independently: an unwatchable
+// oldest-marker-first (listCIMarkers' order) and independently: an unwatchable
 // or failing marker can never strand another one.
+//
+// The scan is deliberately tolerant of the ONE crash window finishPush can
+// leave: a marker whose task has no terminal result row in the audit (SIGKILL
+// between the two writes). Nothing here reads the audit — a marker is
+// self-describing — so such a marker is watched and concluded normally.
+// finishPush nonetheless emits its terminal event BEFORE writing the marker, so
+// the state that actually survives a kill is the other one: a completed task
+// with no watch, which is exactly the documented "no PR identity => no watch".
 func (b *Broker) ciWatchPass(errRuns map[string]int) {
-	markers, err := ListCIMarkers(b.AuditRoot)
+	markers, err := listCIMarkers(b.AuditRoot)
 	if err != nil {
 		slog.Warn("ci watch: could not scan markers", "err", err)
 		return
@@ -201,13 +209,32 @@ func (b *Broker) pollCIMarker(m ciMarker, errRuns map[string]int) {
 		return
 	}
 
-	owner, repo, ok := ownerRepoFromRef(m.RepoRef)
-	if !ok {
-		// remote.Checks pins github.com in the --repo value (the GH_HOST
-		// defense), so a marker for any other host is not watchable at all.
+	// The HOST gate reads the task's repo ref; the OWNER/REPO the watch queries
+	// come from the marker's validated PR fields. Both halves matter:
+	//
+	//   - remote.Checks pins github.com inside the --repo value (the GH_HOST
+	//     defense), so a marker whose task ref names any other host is not
+	//     watchable at all. Reading the host off the task ref is sound because
+	//     the capture already refused any PR URL whose host differed from it:
+	//     "the task ref is on github.com" therefore implies "the PR is too".
+	//   - The PR's OWN owner/repo is where the checks live, and it legitimately
+	//     differs from the task's repo when the PR was opened from a fork
+	//     against the upstream. So the query target is PROwner/PRRepo — the
+	//     values validated at capture time — never a re-parse of PRURL and
+	//     never the task ref's own owner/repo.
+	if !ciRefHostWatchable(m.RepoRef) {
 		// Conclude now with missing evidence rather than failing every poll
 		// until the deadline.
 		b.concludeCIWatch(m, CIUnknown, "repo_ref is not a github.com owner/repo reference; this PR cannot be watched",
+			remote.CheckSummary{}, errRuns)
+		return
+	}
+	owner, repo := m.PROwner, m.PRRepo
+	if !remote.ValidOwnerRepo(owner) || !remote.ValidOwnerRepo(repo) {
+		// A marker with no validated PR coordinate cannot be turned into a gh
+		// argv, and guessing one from PRURL is exactly what the explicit fields
+		// exist to prevent. Fail closed, without spending a gh call.
+		b.concludeCIWatch(m, CIUnknown, "marker carries no validated PR owner/repo; this PR cannot be watched",
 			remote.CheckSummary{}, errRuns)
 		return
 	}
@@ -344,24 +371,25 @@ func ciTerminal(s CIState) bool {
 	}
 }
 
-// ownerRepoFromRef extracts the GitHub owner/repo from a task's repo_ref,
-// across every spelling repokey.Normalize canonicalizes (https, ssh://,
-// scp-style git@host:owner/repo, with or without .git). The host must be
-// github.com: remote.Checks hard-pins github.com inside its --repo value as the
-// GH_HOST defense, so a marker naming any other host is honestly unwatchable
-// rather than quietly retargeted.
-func ownerRepoFromRef(ref string) (owner, repo string, ok bool) {
+// ciRefHostWatchable reports whether a task's repo_ref names a github.com
+// repository, across every spelling repokey.Normalize canonicalizes (https,
+// ssh://, scp-style git@host:owner/repo, with or without .git). The host must
+// be github.com: remote.Checks hard-pins github.com inside its --repo value as
+// the GH_HOST defense, so a marker naming any other host is honestly
+// unwatchable rather than quietly retargeted.
+//
+// It answers the HOST question only. The owner/repo the watch actually queries
+// come from the marker's validated PROwner/PRRepo, which for a fork-opened PR
+// are a different repository on the same host (see pollCIMarker).
+func ciRefHostWatchable(ref string) bool {
 	parts := strings.Split(repokey.Normalize(ref), "/")
 	if len(parts) != 3 {
-		return "", "", false
+		return false
 	}
 	if parts[0] != "github.com" { // Normalize already lowercased the host
-		return "", "", false
+		return false
 	}
-	if parts[1] == "" || parts[2] == "" {
-		return "", "", false
-	}
-	return parts[1], parts[2], true
+	return parts[1] != "" && parts[2] != ""
 }
 
 // runChecks is the check-read seam: b.checksFn when a test injected one,

@@ -15,6 +15,8 @@ func sampleCIMarker() ciMarker {
 		RepoRef:     "https://github.com/example/repo.git",
 		Branch:      "agent/fedcba9876543210fedcba9876543210-2",
 		PRNumber:    42,
+		PROwner:     "example",
+		PRRepo:      "repo",
 		PRURL:       "https://github.com/example/repo/pull/42",
 		Attempt:     2,
 		RetryOf:     "0123456789abcdef0123456789abcdef",
@@ -162,9 +164,9 @@ func TestListCIMarkersSortsAndTolerates(t *testing.T) {
 	if err := os.Symlink(real, filepath.Join(root, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.ci.json")); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	got, err := ListCIMarkers(root)
+	got, err := listCIMarkers(root)
 	if err != nil {
-		t.Fatalf("ListCIMarkers: %v", err)
+		t.Fatalf("listCIMarkers: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("len = %d, want 3 (garbage and symlink skipped): %+v", len(got), got)
@@ -180,8 +182,8 @@ func TestListCIMarkersSortsAndTolerates(t *testing.T) {
 // A missing audit dir is an empty scan, not an error — brokerd boots before
 // anything has ever been written.
 func TestListCIMarkersMissingDir(t *testing.T) {
-	got, err := ListCIMarkers(filepath.Join(t.TempDir(), "nope"))
+	got, err := listCIMarkers(filepath.Join(t.TempDir(), "nope"))
 	if err != nil || len(got) != 0 {
-		t.Errorf("ListCIMarkers(missing) = %v, %v; want nil, nil", got, err)
+		t.Errorf("listCIMarkers(missing) = %v, %v; want nil, nil", got, err)
 	}
 }

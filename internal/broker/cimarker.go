@@ -48,11 +48,35 @@ const (
 // exist now so B2 needs no schema change to an on-disk format that will already
 // have live markers written by a B1 daemon.
 type ciMarker struct {
-	TaskID   string `json:"task_id"`
+	TaskID string `json:"task_id"`
+	// RepoRef is the TASK's repository — the one it cloned and pushed to — with
+	// any embedded clone credential redacted (trustbrief.RedactRepoRef), same
+	// as the Brief: this is a durable artifact, and the userinfo in
+	// https://user:tok@host/... must not land in one. It is kept for display
+	// and for ONE check: its host. It is NOT the coordinate the watch queries
+	// (see PROwner/PRRepo) and it is not a clone source — a B2 retry re-clones
+	// from the persisted queue item's Task, never from this field.
 	RepoRef  string `json:"repo_ref"`
 	Branch   string `json:"branch"`
 	PRNumber int    `json:"pr_number"`
-	PRURL    string `json:"pr_url"`
+	// PROwner/PRRepo are the repository THE PULL REQUEST ITSELF lives in, and
+	// they are AUTHORITATIVE for the watch: that is where the checks are.
+	//
+	// They are captured and validated at PR-open time (remote.parsePRURL:
+	// host-pinned to the task's ref, four exact path segments, each of
+	// owner/repo through validateOwnerRepo) and stored as explicit fields so
+	// the watcher reads validated data and NEVER re-parses PRURL.
+	//
+	// They may legitimately differ from RepoRef: `gh pr create` run in a fork
+	// opens the PR against the UPSTREAM repository. The capture therefore pins
+	// only the HOST (a PR must live on the same host as the task's repo);
+	// owner/repo are free to differ, and the PR's own pair wins.
+	PROwner string `json:"pr_owner"`
+	PRRepo  string `json:"pr_repo"`
+	// PRURL is the canonical URL, rebuilt from the validated pieces above. It
+	// is for display and operator navigation ONLY — nothing may re-parse it to
+	// recover a coordinate.
+	PRURL string `json:"pr_url"`
 	// Attempt is 1 for a first attempt, N for the Nth retry in a chain.
 	// RetryOf is the parent task id ("" for a first attempt).
 	Attempt int    `json:"attempt,omitempty"`
@@ -138,11 +162,14 @@ func removeCIMarker(auditRoot, id string) error {
 	return err
 }
 
-// ListCIMarkers is the boot scan: every parseable *.ci.json in auditRoot,
+// listCIMarkers is the boot scan: every parseable *.ci.json in auditRoot,
 // oldest-first by CreatedAtMs. A garbage, unreadable, or symlinked marker is
 // skipped with a warning rather than failing the scan — one corrupt marker must
 // not strand every other pending watch. A missing audit dir is not an error.
-func ListCIMarkers(auditRoot string) ([]ciMarker, error) {
+//
+// Unexported, like listQueueItems: it returns the unexported ciMarker, so an
+// exported form would be unusable from outside the package anyway.
+func listCIMarkers(auditRoot string) ([]ciMarker, error) {
 	entries, err := os.ReadDir(auditRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
