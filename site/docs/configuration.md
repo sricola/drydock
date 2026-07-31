@@ -177,6 +177,90 @@ Cache participation lands in the trust brief's setup block (`drydock
 inspect <id>`): `hit`/`miss`/`disabled: no lockfile` plus the entry's key
 prefix.
 
+## Host-side CI observation (opt-in, off by default)
+
+The optional `ci` block lets brokerd follow a pushed PR's continuous
+integration and record what it observed on the queue item. It is **off by
+default**: a stock install writes no marker, starts no watch goroutine, and
+makes no API call on a timer.
+
+```yaml
+ci:
+  watch:         false          # enable the watch (default false = off)
+  poll_interval: 60s            # watch tick; 0 = built-in default (60s), minimum 10s
+  watch_timeout: 90m            # absolute per-PR deadline; 0 = built-in default (90m); must exceed max(2 x poll_interval, 5m)
+  max_attempts:  0              # bounded retry on an observed CI failure; 0 = off
+```
+
+| Field (under `ci:`) | Env override | Default | Meaning |
+|---|---|---|---|
+| `watch` | `DRYDOCK_CI_WATCH=1` | `false` | Enable the host-side CI watch. Only the exact value `1` enables it via env |
+| `poll_interval` | `DRYDOCK_CI_POLL_INTERVAL` | `60s` | Watch tick. One GitHub API call per watched PR per tick; `0` = the built-in default, minimum `10s` |
+| `watch_timeout` | `DRYDOCK_CI_WATCH_TIMEOUT` | `90m` | Per-PR deadline, absolute and anchored at push, so a restart cannot extend it; `0` = the built-in default. Must exceed the dispatch floor `max(2 × poll_interval, 5m)` — a shorter window makes every watch dead-letter, so the pair is rejected at load |
+| `max_attempts` | `DRYDOCK_CI_MAX_ATTEMPTS` | `0` (off) | Bounded retry on an observed CI failure. **Not yet wired** — the key is declared so the schema is stable; the behavior ships in the next increment. Capped at `10` |
+
+### What the watch does, and what it does not
+
+- **It observes check conclusions.** With `watch: true`, a queued task no
+  longer finishes at the push: the item moves to `awaiting_ci` and brokerd
+  polls that PR's checks until they resolve. Terminals are `completed` (every
+  check passed, *or* the PR has no checks configured), `ci_failed` (the broker
+  **observed** a check fail), and `dead_letter` when the watch ended with *no*
+  conclusion — a timeout, repeated read failures, or a marker lost to a
+  restart. An unobserved outcome never reads as success. The verdict is
+  surfaced on the **queue** — `drydock queue list` and `GET /queue` — and in
+  the raw audit record; `drydock tasks`, `drydock stats`, and the web UI
+  classify a task from its own terminal row and keep reading `ok` for a clean
+  push regardless of its CI. The full state table is in
+  [Submitting tasks](submitting-tasks.html#watching-the-pr-s-ci-opt-in-off-by-default).
+- **It does not read CI logs.** Only conclusions are fetched. No CI log text
+  is retrieved, parsed, stored, or displayed anywhere on this path, and
+  nothing a repository's workflow prints can influence any decision. Check
+  *names* are recorded (a repo's workflow file chooses them, so they are
+  sanitized at ingestion) and they decide nothing.
+- **It does not retry.** `max_attempts` is declared but inert in this
+  release: a CI failure is recorded, never acted on. When retry ships, each
+  attempt is a **new** task with a **fresh full `task_budget_usd`**, so the
+  worst case for one chain is `max_attempts × task_budget_usd` on top of the
+  parent's own budget. That is why the default is `0` and the cap is `10`.
+- **It holds no concurrency slot and keeps no stage.** The watch is a
+  separate bounded poll, so other tasks keep dispatching normally.
+- **It waits before believing a non-failing answer.** CI dispatch is
+  asynchronous and incremental, so a poll right after a push sees only part of
+  what will run. An empty check list means *not yet*; a list where everything
+  is green means *the first workflow finished*. Both are kept as `pending`
+  until `max(2 × poll_interval, 5m)` has elapsed since the push — raising
+  `poll_interval` therefore raises that floor too, and `watch_timeout` must
+  exceed it (the pair is validated at load). Only after the floor do "this PR
+  has no checks" and "this PR passed" become conclusions. An observed
+  **failure** is conclusive immediately.
+- **It only watches `github.com`.** The host is pinned inside the API call
+  (see below), so a task on a GitHub Enterprise host is never watched: it
+  pushes and completes on the unwatched path, and is never dead-lettered for
+  it.
+
+### It puts your `gh` credential on a timer
+
+This is the one thing to weigh before enabling it. Until now every host
+`gh`/`git` call drydock made was operator-initiated — a push and a PR open,
+both downstream of your approval at the diff gate. The watch is not: it runs
+every `poll_interval` for up to `watch_timeout` with no human in the loop.
+
+The calls are **read-only** (`gh pr checks --json` and `gh pr view --json`;
+no write subcommand is reachable from the watch path), the GitHub host is
+**pinned in the flag value** so an exported `GH_HOST` cannot redirect the
+credential elsewhere, and the environment is the same curated env every other
+host CLI call gets. See [N5 in the threat model](threat-model.html) for the
+full statement.
+
+**To turn it off:** set `ci.watch: false` (or delete the block — the default
+is off) and restart brokerd with `drydock start`. Make sure
+`DRYDOCK_CI_WATCH` is not exported to `1` in the daemon's environment; env
+wins over the file. `drydock policy explain` shows which layer set it, and
+whether the running daemon agrees. An item already parked in `awaiting_ci`
+when the watch is switched off is terminated honestly at the next boot
+(`dead_letter`, "no CI conclusion was observed") rather than left hanging.
+
 ## Bring your own model
 
 `opencode` reaches any OpenAI-compatible endpoint via the `openai_compat` block

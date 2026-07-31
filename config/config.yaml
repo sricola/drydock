@@ -87,6 +87,29 @@ openai_compat:
 #   blocked_paths: []           # e.g. ["**/*.pem", ".github/workflows/**"] — touching one fails the task
 #   second_look_paths: []       # e.g. ["**/Dockerfile"] — approver must acknowledge each flagged category
 
+# --- Host-side CI observation (opt-in; OFF by default) ---
+# With watch: true, a queued task no longer finishes at the push: once its
+# branch is pushed and the PR is open the queue item moves to awaiting_ci and
+# brokerd polls that PR's check CONCLUSIONS until they resolve. Only
+# conclusions are read — no CI log text is fetched, stored, or parsed, and
+# nothing a repository's workflow prints can influence a decision. The watch
+# holds no concurrency slot and keeps no stage. An observed pass (or an
+# observed "this PR has no checks") completes the item; an observed failure is
+# the new terminal ci_failed; a watch that ends with NO conclusion (timeout,
+# repeated read failures, marker lost to a restart) dead-letters — absence of
+# evidence is never success.
+#
+# SECURITY: turning this on puts the HOST's gh credential on a TIMER. It is
+# read-only ("gh pr checks" / "gh pr view --json"), pinned to github.com, and
+# uses the same curated env as every other host CLI call — but it is no longer
+# only operator-initiated. See THREAT_MODEL.md N5. Set watch: false (the
+# default) to stop it entirely.
+ci:
+  watch:         false          # enable the host-side CI watch (default false = off; nothing polls, no gh call on a timer)
+  poll_interval: 60s            # watch tick; one gh API call per watched PR per tick. 0 = built-in default (60s); minimum 10s
+  watch_timeout: 90m            # ABSOLUTE per-PR deadline anchored at push, so a restart can't extend it. 0 = built-in default (90m); must exceed the dispatch floor max(2 x poll_interval, 5m)
+  max_attempts:  0              # bounded retry on an observed CI failure (increment B2). 0 = off. Worst-case spend for one chain is max_attempts × task_budget_usd; max 10
+
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)
 audit_root:    ~/.drydock/audit        # per-task <id>.jsonl + .diff

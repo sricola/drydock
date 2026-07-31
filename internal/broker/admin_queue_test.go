@@ -208,3 +208,39 @@ func TestHandleQueueCancel_DelegatesToKillWhenRunning(t *testing.T) {
 		t.Fatal("stored cancel never fired")
 	}
 }
+
+// TestHandleQueueList_ProjectsCIFields: the CI observation reaches the CLI
+// through the projected view. Both fields are omitempty, so an unwatched item
+// serialises to exactly its pre-CI shape — the absence of ci_state is the
+// wire-level statement "nothing was observed", and it must never be filled in
+// with a default.
+func TestHandleQueueList_ProjectsCIFields(t *testing.T) {
+	b := queueBroker(t, 2, writesResult(`{"type":"result","subtype":"success"}`))
+	watched := seedQueuedItem(t, b, QueueAwaitingCI)
+	unwatched := seedQueuedItem(t, b, QueueAwaitingReview)
+
+	rr := httptest.NewRecorder()
+	b.HandleQueueList(rr, httptest.NewRequest("GET", "/queue", nil))
+	if rr.Code != 200 {
+		t.Fatalf("code=%d body=%s", rr.Code, rr.Body)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byID := map[string]map[string]any{}
+	for _, it := range got {
+		byID[it["id"].(string)] = it
+	}
+	w := byID[watched.ID]
+	if w["state"] != "awaiting_ci" || w["ci_state"] != "pending" || w["pr_number"] != float64(42) {
+		t.Errorf("watched projection = %v", w)
+	}
+	u := byID[unwatched.ID]
+	if _, present := u["ci_state"]; present {
+		t.Errorf("unwatched item carries ci_state = %v, want the key omitted entirely", u["ci_state"])
+	}
+	if _, present := u["pr_number"]; present {
+		t.Errorf("unwatched item carries pr_number = %v, want the key omitted", u["pr_number"])
+	}
+}

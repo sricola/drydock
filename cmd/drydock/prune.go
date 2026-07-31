@@ -19,9 +19,30 @@ type taskArtifacts struct {
 	files  []string  // absolute paths, deleted all-or-nothing
 }
 
-// knownSuffixes are the per-task audit artifacts brokerd writes. prune only
+// knownSuffixes are the per-task AUDIT artifacts brokerd writes. prune only
 // ever touches files matching <hex-id><suffix> in the audit dir — never
 // recurses, never other files.
+//
+// Deliberately absent, and this is a rule rather than an oversight: the
+// LIVE-STATE markers — .gate.json (a task parked at the approval gate),
+// .queue.json (a durable queue item), and .ci.json (a pull request under CI
+// observation). They are not records of what happened; they are the state a
+// restart resumes from, and each one is removed by the component that owns it
+// the moment its work ends (the gate on approve/deny/kill/timeout, the queue on
+// a terminal transition, the CI watcher on a terminal observation or timeout).
+// Pruning one mid-flight would silently cancel live work: `drydock prune
+// --older-than 1h --yes` against a long CI watch would drop the marker out from
+// under the watcher, and in B2 that marker is where Attempt/RetryOf live — so
+// pruning mid-chain would launder the retry bound that D6 says a crash cannot
+// launder. Age is not a safe proxy for "finished" for any of the three.
+//
+// "It cannot accumulate" is the claim that makes that safe, and it is enforced
+// rather than hoped for: brokerd's boot reconciliation (broker.ResumeQueue ->
+// reclaimOrphanCIMarkers) records an honest observation for and then removes
+// every `.ci.json` left on disk when the CI watch is off — including markers
+// for synchronous (POST /tasks) pushes, which have no queue item to be found
+// by. With the watch on, each marker's own watch concludes it, at the latest at
+// its absolute deadline.
 var knownSuffixes = []string{".jsonl", ".diff", ".widen.json", ".brief.json", ".verify.log"}
 
 func isHexID(s string) bool {
@@ -138,10 +159,11 @@ func runPrune(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `Usage: drydock prune --older-than DUR [--keep-last N] [--yes]
 
-Delete old per-task audit artifacts (<id>.jsonl/.diff/.widen.json/.brief.json/.verify.log)
-from the audit dir. Dry-run by default — pass --yes to actually delete. Running and
-awaiting-approval tasks have just-created files, so any sane --older-than
-won't touch them.
+Delete old per-task audit artifacts (<id>.jsonl/.diff/.widen.json/.brief.json/
+.verify.log) from the audit dir. Dry-run by default — pass --yes to actually
+delete. Live-state markers (.gate.json/.queue.json/.ci.json) are never touched:
+they are what a restart resumes from, and each is removed by its owner when the
+work it tracks ends.
 
 Flags:`)
 		fs.PrintDefaults()

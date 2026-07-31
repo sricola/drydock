@@ -297,6 +297,12 @@ func outcomeString(key string, r Result, m Meta) string {
 		// Queue terminal: the queued task exhausted its run without a clean
 		// finish and was parked as undeliverable (Increment B adds retry).
 		s = "dead-letter"
+	// NOTE what has no case here: "ci_failed". It is a QUEUE terminal, and no
+	// writer anywhere emits it as a result subtype — deliberately, so an
+	// observed CI failure can never relabel a push that landed exactly as asked
+	// (see CIObservation). A display case for a key this function cannot
+	// receive would be a claim that `drydock tasks`/`stats` surface CI verdicts.
+	// They do not; `drydock queue list` and GET /queue do.
 	case "completed":
 		// Queue terminal: the queued task finished cleanly (pushed, no_diff,
 		// or planned). Displayed as-is; the explicit case documents the
@@ -460,6 +466,98 @@ func Reason(path string) (line string, ok bool) {
 	}
 	return "", false
 }
+
+// CIObservation is the broker-authored {"type":"ci_observation"} record: ONE
+// terminal, host-observed CI conclusion for the pull request a task's push
+// opened, appended to that task's audit trace.
+//
+// It is USUALLY written long after the task terminated and its audit fd was
+// closed — but not always, and the code must not assume it: the marker-write
+// unwind records an observation synchronously inside finishPush, and the
+// watcher can conclude a marker the instant it lands, both while the task's own
+// audit fd is still open. Every writer of a .jsonl trace therefore opens it
+// O_APPEND (see broker.runLifecycle and broker.appendLine) so two fds can
+// interleave lines but can never overwrite each other.
+//
+// TRUST: this row is a LOG, never an input to a control decision. The trace it
+// lands in is agent-writable — the VM's stdout is copied into it verbatim — so
+// an agent can print a line that decodes as a broker-authored ci_observation
+// (Type and Src are both attacker-supplied text). Readers may render it; no
+// reader may branch on it. The AUTHORITATIVE, machine-readable form of the same
+// fact is the durable queue item (broker.QueueItem.CIState + its terminal
+// state), which nothing inside the VM can write.
+//
+// WHY THIS IS NOT A {"type":"result"} ROW — the ordering decision, recorded so
+// nobody "simplifies" it into one:
+//
+// The CI observation is the only fact drydock records about a task after the
+// task is over. It happens minutes to hours later, on a file the broker has
+// already flushed and closed, about work that happened on GitHub rather than
+// on this host. Writing it as a late `result` line would collide with three
+// invariants that the last-result-line is the sole carrier of:
+//
+//  1. SPEND (F-07). seedAggregateFromAudit reseeds the rolling aggregate cap
+//     from the LAST result line's broker-authored total_cost_usd. A late
+//     result row would have to restate a cost it did not measure — copying a
+//     number out of a closed file to avoid deleting that task's spend from
+//     the cap. A row whose only job is to not break accounting is a row that
+//     will eventually break accounting.
+//
+//  2. OUTCOME. OutcomeKey classifies a task from that same last row. A push
+//     that landed exactly as asked would start rendering as "ci_failed" in
+//     `drydock tasks`, the web-UI history strip, and `drydock stats` — i.e.
+//     the task's own success rate would silently become a CI success rate.
+//     The task did not fail; its branch's CI did.
+//
+//  3. F-07's ACTUAL RULE, which is that the broker authors the last result
+//     line on every LIFECYCLE EXIT PATH. Every such path already does. The CI
+//     watch is not a lifecycle exit path; it runs after all of them.
+//
+// So the record gets its own type. It is still broker-authored (Src is always
+// "broker"), still lives in the per-task audit (so `drydock logs <id>` and the
+// web UI log view show it), and is provably inert for every existing reader:
+// scanTailForResult requires type=="result" and LastMetricsFile requires
+// type=="metrics", so both backward scans skip it and select exactly the rows
+// they selected before. The AUTHORITATIVE, machine-readable form of the same
+// fact is the durable queue item's terminal state (completed / ci_failed /
+// dead_letter) — see broker.QueueAwaitingCI.
+//
+// It carries NO CI log text (D3). State and Detail are broker-authored
+// vocabulary; the counts are broker-computed. There is no field a repository's
+// own workflow output could reach.
+type CIObservation struct {
+	Type   string `json:"type"`
+	Src    string `json:"src"`
+	TaskID string `json:"task_id"`
+	// State is the terminal ciwatch state: passed, failed, no_checks,
+	// timed_out, or unknown. It is never empty on a written record, and
+	// "passed" is the ONLY value that means CI succeeded.
+	State    string `json:"state"`
+	PRNumber int    `json:"pr_number,omitempty"`
+	PRURL    string `json:"pr_url,omitempty"`
+	// QueueState is the durable queue terminal this observation drove, or ""
+	// for a synchronous (non-queued) task, which has no queue item at all.
+	QueueState string `json:"queue_state,omitempty"`
+	Checks     int    `json:"checks"`
+	Passed     int    `json:"passed"`
+	Failed     int    `json:"failed"`
+	Pending    int    `json:"pending"`
+	// Detail is short broker-authored English explaining a non-conclusive end
+	// (a timeout, a give-up). Empty for a conclusive observation.
+	Detail       string `json:"detail,omitempty"`
+	ObservedAtMs int64  `json:"observed_at_ms"`
+}
+
+// THERE IS DELIBERATELY NO LastCIObservation READER HERE, and adding one is a
+// decision, not a convenience. This package's tail readers exist to feed
+// CONTROL DECISIONS — the aggregate-cap reseed, the outcome classification —
+// and both fields such a scan could filter on (type, src) are attacker-supplied
+// text in an agent-writable file, so anything it returned would be unsafe for
+// exactly the callers who would reach for it. The authoritative, machine-
+// readable form of this fact is the durable queue item
+// (broker.QueueItem.CIState plus its terminal state), which nothing inside the
+// VM can write. Render the row from the raw trace if you want to show it; do
+// not build a typed reader that invites branching on it.
 
 // LastMetricsFile finds the final broker-authored {"type":"metrics"} line by
 // reading only the file tail (same 16KB window as LastResultFile). ok=false

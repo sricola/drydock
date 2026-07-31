@@ -9,6 +9,93 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Host-side CI observation for pushed PRs (orchestration increment B1,
+  opt-in, off by default).** With `ci.watch` enabled, a queued task no longer
+  finishes at the push: once its branch is pushed and the PR is open, the item
+  moves to the new **`awaiting_ci`** state and brokerd polls that PR's check
+  conclusions host-side until they conclude. The watch holds **no concurrency
+  slot and keeps no stage** — it is a bounded poll keyed off a durable
+  `<id>.ci.json` marker, so a restart re-watches with the *original* absolute
+  deadline and a crash loop cannot extend the window. Terminals:
+  `completed` for an observed pass **or** an observed "this PR has no checks
+  configured", the new terminal **`ci_failed`** for an **observed** check
+  failure, and `dead_letter` for a watch that ended with *no* conclusion (a
+  timeout, repeated read failures, a marker lost to a restart, or the watch
+  being disabled under a parked item), with the reason in `last_error`. The
+  asymmetry is the feature: `ci_failed` means the broker watched a check fail
+  and nothing else produces it, and **an unobserved CI outcome never reaches
+  `completed`** — absence of evidence is not success. The queue state machine
+  stays forward-only and acyclic (asserted mechanically, not by inspection);
+  terminals remain sinks. Only check *conclusions* are read — no CI log text
+  is fetched, parsed, stored, or displayed anywhere on the path, and none can
+  influence a decision. **Where the observation is surfaced**, exactly: a `CI`
+  column in `drydock queue list` (observed conclusion + PR number, `-` when
+  nothing was observed), `ci_state`/`pr_number` on `GET /queue`, and the raw
+  `ci_observation` record in the task's audit trace. It is deliberately **not**
+  surfaced in the web UI, `drydock tasks`, or `drydock stats`: all three
+  classify a task from its last `result` row, and a CI observation is not one
+  (see below), so a pushed task keeps reading `ok` in those views no matter
+  what its PR's CI did. The queue is the CI surface. The observation is appended to the
+  task's audit as a broker-authored `{"type":"ci_observation","src":"broker"}`
+  record — deliberately **not** a late `result` row, so a CI failure never
+  relabels a successful push in `drydock tasks`/`stats`/the web UI and never
+  disturbs the restart-seeded aggregate spend ledger (F-07), both of which
+  read the last `result` line. With `ci.watch` off (the default) a pushed
+  queue item completes at the push exactly as before, no marker is written,
+  and no API call is made on a timer.
+
+  Three details worth stating outright, because each one is a place "nothing
+  observed" could otherwise have become "fine":
+
+  - **`no_checks` is a function of time, not just of one poll.** GitHub Actions
+    dispatch is asynchronous, so a poll that lands between the push and the
+    checks appearing sees an empty rollup that means *not yet*. An empty rollup
+    is therefore recorded as `pending` until a **dispatch floor** —
+    `max(2 × ci.poll_interval, 5m)`, measured from the marker's persisted push
+    time so a restart or crash loop cannot dodge it — has elapsed. The floor
+    holds a **passing** rollup for exactly the same reason: a poll that lands
+    while workflow A's check is green and workflow B's has not been created yet
+    sees a real `passed`, about one workflow of N, and concluding on it would
+    make B's later failure permanently invisible. An observed **failure** is
+    conclusive on sight and is never held. Only above the floor are "this PR
+    has no checks" and "this PR passed" conclusions. A repository with
+    genuinely no CI — or with very fast CI — now sits in `awaiting_ci` for
+    those few minutes before completing. The pair `ci.poll_interval` /
+    `ci.watch_timeout` is cross-validated at load so a timeout inside the floor
+    (which would dead-letter every watch) is rejected rather than discovered in
+    production.
+  - **Enterprise hosts are not watched, and are not failed either.** The
+    watch's `gh` calls hard-pin `github.com` (the `GH_HOST` defense), so a task
+    whose repo ref names a GitHub Enterprise host writes no marker and arms no
+    watch: its push completes on the unchanged path exactly as it does with
+    `ci.watch` off. Watching enterprise hosts is a deliberate future increment.
+  - **The `CI` column in `drydock queue list` is always present**, including
+    with `ci.watch` off, where every row simply shows `-`. The column is part
+    of the table now, not conditional on the feature; scripts that parse that
+    output by column position should be updated.
+  - **`drydock queue cancel` works on an `awaiting_ci` item**, cancelling the
+    watch (its marker is removed, so no further API call is spent on that PR)
+    and moving the item to `cancelled`. `cancelled` therefore remains reachable
+    from every non-terminal state, as documented.
+
+- **`ci:` config block — the opt-in that turns the CI watch on.** New keys in
+  `~/.drydock/config.yaml`: `ci.watch` (default **`false`** — the feature ships
+  off), `ci.poll_interval` (`60s`, minimum `10s`), `ci.watch_timeout` (`90m`,
+  minimum `1m`, an absolute deadline anchored at push so a restart cannot
+  extend it), and `ci.max_attempts` (`0` = retry off, capped at `10`) which is
+  declared now for schema stability and consumed by the next increment. Each
+  has an env override (`DRYDOCK_CI_WATCH=1`, `DRYDOCK_CI_POLL_INTERVAL`,
+  `DRYDOCK_CI_WATCH_TIMEOUT`, `DRYDOCK_CI_MAX_ATTEMPTS`) and a row in
+  `drydock policy explain`, so which layer armed the watch is always visible.
+  Out-of-range values are rejected at load rather than silently clamped, and
+  the `max_attempts` ceiling exists because a retry chain's worst case is
+  `max_attempts × task_budget_usd` — each attempt mints a fresh full budget.
+  **Threat model updated, not weakened:** enabling `ci.watch` puts the host's
+  `gh` credential on a **timer** where it was previously only
+  operator-initiated (N5), and CI check names join staged files and issue text
+  as a documented untrusted *source* (N2). No new containment claim is made
+  and no exception is taken; B1 fetches no CI log text at all.
+
 - **Durable task queue (orchestration increment A).** `drydock queue add`
   takes the same flags as `submit` but returns the moment brokerd has
   durably persisted the task; it runs unattended when a concurrency slot

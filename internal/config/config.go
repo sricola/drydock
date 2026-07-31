@@ -96,6 +96,42 @@ type DiffPolicy struct {
 	SecondLookPaths []string `yaml:"second_look_paths"`
 }
 
+// CI configures host-side observation of a pushed PR's continuous integration.
+// The whole block is opt-in: with Watch false (the default) brokerd starts no
+// watch goroutine, writes no <id>.ci.json marker, and makes no `gh` call on a
+// timer — a stock install behaves exactly as it did before the block existed.
+//
+// What the watch does: after a task's branch is pushed and its PR is open, the
+// broker polls that PR's check CONCLUSIONS on the host (`gh pr checks` /
+// `gh pr view --json statusCheckRollup`, read-only, host-pinned to github.com,
+// with the same curated env every other host CLI call uses) until they resolve
+// or the deadline expires. No CI log text is fetched, stored, parsed, or
+// displayed, and nothing a repository's workflow prints can influence a
+// decision. See THREAT_MODEL.md N5: enabling this puts the host's `gh`
+// credential on a timer, where it was previously only operator-initiated.
+type CIConfig struct {
+	// Watch enables the host-side CI watch. Default false (off).
+	Watch bool `yaml:"watch"`
+	// PollInterval is the watch tick. 0 uses the broker's built-in default
+	// (DefaultCIPollInterval). Every tick costs one `gh` API call per PR
+	// still being watched, so this is also the rate at which the operator's
+	// GitHub credential is exercised.
+	PollInterval time.Duration `yaml:"poll_interval"`
+	// WatchTimeout bounds a single PR's watch as an ABSOLUTE deadline
+	// anchored to when the marker was written, so a restart cannot extend it.
+	// A watch that expires with no conclusion is recorded honestly (the queue
+	// item dead-letters); it never reads as a pass. 0 uses the broker's
+	// built-in default (DefaultCIWatchTimeout).
+	WatchTimeout time.Duration `yaml:"watch_timeout"`
+	// MaxAttempts bounds the bounded-retry chain: on an observed CI failure
+	// the broker may enqueue up to this many fresh retry tasks. 0 (the
+	// default) disables retry entirely. Declared here in B1 so the schema is
+	// stable; the behavior lands in B2. Each attempt mints a fresh full
+	// task_budget_usd, so the worst-case spend for one chain is
+	// max_attempts × task_budget_usd — which is why MaxCIAttempts caps it.
+	MaxAttempts int `yaml:"max_attempts"`
+}
+
 // Config is the operator surface. yaml tags match what's written to
 // ~/.drydock/config.yaml; the env-var names are documented in README.
 type Config struct {
@@ -210,6 +246,10 @@ type Config struct {
 	// Zero value = disabled (no caps, no blocked/second-look paths).
 	DiffPolicy DiffPolicy `yaml:"diff_policy"`
 
+	// CI configures host-side observation of a pushed PR's CI. Off by
+	// default; see CIConfig.
+	CI CIConfig `yaml:"ci"`
+
 	// Where state lives
 	StageRoot   string `yaml:"stage_root"`
 	AuditRoot   string `yaml:"audit_root"`
@@ -231,34 +271,75 @@ type Config struct {
 	StrictContainerVersion bool `yaml:"strict_container_version"`
 }
 
+// CI watch bounds. The two duration defaults mirror the broker's built-in
+// fallbacks (internal/broker/ciwatch.go) so the seeded config documents the
+// values the daemon actually applies; a broker-side test pins them equal.
+// The minimums and MaxCIAttempts are enforced by validate().
+const (
+	// DefaultCIPollInterval is the shipped watch tick.
+	DefaultCIPollInterval = 60 * time.Second
+	// DefaultCIWatchTimeout is the shipped per-PR watch deadline.
+	DefaultCIWatchTimeout = 90 * time.Minute
+	// MinCIPollInterval floors ci.poll_interval. Each tick spends one GitHub
+	// API call per watched PR against the operator's own `gh` credential, so
+	// a mistyped "1s" would turn the daemon into a rate-limit-burning loop on
+	// a credential drydock does not own.
+	MinCIPollInterval = 10 * time.Second
+	// MinCIWatchTimeout floors ci.watch_timeout. A window shorter than this
+	// cannot contain a single poll, so every watch would expire unobserved
+	// and every watched task would dead-letter. It is the per-field floor;
+	// validate() additionally requires the timeout to clear the DISPATCH FLOOR,
+	// which for the shipped poll interval is stricter (5m).
+	MinCIWatchTimeout = time.Minute
+	// CIDispatchFloorPolls and CIDispatchFloorGrace mirror the broker's
+	// DISPATCH FLOOR (internal/broker/ciwatch.go): the earliest a non-failing
+	// check rollup may be believed, max(polls × poll_interval, grace) after the
+	// push. They live here so validate() can reject a poll/timeout PAIR that
+	// can never conclude; a broker-side test pins them equal to the broker's.
+	CIDispatchFloorPolls = 2
+	CIDispatchFloorGrace = 5 * time.Minute
+	// MaxCIAttempts caps ci.max_attempts. The bound exists because a retry
+	// chain's worst-case spend is max_attempts × task_budget_usd (each
+	// attempt mints a fresh full budget), so a typo'd "10000" would authorize
+	// a 10000-deep chain of real model spend. 10 is far past any useful
+	// retry depth and still bounds the bill.
+	MaxCIAttempts = 10
+)
+
 // Defaults returns the same values that the v0.1.0 env-var fallbacks gave.
 // Anyone who never edits config.yaml gets exactly that behavior.
 func Defaults() *Config {
 	c := &Config{
-		Network:                "drydock-egress",
-		GatewayIP:              "192.168.66.1",
-		SandboxImage:           "drydock-sandbox:latest",
-		AnchorImage:            "drydock-anchor:latest",
-		TaskBudgetUSD:          2.0,
-		MaxConcurrent:          2,
-		TaskTimeout:            30 * time.Minute,
-		DefaultAgent:           "claude",
-		AnthropicAuth:          "api_key",
-		OpenAIAuth:             "api_key",
-		TaskMaxRequests:        0,
-		TaskMaxInFlight:        1,
-		StageQuotaGB:           8,
-		CacheQuotaGB:           20,
-		MaxRequestCostUSD:      0,
-		AggregateBudgetUSD:     0,
-		AggregateWindow:        24 * time.Hour,
-		PushMaxRetries:         3,
-		PushRetryBackoff:       time.Second,
-		PushFreshBranchTries:   2,
-		StageRoot:              defaultStateDir("stage"),
-		AuditRoot:              defaultStateDir("audit"),
-		SquidRunDir:            defaultStateDir("squid"),
-		CacheRoot:              defaultStateDir("cache"),
+		Network:              "drydock-egress",
+		GatewayIP:            "192.168.66.1",
+		SandboxImage:         "drydock-sandbox:latest",
+		AnchorImage:          "drydock-anchor:latest",
+		TaskBudgetUSD:        2.0,
+		MaxConcurrent:        2,
+		TaskTimeout:          30 * time.Minute,
+		DefaultAgent:         "claude",
+		AnthropicAuth:        "api_key",
+		OpenAIAuth:           "api_key",
+		TaskMaxRequests:      0,
+		TaskMaxInFlight:      1,
+		StageQuotaGB:         8,
+		CacheQuotaGB:         20,
+		MaxRequestCostUSD:    0,
+		AggregateBudgetUSD:   0,
+		AggregateWindow:      24 * time.Hour,
+		PushMaxRetries:       3,
+		PushRetryBackoff:     time.Second,
+		PushFreshBranchTries: 2,
+		StageRoot:            defaultStateDir("stage"),
+		AuditRoot:            defaultStateDir("audit"),
+		SquidRunDir:          defaultStateDir("squid"),
+		CacheRoot:            defaultStateDir("cache"),
+		CI: CIConfig{
+			Watch:        false, // explicit: the CI watch ships OFF
+			PollInterval: DefaultCIPollInterval,
+			WatchTimeout: DefaultCIWatchTimeout,
+			MaxAttempts:  0, // explicit: bounded retry (B2) ships OFF
+		},
 		Notifications:          true,
 		LogJSON:                false,
 		StrictContainerVersion: false,
@@ -464,6 +545,26 @@ func (c *Config) applyEnvOverrides() {
 			c.PushFreshBranchTries = n
 		}
 	}
+	// DRYDOCK_CI_WATCH follows the exactly-"1" bool idiom used by the other
+	// three bool vars: nothing else arms the credentialed poll loop.
+	if os.Getenv("DRYDOCK_CI_WATCH") == "1" {
+		c.CI.Watch = true
+	}
+	if v := os.Getenv("DRYDOCK_CI_POLL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			c.CI.PollInterval = d
+		}
+	}
+	if v := os.Getenv("DRYDOCK_CI_WATCH_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			c.CI.WatchTimeout = d
+		}
+	}
+	if v := os.Getenv("DRYDOCK_CI_MAX_ATTEMPTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.CI.MaxAttempts = n
+		}
+	}
 	if v := os.Getenv("STAGE_ROOT"); v != "" {
 		c.StageRoot = v
 	}
@@ -637,7 +738,61 @@ func (c *Config) validate() error {
 	if c.PushFreshBranchTries < 0 {
 		return fmt.Errorf("config: push_fresh_branch_tries must be >= 0, got %d", c.PushFreshBranchTries)
 	}
+	// ci: the range checks are deliberately explicit rather than "clamp to
+	// something sane". A silently-clamped poll interval or attempt cap is a
+	// security control the operator believes they set and did not.
+	if c.CI.PollInterval != 0 && c.CI.PollInterval < MinCIPollInterval {
+		return fmt.Errorf("config: ci.poll_interval must be 0 (built-in default %v) or >= %v, got %v",
+			DefaultCIPollInterval, MinCIPollInterval, c.CI.PollInterval)
+	}
+	if c.CI.WatchTimeout != 0 && c.CI.WatchTimeout < MinCIWatchTimeout {
+		return fmt.Errorf("config: ci.watch_timeout must be 0 (built-in default %v) or >= %v, got %v",
+			DefaultCIWatchTimeout, MinCIWatchTimeout, c.CI.WatchTimeout)
+	}
+	if c.CI.MaxAttempts < 0 {
+		return fmt.Errorf("config: ci.max_attempts must be >= 0, got %d", c.CI.MaxAttempts)
+	}
+	if c.CI.MaxAttempts > MaxCIAttempts {
+		return fmt.Errorf("config: ci.max_attempts must be <= %d, got %d; each attempt mints a fresh task_budget_usd, so the worst-case spend for one chain is max_attempts × task_budget_usd",
+			MaxCIAttempts, c.CI.MaxAttempts)
+	}
+	// The CROSS-FIELD check, which neither range check above can catch: each of
+	// `poll_interval: 10m` and `watch_timeout: 5m` is individually legal, and
+	// TOGETHER they make every single watch dead-letter. The watch checks its
+	// deadline before it checks the dispatch floor, so a timeout at or below the
+	// floor means no non-failing conclusion is ever reachable — `no_checks` and
+	// `passed` both become unreachable states and every watched task ends
+	// "no conclusion was observed". Rejecting the pair at load is the only place
+	// an operator finds out; at runtime it looks exactly like CI being broken.
+	if floor := ciDispatchFloor(c.CI.PollInterval); c.CI.effectiveWatchTimeout() <= floor {
+		return fmt.Errorf("config: ci.watch_timeout (%v) must be greater than the dispatch floor max(%d × ci.poll_interval, %v) = %v; with this pair every watch would expire before any CI conclusion could be believed, so every watched task would dead-letter",
+			c.CI.effectiveWatchTimeout(), CIDispatchFloorPolls, CIDispatchFloorGrace, floor)
+	}
 	return nil
+}
+
+// effectiveWatchTimeout is the deadline the daemon actually applies: the
+// configured value, or the built-in default when it is 0.
+func (c CIConfig) effectiveWatchTimeout() time.Duration {
+	if c.WatchTimeout <= 0 {
+		return DefaultCIWatchTimeout
+	}
+	return c.WatchTimeout
+}
+
+// ciDispatchFloor is the broker's floor arithmetic (broker.ciDispatchFloor),
+// duplicated here so validate() can reason about a config pair without the
+// import cycle a broker dependency would create. The two are pinned equal by a
+// broker-side test.
+func ciDispatchFloor(poll time.Duration) time.Duration {
+	if poll <= 0 {
+		poll = DefaultCIPollInterval
+	}
+	floor := CIDispatchFloorPolls * poll
+	if floor < CIDispatchFloorGrace {
+		floor = CIDispatchFloorGrace
+	}
+	return floor
 }
 
 // SeedTemplate is the comment-rich YAML written by `drydock init` when
@@ -731,6 +886,29 @@ openai_compat:
 #   max_lines_changed: 0        # fail closed when added+deleted lines exceed this (0 = no cap)
 #   blocked_paths: []           # e.g. ["**/*.pem", ".github/workflows/**"] — touching one fails the task
 #   second_look_paths: []       # e.g. ["**/Dockerfile"] — approver must acknowledge each flagged category
+
+# --- Host-side CI observation (opt-in; OFF by default) ---
+# With watch: true, a queued task no longer finishes at the push: once its
+# branch is pushed and the PR is open the queue item moves to awaiting_ci and
+# brokerd polls that PR's check CONCLUSIONS until they resolve. Only
+# conclusions are read — no CI log text is fetched, stored, or parsed, and
+# nothing a repository's workflow prints can influence a decision. The watch
+# holds no concurrency slot and keeps no stage. An observed pass (or an
+# observed "this PR has no checks") completes the item; an observed failure is
+# the new terminal ci_failed; a watch that ends with NO conclusion (timeout,
+# repeated read failures, marker lost to a restart) dead-letters — absence of
+# evidence is never success.
+#
+# SECURITY: turning this on puts the HOST's gh credential on a TIMER. It is
+# read-only ("gh pr checks" / "gh pr view --json"), pinned to github.com, and
+# uses the same curated env as every other host CLI call — but it is no longer
+# only operator-initiated. See THREAT_MODEL.md N5. Set watch: false (the
+# default) to stop it entirely.
+ci:
+  watch:         false          # enable the host-side CI watch (default false = off; nothing polls, no gh call on a timer)
+  poll_interval: 60s            # watch tick; one gh API call per watched PR per tick. 0 = built-in default (60s); minimum 10s
+  watch_timeout: 90m            # ABSOLUTE per-PR deadline anchored at push, so a restart can't extend it. 0 = built-in default (90m); must exceed the dispatch floor max(2 x poll_interval, 5m)
+  max_attempts:  0              # bounded retry on an observed CI failure (increment B2). 0 = off. Worst-case spend for one chain is max_attempts × task_budget_usd; max 10
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

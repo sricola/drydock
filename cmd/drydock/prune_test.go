@@ -42,6 +42,7 @@ func TestTaskIDFromFile(t *testing.T) {
 		"2d66a317c7c77f92.diff":       "2d66a317c7c77f92",
 		"2d66a317c7c77f92.widen.json": "2d66a317c7c77f92",
 		"2d66a317c7c77f92.verify.log": "2d66a317c7c77f92",
+		"2d66a317c7c77f92.brief.json": "2d66a317c7c77f92",
 	}
 	for name, wantID := range ok {
 		if id, got := taskIDFromFile(name); !got || id != wantID {
@@ -52,6 +53,48 @@ func TestTaskIDFromFile(t *testing.T) {
 		if _, ok := taskIDFromFile(name); ok {
 			t.Errorf("taskIDFromFile(%q) should be rejected", name)
 		}
+	}
+}
+
+// The three LIVE-STATE markers are not audit artifacts and prune must never
+// match them. .gate.json is a task parked at the approval gate, .queue.json is
+// a durable queue item, and .ci.json is a PR under CI observation — each is the
+// state a restart resumes from, and each is removed by its owner when the work
+// it tracks ends. `drydock prune --older-than 1h --yes` against a long CI watch
+// would otherwise cancel it mid-flight, and in B2 that marker is where the
+// retry chain's Attempt/RetryOf live: pruning it would launder the bound that
+// D6 says a crash cannot launder.
+func TestTaskIDFromFile_LiveStateMarkersAreNeverPruned(t *testing.T) {
+	for _, name := range []string{
+		"2d66a317c7c77f92.ci.json",
+		"2d66a317c7c77f92.gate.json",
+		"2d66a317c7c77f92.queue.json",
+	} {
+		if id, ok := taskIDFromFile(name); ok {
+			t.Errorf("taskIDFromFile(%q) = %q,true; live-state markers must never be prunable", name, id)
+		}
+	}
+}
+
+// And the same at the scan level: a marker sitting next to a task's audit
+// artifacts must not be swept up with them.
+func TestScanAuditTasks_SkipsLiveStateMarkers(t *testing.T) {
+	dir := t.TempDir()
+	const id = "2d66a317c7c77f92"
+	for _, name := range []string{id + ".jsonl", id + ".ci.json", id + ".gate.json", id + ".queue.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tasks, err := scanAuditTasks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %+v, want exactly one", tasks)
+	}
+	if len(tasks[0].files) != 1 || !strings.HasSuffix(tasks[0].files[0], ".jsonl") {
+		t.Errorf("prune would delete live-state markers: %v", tasks[0].files)
 	}
 }
 

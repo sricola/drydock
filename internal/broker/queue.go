@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -183,6 +184,16 @@ func (b *Broker) vendorExceeded(taskAgent string) bool {
 	return v != "" && b.AggregateExceeded(v)
 }
 
+// errInvalidTransition marks the ONE setQueueState failure that is the state
+// machine working as designed — the item moved on and the caller's write is
+// no longer legal — as opposed to a failure to WRITE (a full or read-only disk,
+// a permissions problem), which is a fault the caller may want to retry. The
+// CI watch is the caller that needs the distinction: it deletes the marker that
+// drives the retry, so it must not delete it on a write it can still redo. The
+// message text is unchanged from the pre-sentinel version by construction (the
+// verb phrase lives in the sentinel).
+var errInvalidTransition = errors.New("queue: invalid transition")
+
 // setQueueState transitions the durable item id to state to, guarded by the
 // CanTransitionTo state machine. It reads-modifies-writes the queue file and
 // refreshes any in-memory copy, all under queueMu; mut (optional) edits the
@@ -200,7 +211,7 @@ func (b *Broker) setQueueStateLocked(id string, to QueueState, mut func(*QueueIt
 		return it, err
 	}
 	if !it.State.CanTransitionTo(to) {
-		return it, fmt.Errorf("queue: invalid transition %s -> %s for %s", it.State, to, id)
+		return it, fmt.Errorf("%w %s -> %s for %s", errInvalidTransition, it.State, to, id)
 	}
 	it.State = to
 	it.UpdatedAtMs = b.nowMs()
@@ -299,6 +310,19 @@ func (b *Broker) runQueued(it QueueItem) {
 		}
 	}
 
+	// A push that armed the CI watch is NOT terminal here: finishPush already
+	// moved the item awaiting_review -> awaiting_ci, and its real terminal is
+	// whatever the watcher observes (ciqueue.go). Writing queueTerminal's
+	// `pushed -> completed` now would mark the item clean before any CI
+	// evidence exists — the exact "absence of evidence reads as success"
+	// failure the watch exists to prevent. Everything else (no watch, watch
+	// disabled, watch declined, a non-push outcome) falls through unchanged.
+	if b.ciOwnsTerminal(it.ID) {
+		slog.Info("queue: push is under ci observation; the watch owns this item's terminal",
+			"task_id", it.ID)
+		return
+	}
+
 	to, lastErr := queueTerminal(tr.outcome, ctx.Err() != nil)
 	if _, err := b.setQueueState(it.ID, to, func(q *QueueItem) {
 		q.LastError = lastErr
@@ -313,6 +337,14 @@ func (b *Broker) runQueued(it QueueItem) {
 // failure outcome dead-letters immediately (Increment B turns retryable
 // ones into re-queues). cancelled covers the pre-outcome aborts too when
 // the task context was cancelled (kill/shutdown before a terminal emit).
+//
+// `pushed -> completed` stays exactly as written, and is deliberately NOT
+// conditioned on the CI watch: the diversion to awaiting_ci is made by the
+// CALLERS (runQueued, finalizeQueuedResume), which skip this mapping entirely
+// when ciOwnsTerminal reports the watch owns the item. Keeping the condition
+// out of here means this function stays a pure outcome->state mapping with no
+// disk read in it, and the one place that decides "is this item finished at
+// all" is the one place that reads the durable item.
 func queueTerminal(outcome string, ctxCancelled bool) (QueueState, string) {
 	switch outcome {
 	case "pushed", "no_diff", "planned":
@@ -352,4 +384,48 @@ func (b *Broker) cancelQueued(id string) bool {
 		return true
 	}
 	return false
+}
+
+// cancelAwaitingCI cancels an item parked in awaiting_ci: it removes the
+// <id>.ci.json marker (which is the whole of the watch's state — deleting it is
+// how you cancel a watch) and persists awaiting_ci -> cancelled. Reports
+// whether it did so; anything not currently in awaiting_ci reports false and the
+// caller falls through to its next option.
+//
+// It exists because an awaiting_ci item is reachable by NOTHING else: its
+// lifecycle goroutine has already returned, so there is no live task for the
+// kill path to find, and it is not in the in-memory queue for cancelQueued to
+// match. Without this, `drydock queue cancel <id>` 404s on a pushed-and-watched
+// item and the only way out is to wait out ci.watch_timeout — while the state
+// machine and the docs both say cancelled is reachable from every non-terminal
+// state.
+//
+// ORDER: marker first, then the transition. A crash in that gap leaves an
+// awaiting_ci item with no marker, which the next boot terminates honestly
+// (ResumeQueue's awaiting_ci branch) — a bounded, already-modeled outcome. The
+// other order would leave a live marker over a terminal item, which the watcher
+// would then poll (spending real gh calls) until its deadline for a task the
+// operator has already cancelled.
+//
+// A watcher poll racing this loses harmlessly in both directions: it either
+// finds no marker, or concludes one whose queue write is then refused by the
+// state machine — cancelled is a sink, and the refusal is the guard working.
+func (b *Broker) cancelAwaitingCI(id string) bool {
+	cur, err := readQueueItem(b.AuditRoot, id)
+	if err != nil || cur.State != QueueAwaitingCI {
+		return false
+	}
+	if err := removeCIMarker(b.AuditRoot, id); err != nil {
+		slog.Warn("queue: could not remove the ci marker of a cancelled item", "task_id", id, "err", err)
+	}
+	if _, err := b.setQueueState(id, QueueCancelled, func(q *QueueItem) {
+		q.LastError = "cancelled by the operator while awaiting ci"
+	}); err != nil {
+		// It raced to a terminal (the watch concluded first). That is a real
+		// terminal reached honestly, so report the cancel as not-applicable
+		// rather than forcing anything.
+		slog.Warn("queue: could not cancel an awaiting_ci item", "task_id", id, "err", err)
+		return false
+	}
+	return true
 }

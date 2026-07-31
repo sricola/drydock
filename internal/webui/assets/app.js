@@ -263,7 +263,16 @@ async function renderFinishedStrip(container, liveIDs){
     // unexpected passthrough key) gets the neutral glyph by default: a green
     // checkmark must never be the fallback for a key this code doesn't
     // recognize.
-    const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed" || it.outcome_key === "dead_letter";
+    //
+    // THERE IS DELIBERATELY NO "ci_failed" HERE. outcome_key is derived from a
+    // task's LAST {"type":"result"} row, and the broker never writes one for a
+    // CI observation — by design, so a CI failure cannot relabel a push that
+    // landed exactly as asked (see audit.CIObservation). A CI verdict lives on
+    // the durable queue item instead: `drydock queue list` and GET /queue. A
+    // key this map cannot receive is a lie waiting to be believed, so it stays
+    // out; internal/webui/ci_assets_test.go pins that both ways.
+    const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed" ||
+                  it.outcome_key === "dead_letter";
     const isOk = it.outcome_key === "ok" || it.outcome_key === "completed";
     // Color via class, not a style attribute: the strict CSP (default-src
     // 'self', no style-src 'unsafe-inline') blocks inline style attributes.
@@ -277,7 +286,7 @@ async function renderFinishedStrip(container, liveIDs){
       el("code", { class: "tid", text: shortId(it.id) }),
       el("span", { class: "age", text: fmtAgeFromUnix(it.mtime_unix) }));
     if (isErr){
-      const lbl = it.outcome_key === "dead_letter" ? "dead-letter" : "error";
+      const lbl = { dead_letter: "dead-letter" }[it.outcome_key] || "error";
       const r = el("span", { class: "reason", text: lbl });
       row.append(r);
       failureReason(it.id).then(reason => { if (reason) r.textContent = lbl + " · " + reason; });
@@ -340,6 +349,14 @@ setInterval(() => {
   }
 }, 1000);
 
+// stageBadge renders one lifecycle state as a badge. `stage` comes from
+// /api/tasks, which is the LIVE-task stream, so the map covers the TaskStage
+// vocabulary and nothing else. In particular it has no `awaiting_ci` entry:
+// that is a durable QUEUE state whose task has already finished and been
+// unregistered, so it can never appear here — the web UI has no queue view at
+// all, and the CI observation is surfaced by `drydock queue list` and
+// GET /queue. An unknown state falls through to its raw name rather than being
+// dropped, so a state this build doesn't know about is still visible.
 function stageBadge(stage) {
   const label = { queued: "queued", awaiting_egress: "egress?", setting_up: "setting up", running: "running", verifying: "verifying", awaiting_approval: "review?", pushing: "pushing" }[stage] || stage;
   return el("span", { class: "badge stage-" + stage, text: label });

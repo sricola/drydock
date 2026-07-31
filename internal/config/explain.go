@@ -381,6 +381,22 @@ func provenanceTable() []fieldDesc {
 			differs: func(yamlCfg, def *Config) bool {
 				return diffPolicySet(yamlCfg.DiffPolicy) != diffPolicySet(def.DiffPolicy)
 			}},
+		// ci: one row per field rather than a collapsed block summary. Each is
+		// individually env-overridable, and ci.watch in particular decides
+		// whether the host's gh credential is exercised on a timer — an
+		// operator auditing that must see exactly which layer turned it on.
+		{name: "CI.Watch", yamlKey: "ci.watch", envVar: "DRYDOCK_CI_WATCH",
+			guardedEnv: envBoolOne("DRYDOCK_CI_WATCH"),
+			value:      func(c *Config) string { return renderBool(c.CI.Watch) }},
+		{name: "CI.PollInterval", yamlKey: "ci.poll_interval", envVar: "DRYDOCK_CI_POLL_INTERVAL",
+			guardedEnv: envDurationNonNegative("DRYDOCK_CI_POLL_INTERVAL"),
+			value:      func(c *Config) string { return renderDur(c.CI.PollInterval) }},
+		{name: "CI.WatchTimeout", yamlKey: "ci.watch_timeout", envVar: "DRYDOCK_CI_WATCH_TIMEOUT",
+			guardedEnv: envDurationNonNegative("DRYDOCK_CI_WATCH_TIMEOUT"),
+			value:      func(c *Config) string { return renderDur(c.CI.WatchTimeout) }},
+		{name: "CI.MaxAttempts", yamlKey: "ci.max_attempts", envVar: "DRYDOCK_CI_MAX_ATTEMPTS",
+			guardedEnv: envIntNonNegative("DRYDOCK_CI_MAX_ATTEMPTS"),
+			value:      func(c *Config) string { return renderInt(c.CI.MaxAttempts) }},
 		{name: "StageRoot", yamlKey: "stage_root", envVar: "STAGE_ROOT",
 			guardedEnv: envString("STAGE_ROOT"),
 			value:      func(c *Config) string { return c.StageRoot }},

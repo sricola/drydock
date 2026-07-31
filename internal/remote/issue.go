@@ -40,6 +40,13 @@ func validateOwnerRepo(seg string) bool {
 	return ownerRepoRE.MatchString(seg) && !strings.Contains(seg, "..")
 }
 
+// ValidOwnerRepo is validateOwnerRepo for callers outside this package. It
+// exists so a consumer holding an owner/repo pair that came off DISK (the
+// broker's CI marker, whose values were validated when they were captured) can
+// re-check the invariant itself and fail closed, instead of discovering the
+// problem as an opaque error from a gh call it should never have made.
+func ValidOwnerRepo(seg string) bool { return validateOwnerRepo(seg) }
+
 // ParseIssueURL strictly parses a GitHub issue URL of the form
 // https://github.com/{owner}/{repo}/issues/{number} (the scheme-less
 // github.com/o/r/issues/n shorthand is also accepted). A trailing slash and a

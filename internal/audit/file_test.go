@@ -130,3 +130,53 @@ func TestLastResultAndMetricsFile_MatchesTheSingleRowFunctions(t *testing.T) {
 		}
 	})
 }
+
+// ---- the broker-authored ci_observation record ----
+//
+// The audit-ordering decision for the CI arc (see the CIObservation doc
+// comment) is that the post-terminal CI conclusion is appended to the closed
+// audit as its OWN record type, never as a late {"type":"result"} row. These
+// tests are what that decision has to survive: the new record must be
+// completely inert for the existing readers, because the last result line is
+// the sole input to the aggregate-cap reseed (F-07) and to every outcome
+// classification.
+
+const ciObservedFixture = `{"type":"drydock_meta","subscription":false,"sensitive":false}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1234,"total_cost_usd":0.05,"num_turns":3,"src":"broker"}
+{"type":"metrics","src":"broker","task_id":"abc","agent":"claude","vendor":"anthropic","auth":"api_key","repo":"github.com/o/r","outcome":"pushed","stage_ms":{"preparing":100,"running":1200,"pushing":50},"egress_gate_wait_ms":0,"approval_gate_wait_ms":900,"requests":3,"diff_files":2,"diff_bytes":512,"cost_usd":0.05,"widen_requested":0,"widen_outcome":"none"}
+{"type":"ci_observation","src":"broker","task_id":"abc","state":"failed","pr_number":42,"pr_url":"https://github.com/o/r/pull/42","queue_state":"ci_failed","checks":2,"passed":1,"failed":1,"pending":0,"observed_at_ms":1700000000000}
+`
+
+// TestCIObservationRowIsInertForExistingReaders: the last result row, the last
+// metrics row, the combined single-pass reader, and the derived outcome key
+// are all byte-for-byte what they were before the ci_observation line was
+// appended. Anything else would mean the CI verdict had silently rewritten the
+// task's spend accounting or its outcome.
+func TestCIObservationRowIsInertForExistingReaders(t *testing.T) {
+	withRow := writeAudit(t, ciObservedFixture)
+	without := writeAudit(t, ciObservedFixture[:len(ciObservedFixture)-
+		len(`{"type":"ci_observation","src":"broker","task_id":"abc","state":"failed","pr_number":42,"pr_url":"https://github.com/o/r/pull/42","queue_state":"ci_failed","checks":2,"passed":1,"failed":1,"pending":0,"observed_at_ms":1700000000000}`+"\n")])
+
+	rA, okA, mA, hmA := LastResultAndMetricsFile(withRow)
+	rB, okB, mB, hmB := LastResultAndMetricsFile(without)
+	if !okA || !okB || rA != rB {
+		t.Fatalf("last result row differs: %+v (ok=%v) vs %+v (ok=%v)", rA, okA, rB, okB)
+	}
+	if !hmA || !hmB || mA != mB {
+		t.Fatalf("last metrics row differs: %+v vs %+v", mA, mB)
+	}
+	// The precise predicate seedAggregateFromAudit applies.
+	if rA.Src != "broker" || rA.TotalCostUSD != 0.05 {
+		t.Errorf("aggregate seed would read src=%q cost=%v, want broker/0.05", rA.Src, rA.TotalCostUSD)
+	}
+	if key := OutcomeKeyWithMetrics(rA, okA, mA, hmA); key != "ok" {
+		t.Errorf("outcome key = %q, want ok — an observed CI failure must not relabel a clean push", key)
+	}
+	// The single-row readers agree with the combined one.
+	if r, ok := LastResultFile(withRow); !ok || r != rA {
+		t.Errorf("LastResultFile = %+v (ok=%v), want %+v", r, ok, rA)
+	}
+	if m, ok := LastMetricsFile(withRow); !ok || m != mA {
+		t.Errorf("LastMetricsFile = %+v (ok=%v), want %+v", m, ok, mA)
+	}
+}

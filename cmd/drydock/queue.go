@@ -22,8 +22,10 @@ func queueUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage: drydock queue <add|list|cancel>
 
   drydock queue add <submit flags>   enqueue a task; returns immediately with its id
-  drydock queue list                 show queue items: id, state, age, attempts, repo
-  drydock queue cancel <id>          cancel a queued item (kills it if already running)
+  drydock queue list                 show queue items: id, state, age, attempts, ci, repo
+  drydock queue cancel <id>          cancel a queued item (kills it if already
+                                     running; cancels the CI watch if it is
+                                     parked in awaiting_ci)
 
 'queue add' takes the same flags as 'drydock submit' (drydock queue add -h).
 Queued tasks survive brokerd restarts and run unattended when a concurrency
@@ -143,6 +145,8 @@ type queueListItem struct {
 	State        string `json:"state"`
 	EnqueuedAtMs int64  `json:"enqueued_at_ms"`
 	Attempts     int    `json:"attempts"`
+	PRNumber     int    `json:"pr_number"`
+	CIState      string `json:"ci_state"`
 }
 
 func fetchQueue() ([]queueListItem, error) {
@@ -162,7 +166,31 @@ func fetchQueue() ([]queueListItem, error) {
 	return out, nil
 }
 
-// renderQueueTable renders the queue as ID/STATE/AGE/ATTEMPTS/REPO, oldest
+// queueCICell renders the CI column: the broker's last OBSERVED conclusion for
+// the item's pull request, with the PR number when there is one.
+//
+// The empty CI state renders as "-", NEVER as anything that could be mistaken
+// for a pass. It means one of: the watch is off, this item never pushed, or no
+// PR identity was captured — in every case the broker has observed nothing.
+// The states themselves are broker-authored vocabulary (pending, passed,
+// failed, no_checks, timed_out, unknown); no CI log text exists in the payload
+// at all (D3). It still goes through safeCell like every other broker-sourced
+// string: this column is a terminal write, and the sanitizer is what keeps a
+// tampered queue file from putting escapes on an operator's screen.
+func queueCICell(it queueListItem) string {
+	switch {
+	case it.CIState == "" && it.PRNumber == 0:
+		return "-"
+	case it.CIState == "":
+		return "#" + fmt.Sprint(it.PRNumber)
+	case it.PRNumber == 0:
+		return safeCell(it.CIState)
+	default:
+		return safeCell(it.CIState) + " #" + fmt.Sprint(it.PRNumber)
+	}
+}
+
+// renderQueueTable renders the queue as ID/STATE/AGE/ATTEMPTS/CI/REPO, oldest
 // first (brokerd already sorts by enqueue time). AGE is derived from
 // enqueued_at_ms. Every broker-sourced string crosses the terminal boundary
 // through safeCell, same as the other tables.
@@ -171,11 +199,12 @@ func renderQueueTable(w io.Writer, items []queueListItem) {
 		fmt.Fprintln(w, "(queue is empty)")
 		return
 	}
-	fmt.Fprintf(w, "%-32s  %-15s  %5s  %8s  %s\n", "ID", "STATE", "AGE", "ATTEMPTS", "REPO")
+	fmt.Fprintf(w, "%-32s  %-15s  %5s  %8s  %-16s  %s\n", "ID", "STATE", "AGE", "ATTEMPTS", "CI", "REPO")
 	for _, it := range items {
-		fmt.Fprintf(w, "%-32s  %-15s  %5s  %8d  %s\n",
+		fmt.Fprintf(w, "%-32s  %-15s  %5s  %8d  %-16s  %s\n",
 			safeCell(it.ID), safeCell(it.State),
 			relAge(time.UnixMilli(it.EnqueuedAtMs)), it.Attempts,
+			queueCICell(it),
 			safeCell(shorten(it.Repo, 40)))
 	}
 }
@@ -205,7 +234,7 @@ func postQueueCancel(id string) int {
 		fmt.Printf("task %s cancelled\n", id)
 		return 0
 	case http.StatusNotFound:
-		fmt.Fprintf(errOut, "drydock queue cancel: no such queued or running task: %s\n", id)
+		fmt.Fprintf(errOut, "drydock queue cancel: no such queued, running, or ci-watched task: %s\n", id)
 		return 1
 	default:
 		fmt.Fprintf(errOut, "drydock queue cancel: brokerd returned %s\n", resp.Status)

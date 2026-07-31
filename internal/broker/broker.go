@@ -181,6 +181,38 @@ type Broker struct {
 	PushRetryBackoff     time.Duration
 	PushFreshBranchTries int
 
+	// CIWatch enables host-side observation of a pushed PR's CI (config
+	// `ci.watch`). OFF by default: with it false, a stock install behaves
+	// exactly as it did before — finishPush opens the PR through the plain
+	// Adapter.OpenRequest path and writes no marker.
+	//
+	// When true AND the selected adapter implements remote.PullRequestOpener,
+	// a SUCCESSFUL push captures the PR's identity and persists a <id>.ci.json
+	// marker for the watcher. Neither the capture nor the marker write can
+	// turn a landed push into a failure: the branch is already saved, so
+	// missing PR identity is recorded as missing evidence (no marker, no
+	// watch) and the task completes exactly as it does today (D7).
+	CIWatch bool
+
+	// CIPollInterval and CIWatchTimeout bound the CI watch (config
+	// `ci.poll_interval` / `ci.watch_timeout`). Zero means the ciwatch.go
+	// defaults. CIWatchTimeout is applied as an ABSOLUTE deadline anchored to
+	// the marker's persisted creation stamp, so a restart never extends a
+	// watch. Both are ignored when CIWatch is false.
+	CIPollInterval time.Duration
+	CIWatchTimeout time.Duration
+
+	// OnCIObserved, when set, receives every TERMINAL CI observation the
+	// watcher records, immediately before the marker is deleted. It is the
+	// clean seam the queue-state/audit surfacing hangs off (B1 task 3) so the
+	// watcher never has to reach into the queue itself. nil = observations are
+	// logged only.
+	//
+	// Implementations MUST be idempotent: a crash between the hook firing and
+	// the marker's removal replays the same observation on the next boot (see
+	// concludeCIWatch for why that direction is the safe one).
+	OnCIObserved func(CIObservation)
+
 	// PolicyFields/PolicyHash are the daemon's effective policy as resolved by
 	// config.Explain at boot, stashed here so GET /admin/policy can report what
 	// brokerd actually loaded — read-only, no recomputation on request. Set
@@ -222,6 +254,19 @@ type Broker struct {
 	// VM (task-<id> or verify-<id>). nil in production -> forceDeleteContainer.
 	// Tests inject a fake to observe which containers get deleted.
 	deleteContainer func(name string) error
+	// checksFn seams the host-side CI check read. nil in production ->
+	// remote.Checks. Tests inject a script so the watcher never shells out to
+	// gh. ciEnvFn seams the curated env the same call runs with (nil ->
+	// stage.CuratedEnv), so a unit test never reads the host environment.
+	checksFn func(env []string, owner, repo string, number int) (remote.CheckSummary, error)
+	ciEnvFn  func() []string
+	// onQueueResumeItem is called by ResumeQueue just before it reconciles each
+	// item. nil in production; it exists so a test can deterministically inject
+	// the CONCURRENT WRITE that boot reconciliation actually races against —
+	// ResumeAwaiting resumes each surviving gate in its own goroutine, so a
+	// resumed auto-approve push can arm an item and write its CI marker while
+	// this sweep is mid-walk. Without a seam that race is unreproducible.
+	onQueueResumeItem func(id string)
 
 	// MaxConcurrent caps how many tasks may be in any non-terminal state at
 	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
@@ -248,6 +293,38 @@ type Broker struct {
 	queueOnce sync.Once
 	queueTick time.Duration
 	now       func() int64
+
+	// CI watch (increment B, ciwatch.go). ciStop ends the watch goroutine;
+	// ciOnce builds it lazily, mirroring queueOnce. There is no wake channel
+	// and no in-memory list: the watcher's only state is the durable
+	// <id>.ci.json markers it re-reads every pass, which is what makes boot
+	// resume free. It holds NO concurrency slot (D4).
+	// ciDone is closed when the watch goroutine returns. Nothing in production
+	// waits on it — shutdown must never block behind an in-flight gh call —
+	// but it makes teardown deterministic for tests.
+	// ciStartOnce/ciStopOnce make StartCIWatch and StopCIWatch idempotent:
+	// brokerd calls Stop from the signal handler, tests call it from a defer,
+	// and a second close of ciDone (or of ciStop) is a panic.
+	ciStop      chan struct{}
+	ciDone      chan struct{}
+	ciOnce      sync.Once
+	ciStartOnce sync.Once
+	ciStopOnce  sync.Once
+
+	// ciArmingMu/ciArming track the ids whose CI watch is being armed RIGHT NOW
+	// — the window inside recordCIMarker between armCIWatch's queue write
+	// (awaiting_review -> awaiting_ci) and the marker write that follows it.
+	//
+	// It exists for exactly one reader: ResumeQueue's awaiting_ci branch, which
+	// terminates an armed item that has no marker. Those two disk ops are not
+	// atomic, so a boot sweep running concurrently with a resumed auto-approve
+	// push (ResumeAwaiting hands each surviving gate its own goroutine) could
+	// observe the armed item before its marker landed, dead-letter it, and then
+	// have the live marker written on top — leaving the watcher burning gh calls
+	// on an item whose every transition is refused. The boot lock guarantees a
+	// single brokerd process, so an in-process set closes the window completely.
+	ciArmingMu sync.Mutex
+	ciArming   map[string]bool
 
 	pendingMu sync.Mutex
 	pending   map[string]chan gateReply // task_id -> approval channel
@@ -710,9 +787,23 @@ func (tr *taskRun) runLifecycle() {
 	}
 	// 0o600 on the audit log: same reasoning. os.Create would create at
 	// 0666 (umask-reduced); be explicit.
+	//
+	// O_APPEND is load-bearing, not decoration. This fd is NOT the only writer
+	// of this file: appendLine (TerminateStuckAudits' synthetic terminal, and
+	// the CI observation row) opens its OWN O_APPEND fd against the same path,
+	// and the CI observation can be written while this one is still open — the
+	// marker-write-failure unwind runs applyCIObservation synchronously inside
+	// finishPush, and the watcher can conclude a marker the instant it lands.
+	// Without O_APPEND this fd carries a private offset, so the deferred
+	// metrics row would write AT that stale offset and silently overwrite the
+	// appended line (leaving a corrupt tail fragment whenever the appended line
+	// was the longer of the two). With O_APPEND every write from either fd is
+	// positioned at EOF by the kernel, so the two can interleave lines but can
+	// never overwrite each other. O_TRUNC still applies at open (a fresh trace
+	// per task id); the two flags are independent.
 	logf, err := os.OpenFile(
 		filepath.Join(b.AuditRoot, taskID+".jsonl"),
-		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
+		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		slog.Warn("task audit log open failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "audit setup failed", ""))
@@ -1371,11 +1462,30 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 	}
 	// Branch is saved. Opening the PR/MR is best-effort; never downgrade a
 	// successful push to a failure.
+	//
+	// `branch` — the branch pushWithRecovery actually landed — is what every
+	// downstream record keys on, NOT `base`: a collision pushes agent/<id>-2,
+	// and a marker naming agent/<id> would point the CI watch at a branch this
+	// task never pushed.
 	title, body := prContent(tr.instruction, tr.id)
-	prErr := adapter.OpenRequest(remote.Request{
+	req := remote.Request{
 		WorkDir: tr.st.WorkDir(), Branch: branch, Env: tr.st.PushEnv(),
 		Title: title, Body: body, Draft: tr.draft,
-	})
+		// RepoRef never reaches an argv; it is the host the PR-identity
+		// capture pins the URL gh prints against.
+		RepoRef: tr.repoRef,
+	}
+	// The capability path opens the PR with the SAME argv as OpenRequest and
+	// additionally reports its identity; it replaces (never supplements) the
+	// plain call, or two PRs would be opened. Gated on CIWatch so a stock
+	// install takes the byte-identical path it always has.
+	var pr remote.PullRequest
+	var prErr error
+	if opener, ok := adapter.(remote.PullRequestOpener); ok && b.CIWatch {
+		pr, prErr = opener.OpenRequestResult(req)
+	} else {
+		prErr = adapter.OpenRequest(req)
+	}
 	tr.outcome = "pushed"
 	ev := map[string]any{"event": "result", "outcome": "pushed",
 		"task_id": tr.id, "branch": branch, "platform": adapter.Name(),
@@ -1386,7 +1496,136 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		ev["pr_error"] = safeErr(prErr)
 		ev["pr_hint"] = "branch '" + branch + "' was pushed; open a PR manually (" + adapter.Name() + ")"
 	}
+	// Additive only: pr_opened keeps its meaning ("the open call did not
+	// error"), and pr_number/pr_url appear only when the identity is actually
+	// known. No identity => the keys are absent and no marker exists, which is
+	// exactly today's behavior.
+	//
+	// prErr == nil is part of the guard, not decoration. An implementation that
+	// returned BOTH an error and a non-zero identity would otherwise emit a
+	// self-contradicting terminal event (pr_opened:false alongside pr_number:N)
+	// and start a watch on a PR the broker just reported it had failed to open.
+	// The error wins: it means the same thing OpenRequest's error means.
+	//
+	// pr_url is routed through safeStr even though parsePRURL rebuilds it from
+	// validated pieces — it is subprocess-derived text reflected to an operator
+	// terminal, and the caps/stripping cost nothing (defense in depth, same
+	// treatment pr_error and every other reflected string gets).
+	if prErr == nil && pr.Number > 0 {
+		ev["pr_number"] = pr.Number
+		ev["pr_url"] = safeStr(pr.URL)
+	}
+	// The terminal event is emitted BEFORE the marker is written, deliberately.
+	// A SIGKILL between the two then leaves a task with a terminal result row
+	// and no watch — the documented "no PR identity => no watch => the task
+	// completes exactly as it does today". The other order would leave a live
+	// marker for a task with no terminal row. (The boot scan tolerates either:
+	// a marker is self-describing and the watcher never reads the audit.)
 	tr.sw.emit(ev)
+	if prErr == nil && pr.Number > 0 {
+		tr.recordCIMarker(branch, pr)
+	}
+}
+
+// recordCIMarker persists the <id>.ci.json watch marker for a landed push with
+// a known PR identity. Best-effort BY CONSTRUCTION: the push already succeeded
+// and the terminal event is already assembled, so a marker write failure is
+// logged and cannot touch the outcome. The worst case is a task that completes
+// without a CI watch — the same as a task whose adapter reports no identity.
+func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
+	// A PR identity with no validated owner/repo cannot be watched: the watcher
+	// builds `gh --repo <owner>/<repo>` from these fields and is forbidden from
+	// re-deriving them by re-parsing the URL. Refuse to write a marker that
+	// could only ever conclude "unwatchable".
+	if pr.Owner == "" || pr.Repo == "" {
+		slog.Warn("ci watch: PR identity carries no validated owner/repo; this push will not be watched",
+			"task_id", tr.id, "branch", branch, "pr", pr.Number)
+		return
+	}
+	// Redacted at write time, exactly as the Brief does (see the Brief's
+	// RepoRef): the marker is a durable artifact AND its contents reach a
+	// `gh --repo` argv, where an embedded clone credential would be visible in
+	// `ps` on the host. Computed here because the WATCHABILITY GATE below reads
+	// it too.
+	repoRef := trustbrief.RedactRepoRef(tr.repoRef)
+	// THE WATCHABILITY GATE, and it belongs HERE — before anything is armed.
+	//
+	// remote.Checks hard-pins github.com inside its --repo value (the GH_HOST
+	// defense), so a task on an enterprise host has a PR the watch can never
+	// query. The PR-identity capture, by contrast, accepts an enterprise host
+	// (it pins the PR URL to the TASK's own ref, which is the right rule for
+	// what IT does). Deciding watchability only at poll time would therefore
+	// arm every enterprise push into awaiting_ci and then dead-letter it on the
+	// first poll — a clean, successful push recorded as a failure, forever, for
+	// every GHE operator who turns ci.watch on.
+	//
+	// An unwatchable ref writes NO marker and arms NOTHING, so the item takes
+	// the unchanged path and completes on its push exactly as it does with the
+	// watch off. That is the documented "no watchable PR identity => no watch".
+	//
+	// SCOPE, recorded so it is a decision rather than an oversight: gh itself
+	// supports enterprise hosts, so GHE is watchable in principle. Doing it
+	// means threading an operator-configured host through remote.Checks in
+	// place of the github.com literal, which trades away the single-literal
+	// GH_HOST defense for a config-derived one and needs its own validation and
+	// tests. That is a deliberate future increment, not a line change; until
+	// then a GHE push is honestly un-watched rather than dishonestly failed.
+	if !ciRefHostWatchable(repoRef) {
+		slog.Info("ci watch: repo ref is not a github.com repository; this push completes unwatched",
+			"task_id", tr.id, "branch", branch, "pr", pr.Number)
+		return
+	}
+	// Take ownership of the queue item's terminal FIRST (awaiting_review ->
+	// awaiting_ci), then write the marker. That order is what makes "a live CI
+	// marker implies an armed item" true at every instant, so the watcher can
+	// never observe a marker for an item still sitting in awaiting_review. A
+	// crash in the gap leaves an armed item with no marker — resolved to an
+	// honest terminal by ResumeQueue, never a hang. No-op for a synchronous
+	// task (no queue item); declines the watch entirely if a real item could
+	// not be armed. See armCIWatch.
+	//
+	// The two writes are bracketed by beginCIArm so ResumeQueue's boot sweep,
+	// which may be walking the queue in another goroutine right now, treats them
+	// as one step: without it the sweep can see the armed item BEFORE its marker
+	// exists, dead-letter it, and then have the marker written on top of the
+	// dead-lettered record. See Broker.ciArming.
+	endArm := tr.b.beginCIArm(tr.id)
+	defer endArm()
+	if !tr.b.armCIWatch(tr.id, pr.Number) {
+		return
+	}
+	now := tr.b.nowMs()
+	m := ciMarker{
+		TaskID:   tr.id,
+		RepoRef:  repoRef,
+		Branch:   branch,
+		PRNumber: pr.Number,
+		PROwner:  pr.Owner,
+		PRRepo:   pr.Repo,
+		PRURL:    pr.URL,
+		// State is what the broker has OBSERVED, and it has observed nothing
+		// yet — pending, never "passed by default".
+		State:       CIPending,
+		CreatedAtMs: now,
+		UpdatedAtMs: now,
+	}
+	if err := writeCIMarker(tr.b.AuditRoot, m); err != nil {
+		slog.Warn("ci watch: could not persist marker; this push will not be watched",
+			"task_id", tr.id, "branch", branch, "pr", pr.Number, "err", err)
+		// The item was armed a moment ago and no marker exists, so nothing will
+		// ever conclude its watch. Unwind it to an honest terminal NOW rather
+		// than leaving it parked in awaiting_ci until some future boot notices.
+		// dead_letter, not completed: the operator turned the watch on, it did
+		// not happen, and a silent `completed` would be an unobserved CI
+		// outcome reading as success. The push itself is unaffected — the
+		// terminal `pushed` event and audit row are already written.
+		tr.b.applyCIObservation(CIObservation{
+			TaskID: tr.id, RepoRef: m.RepoRef, Branch: branch,
+			PRNumber: pr.Number, PRURL: pr.URL, State: CIUnknown,
+			Detail:       "could not persist the ci watch marker; this push was never watched",
+			ObservedAtMs: now,
+		})
+	}
 }
 
 // resolveAgent picks the agent (task value → operator default → "claude") and

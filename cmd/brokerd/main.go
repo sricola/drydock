@@ -146,6 +146,19 @@ func setupProfiles(repos map[string]config.SetupProfile) map[string]broker.Setup
 	return out
 }
 
+// applyCIConfig maps the operator's `ci:` block onto the broker's CI-watch
+// fields. Split out of the assembly literal (rather than inlined like the
+// other scalars) so the OFF-by-default wiring is directly testable: b.CIWatch
+// is the single gate brokerd consults before starting the watcher, and this is
+// the only place anything sets it. Ranges are already validated by
+// config.Load; 0 durations stay 0 here and the broker applies its own built-in
+// fallbacks, so "unset" means the same thing at both layers.
+func applyCIConfig(b *broker.Broker, ci config.CIConfig) {
+	b.CIWatch = ci.Watch
+	b.CIPollInterval = ci.PollInterval
+	b.CIWatchTimeout = ci.WatchTimeout
+}
+
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
 
 // taskContainerRE matches a drydock task VM name exactly (task- + a 32-hex
@@ -558,6 +571,8 @@ func main() {
 		PolicyFields:         policyFields,
 		PolicyHash:           policyHash,
 	}
+	// Host-side CI observation (increment B). Off unless ci.watch is set.
+	applyCIConfig(b, cfg.CI)
 	if squidCtl != nil {
 		b.Squid = squidCtl
 	}
@@ -605,6 +620,19 @@ func main() {
 	// reconciled queue.
 	b.StartDispatcher()
 
+	// Host-side CI observation (increment B). b.CIWatch comes from ci.watch
+	// (applyCIConfig, above) and defaults to false, so a stock install runs no
+	// extra goroutine and makes no gh call on a timer — the operator's GitHub
+	// credential is exercised on a timer only after an explicit opt-in.
+	// There is no separate resume step: the watcher's first pass
+	// reads the durable <id>.ci.json markers off disk, so a watch that survived
+	// a restart is picked up here with its ORIGINAL absolute deadline. It holds
+	// no concurrency slot and keeps no stage (D4), so it can never starve
+	// dispatch — which is why it is safe to start it alongside the dispatcher.
+	if b.CIWatch {
+		b.StartCIWatch()
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)
 	// Durable queue (orchestration increment A): detached submit, list, cancel.
@@ -636,6 +664,14 @@ func main() {
 	go func() {
 		<-sigCh
 		slog.Info("shutting down — cancelling in-flight tasks")
+		// Stop the CI watch first, and note what this does NOT do: it does not
+		// wait. A poll already in flight is bounded by the vendor-CLI timeout,
+		// and blocking the drain behind a GitHub round trip is exactly the
+		// starvation D4 exists to prevent. Its markers stay on disk and are
+		// re-watched at the next boot with their ORIGINAL absolute deadlines, so
+		// stopping mid-watch loses nothing. Idempotent and safe even when the
+		// watch was never started (ci.watch off).
+		brk.StopCIWatch()
 		brk.CancelAll() // each task force-deletes its own VM and responds
 		ctx, c := context.WithTimeout(context.Background(), 20*time.Second)
 		_ = srv.Shutdown(ctx) // block until in-flight task handlers drain
@@ -931,6 +967,12 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 	// still-`queued` items have no stage yet, and interrupted
 	// preparing/running/verifying items are dead-lettered at resume, so
 	// reaping their stages is correct.
+	//
+	// awaiting_ci is the fourth non-terminal state and it is deliberately absent
+	// from the keep-map: such an item has ALREADY PUSHED, the CI watch holds no
+	// stage and never reopens one (D4), and a B2 retry re-clones from scratch
+	// (D2). There is nothing about its stage worth keeping alive, so reaping it
+	// is correct — the watch resumes from the durable <id>.ci.json marker alone.
 	keep := map[string]bool{}
 	for id := range broker.ListGateMarkers(auditRoot) {
 		keep[id] = true
