@@ -5,6 +5,23 @@ import (
 	"fmt"
 )
 
+// cacheMountTarget is where the shared dependency cache is mounted inside
+// every VM that uses it. CacheEnv derives all tool cache paths from it so the
+// mount target and the env can never drift apart.
+const cacheMountTarget = "/deps"
+
+// CacheEnv returns the tool cache env pointing each package manager's cache
+// at the shared /deps mount. The broker injects these into BOTH the setup and
+// agent env when caching is on; runner only exposes the constant set.
+func CacheEnv() []string {
+	return []string{
+		"npm_config_cache=" + cacheMountTarget + "/npm",
+		"GOMODCACHE=" + cacheMountTarget + "/go/mod",
+		"PIP_CACHE_DIR=" + cacheMountTarget + "/pip",
+		"CARGO_HOME=" + cacheMountTarget + "/cargo",
+	}
+}
+
 type Spec struct {
 	TaskID     string
 	Network    string
@@ -12,6 +29,7 @@ type Spec struct {
 	Env        []string // injected as --env pairs (grant env + proxy env + GW ip)
 	StageDir   string
 	PromptFile string
+	CacheDir   string // host dependency cache; empty = no cache mount. Mounted READ-ONLY at /deps.
 	MemoryGB   int
 	CPUs       int
 }
@@ -37,6 +55,16 @@ func BuildRunArgs(s Spec) []string {
 		// Apple container treats "readonly" as a presence flag; setting
 		// readonly=false still mounts read-only. Omit it entirely for rw.
 		"--mount", fmt.Sprintf("type=bind,source=%s,target=/work", s.StageDir),
+	)
+	if s.CacheDir != "" {
+		// SECURITY: the agent's cache mount is READ-ONLY (the ",readonly"
+		// presence flag). Only the setup VM writes the shared cache; if the
+		// agent could write it, agent-run code could poison dependencies
+		// consumed by other tasks.
+		args = append(args, "--mount",
+			fmt.Sprintf("type=bind,source=%s,target=%s,readonly", s.CacheDir, cacheMountTarget))
+	}
+	args = append(args,
 		s.ImageRef,
 		"/usr/local/bin/entrypoint.sh",
 	)
@@ -88,6 +116,7 @@ type SetupSpec struct {
 	Network  string
 	ImageRef string
 	StageDir string   // live stage.WorkDir(), mounted rw at /work
+	CacheDir string   // host dependency cache; empty = no cache mount. Mounted RW at /deps — setup populates it.
 	Env      []string // proxy/gateway env only — no credential material
 	Argv     []string // the setup command, passed as positionals
 	MemoryGB int
@@ -116,6 +145,15 @@ func BuildSetupArgs(s SetupSpec) []string {
 	}
 	args = append(args,
 		"--mount", fmt.Sprintf("type=bind,source=%s,target=/work", s.StageDir),
+	)
+	if s.CacheDir != "" {
+		// RW: setup is the only VM allowed to write the shared cache. Apple
+		// container treats "readonly" as a presence flag (readonly=false
+		// still mounts read-only), so RW means omitting it entirely.
+		args = append(args, "--mount",
+			fmt.Sprintf("type=bind,source=%s,target=%s", s.CacheDir, cacheMountTarget))
+	}
+	args = append(args,
 		"--entrypoint", "/bin/sh",
 		s.ImageRef,
 		"-c", setupScript, "sh",
