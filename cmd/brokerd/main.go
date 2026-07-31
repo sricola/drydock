@@ -607,6 +607,12 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", b.HandleTask)
+	// Durable queue (orchestration increment A): detached submit, list, cancel.
+	// Same listener and auth story as /admin/* — the unix socket (0600) or the
+	// loopback-guarded TCP wrap; nothing here is reachable from the sandbox VM.
+	mux.HandleFunc("POST /queue", b.HandleQueueAdd)
+	mux.HandleFunc("GET /queue", b.HandleQueueList)
+	mux.HandleFunc("POST /queue/cancel/{id}", b.HandleQueueCancel)
 	mux.HandleFunc("POST /admin/approve/{id}", b.HandleApprove)
 	mux.HandleFunc("POST /admin/deny/{id}", b.HandleDeny)
 	mux.HandleFunc("POST /admin/kill/{id}", b.HandleKill)

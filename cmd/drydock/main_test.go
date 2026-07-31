@@ -18,7 +18,7 @@ import (
 
 var dispatchedCommands = []string{
 	"setup", "init", "start", "daemon", "submit", "plan", "status", "tasks", "stats",
-	"logs", "retry", "review", "inspect", "kill", "cancel", "prune", "pending",
+	"logs", "retry", "review", "inspect", "kill", "cancel", "queue", "prune", "pending",
 	"approve", "deny", "doctor", "redteam", "auth", "ui", "policy", "version",
 }
 

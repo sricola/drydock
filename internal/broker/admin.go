@@ -124,6 +124,75 @@ func (b *Broker) HandleKill(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// HandleQueueAdd enqueues a task on the durable queue. Wire as POST /queue.
+// The body is decoded and capped exactly like POST /tasks (same Task JSON,
+// same MaxBytesReader bound); validation (repo_ref shape, egress domains)
+// lives in Enqueue so the HTTP path and any internal caller can never drift.
+// Unlike /tasks there is no stream: the response is a single
+// {event:"queued", task_id} object and the dispatcher runs the task detached.
+func (b *Broker) HandleQueueAdd(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxTaskBodyBytes)
+	var t Task
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	id, err := b.Enqueue(t)
+	if err != nil {
+		http.Error(w, safeErr(err), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"event": "queued", "task_id": id})
+}
+
+// queueItemView is the projected shape GET /queue returns: enough for the
+// CLI's ID/STATE/AGE/ATTEMPTS/REPO table, deliberately NOT the full QueueItem
+// — the embedded Task carries the instruction text (and flags like Sensitive),
+// which a list endpoint has no business re-broadcasting.
+type queueItemView struct {
+	ID           string     `json:"id"`
+	Repo         string     `json:"repo"`
+	State        QueueState `json:"state"`
+	EnqueuedAtMs int64      `json:"enqueued_at_ms"`
+	Attempts     int        `json:"attempts"`
+}
+
+// HandleQueueList returns every durable queue item (including terminals —
+// they're kept as history) as projected views, sorted FIFO by enqueue time.
+// Wire as GET /queue.
+func (b *Broker) HandleQueueList(w http.ResponseWriter, r *http.Request) {
+	items, err := listQueueItems(b.AuditRoot)
+	if err != nil {
+		http.Error(w, "queue list failed", http.StatusInternalServerError)
+		return
+	}
+	out := make([]queueItemView, 0, len(items))
+	for _, it := range items {
+		out = append(out, queueItemView{
+			ID:           it.ID,
+			Repo:         it.Task.RepoRef,
+			State:        it.State,
+			EnqueuedAtMs: it.EnqueuedAtMs,
+			Attempts:     it.Attempts,
+		})
+	}
+	writeJSON(w, out)
+}
+
+// HandleQueueCancel cancels a queue item. Wire as POST /queue/cancel/{id}.
+// Still queued (never dispatched) -> dequeued + durable `cancelled`, 204.
+// Already dispatched -> delegate to HandleKill, the SAME live-task kill path
+// /admin/kill uses (fires the stored per-task context cancel; the lifecycle's
+// terminal then lands on the queue file via runQueued): 204, or 404 when no
+// live task exists either — unknown id, or already terminal.
+func (b *Broker) HandleQueueCancel(w http.ResponseWriter, r *http.Request) {
+	if b.cancelQueued(r.PathValue("id")) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	b.HandleKill(w, r)
+}
+
 // maxAckBodyBytes caps the optional approve/deny request body. Acknowledgment
 // lists are a handful of short category strings; anything bigger is abuse.
 const maxAckBodyBytes = 4 << 10
