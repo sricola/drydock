@@ -46,6 +46,40 @@ const (
 	// unset. Long enough for a slow matrix build, short enough that a PR whose
 	// checks never start cannot hold a marker forever.
 	defaultCIWatchTimeout = 90 * time.Minute
+	// ciNoChecksMinPolls and ciNoChecksMinGrace together set the DISPATCH FLOOR:
+	// the earliest a `no_checks` rollup may be believed, measured from the
+	// marker's persisted CreatedAtMs (push time). Below the floor an empty
+	// rollup is recorded as CIPending and the watch keeps going.
+	//
+	// WHY THIS EXISTS. GitHub Actions dispatch is ASYNCHRONOUS: a push's checks
+	// appear on the PR seconds — sometimes tens of seconds — after the head
+	// commit lands. The watcher ticks on a free-running interval, so its first
+	// poll lands wherever it lands, and without a floor a poll that fell in the
+	// dispatch gap would read an empty rollup, conclude `no_checks`, map that to
+	// `completed`, delete the marker and end the watch. Nothing would ever
+	// revisit it. Deterministic variants of the same window: a fork PR whose
+	// workflows wait for maintainer approval, and CI from an external app that
+	// posts its status later. `no_checks` is the ONE terminal state derived from
+	// seeing nothing, so it is the one state that must be a function of time —
+	// everything else in this file already fails toward "keep watching".
+	//
+	// WHY BOTH TERMS. The poll-count term (ciNoChecksMinPolls) is derived from
+	// the operator's own ci.poll_interval so an operator who polls slowly gets
+	// the same "more than one independent look" guarantee an operator who polls
+	// fast does; the wall-clock term (ciNoChecksMinGrace) is the floor under
+	// THAT, so a very fast poll interval — a test's, or an impatient operator's
+	// 5s — cannot shrink the dispatch window to nothing. The floor is
+	// max(polls*interval, grace), anchored to CreatedAtMs so it is ABSOLUTE: a
+	// crash loop that restarts the watch cannot dodge it, exactly as the
+	// deadline cannot be extended by one.
+	//
+	// Two polls, five minutes: a dispatch that has not produced a single check
+	// five minutes and two independent looks after the push is a repository with
+	// no CI on this branch, not a slow queue. The watch deadline still bounds
+	// everything above this (a floor longer than the deadline simply yields an
+	// honest timed_out instead).
+	ciNoChecksMinPolls = 2
+	ciNoChecksMinGrace = 5 * time.Minute
 	// ciWatchMaxConsecutiveErrors is how many back-to-back check-read failures
 	// a watch tolerates before giving up. Transient gh failures (network blip,
 	// a 5xx, a rate-limit pause) must not end a watch; a persistent one must
@@ -126,9 +160,13 @@ func (b *Broker) StartCIWatch() {
 // in-flight marker simply stays on disk and is re-watched at the next boot with
 // the same absolute deadline. Callers that need to observe the exit (tests) can
 // wait on b.ciDone.
+//
+// Idempotent, and safe to call whether or not StartCIWatch ever ran: brokerd
+// calls it from the signal handler on every shutdown, tests call it from a
+// defer, and closing an already-closed channel would panic.
 func (b *Broker) StopCIWatch() {
 	b.initCIChans()
-	close(b.ciStop)
+	b.ciStopOnce.Do(func() { close(b.ciStop) })
 }
 
 func (b *Broker) ciWatchLoop() {
@@ -223,8 +261,11 @@ func (b *Broker) pollCIMarker(m ciMarker, errRuns map[string]int) {
 	//     values validated at capture time — never a re-parse of PRURL and
 	//     never the task ref's own owner/repo.
 	if !ciRefHostWatchable(m.RepoRef) {
-		// Conclude now with missing evidence rather than failing every poll
-		// until the deadline.
+		// Belt and braces. recordCIMarker refuses to write a marker for an
+		// unwatchable ref at all (a push on such a ref completes unwatched
+		// instead), so reaching here means a marker written by an older build,
+		// or one planted by hand. Conclude now with missing evidence rather
+		// than failing every poll until the deadline.
 		b.concludeCIWatch(m, CIUnknown, "repo_ref is not a github.com owner/repo reference; this PR cannot be watched",
 			remote.CheckSummary{}, errRuns)
 		return
@@ -259,11 +300,43 @@ func (b *Broker) pollCIMarker(m ciMarker, errRuns map[string]int) {
 	delete(errRuns, m.TaskID)
 
 	st := ciStateFor(sum.Rollup)
+	// The dispatch floor: "this PR has no checks" is the only terminal derived
+	// from seeing NOTHING, so it is not believed until CI has had time to
+	// dispatch. Below the floor it is demoted to pending and the watch goes on;
+	// above it, it is a legitimate observation. See ciNoChecksMinGrace.
+	//
+	// It covers BOTH spellings of the rollup — an empty check list and a list
+	// where nothing passed — deliberately: an early all-skipped read is the same
+	// partial view of a dispatch still in progress (a second workflow whose
+	// filters do match can still land), and the extra wait costs a repository
+	// with genuinely no CI a few minutes of `awaiting_ci` and nothing else.
+	if st == CINoChecks && b.nowMs() < b.ciNoChecksFloor(m) {
+		slog.Debug("ci watch: empty check rollup before the dispatch floor; still pending",
+			"task_id", m.TaskID, "pr", m.PRNumber)
+		b.refreshCIMarker(m, CIPending)
+		return
+	}
 	if !ciTerminal(st) {
 		b.refreshCIMarker(m, st)
 		return
 	}
 	b.concludeCIWatch(m, st, "", sum, errRuns)
+}
+
+// ciNoChecksFloor is the ABSOLUTE earliest time, in unix millis, at which an
+// empty check rollup for this marker may be concluded as no_checks. Anchored to
+// the marker's persisted CreatedAtMs (stamped at push time) for the same reason
+// ciDeadline is: a restart, or a crash loop, must not be able to move it.
+func (b *Broker) ciNoChecksFloor(m ciMarker) int64 {
+	tick := b.CIPollInterval
+	if tick <= 0 {
+		tick = defaultCIPollInterval
+	}
+	floor := time.Duration(ciNoChecksMinPolls) * tick
+	if floor < ciNoChecksMinGrace {
+		floor = ciNoChecksMinGrace
+	}
+	return m.CreatedAtMs + floor.Milliseconds()
 }
 
 // refreshCIMarker persists a still-pending observation: the state, the update
@@ -353,6 +426,10 @@ func (b *Broker) ciDeadline(m ciMarker) int64 {
 // ciStateFor maps a check rollup to the marker state. Note the default: an
 // unmodeled rollup is NOT a pass and NOT a terminal — it keeps the watch alive
 // until the deadline, which then records an honest timeout.
+//
+// The CINoChecks it returns is a rollup FACT, not yet a conclusion: pollCIMarker
+// additionally holds it against the dispatch floor before letting it end a
+// watch. Nothing else may treat this function's output as terminal-by-itself.
 func ciStateFor(r remote.CheckRollup) CIState {
 	switch r {
 	case remote.RollupPassed:
@@ -388,6 +465,12 @@ func ciTerminal(s CIState) bool {
 // It answers the HOST question only. The owner/repo the watch actually queries
 // come from the marker's validated PROwner/PRRepo, which for a fork-opened PR
 // are a different repository on the same host (see pollCIMarker).
+//
+// THE PRIMARY CALLER IS recordCIMarker, not this file: an unwatchable ref must
+// be refused BEFORE a watch is armed, or an enterprise-hosted push would arm,
+// then dead-letter on its first poll. See recordCIMarker for that reasoning and
+// for why GHE support is a deliberate future increment rather than a relaxation
+// of this predicate.
 func ciRefHostWatchable(ref string) bool {
 	parts := strings.Split(repokey.Normalize(ref), "/")
 	if len(parts) != 3 {

@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"drydock/internal/audit"
 	"drydock/internal/remote"
 )
 
@@ -492,5 +494,56 @@ func TestFinishPush_IdentityWithoutOwnerRepo_NoMarker(t *testing.T) {
 	}
 	if files := markerFiles(t, b.AuditRoot); len(files) != 0 {
 		t.Errorf("a marker was written with no watchable coordinate: %v", files)
+	}
+}
+
+// TestFinishPush_MarkerWriteFailure_AuditRowSurvivesTheDrain is the REGRESSION
+// test for the audit-fd clobber. The marker-write-failure unwind runs
+// applyCIObservation SYNCHRONOUSLY inside finishPush, while the task's own
+// audit fd is still open — and the deferred metrics row is written afterwards.
+// Reading the trace at the moment the queue state flips (as the other tests do)
+// hides the bug entirely; the only way to see it is to read AFTER the lifecycle
+// has fully drained.
+func TestFinishPush_MarkerWriteFailure_AuditRowSurvivesTheDrain(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a b\n+x"}
+	ad := &capturingAdapter{
+		fakeAdapter: fakeAdapter{name: "github"},
+		pr:          prIdentity(7, "o", "r"),
+	}
+	b := ciTestBroker(t, st, ad)
+	b.CIWatch = true
+	ad.onResult = func(r remote.Request) {
+		id := strings.TrimPrefix(r.Branch, "agent/")
+		if err := os.Mkdir(filepath.Join(b.AuditRoot, id+".ci.json"), 0o700); err != nil {
+			t.Errorf("planting the sabotage dir: %v", err)
+		}
+	}
+
+	_, _, term := submit(b, pushBody)
+	id, _ := term["task_id"].(string)
+	data, err := os.ReadFile(filepath.Join(b.AuditRoot, id+".jsonl"))
+	if err != nil {
+		t.Fatalf("reading the drained audit: %v", err)
+	}
+	// Every line must still be whole JSON — a clobbering write leaves a
+	// truncated tail fragment behind.
+	for i, ln := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		var any map[string]any
+		if err := json.Unmarshal([]byte(ln), &any); err != nil {
+			t.Fatalf("audit line %d is not whole JSON (%v): %q", i, err, ln)
+		}
+	}
+	if got, ok := ciAuditRow(t, b, id); !ok || got.State != string(CIUnknown) {
+		t.Errorf("ci_observation row after the drain = %+v (ok=%v), want the unknown observation to survive", got, ok)
+	}
+	// And the metrics row must still be there too: the fix may not trade one
+	// row for the other.
+	f, err := os.Open(filepath.Join(b.AuditRoot, id+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, ok := audit.LastMetricsFile(f); !ok {
+		t.Error("metrics row missing after the drain")
 	}
 }

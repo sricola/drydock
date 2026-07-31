@@ -288,12 +288,15 @@ func TestCIWatch_RollupToState(t *testing.T) {
 }
 
 // TestCIWatch_NoChecksIsRecordedAndIsNotPassed drives the whole loop for a PR
-// that has no checks configured.
+// that has no checks configured — from ABOVE the dispatch floor, which is the
+// only place `no_checks` is a legitimate conclusion (see the floor tests
+// below).
 func TestCIWatch_NoChecksIsRecordedAndIsNotPassed(t *testing.T) {
-	b, obs, _ := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+	b, obs, clk := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
 		return remote.CheckSummary{Rollup: remote.RollupNoChecks}, nil
 	})
 	m := seedMarker(t, b, ciMarker{})
+	clk.advance(ciNoChecksMinGrace + time.Minute) // past the dispatch floor
 	b.StartCIWatch()
 	defer stopWatch(t, b)
 
@@ -306,6 +309,139 @@ func TestCIWatch_NoChecksIsRecordedAndIsNotPassed(t *testing.T) {
 	}
 	if got.State == CIPassed {
 		t.Fatal("a PR with no checks was recorded as passed")
+	}
+	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, m.TaskID) }) {
+		t.Fatal("marker survived a terminal observation")
+	}
+}
+
+// ---- the no_checks dispatch floor (C1) ----
+//
+// `no_checks` is the ONE terminal state derived from seeing nothing, so it is
+// the one state that has to be a function of TIME. GitHub Actions dispatch is
+// asynchronous: a poll that lands in the gap between the push and the checks
+// appearing sees an empty rollup that means "not yet", not "never". These tests
+// therefore assert on the CLOCK, not just on "no_checks != passed".
+
+// TestCIWatch_NoChecksBelowTheFloorIsPendingThenConcludes is the core one: the
+// SAME empty rollup, polled repeatedly, is non-terminal before the floor and
+// terminal after it. Nothing changes except the clock.
+func TestCIWatch_NoChecksBelowTheFloorIsPendingThenConcludes(t *testing.T) {
+	var polls int64
+	b, obs, clk := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+		atomic.AddInt64(&polls, 1)
+		return remote.CheckSummary{Rollup: remote.RollupNoChecks}, nil
+	})
+	m := seedMarker(t, b, ciMarker{})
+	b.StartCIWatch()
+	defer stopWatch(t, b)
+
+	// Several independent polls inside the dispatch window: no conclusion, and
+	// the marker stays live and explicitly `pending`.
+	if !waitFor(5*time.Second, func() bool { return atomic.LoadInt64(&polls) >= 4 }) {
+		t.Fatal("the watch did not keep polling below the floor")
+	}
+	if n := obs.count(); n != 0 {
+		t.Fatalf("observations below the dispatch floor = %d, want 0 — an empty rollup seconds after a push means CI has not dispatched yet", n)
+	}
+	live, err := readCIMarker(b.AuditRoot, m.TaskID)
+	if err != nil {
+		t.Fatalf("the marker was removed below the floor: %v", err)
+	}
+	if live.State != CIPending {
+		t.Fatalf("marker state below the floor = %q, want %q", live.State, CIPending)
+	}
+
+	// Cross the floor. The rollup the fake returns has not changed at all.
+	clk.advance(ciNoChecksMinGrace + time.Second)
+	if !waitFor(5*time.Second, func() bool { return obs.count() == 1 }) {
+		t.Fatal("no observation after the dispatch floor elapsed")
+	}
+	if got := obs.all()[0]; got.State != CINoChecks {
+		t.Fatalf("state after the floor = %q, want %q", got.State, CINoChecks)
+	}
+	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, m.TaskID) }) {
+		t.Fatal("marker survived a terminal observation")
+	}
+}
+
+// TestCIWatch_NoChecksFloorIsAbsolute: the floor is measured from the marker's
+// PERSISTED CreatedAtMs, so a restart — or a crash loop that restarts the watch
+// over and over — cannot dodge it. Each pass here is a fresh Broker over the
+// same audit dir, exactly as a re-exec would be.
+func TestCIWatch_NoChecksFloorIsAbsolute(t *testing.T) {
+	b, obs, clk := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+		return remote.CheckSummary{Rollup: remote.RollupNoChecks}, nil
+	})
+	created := b.nowMs()
+	m := seedMarker(t, b, ciMarker{CreatedAtMs: created, UpdatedAtMs: created})
+
+	for i := 0; i < 5; i++ {
+		// A "restart": a pass with brand-new in-memory watcher state (a fresh
+		// error-run map, no memory of any earlier poll) over the same durable
+		// marker. The clock advances a little each life, never past the floor.
+		clk.advance(30 * time.Second)
+		b.ciWatchPass(map[string]int{})
+		if n := obs.count(); n != 0 {
+			t.Fatalf("restart %d concluded no_checks below the floor (%d observations)", i, n)
+		}
+	}
+	if _, err := readCIMarker(b.AuditRoot, m.TaskID); err != nil {
+		t.Fatalf("the marker did not survive the restarts: %v", err)
+	}
+	// Only real elapsed time from CreatedAtMs releases it.
+	clk.set(b.ciNoChecksFloor(m))
+	b.ciWatchPass(map[string]int{})
+	if obs.count() != 1 || obs.all()[0].State != CINoChecks {
+		t.Fatalf("observations at the floor = %+v, want exactly one no_checks", obs.all())
+	}
+}
+
+// TestCINoChecksFloor pins the floor arithmetic: max(minPolls * poll_interval,
+// minGrace), anchored at the marker's CreatedAtMs.
+func TestCINoChecksFloor(t *testing.T) {
+	created := int64(1_700_000_000_000)
+	m := ciMarker{TaskID: newID(), CreatedAtMs: created}
+	cases := []struct {
+		name     string
+		interval time.Duration
+		want     time.Duration
+	}{
+		// Unset -> the 60s default; 2 polls is under the grace, so grace wins.
+		{"default interval", 0, ciNoChecksMinGrace},
+		// A fast poll interval must NOT be able to shrink the dispatch window.
+		{"very fast poll", 5 * time.Millisecond, ciNoChecksMinGrace},
+		// A slow operator interval wins: the guarantee is "more than one
+		// independent look", whatever the operator's cadence.
+		{"slow poll", 10 * time.Minute, time.Duration(ciNoChecksMinPolls) * 10 * time.Minute},
+	}
+	for _, c := range cases {
+		b := &Broker{CIPollInterval: c.interval}
+		if got, want := b.ciNoChecksFloor(m), created+c.want.Milliseconds(); got != want {
+			t.Errorf("%s: ciNoChecksFloor = %d, want %d (created + %s)", c.name, got, want, c.want)
+		}
+	}
+}
+
+// TestCIWatch_NoChecksFloorNeverOutlivesTheDeadline: when the watch deadline
+// falls inside the dispatch floor, the watch ends as an honest `timed_out` —
+// never as `no_checks`, and never by hanging past its bound.
+func TestCIWatch_NoChecksFloorNeverOutlivesTheDeadline(t *testing.T) {
+	b, obs, clk := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+		return remote.CheckSummary{Rollup: remote.RollupNoChecks}, nil
+	})
+	b.CIWatchTimeout = time.Minute // well inside the 5-minute floor
+	created := b.nowMs()
+	m := seedMarker(t, b, ciMarker{CreatedAtMs: created, UpdatedAtMs: created})
+	b.StartCIWatch()
+	defer stopWatch(t, b)
+
+	clk.advance(2 * time.Minute)
+	if !waitFor(5*time.Second, func() bool { return obs.count() == 1 }) {
+		t.Fatal("no observation after the deadline expired")
+	}
+	if got := obs.all()[0]; got.State != CITimedOut {
+		t.Fatalf("state = %q, want %q — an unelapsed floor must not become a conclusion", got.State, CITimedOut)
 	}
 	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, m.TaskID) }) {
 		t.Fatal("marker survived a terminal observation")

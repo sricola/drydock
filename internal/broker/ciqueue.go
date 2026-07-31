@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"drydock/internal/audit"
 )
@@ -130,8 +131,10 @@ func ciQueueTerminal(st CIState) (QueueState, string) {
 //
 // It MUST be idempotent: concludeCIWatch persists the terminal state, then
 // calls here, then removes the marker, so a crash in that last gap replays the
-// whole observation on the next boot. Both writes below detect and skip a
-// replay rather than double-writing.
+// whole observation on the next boot. The replay is detected on the DURABLE
+// QUEUE ITEM and nowhere else — that record is broker-owned and unreachable
+// from the task's VM, unlike the audit trace (see appendCIObservationRow's
+// note on why the audit tail must never be an idempotency anchor).
 //
 // It must also no-op cleanly for a SYNCHRONOUS (POST /tasks, non-queued) task,
 // which has no queue item at all — the same contract finalizeQueuedResume
@@ -196,11 +199,25 @@ func (b *Broker) recordCIQueueTerminal(obs CIObservation, to QueueState, lastErr
 // CI log text exists to sanitize (D3): the record carries broker-authored
 // state/detail and broker-computed counts, and there is no field a repository
 // workflow's output could reach.
+//
+// THERE IS DELIBERATELY NO AUDIT-TAIL DEDUP HERE. An earlier version skipped
+// the append when audit.LastCIObservation already reported the same state — a
+// guard anchored on an AGENT-WRITABLE file (the VM's stdout is copied into the
+// trace verbatim, and both fields that scan filters on, type and src, are
+// attacker-supplied). An agent that printed a forged ci_observation row would
+// have SUPPRESSED the broker's own later, genuine one, leaving the forgery as
+// the only record in the trace. The idempotency guard belongs on the durable
+// queue item, which nothing inside the VM can write, and that is where it now
+// lives exclusively (recordCIQueueTerminal's replay check, which returns before
+// this function is called). No control decision anywhere may read a
+// ci_observation row — a rule B2's retry gate inherits.
+//
+// The cost is a possible DUPLICATE row for a SYNCHRONOUS (non-queued) task
+// replayed through the concludeCIWatch crash window, which has no queue item to
+// dedup against. That is the right trade: the audit is a log, two identical
+// broker-authored rows are honest, and no reader branches on them.
 func (b *Broker) appendCIObservationRow(obs CIObservation, qs QueueState) {
 	path := filepath.Join(b.AuditRoot, obs.TaskID+".jsonl")
-	if prev, ok := audit.LastCIObservation(path); ok && prev.State == string(obs.State) {
-		return // already recorded; a crash-window replay
-	}
 	line, err := json.Marshal(audit.CIObservation{
 		Type:         "ci_observation",
 		Src:          "broker",
@@ -219,7 +236,7 @@ func (b *Broker) appendCIObservationRow(obs CIObservation, qs QueueState) {
 	if err != nil {
 		return
 	}
-	if err := appendLine(path, string(line)+"\n"); err != nil {
+	if err := appendPreservingMTime(path, string(line)+"\n"); err != nil {
 		if os.IsNotExist(err) {
 			// No audit file for this id (a pruned trace, or a test fixture).
 			// The queue item still carries the conclusion; nothing is lost
@@ -230,4 +247,40 @@ func (b *Broker) appendCIObservationRow(obs CIObservation, qs QueueState) {
 		slog.Warn("ci watch: could not append the ci observation to the task audit",
 			"task_id", obs.TaskID, "err", err)
 	}
+}
+
+// appendPreservingMTime appends s to path (appendLine's O_APPEND|O_NOFOLLOW|
+// fsync write) and then restores the file's previous modification time.
+//
+// The restore is not cosmetic. Several host-side consumers read a task trace's
+// mtime as "when this task happened", and this append happens minutes to hours
+// after the task ended, about work that ran on GitHub rather than on this host:
+//
+//   - seedAggregateFromAudit (cmd/brokerd) uses ModTime BOTH as the rolling
+//     spend-window cutoff AND as the timestamp it seeds the aggregate ledger
+//     with. A bumped mtime would re-seed a task's spend at observation time,
+//     keeping it inside the rolling cap window up to a full watch_timeout
+//     longer than the spend actually occurred. Conservative in direction, but
+//     it silently mis-states WHEN money was spent, which is the thing the
+//     ledger exists to record.
+//   - `drydock prune` ages a task by its newest artifact's mtime.
+//   - The web UI's history strip orders by the same stamp.
+//
+// A zero time in os.Chtimes leaves that timestamp unchanged, so only mtime is
+// restored and atime is left to the filesystem. A failed restore is logged and
+// ignored: the row is written and durable, which is the part that matters.
+func appendPreservingMTime(path, s string) error {
+	var prev time.Time
+	if fi, err := os.Stat(path); err == nil {
+		prev = fi.ModTime()
+	}
+	if err := appendLine(path, s); err != nil {
+		return err
+	}
+	if !prev.IsZero() {
+		if err := os.Chtimes(path, time.Time{}, prev); err != nil {
+			slog.Debug("ci watch: could not restore the audit trace mtime", "path", path, "err", err)
+		}
+	}
+	return nil
 }

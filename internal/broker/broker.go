@@ -260,6 +260,13 @@ type Broker struct {
 	// stage.CuratedEnv), so a unit test never reads the host environment.
 	checksFn func(env []string, owner, repo string, number int) (remote.CheckSummary, error)
 	ciEnvFn  func() []string
+	// onQueueResumeItem is called by ResumeQueue just before it reconciles each
+	// item. nil in production; it exists so a test can deterministically inject
+	// the CONCURRENT WRITE that boot reconciliation actually races against —
+	// ResumeAwaiting resumes each surviving gate in its own goroutine, so a
+	// resumed auto-approve push can arm an item and write its CI marker while
+	// this sweep is mid-walk. Without a seam that race is unreproducible.
+	onQueueResumeItem func(id string)
 
 	// MaxConcurrent caps how many tasks may be in any non-terminal state at
 	// once. Excess POSTs to /tasks return 503. Default (when zero) is 2.
@@ -295,9 +302,13 @@ type Broker struct {
 	// ciDone is closed when the watch goroutine returns. Nothing in production
 	// waits on it — shutdown must never block behind an in-flight gh call —
 	// but it makes teardown deterministic for tests.
-	ciStop chan struct{}
-	ciDone chan struct{}
-	ciOnce sync.Once
+	// ciStopOnce makes StopCIWatch idempotent: brokerd calls it from the signal
+	// handler, tests call it from a defer, and a second close of a closed
+	// channel is a panic.
+	ciStop     chan struct{}
+	ciDone     chan struct{}
+	ciOnce     sync.Once
+	ciStopOnce sync.Once
 
 	pendingMu sync.Mutex
 	pending   map[string]chan gateReply // task_id -> approval channel
@@ -760,9 +771,23 @@ func (tr *taskRun) runLifecycle() {
 	}
 	// 0o600 on the audit log: same reasoning. os.Create would create at
 	// 0666 (umask-reduced); be explicit.
+	//
+	// O_APPEND is load-bearing, not decoration. This fd is NOT the only writer
+	// of this file: appendLine (TerminateStuckAudits' synthetic terminal, and
+	// the CI observation row) opens its OWN O_APPEND fd against the same path,
+	// and the CI observation can be written while this one is still open — the
+	// marker-write-failure unwind runs applyCIObservation synchronously inside
+	// finishPush, and the watcher can conclude a marker the instant it lands.
+	// Without O_APPEND this fd carries a private offset, so the deferred
+	// metrics row would write AT that stale offset and silently overwrite the
+	// appended line (leaving a corrupt tail fragment whenever the appended line
+	// was the longer of the two). With O_APPEND every write from either fd is
+	// positioned at EOF by the kernel, so the two can interleave lines but can
+	// never overwrite each other. O_TRUNC still applies at open (a fresh trace
+	// per task id); the two flags are independent.
 	logf, err := os.OpenFile(
 		filepath.Join(b.AuditRoot, taskID+".jsonl"),
-		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
+		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		slog.Warn("task audit log open failed", "task_id", taskID, "err", err)
 		sw.emit(errorEvent(taskID, "audit setup failed", ""))
@@ -1501,6 +1526,39 @@ func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
 			"task_id", tr.id, "branch", branch, "pr", pr.Number)
 		return
 	}
+	// Redacted at write time, exactly as the Brief does (see the Brief's
+	// RepoRef): the marker is a durable artifact AND its contents reach a
+	// `gh --repo` argv, where an embedded clone credential would be visible in
+	// `ps` on the host. Computed here because the WATCHABILITY GATE below reads
+	// it too.
+	repoRef := trustbrief.RedactRepoRef(tr.repoRef)
+	// THE WATCHABILITY GATE, and it belongs HERE — before anything is armed.
+	//
+	// remote.Checks hard-pins github.com inside its --repo value (the GH_HOST
+	// defense), so a task on an enterprise host has a PR the watch can never
+	// query. The PR-identity capture, by contrast, accepts an enterprise host
+	// (it pins the PR URL to the TASK's own ref, which is the right rule for
+	// what IT does). Deciding watchability only at poll time would therefore
+	// arm every enterprise push into awaiting_ci and then dead-letter it on the
+	// first poll — a clean, successful push recorded as a failure, forever, for
+	// every GHE operator who turns ci.watch on.
+	//
+	// An unwatchable ref writes NO marker and arms NOTHING, so the item takes
+	// the unchanged path and completes on its push exactly as it does with the
+	// watch off. That is the documented "no watchable PR identity => no watch".
+	//
+	// SCOPE, recorded so it is a decision rather than an oversight: gh itself
+	// supports enterprise hosts, so GHE is watchable in principle. Doing it
+	// means threading an operator-configured host through remote.Checks in
+	// place of the github.com literal, which trades away the single-literal
+	// GH_HOST defense for a config-derived one and needs its own validation and
+	// tests. That is a deliberate future increment, not a line change; until
+	// then a GHE push is honestly un-watched rather than dishonestly failed.
+	if !ciRefHostWatchable(repoRef) {
+		slog.Info("ci watch: repo ref is not a github.com repository; this push completes unwatched",
+			"task_id", tr.id, "branch", branch, "pr", pr.Number)
+		return
+	}
 	// Take ownership of the queue item's terminal FIRST (awaiting_review ->
 	// awaiting_ci), then write the marker. That order is what makes "a live CI
 	// marker implies an armed item" true at every instant, so the watcher can
@@ -1514,12 +1572,8 @@ func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
 	}
 	now := tr.b.nowMs()
 	m := ciMarker{
-		TaskID: tr.id,
-		// Redacted at write time, exactly as the Brief does (see the Brief's
-		// RepoRef): the marker is a durable artifact AND its contents reach a
-		// `gh --repo` argv, where an embedded clone credential would be visible
-		// in `ps` on the host.
-		RepoRef:  trustbrief.RedactRepoRef(tr.repoRef),
+		TaskID:   tr.id,
+		RepoRef:  repoRef,
 		Branch:   branch,
 		PRNumber: pr.Number,
 		PROwner:  pr.Owner,

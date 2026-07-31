@@ -471,8 +471,23 @@ func Reason(path string) (line string, ok bool) {
 
 // CIObservation is the broker-authored {"type":"ci_observation"} record: ONE
 // terminal, host-observed CI conclusion for the pull request a task's push
-// opened, appended to that task's audit AFTER the task itself has terminated
-// and its audit fd has been closed.
+// opened, appended to that task's audit trace.
+//
+// It is USUALLY written long after the task terminated and its audit fd was
+// closed — but not always, and the code must not assume it: the marker-write
+// unwind records an observation synchronously inside finishPush, and the
+// watcher can conclude a marker the instant it lands, both while the task's own
+// audit fd is still open. Every writer of a .jsonl trace therefore opens it
+// O_APPEND (see broker.runLifecycle and broker.appendLine) so two fds can
+// interleave lines but can never overwrite each other.
+//
+// TRUST: this row is a LOG, never an input to a control decision. The trace it
+// lands in is agent-writable — the VM's stdout is copied into it verbatim — so
+// an agent can print a line that decodes as a broker-authored ci_observation
+// (Type and Src are both attacker-supplied text). Readers may render it; no
+// reader may branch on it. The AUTHORITATIVE, machine-readable form of the same
+// fact is the durable queue item (broker.QueueItem.CIState + its terminal
+// state), which nothing inside the VM can write.
 //
 // WHY THIS IS NOT A {"type":"result"} ROW — the ordering decision, recorded so
 // nobody "simplifies" it into one:
@@ -540,6 +555,11 @@ type CIObservation struct {
 // window and last-wins scan as LastResultFile/LastMetricsFile. ok=false when
 // absent — which is the common case: no watch was armed, or the watch has not
 // concluded yet. Absence is NEVER a CI pass.
+//
+// FOR DISPLAY ONLY. Both fields this scan filters on (type, src) come from the
+// same agent-writable file, so a forged row is indistinguishable from a real
+// one here. Nothing may make a decision from what this returns — not an
+// idempotency guard, not a retry gate, nothing. See CIObservation's TRUST note.
 func LastCIObservationFile(f *os.File) (CIObservation, bool) {
 	info, err := f.Stat()
 	if err != nil {

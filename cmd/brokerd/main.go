@@ -664,6 +664,14 @@ func main() {
 	go func() {
 		<-sigCh
 		slog.Info("shutting down — cancelling in-flight tasks")
+		// Stop the CI watch first, and note what this does NOT do: it does not
+		// wait. A poll already in flight is bounded by the vendor-CLI timeout,
+		// and blocking the drain behind a GitHub round trip is exactly the
+		// starvation D4 exists to prevent. Its markers stay on disk and are
+		// re-watched at the next boot with their ORIGINAL absolute deadlines, so
+		// stopping mid-watch loses nothing. Idempotent and safe even when the
+		// watch was never started (ci.watch off).
+		brk.StopCIWatch()
 		brk.CancelAll() // each task force-deletes its own VM and responds
 		ctx, c := context.WithTimeout(context.Background(), 20*time.Second)
 		_ = srv.Shutdown(ctx) // block until in-flight task handlers drain
@@ -959,6 +967,12 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 	// still-`queued` items have no stage yet, and interrupted
 	// preparing/running/verifying items are dead-lettered at resume, so
 	// reaping their stages is correct.
+	//
+	// awaiting_ci is the fourth non-terminal state and it is deliberately absent
+	// from the keep-map: such an item has ALREADY PUSHED, the CI watch holds no
+	// stage and never reopens one (D4), and a B2 retry re-clones from scratch
+	// (D2). There is nothing about its stage worth keeping alive, so reaping it
+	// is correct — the watch resumes from the durable <id>.ci.json marker alone.
 	keep := map[string]bool{}
 	for id := range broker.ListGateMarkers(auditRoot) {
 		keep[id] = true

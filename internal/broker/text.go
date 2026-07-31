@@ -70,6 +70,17 @@ func safeErr(err error) string {
 // that traces back to the agent (its stdout/stderr, a distilled audit line) can
 // carry attacker-influenced bytes; reflecting them raw lets a clever agent
 // inject ANSI escapes into operator terminals. Strip non-printables and cap.
+//
+// KNOWN ASYMMETRY with remote.sanitize (used for repo-controlled CI check
+// names): this function strips C0 controls and DEL only, while remote's also
+// strips C1 controls (CSI at U+009B is live over a UTF-8 terminal) and Unicode
+// format characters (bidi overrides can make a string visually spoof itself in
+// the line a reviewer reads). The two are not merged because their inputs
+// differ in kind — safeStr's callers are broker-authored strings and vendor-CLI
+// error text reflected into JSON responses, remote's are repository-authored
+// display columns — and because widening this one would change every existing
+// event body. If a repo-controlled string ever starts flowing through here,
+// this is the note that says to use remote's stricter form instead.
 func safeStr(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

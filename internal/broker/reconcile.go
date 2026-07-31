@@ -167,6 +167,11 @@ func (b *Broker) ResumeAwaiting(stageRoot string) {
 //   - terminal (completed/ci_failed/dead_letter/cancelled): untouched —
 //     history for `drydock queue list`.
 //
+// After the per-item pass it runs reclaimOrphanCIMarkers, which covers the one
+// thing an item-driven sweep structurally cannot see: a CI marker with no queue
+// item behind it (a synchronous POST /tasks push). That call runs even when
+// there are no queue items at all.
+//
 // stageRoot is accepted for signature parity with ResumeAwaiting (and for
 // future increments that reconcile against the stage); this sweep decides
 // purely from the queue records and gate markers. Call StartDispatcher after
@@ -177,22 +182,13 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 		return err
 	}
 	if len(items) == 0 {
+		// No queue items is NOT nothing to do: a synchronous (POST /tasks) task
+		// can leave a CI marker behind and has no queue item at all, so the
+		// orphan sweep still has to run. See reclaimOrphanCIMarkers.
+		b.reclaimOrphanCIMarkers()
 		return nil
 	}
 	markers := ListGateMarkers(b.AuditRoot)
-	// The CI markers are a SEPARATE set from the gate markers and answer a
-	// different question: not "did this item reach the approval gate" but "is
-	// there a live watch that will still conclude it". A read error is treated
-	// as "no markers", which fails toward terminating awaiting_ci items rather
-	// than leaving them parked on a watch that may not exist.
-	ciMarked := map[string]bool{}
-	if ms, err := listCIMarkers(b.AuditRoot); err != nil {
-		slog.Warn("queue resume: could not scan ci markers; awaiting_ci items will be terminated honestly", "err", err)
-	} else {
-		for _, m := range ms {
-			ciMarked[m.TaskID] = true
-		}
-	}
 	b.initQueueChans()
 	deadLetter := func(id string) {
 		if _, err := b.setQueueState(id, QueueDeadLetter, func(q *QueueItem) {
@@ -203,6 +199,9 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 	}
 	requeued := 0
 	for _, it := range items {
+		if b.onQueueResumeItem != nil {
+			b.onQueueResumeItem(it.ID)
+		}
 		switch it.State {
 		case QueueQueued:
 			b.queueMu.Lock()
@@ -238,11 +237,26 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 		case QueueAwaitingCI:
 			// NEVER re-dispatched: this item already pushed. The only question
 			// is whether anything will still conclude its watch.
-			if ciMarked[it.ID] && b.CIWatch {
+			//
+			// The marker is read HERE, per item, and deliberately not from a
+			// snapshot taken at entry. ResumeAwaiting (which runs first) hands
+			// each surviving gate to its own goroutine, so a resumed
+			// auto-approve push can arm and write its marker WHILE this loop is
+			// running. A snapshot taken before that write would dead-letter an
+			// item whose live watch is polling it — the queue record and the
+			// watcher disagreeing about the same task, which is the one state
+			// this reconciliation exists to prevent.
+			//
+			// A read error is treated as "no marker", which fails toward
+			// terminating the item honestly rather than leaving it parked on a
+			// watch that may not exist.
+			_, mErr := readCIMarker(b.AuditRoot, it.ID)
+			ciMarked := mErr == nil
+			if ciMarked && b.CIWatch {
 				continue // the marker survived and the watch is on: StartCIWatch re-watches it
 			}
 			reason := "ci watch marker did not survive the restart; no CI conclusion was observed"
-			if ciMarked[it.ID] {
+			if ciMarked {
 				// Marker present but the watch is disabled — nothing will ever
 				// poll it. Terminate honestly and drop the orphan, which is the
 				// one thing that would otherwise accumulate (the marker is
@@ -262,6 +276,11 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 			// dispatch because takeDispatchable only takes QueueQueued.)
 		}
 	}
+	// AFTER the item loop, never before: the loop's awaiting_ci branch reports
+	// the accurate reason for each item it terminates and removes that item's
+	// marker itself. The sweep then handles what the loop structurally cannot
+	// reach — a marker with no queue item at all.
+	b.reclaimOrphanCIMarkers()
 	if requeued > 0 {
 		slog.Info("queue resume: re-enqueued surviving queued items", "count", requeued)
 		select {
@@ -270,6 +289,54 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 		}
 	}
 	return nil
+}
+
+// reclaimOrphanCIMarkers removes CI markers that nothing will ever conclude.
+//
+// It exists because the item loop above iterates QUEUE ITEMS, and a marker does
+// not need one: finishPush writes a marker for a SYNCHRONOUS (POST /tasks) task
+// too, and that task has no queue record for the sweep to find it by. `.ci.json`
+// is deliberately not prunable by age (see cmd/drydock/prune.go, whose whole
+// rationale is that each marker is removed by the component that owns it), so
+// without this sweep a marker left by a synchronous push on a daemon whose watch
+// is off would sit in the audit dir forever and the prune rationale would simply
+// be false.
+//
+// It only acts when the watch is OFF, and that bound is the point. With the
+// watch ON every marker has an owner: the watcher polls it and concludes it, at
+// the latest when its absolute deadline expires — including markers for
+// synchronous tasks and for tasks whose queue item is already terminal. Deleting
+// one here would be cancelling live work. With the watch off nothing will ever
+// poll any of them, so every marker on disk is by definition an orphan.
+//
+// The removal is not silent: each orphan gets an honest recorded observation
+// first (CIUnknown — the watch was turned off, so nothing was observed), which
+// for a queued task also drives its durable terminal and for a synchronous one
+// lands in the audit trace. Never `completed`: a push whose CI was never looked
+// at has produced no evidence of anything.
+func (b *Broker) reclaimOrphanCIMarkers() {
+	if b.CIWatch {
+		return
+	}
+	ms, err := listCIMarkers(b.AuditRoot)
+	if err != nil {
+		slog.Warn("queue resume: could not scan ci markers for orphans", "err", err)
+		return
+	}
+	for _, m := range ms {
+		b.applyCIObservation(CIObservation{
+			TaskID: m.TaskID, RepoRef: m.RepoRef, Branch: m.Branch,
+			PRNumber: m.PRNumber, PRURL: m.PRURL, Attempt: m.Attempt, RetryOf: m.RetryOf,
+			State:        CIUnknown,
+			Detail:       "ci watch is disabled; no CI conclusion will be observed for this push",
+			ObservedAtMs: b.nowMs(),
+		})
+		if err := removeCIMarker(b.AuditRoot, m.TaskID); err != nil {
+			slog.Warn("queue resume: could not remove an orphaned ci marker", "task_id", m.TaskID, "err", err)
+			continue
+		}
+		slog.Info("queue resume: removed an orphaned ci marker (the watch is off)", "task_id", m.TaskID)
+	}
 }
 
 // finalizeQueuedResume bridges a resumed gate's resolution back onto the

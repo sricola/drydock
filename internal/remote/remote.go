@@ -164,6 +164,13 @@ var stderr io.Writer = os.Stderr
 // positional: pflag/urfave-style CLIs consume flag values verbatim even
 // when they start with a dash, so a title like "--evil" can't be
 // reinterpreted as a flag of the vendor CLI.
+//
+// ONE CARVE-OUT, and it is exhaustive: a VALIDATED POSITIVE INTEGER, rendered
+// with strconv.Itoa, may appear as a bare positional (checks.go passes a PR
+// number that way, as `gh pr checks <n>` requires). It is safe for the reason
+// the flag-value rule is safe — the dash is the whole risk, and an int the
+// caller has already refused unless it is > 0 cannot render with a leading
+// dash. Nothing else may be a bare positional; a string never qualifies.
 var runCLI = func(workDir string, env []string, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteCLITimeout)
 	defer cancel()
@@ -204,10 +211,11 @@ const prCaptureMaxBytes = 64 << 10
 // at most limit of them. truncated reports that the cap was hit; a caller must
 // treat that as "no usable output", never as a partial result to parse.
 //
-// CodeQL-safety (identical contract to runCLI, see its comment): name is split
-// out of the variadic args and is a compile-time string literal at every call
-// site, and every user-influenced value appears only as the VALUE following a
-// flag — never as a bare positional and never as argv[0].
+// CodeQL-safety (identical contract to runCLI, see its comment for the full
+// rule including the validated-positive-integer carve-out): name is split out
+// of the variadic args and is a compile-time string literal at every call site,
+// and every user-influenced value appears only as the VALUE following a flag —
+// never as an unvalidated bare positional and never as argv[0].
 var runCLIOutputIn = func(workDir string, env []string, limit int, name string, args ...string) ([]byte, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteCLITimeout)
 	defer cancel()

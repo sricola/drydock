@@ -489,6 +489,19 @@ directly. Verified by: `internal/webui` tests (`TestAuth`,
 `TestConstantTimeTokenCompare`, `TestSymlinkRejected`,
 `TestSubmitRejectsAutoApprove`).
 
+**The durable state files under the audit dir are trusted for their contents,
+and this is a host-filesystem assumption rather than a check.** With `ci.watch`
+on, `<id>.ci.json` is the watch's entire cross-restart state: a process running
+as the operator that hand-edits one to `"state": "passed"` short-circuits that
+task to `completed` with zero `gh` calls and no CI ever observed. The same
+applies to `<id>.queue.json` and `<id>.gate.json`. What is enforced is
+structural, not semantic: the audit dir is `0700` and each marker `0600`, every
+read refuses symlinks (`O_NOFOLLOW`), every write is atomic (temp + rename), the
+task id is validated against its shape before any path is built (no traversal),
+and a marker whose body names a different task id than its filename is
+discarded rather than acted on. Contents are trusted because an attacker who can
+write these files is already the operator — the boundary N6 has always drawn.
+
 ### N7. Apple `container` runtime escapes
 
 A guest-to-host escape in the VM stack defeats every claim above. We

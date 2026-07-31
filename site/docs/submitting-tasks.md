@@ -152,6 +152,23 @@ never lands on `completed`, because *absence of evidence is not success*. If
 you want to know whether CI passed, `completed` plus `ci_state: passed` is the
 only pair that says so.
 
+Two behaviours follow from that same rule and are worth knowing before you
+turn the watch on:
+
+- **"No checks" is not concluded immediately.** CI dispatch is asynchronous —
+  a PR's checks appear on GitHub seconds after the branch lands — so an empty
+  check list right after a push means *not yet*, not *never*. The watch keeps
+  an empty result as `pending` until at least `max(2 × ci.poll_interval, 5m)`
+  has passed since the push, measured from the durable marker so a restart
+  cannot skip it. In practice: a repository that genuinely has no CI sits in
+  `awaiting_ci` for about five minutes and then completes.
+- **GitHub Enterprise repositories are not watched.** The watch pins its API
+  calls to `github.com` on purpose (it is what stops a stray `GH_HOST` from
+  aiming your credential at another host). A task whose repo lives on an
+  enterprise host therefore takes the unwatched path: it pushes, opens its PR,
+  and completes exactly as it does with `ci.watch` off. It is **not**
+  dead-lettered, and no marker is written for it.
+
 Only the check **conclusions** are read. No CI log text is fetched, parsed,
 stored, or displayed anywhere on this path, and no log content can influence
 any decision. What you see in the CI column is broker-authored vocabulary and

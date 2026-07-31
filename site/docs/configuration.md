@@ -222,6 +222,15 @@ ci:
   parent's own budget. That is why the default is `0` and the cap is `10`.
 - **It holds no concurrency slot and keeps no stage.** The watch is a
   separate bounded poll, so other tasks keep dispatching normally.
+- **It waits before believing "no checks".** CI dispatch is asynchronous, so
+  an empty check list right after a push means *not yet*. An empty result is
+  kept as `pending` until `max(2 × poll_interval, 5m)` has elapsed since the
+  push — raising `poll_interval` therefore raises that floor too. Only after
+  it does "this PR has no checks" become a conclusion.
+- **It only watches `github.com`.** The host is pinned inside the API call
+  (see below), so a task on a GitHub Enterprise host is never watched: it
+  pushes and completes on the unwatched path, and is never dead-lettered for
+  it.
 
 ### It puts your `gh` credential on a timer
 

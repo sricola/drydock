@@ -267,11 +267,13 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 // Dir is deliberately empty: like `gh issue view`, `gh pr checks --repo ...` is
 // scoped by the flag and not by a working directory.
 //
-// CodeQL-safety (identical contract to runCLI / runCLIOutput): name is split
-// out of the variadic args and is a compile-time string literal at every call
-// site, and every user-influenced value appears only as the VALUE following a
-// flag or as a validated stringified positive integer — never as a bare
-// positional and never as argv[0].
+// CodeQL-safety (identical contract to runCLI / runCLIOutput, carve-out and
+// all): name is split out of the variadic args and is a compile-time string
+// literal at every call site, and every user-influenced value appears only as
+// the VALUE following a flag or as a validated stringified positive integer
+// (the PR number, which `gh pr checks <n>` requires as a positional and which
+// Checks refuses unless it is > 0) — never as an unvalidated bare positional
+// and never as argv[0].
 //
 // A package var so tests can script gh without shelling out.
 var runCLIOutputCapped = func(env []string, limit int, name string, args ...string) ([]byte, bool, error) {

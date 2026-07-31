@@ -188,6 +188,18 @@ func listCIMarkers(auditRoot string) ([]ciMarker, error) {
 			slog.Warn("cimarker: skipping unreadable ci marker", "file", e.Name(), "err", err)
 			continue
 		}
+		// The body must name the file it was found in. Every consumer keys off
+		// m.TaskID — concludeCIWatch removes the marker by removeCIMarker(
+		// m.TaskID) — so a marker whose body names a DIFFERENT id would delete
+		// some other task's path, leak the file it was actually read from
+		// (which is then re-concluded on every subsequent pass), and attribute
+		// its observation to an unrelated task. The file name is the identity;
+		// the body has to agree with it.
+		if m.TaskID != id {
+			slog.Warn("cimarker: skipping ci marker whose body names a different task id",
+				"file", e.Name(), "body_task_id", m.TaskID)
+			continue
+		}
 		out = append(out, m)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAtMs < out[j].CreatedAtMs })

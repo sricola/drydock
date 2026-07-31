@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,5 +186,55 @@ func TestListCIMarkersMissingDir(t *testing.T) {
 	got, err := listCIMarkers(filepath.Join(t.TempDir(), "nope"))
 	if err != nil || len(got) != 0 {
 		t.Errorf("listCIMarkers(missing) = %v, %v; want nil, nil", got, err)
+	}
+}
+
+// TestListCIMarkers_SkipsBodyIDMismatch: the FILE NAME is the identity. A
+// marker whose body names a different task id is discarded, not acted on.
+//
+// The failure it prevents is not subtle: every consumer keys off m.TaskID, and
+// concludeCIWatch removes a marker with removeCIMarker(m.TaskID). A planted
+// <victim>.ci.json whose body says {"task_id":"<other>"} would therefore delete
+// the OTHER task's marker, leave the planted file on disk forever, and
+// re-conclude it against an unrelated task on every single pass.
+func TestListCIMarkers_SkipsBodyIDMismatch(t *testing.T) {
+	root := t.TempDir()
+	honest := strings.Repeat("a", 32)
+	planted := strings.Repeat("b", 32)
+	victim := strings.Repeat("c", 32)
+	for _, m := range []ciMarker{
+		{TaskID: honest, RepoRef: "https://github.com/o/r.git", State: CIPending, CreatedAtMs: 100},
+		{TaskID: victim, RepoRef: "https://github.com/o/r.git", State: CIPending, CreatedAtMs: 200},
+	} {
+		if err := writeCIMarker(root, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The planted file: named for itself, but its body claims the victim's id.
+	body, err := json.Marshal(ciMarker{TaskID: victim, RepoRef: "https://github.com/o/r.git",
+		PROwner: "o", PRRepo: "r", PRNumber: 1, State: CIPending, CreatedAtMs: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, planted+ciSuffix), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := listCIMarkers(root)
+	if err != nil {
+		t.Fatalf("listCIMarkers: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (the id-mismatched marker skipped): %+v", len(got), got)
+	}
+	seen := map[string]int{}
+	for _, m := range got {
+		seen[m.TaskID]++
+	}
+	if seen[victim] != 1 {
+		t.Errorf("the victim id appears %d times; a planted body must not impersonate another task", seen[victim])
+	}
+	if seen[honest] != 1 {
+		t.Error("the honest marker was lost")
 	}
 }

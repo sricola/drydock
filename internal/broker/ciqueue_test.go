@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -698,5 +699,196 @@ func TestQueue_NonPushOutcomeIsUnaffected(t *testing.T) {
 	waitForQueueState(t, b, id, QueueDeadLetter)
 	if it := queueItemState(t, b, id); it.CIState != "" {
 		t.Errorf("ci_state = %q on a task that never pushed", it.CIState)
+	}
+}
+
+// ---- the enterprise-host seam (I3) ----
+
+// TestQueue_EnterpriseHostRefCompletesUnwatched crosses the seam two commits
+// disagreed about: the PR-identity capture ACCEPTS an enterprise host (it pins
+// the PR URL to the task's own ref), while the watch can only ever query
+// github.com (remote.Checks hard-pins it inside --repo). If watchability were
+// decided at poll time, every clean push on GHE would arm awaiting_ci and then
+// dead-letter on its first poll. It must instead take the unchanged path.
+func TestQueue_EnterpriseHostRefCompletesUnwatched(t *testing.T) {
+	b := queueBroker(t, 2, writesResult(`{"type":"result","subtype":"success"}`))
+	b.CIWatch = true
+	b.CIPollInterval = 200 * time.Microsecond
+	b.CIWatchTimeout = time.Hour
+	b.ciEnvFn = func() []string { return []string{"PATH=/usr/bin"} }
+	b.newAdapter = func(string, string) remote.Adapter {
+		return &capturingAdapter{fakeAdapter: fakeAdapter{name: "github"}, pr: prIdentity(42, "o", "r")}
+	}
+	var polls int64
+	b.checksFn = func([]string, string, string, int) (remote.CheckSummary, error) {
+		atomic.AddInt64(&polls, 1)
+		return remote.CheckSummary{}, errors.New("the watch must never have been armed for an enterprise ref")
+	}
+
+	id, err := b.Enqueue(Task{RepoRef: "https://github.mycorp.com/o/r.git", Instruction: "x", AutoApprove: true})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+	b.StartCIWatch()
+	defer stopWatch(t, b)
+
+	waitForQueueState(t, b, id, QueueCompleted)
+	final := queueItemState(t, b, id)
+	if final.State == QueueDeadLetter {
+		t.Fatal("a clean push on an enterprise host dead-lettered")
+	}
+	if final.CIState != "" {
+		t.Errorf("ci_state = %q, want empty — no watch was ever armed", final.CIState)
+	}
+	if !markerGone(t, b, id) {
+		t.Error("a ci marker was written for an unwatchable ref")
+	}
+	// And no gh call was ever made on its behalf.
+	time.Sleep(20 * time.Millisecond)
+	if n := atomic.LoadInt64(&polls); n != 0 {
+		t.Errorf("check polls = %d, want 0", n)
+	}
+}
+
+// ---- boot reconciliation races and orphans (M7, M8) ----
+
+// TestResumeQueue_MarkerWrittenDuringTheSweepIsNotDeadLettered: ResumeAwaiting
+// resumes each gate in its OWN goroutine, so a resumed auto-approve push can
+// arm its item and write its marker WHILE ResumeQueue is walking the items. A
+// snapshot of the markers taken once at entry would dead-letter that item while
+// its live watch kept polling it. The marker must be read per item, at the
+// moment the item is examined.
+func TestResumeQueue_MarkerWrittenDuringTheSweepIsNotDeadLettered(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir(), StageRoot: t.TempDir(), CIWatch: true}
+	// Two items: the first one's handling is where the concurrent write lands.
+	early := seedQueuedItem(t, b, QueueAwaitingCI)
+	late := seedQueuedItem(t, b, QueueAwaitingCI)
+	// `early` has its marker already; `late`'s arrives mid-sweep, exactly as a
+	// resumePush goroutine would write it.
+	seedMarker(t, b, ciMarker{TaskID: early.ID})
+	b.onQueueResumeItem = func(id string) {
+		if id == early.ID {
+			seedMarker(t, b, ciMarker{TaskID: late.ID})
+		}
+	}
+
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	if got := queueItemState(t, b, late.ID); got.State != QueueAwaitingCI {
+		t.Fatalf("item whose marker landed mid-sweep = %q, want awaiting_ci — its watch is live and polling it", got.State)
+	}
+	if markerGone(t, b, late.ID) {
+		t.Error("the marker written mid-sweep was removed")
+	}
+}
+
+// TestResumeQueue_ReclaimsOrphanMarkerWithNoQueueItem: a SYNCHRONOUS (POST
+// /tasks) push writes a marker and has no queue item at all, so an item-driven
+// sweep can never see it. With the watch off nothing will ever poll it either,
+// and `.ci.json` is deliberately not prunable by age — so without a marker-side
+// sweep it accumulates forever and prune's stated rationale is false.
+func TestResumeQueue_ReclaimsOrphanMarkerWithNoQueueItem(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir(), StageRoot: t.TempDir(), CIWatch: false}
+	orphan := seedMarker(t, b, ciMarker{}) // no queue item anywhere
+
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	if !markerGone(t, b, orphan.TaskID) {
+		t.Fatal("an orphan marker for a synchronous task survived the boot sweep; it can never be removed by anything else")
+	}
+}
+
+// The same sweep must NOT touch markers while the watch is ON: every marker
+// then has an owner (the watcher concludes it, at the latest at its deadline),
+// and removing one would cancel live work.
+func TestResumeQueue_WatchOnLeavesOrphanMarkersAlone(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir(), StageRoot: t.TempDir(), CIWatch: true}
+	live := seedMarker(t, b, ciMarker{})
+
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	if markerGone(t, b, live.TaskID) {
+		t.Fatal("the boot sweep removed a marker the running watch owns")
+	}
+}
+
+// TestApplyCIObservation_ForgedAuditRowCannotSuppressTheRealOne (M4): the
+// replay guard must never be anchored on the audit trace.
+//
+// <id>.jsonl is AGENT-WRITABLE — the VM's stdout is copied into it verbatim —
+// and audit.LastCIObservationFile filters on type and src, both of which are
+// just text in that file. An earlier version skipped the append when the trace
+// tail already showed the same state, so an agent that printed one forged
+// ci_observation row would have suppressed the broker's own later, genuine
+// observation and left the forgery as the only record. The guard belongs on the
+// durable queue item, which nothing in the VM can write.
+func TestApplyCIObservation_ForgedAuditRowCannotSuppressTheRealOne(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir()}
+	it := seedQueuedItem(t, b, QueueAwaitingCI)
+	auditPath := filepath.Join(b.AuditRoot, it.ID+".jsonl")
+	// What an agent can print: a row that decodes exactly as a broker-authored
+	// observation, claiming the state the real watch is about to report.
+	forged := `{"type":"ci_observation","src":"broker","task_id":"` + it.ID +
+		`","state":"failed","pr_number":42,"detail":"forged by the agent","observed_at_ms":1}`
+	if err := os.WriteFile(auditPath, []byte(forged+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	b.applyCIObservation(CIObservation{TaskID: it.ID, PRNumber: 42, State: CIFailed, ObservedAtMs: 9})
+
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), `"ci_observation"`); n != 2 {
+		t.Fatalf("ci_observation rows = %d, want 2 — the forged row must not suppress the broker's own", n)
+	}
+	// The broker's row is the one carrying the queue terminal it actually drove.
+	rec, ok := ciAuditRow(t, b, it.ID)
+	if !ok || rec.QueueState != string(QueueCIFailed) || rec.ObservedAtMs != 9 {
+		t.Errorf("last ci_observation = %+v, want the broker's genuine record", rec)
+	}
+	// And the authoritative record — the durable queue item — moved.
+	if got := queueItemState(t, b, it.ID); got.State != QueueCIFailed {
+		t.Errorf("queue state = %q, want ci_failed", got.State)
+	}
+}
+
+// TestApplyCIObservation_DoesNotBumpTheTraceMTime (M5): several host-side
+// consumers read a trace's mtime as "when this task happened" —
+// seedAggregateFromAudit uses it BOTH as the rolling spend-window cutoff and as
+// the timestamp it seeds the ledger with, prune ages tasks by it, and the web
+// UI orders history by it. The CI observation lands minutes to hours later and
+// is a fact about a PR, not new task activity, so it must not move that stamp.
+func TestApplyCIObservation_DoesNotBumpTheTraceMTime(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir()}
+	it := seedQueuedItem(t, b, QueueAwaitingCI)
+	auditPath := filepath.Join(b.AuditRoot, it.ID+".jsonl")
+	if err := os.WriteFile(auditPath, []byte(`{"type":"result","subtype":"success","src":"broker","total_cost_usd":0.5}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(auditPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	b.applyCIObservation(CIObservation{TaskID: it.ID, PRNumber: 42, State: CIPassed, ObservedAtMs: 9})
+
+	fi, err := os.Stat(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.ModTime().Equal(old) {
+		t.Errorf("trace mtime = %s, want it left at %s — a CI observation must not re-date a task's spend",
+			fi.ModTime(), old)
+	}
+	// The row is still there: the mtime restore must not have cost the write.
+	if rec, ok := ciAuditRow(t, b, it.ID); !ok || rec.State != string(CIPassed) {
+		t.Errorf("ci_observation row = %+v (ok=%v), want the passed record", rec, ok)
 	}
 }

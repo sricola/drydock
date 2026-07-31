@@ -41,6 +41,28 @@ entry below corresponds to a Git tag of the same name.
   queue item completes at the push exactly as before, no marker is written,
   and no API call is made on a timer.
 
+  Three details worth stating outright, because each one is a place "nothing
+  observed" could otherwise have become "fine":
+
+  - **`no_checks` is a function of time, not just of one poll.** GitHub Actions
+    dispatch is asynchronous, so a poll that lands between the push and the
+    checks appearing sees an empty rollup that means *not yet*. An empty rollup
+    is therefore recorded as `pending` until a **dispatch floor** —
+    `max(2 × ci.poll_interval, 5m)`, measured from the marker's persisted push
+    time so a restart or crash loop cannot dodge it — has elapsed. Only above
+    that floor is "this PR has no checks" a conclusion. A repository with
+    genuinely no CI now sits in `awaiting_ci` for those few minutes before
+    completing.
+  - **Enterprise hosts are not watched, and are not failed either.** The
+    watch's `gh` calls hard-pin `github.com` (the `GH_HOST` defense), so a task
+    whose repo ref names a GitHub Enterprise host writes no marker and arms no
+    watch: its push completes on the unchanged path exactly as it does with
+    `ci.watch` off. Watching enterprise hosts is a deliberate future increment.
+  - **The `CI` column in `drydock queue list` is always present**, including
+    with `ci.watch` off, where every row simply shows `-`. The column is part
+    of the table now, not conditional on the feature; scripts that parse that
+    output by column position should be updated.
+
 - **`ci:` config block — the opt-in that turns the CI watch on.** New keys in
   `~/.drydock/config.yaml`: `ci.watch` (default **`false`** — the feature ships
   off), `ci.poll_interval` (`60s`, minimum `10s`), `ci.watch_timeout` (`90m`,

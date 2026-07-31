@@ -35,6 +35,14 @@ type taskArtifacts struct {
 // under the watcher, and in B2 that marker is where Attempt/RetryOf live — so
 // pruning mid-chain would launder the retry bound that D6 says a crash cannot
 // launder. Age is not a safe proxy for "finished" for any of the three.
+//
+// "It cannot accumulate" is the claim that makes that safe, and it is enforced
+// rather than hoped for: brokerd's boot reconciliation (broker.ResumeQueue ->
+// reclaimOrphanCIMarkers) records an honest observation for and then removes
+// every `.ci.json` left on disk when the CI watch is off — including markers
+// for synchronous (POST /tasks) pushes, which have no queue item to be found
+// by. With the watch on, each marker's own watch concludes it, at the latest at
+// its absolute deadline.
 var knownSuffixes = []string{".jsonl", ".diff", ".widen.json", ".brief.json", ".verify.log"}
 
 func isHexID(s string) bool {
