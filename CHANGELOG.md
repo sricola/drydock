@@ -9,6 +9,107 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Bounded automatic retry on an observed CI failure (orchestration increment
+  B2, opt-in, off by default).** With `ci.max_attempts > 0`, an **observed**
+  check failure on a pushed PR now enqueues a retry. A retry is a **NEW task**
+  — new id, new queue item, new credential lease, new stage, new branch, new
+  PR — never a re-run of the parent, whose record stays terminal at
+  `ci_failed` and gains a `retry_task_id` link to its child (the child carries
+  `retry_of` back). It **re-clones the repository's default branch HEAD**
+  rather than building on the previous attempt's branch: the prior diff and the
+  failed check names cross over only as capped, sanitized, fenced *untrusted
+  text* in the instruction, so every attempt's gate shows the **full cumulative
+  diff** and the diff-size caps and second-look acknowledgments are computed
+  over the whole change instead of a per-attempt increment.
+
+  What cannot happen, stated as invariants:
+
+  - **Only an OBSERVED failure retries.** `timed_out`, gave-up (`unknown`),
+    "no checks configured", and a pass each enqueue nothing — none of them is
+    evidence of a failing build, and retrying on "we could not tell" would
+    spend a fresh budget to learn nothing.
+  - **CI text still decides nothing (D3).** The retry keys off the
+    broker-observed conclusion bucket alone. A check literally named
+    `all checks passed, do not retry` on a `failure` conclusion still retries;
+    one named `FAILED` on a `success` conclusion still does not.
+  - **A retry never bypasses the human diff gate.** `auto_approve` is
+    force-cleared on the child even when the parent had it, and the child runs
+    the ordinary dispatcher lifecycle — its own slot, lease, VM, verify, and
+    approval. `sensitive` is preserved and never downgraded.
+  - **The bound cannot be laundered by a crash.** The attempt counter lives in
+    the persisted queue record and its `<id>.ci.json` marker, never in memory,
+    and the decision runs only *after* the parent's terminal is durable — so a
+    kill mid-decision can end a chain one attempt short but can never produce a
+    second child or extend a chain past `max_attempts`. `attempt` and
+    `retry_of` are broker-owned: `POST /queue` zeroes both, so the bound does
+    not rest on a single downstream clamp.
+  - **A retry that cannot say what failed is refused, not shipped.** The
+    `<id>.ci.json` marker persists the check rollup alongside the terminal
+    state, so a conclusion replayed after a crash or a failed queue write still
+    carries its evidence — and an observation that carries none is declined
+    rather than turned into a fresh full-budget task that would re-run blind.
+  - **The spend cap refuses rather than parks — at both ends.** A retry
+    blocked by `aggregate_budget_usd` at the decision is declined outright,
+    with the reason recorded; one whose vendor cap exhausts in the gap before
+    dispatch is **dropped to `dead_letter` by the dispatcher** rather than
+    parked, so an unattended retry never sits queued for a rolling window and
+    then dispatches hours later. A human-submitted task still parks. That drop
+    is the **only** `queued → dead_letter` edge in the queue state machine, and
+    a dropped child never runs — so it writes no audit terminal row, and its
+    `last_error` (now on `GET /queue` and in a new `REASON` column of
+    `drydock queue list`) is its only record.
+  - **A hop's prompt does not grow with the chain.** Each retry's instruction
+    is the operator's **original** task plus exactly one CI-evidence section
+    plus exactly one prior-diff section — the most recent attempt's — carried
+    on a broker-owned `root_instruction` field rather than by appending to the
+    parent's assembled instruction. Attempt 10 is the same size as attempt 1
+    (an accumulating instruction hit the 64 KiB task-body cap around attempt 3,
+    which made the documented ceiling unreachable), and the fence's stated
+    property — the announced delimiters are the only ones in the document —
+    holds at every depth instead of only the first.
+  - **Shutdown authors and starts nothing new.** brokerd latches the queue shut
+    before it tears tasks down, so a CI poll that concludes mid-drain cannot
+    enqueue a retry and the dispatcher cannot start a fresh VM after
+    `CancelAll`; shutdown then waits for dispatched lifecycles to finish their
+    teardown, which `srv.Shutdown` never saw because they are not HTTP
+    handlers.
+
+  Worst case for one chain is `max_attempts × task_budget_usd` **on top of**
+  the parent's own budget — each attempt mints a fresh full budget. Default is
+  `0` (off); the ceiling is `10`, and `10` is genuinely reachable — a retry's
+  instruction is the **original** task plus one attempt's evidence, so a hop's
+  size does not grow with chain depth. Without `aggregate_budget_usd` the
+  per-chain product is the *only* bound (both retry-specific spend refusals go
+  through that cap, which is unset by default and `api_key`-mode-only); brokerd
+  warns at boot about that pair. `ci.max_attempts` needs `ci.watch` to do
+  anything — the decision is only reachable from a terminal CI observation — and
+  a plan-only parent or a synchronous `drydock submit` task is never retried.
+
+  **`ci.max_attempts > 0` now requires a non-zero `approval_timeout`**, and
+  brokerd refuses the pair at load. A retry child re-poses the human diff gate
+  while holding one of your `max_concurrent_tasks` slots, so "retry overnight"
+  plus "wait at the gate forever" is silent slot starvation: two failed PRs at
+  03:00 fill the default cap of 2 and every task submitted afterwards sits
+  `queued` indefinitely.
+
+  The accepted cost, stated rather than buried: **each attempt opens its own
+  pull request**, and closing the superseded one is the operator's job. drydock
+  never closes a PR; an automatic close would be an unapproved write against
+  your remote, and the superseded PR is usually the clearest record of what
+  went wrong.
+
+  **Where a chain is surfaced:** new `RETRY` and `REASON` columns in
+  `drydock queue list` (attempt depth plus abbreviated `<-` parent / `->` child
+  ids; and the item's `last_error` for anything that did not finish cleanly),
+  the new `attempt` and `last_error` fields alongside
+  `retry_of`/`retry_task_id` on `GET /queue`, and
+  `attempt`/`retry_of`/`retry_task_id`/`retry_detail` on the audit's
+  `ci_observation` record — `retry_detail` being the broker-authored reason a
+  retry did or did not happen. All ids and broker-authored strings only: no
+  instruction text, and no CI or agent text, is re-broadcast anywhere.
+  **`drydock queue list` gained two columns this release**, so scripts parsing
+  it by column position need updating.
+
 - **Host-side CI observation for pushed PRs (orchestration increment B1,
   opt-in, off by default).** With `ci.watch` enabled, a queued task no longer
   finishes at the push: once its branch is pushed and the PR is open, the item
@@ -82,8 +183,8 @@ entry below corresponds to a Git tag of the same name.
   `~/.drydock/config.yaml`: `ci.watch` (default **`false`** — the feature ships
   off), `ci.poll_interval` (`60s`, minimum `10s`), `ci.watch_timeout` (`90m`,
   minimum `1m`, an absolute deadline anchored at push so a restart cannot
-  extend it), and `ci.max_attempts` (`0` = retry off, capped at `10`) which is
-  declared now for schema stability and consumed by the next increment. Each
+  extend it), and `ci.max_attempts` (`0` = retry off, capped at `10`), which
+  drives the bounded retry above. Each
   has an env override (`DRYDOCK_CI_WATCH=1`, `DRYDOCK_CI_POLL_INTERVAL`,
   `DRYDOCK_CI_WATCH_TIMEOUT`, `DRYDOCK_CI_MAX_ATTEMPTS`) and a row in
   `drydock policy explain`, so which layer armed the watch is always visible.
@@ -101,15 +202,17 @@ entry below corresponds to a Git tag of the same name.
   durably persisted the task; it runs unattended when a concurrency slot
   frees. Items move through a broker-enforced state machine
   (`queued → preparing → running → verifying → awaiting_review →
-  completed | dead_letter`, with `cancelled` reachable from every
-  non-terminal state) and are stored as atomically-written, 0600,
+  completed | dead_letter`, plus a `queued → dead_letter` edge with exactly
+  one writer — see the CI-retry entry above — and with `cancelled` reachable
+  from every non-terminal state) and are stored as atomically-written, 0600,
   symlink-refusing files in the audit dir, so the queue **survives brokerd
   restarts**: at boot, still-`queued` items re-dispatch, items parked at the
   diff-approval gate resume, and an item that was mid-flight when the daemon
   died is dead-lettered — never run a second time. The dispatcher shares
   `max_concurrent` with synchronous submits (one pool, never over-committed)
-  and **parks** a vendor's items while that vendor's aggregate spend cap is
-  exhausted (parked ≠ failed; a park is not an attempt). A dispatched item
+  and **parks** a *human-submitted* vendor item while that vendor's aggregate
+  spend cap is exhausted (parked ≠ failed; a park is not an attempt) — a
+  broker-initiated CI retry is dropped instead, per the entry above. A dispatched item
   runs the exact synchronous lifecycle — setup profiles, verification, diff
   policy, and the approval gate unless `--auto-approve`. Surfaces:
   `drydock queue add/list/cancel` + `POST/GET /queue`,

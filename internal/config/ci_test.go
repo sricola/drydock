@@ -40,7 +40,9 @@ func TestCI_OffByDefault(t *testing.T) {
 
 func TestCI_LoadsFromYAML(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "c.yaml")
-	body := "network: x\ngateway_ip: 1.2.3.4\n" +
+	// approval_timeout is mandatory alongside max_attempts > 0 (an unattended
+	// retry must not be able to park at a gate forever holding a slot).
+	body := "network: x\ngateway_ip: 1.2.3.4\napproval_timeout: 2h\n" +
 		"ci:\n  watch: true\n  poll_interval: 45s\n  watch_timeout: 3h\n  max_attempts: 2\n"
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -58,7 +60,7 @@ func TestCI_LoadsFromYAML(t *testing.T) {
 func TestCI_EnvOverrides(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := filepath.Join(t.TempDir(), "c.yaml")
-	body := "network: x\ngateway_ip: 1.2.3.4\n" +
+	body := "network: x\ngateway_ip: 1.2.3.4\napproval_timeout: 2h\n" +
 		"ci:\n  watch: false\n  poll_interval: 45s\n  watch_timeout: 3h\n  max_attempts: 1\n"
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -99,7 +101,7 @@ func TestCI_WatchEnvOnlyExactlyOneEnables(t *testing.T) {
 func TestCI_InvalidEnvFallsThrough(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := filepath.Join(t.TempDir(), "c.yaml")
-	body := "network: x\ngateway_ip: 1.2.3.4\n" +
+	body := "network: x\ngateway_ip: 1.2.3.4\napproval_timeout: 2h\n" +
 		"ci:\n  watch: true\n  poll_interval: 45s\n  watch_timeout: 3h\n  max_attempts: 2\n"
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -143,6 +145,18 @@ func TestCI_ValidateRejects(t *testing.T) {
 		"ci:\n  poll_interval: 10s\n  watch_timeout: 5m\n": "dispatch floor",
 		// And with poll_interval left to its default.
 		"ci:\n  watch_timeout: 4m\n": "dispatch floor",
+		// CROSS-FIELD, the expensive one: a bounded retry is the daemon's only
+		// UNATTENDED task author, and it holds a concurrency slot across the
+		// human diff gate it always re-poses. With approval_timeout at its
+		// default 0 ("wait forever") an overnight retry parks at a gate nobody
+		// is at, for good, and every task submitted after it sits queued. Each
+		// value is individually legal; the pair is not.
+		"ci:\n  max_attempts: 1\n":                        "approval_timeout",
+		"approval_timeout: 0s\nci:\n  max_attempts: 10\n": "approval_timeout",
+		// And it bites with the watch off too: max_attempts is inert without
+		// ci.watch, but a config that arms the hazard the moment someone flips
+		// one bool is not one to accept quietly.
+		"ci:\n  watch: false\n  max_attempts: 2\n": "approval_timeout",
 	}
 	for body, want := range cases {
 		p := filepath.Join(t.TempDir(), "c.yaml")
@@ -161,10 +175,11 @@ func TestCI_ValidateAccepts(t *testing.T) {
 		// 0 everywhere = "use the built-in default" / "off"
 		"ci:\n  watch: false\n  poll_interval: 0s\n  watch_timeout: 0s\n  max_attempts: 0\n",
 		// The fastest legal poll with a timeout comfortably past the floor.
-		"ci:\n  watch: true\n  poll_interval: 10s\n  watch_timeout: 6m\n  max_attempts: 1\n",
+		// max_attempts > 0 needs approval_timeout, so it rides along.
+		"approval_timeout: 2h\nci:\n  watch: true\n  poll_interval: 10s\n  watch_timeout: 6m\n  max_attempts: 1\n",
 		// A slow poll: the floor is then 2 × 5m, still far inside 24h.
 		"ci:\n  watch: true\n  poll_interval: 5m\n  watch_timeout: 24h\n",
-		"ci:\n  max_attempts: 10\n",
+		"approval_timeout: 30m\nci:\n  max_attempts: 10\n",
 	}
 	for _, body := range bodies {
 		p := filepath.Join(t.TempDir(), "c.yaml")
@@ -219,7 +234,7 @@ func TestCI_SeedTemplateMatchesDefaults(t *testing.T) {
 func TestExplain_CIProvenance(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := filepath.Join(t.TempDir(), "c.yaml")
-	body := "network: x\ngateway_ip: 1.2.3.4\n" +
+	body := "network: x\ngateway_ip: 1.2.3.4\napproval_timeout: 2h\n" +
 		"ci:\n  watch: true\n  poll_interval: 45s\n  watch_timeout: 3h\n  max_attempts: 2\n"
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

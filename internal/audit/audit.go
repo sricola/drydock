@@ -544,7 +544,20 @@ type CIObservation struct {
 	Pending    int    `json:"pending"`
 	// Detail is short broker-authored English explaining a non-conclusive end
 	// (a timeout, a give-up). Empty for a conclusive observation.
-	Detail       string `json:"detail,omitempty"`
+	Detail string `json:"detail,omitempty"`
+	// Attempt/RetryOf place this observation in its bounded-retry chain
+	// (broker.Task's same-named fields): Attempt counts RETRIES, so an
+	// operator-submitted task is 0 and the Nth automatic retry is N.
+	Attempt int    `json:"attempt,omitempty"`
+	RetryOf string `json:"retry_of,omitempty"`
+	// RetryTaskID is the bounded retry this observation enqueued, and
+	// RetryDetail is the broker's one-line reason when it enqueued none (the
+	// bound was reached, the spend cap was exhausted, the retry was refused).
+	// Both are broker-authored EVIDENCE for an operator following a chain. The
+	// authoritative link is the durable broker.QueueItem.RetryTaskID and the
+	// child's own Task.RetryOf, neither of which anything in a VM can write.
+	RetryTaskID  string `json:"retry_task_id,omitempty"`
+	RetryDetail  string `json:"retry_detail,omitempty"`
 	ObservedAtMs int64  `json:"observed_at_ms"`
 }
 

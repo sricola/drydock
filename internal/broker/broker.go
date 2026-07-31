@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -85,6 +86,48 @@ type Task struct {
 	// --issue). Provenance only — the broker treats the instruction text as
 	// the single source of truth either way.
 	IssueURL string `json:"issue_url,omitempty"`
+	// RetryOf and Attempt carry the bounded CI-retry chain (D6). RetryOf is
+	// the IMMEDIATE parent task's id ("" for an operator-submitted task);
+	// Attempt counts RETRIES, so an operator-submitted task is 0 and the Nth
+	// automatic retry is N. BuildRetryTask (ciretry.go) is the only writer.
+	//
+	// They live on the Task, not beside it, because QueueItem persists the
+	// full Task: the bound must survive a brokerd restart and MUST NOT be
+	// launderable by a crash. A counter held only in memory, or only on the
+	// <id>.ci.json marker (which a prune could remove), would let a chain
+	// restart at zero and run forever.
+	//
+	// Client-submitted bodies may carry them — the fields are just JSON — but
+	// they buy nothing an attacker wants: the retry decision reads the
+	// PERSISTED queue item, never a value the agent VM can reach, a HIGHER
+	// Attempt only shortens a chain, and a NEGATIVE one (the only direction
+	// that could lengthen one) is clamped to 0 where it is read. See
+	// ciretryloop.go's gate 6.
+	RetryOf string `json:"retry_of,omitempty"`
+	Attempt int    `json:"attempt,omitempty"`
+	// RootInstruction is the ORIGINAL, operator-authored instruction the chain
+	// started from — the one at the head of attempt 0 — carried unchanged down
+	// every hop. "" on an operator-submitted task (there is no chain yet); set
+	// once by BuildRetryTask on the first retry and inherited verbatim after
+	// that, so it is a fixed string for the life of a chain.
+	//
+	// It exists because a retry's instruction is ROOT + one CI-evidence section
+	// + one prior-diff section, NOT the parent's instruction plus another pair
+	// of sections. Carrying the parent's assembled instruction forward instead
+	// would stack every earlier attempt's fenced sections on every hop: the
+	// instruction would grow by ~20 KiB per hop, the documented ceiling of
+	// ci.max_attempts: 10 would be unreachable (the build refuses around depth
+	// 3 on the task body cap), and the fence's one stated property — that an
+	// announced token appears nowhere but its own BEGIN/END pair — would be
+	// false from depth 2 on, because the inherited text carries earlier
+	// attempts' delimiters that the current derivation never saw.
+	//
+	// With it, the per-hop instruction size is CONSTANT in depth and every
+	// retry carries exactly ONE prior diff: the most recent attempt's.
+	//
+	// Broker-owned like RetryOf/Attempt: POST /queue zeroes it, and nothing in
+	// a task VM can reach it.
+	RootInstruction string `json:"root_instruction,omitempty"`
 }
 
 // SquidControl registers/deregisters per-task egress widening with squid.
@@ -202,6 +245,21 @@ type Broker struct {
 	CIPollInterval time.Duration
 	CIWatchTimeout time.Duration
 
+	// CIMaxAttempts bounds the automatic retry chain an OBSERVED CI failure may
+	// start (config `ci.max_attempts`, D6). 0 — the default — is OFF: a CI
+	// failure terminates the item at `ci_failed` and nothing is enqueued, which
+	// is exactly B1's behavior.
+	//
+	// It counts RETRIES, matching Task.Attempt: an operator-submitted task is
+	// attempt 0, so a bound of N yields at most N extra tasks in a chain and a
+	// worst-case spend of N × task_budget_usd on top of the original. Each
+	// retry is a NEW task (D1) with a fresh full budget, a fresh lease, and its
+	// own human diff gate — nothing here can bypass that gate.
+	//
+	// The bound is enforced against the PERSISTED Task/marker (ciretryloop.go),
+	// never an in-memory counter, so a restart cannot launder it.
+	CIMaxAttempts int
+
 	// OnCIObserved, when set, receives every TERMINAL CI observation the
 	// watcher records, immediately before the marker is deleted. It is the
 	// clean seam the queue-state/audit surfacing hangs off (B1 task 3) so the
@@ -293,6 +351,26 @@ type Broker struct {
 	queueOnce sync.Once
 	queueTick time.Duration
 	now       func() int64
+
+	// draining is the shutdown latch (BeginQueueDrain). Once set, the queue
+	// accepts no further BROKER-AUTHORED work: takeDispatchable dispatches
+	// nothing more and maybeEnqueueCIRetry enqueues nothing more. It exists
+	// because the CI watch's teardown deliberately does not wait for an
+	// in-flight poll (StopCIWatch), so a poll that concludes DURING shutdown
+	// could otherwise decide a retry, Enqueue it, and have the still-running
+	// dispatcher start a fresh VM after CancelAll had already torn every task
+	// down — an orphan VM and stage the exiting process would never clean up.
+	// Nothing durable is lost: an item enqueued into a draining queue stays
+	// `queued` on disk and the next boot's ResumeQueue dispatches it.
+	// queueStopOnce makes StopDispatcher idempotent, so the drain latch and a
+	// test's own defer can both call it.
+	draining      atomic.Bool
+	queueStopOnce sync.Once
+	// queueRunning counts in-flight runQueued lifecycles so shutdown can wait
+	// for their teardown (VM force-delete, stage cleanup, the terminal queue
+	// write). They are goroutines, not HTTP handlers, so srv.Shutdown does not
+	// see them; without this the process could exit mid-teardown.
+	queueRunning sync.WaitGroup
 
 	// CI watch (increment B, ciwatch.go). ciStop ends the watch goroutine;
 	// ciOnce builds it lazily, mirroring queueOnce. There is no wake channel
@@ -1608,6 +1686,22 @@ func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
 		State:       CIPending,
 		CreatedAtMs: now,
 		UpdatedAtMs: now,
+	}
+	// CARRY THE BOUNDED-RETRY CHAIN (D6). Without this the marker — and so
+	// every CIObservation derived from it — reports Attempt 0 for every link,
+	// each child restarts the chain at zero, and `Attempt < ci.max_attempts`
+	// NEVER BINDS: an infinite retry loop spending a fresh task_budget_usd per
+	// attempt, on a timer, unattended.
+	//
+	// The values come from the DURABLE QUEUE ITEM's Task and from nowhere else.
+	// That is the broker-owned record Enqueue wrote, so it cannot be laundered
+	// by a restart, by taskRun plumbing, or by a request body: a synchronous
+	// POST /tasks task has no queue item, reads zeros here, and cannot retry at
+	// all (ciretryloop.go gate 4). Read AFTER armCIWatch so it observes the same
+	// item the transition just wrote.
+	if it, rerr := readQueueItem(tr.b.AuditRoot, tr.id); rerr == nil {
+		m.Attempt = it.Task.Attempt
+		m.RetryOf = it.Task.RetryOf
 	}
 	if err := writeCIMarker(tr.b.AuditRoot, m); err != nil {
 		slog.Warn("ci watch: could not persist marker; this push will not be watched",

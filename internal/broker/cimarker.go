@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"drydock/internal/atomicfile"
+	"drydock/internal/remote"
 )
 
 // CIState is the broker's LAST OBSERVATION of a pushed PR's CI. It is
@@ -77,12 +78,37 @@ type ciMarker struct {
 	// is for display and operator navigation ONLY — nothing may re-parse it to
 	// recover a coordinate.
 	PRURL string `json:"pr_url"`
-	// Attempt is 1 for a first attempt, N for the Nth retry in a chain.
-	// RetryOf is the parent task id ("" for a first attempt).
+	// Attempt and RetryOf mirror the same-named Task fields (broker.go), and
+	// carry their semantics exactly: Attempt counts RETRIES, so an
+	// operator-submitted task is 0 and the Nth automatic retry is N, and
+	// RetryOf is the immediate parent task id ("" for a first attempt).
 	Attempt int    `json:"attempt,omitempty"`
 	RetryOf string `json:"retry_of,omitempty"`
 	// State is the last observation. See CIState.
 	State CIState `json:"state"`
+	// Summary and Detail are the EVIDENCE behind a TERMINAL State, persisted
+	// in the same atomic write that persists the State itself.
+	//
+	// They exist because State alone is not enough to re-report a conclusion.
+	// concludeCIWatch writes the terminal state, then records it on the queue
+	// item, then deletes the marker; when the middle step fails retryably (a
+	// full or read-only disk) the marker deliberately survives and the NEXT
+	// pass replays it through pollCIMarker's already-terminal branch. Without
+	// these two fields that replay could only reconstruct
+	// CIObservation{State: failed, Summary: {}} — an observation that asserts
+	// "CI FAILED" over a rollup reading "0 total, 0 failed". Downstream that is
+	// not merely cosmetic: B2's bounded retry would mint a child whose whole
+	// evidence section says nothing failed, and spend a fresh task_budget_usd
+	// on it. The same window is reachable by a plain SIGKILL between the marker
+	// write and the queue write.
+	//
+	// Summary is `omitzero`, so a marker written before this field existed (or
+	// one that never reached a terminal) round-trips to the zero value — which
+	// is NOT a verdict and is refused by BuildRetryTask rather than retried
+	// blind. Detail is the broker-authored reason a watch ended WITHOUT a
+	// conclusion; it is broker text only, never anything a workflow printed.
+	Summary remote.CheckSummary `json:"summary,omitzero"`
+	Detail  string              `json:"detail,omitempty"`
 	// Timestamps are unix-millis and are ALWAYS caller-supplied — nothing in
 	// this file calls time.Now, matching queuestore, so tests are
 	// deterministic and the broker's clock seam stays the single source.

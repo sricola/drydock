@@ -137,6 +137,24 @@ func (b *Broker) HandleQueueAdd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	// The bounded-retry chain fields are BROKER-OWNED. Nothing on the HTTP
+	// surface has a legitimate reason to set them — a chain is authored only by
+	// BuildRetryTask — and an operator-supplied `attempt` is the one value that
+	// can LENGTHEN a chain past ci.max_attempts (a negative one makes
+	// `attempt < max` true for max+|n| hops). ciretryloop's gate 6 clamps it,
+	// and dropping it here means the bound no longer rests on that single
+	// downstream reader staying correct forever. `retry_of` goes with it: a
+	// forged parent id would make a hand-submitted task render as a link in
+	// someone else's chain in every surface that follows one.
+	//
+	// Zeroed rather than 400'd: they are inert on this path, so a 400 would be a
+	// new failure mode for a field an operator has no reason to be sending.
+	t.Attempt = 0
+	t.RetryOf = ""
+	// And root_instruction with them: it is the text a retry re-poses as THE
+	// TASK, so a submitted value would be a second instruction body riding
+	// along inside a task body that already has one.
+	t.RootInstruction = ""
 	id, err := b.Enqueue(t)
 	if err != nil {
 		http.Error(w, safeErr(err), http.StatusBadRequest)
@@ -146,7 +164,7 @@ func (b *Broker) HandleQueueAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 // queueItemView is the projected shape GET /queue returns: enough for the
-// CLI's ID/STATE/AGE/ATTEMPTS/REPO table, deliberately NOT the full QueueItem
+// CLI's ID/STATE/AGE/ATTEMPTS/CI/RETRY/REPO/REASON table, deliberately NOT the full QueueItem
 // — the embedded Task carries the instruction text (and flags like Sensitive),
 // which a list endpoint has no business re-broadcasting.
 type queueItemView struct {
@@ -162,6 +180,30 @@ type queueItemView struct {
 	// watched / nothing observed", never "passed".
 	PRNumber int    `json:"pr_number,omitempty"`
 	CIState  string `json:"ci_state,omitempty"`
+	// RetryOf/RetryTaskID make a bounded CI-retry chain followable in BOTH
+	// directions from this endpoint: RetryOf is the parent this item retries,
+	// RetryTaskID the child its own observed CI failure enqueued. Both
+	// omitempty, so an item outside a chain — every item on a stock install,
+	// where ci.max_attempts is 0 — serialises to exactly its previous shape.
+	// Ids only; nothing about the instruction text is re-broadcast.
+	RetryOf     string `json:"retry_of,omitempty"`
+	RetryTaskID string `json:"retry_task_id,omitempty"`
+	// Attempt is this item's DEPTH in that chain: 0 for an operator-submitted
+	// task, N for the Nth automatic retry. It is what makes a chain readable
+	// without walking every link, and it is the value ci.max_attempts is
+	// compared against. omitempty, so a stock install's items are unchanged.
+	Attempt int `json:"attempt,omitempty"`
+	// LastError is the broker-authored reason a non-clean terminal was
+	// reached. It is projected here because it is the ONLY surface for one
+	// ending an operator cannot otherwise see: a CI retry the dispatcher
+	// dropped on the aggregate spend cap (dropSpendCappedRetryLocked) leaves
+	// no audit trace of its own — the child never ran, so it has no terminal
+	// row — and without this the reason existed on disk and nowhere a person
+	// would look. Broker-authored strings only (queueTerminal's outcome
+	// vocabulary and the fixed drop/cancel reasons), never agent or CI text,
+	// and safeStr'd like every other reflected value. omitempty, so an item
+	// with a clean terminal serialises exactly as before.
+	LastError string `json:"last_error,omitempty"`
 }
 
 // HandleQueueList returns every durable queue item (including terminals —
@@ -183,6 +225,15 @@ func (b *Broker) HandleQueueList(w http.ResponseWriter, r *http.Request) {
 			Attempts:     it.Attempts,
 			PRNumber:     it.PRNumber,
 			CIState:      it.CIState,
+			// safeStr for parity with the audit copy (appendCIObservationRow):
+			// both ids are broker-authored today, but this one arrives off a
+			// disk record and is reflected to an operator's terminal, so it
+			// gets the same control-character strip every other reflected
+			// string gets rather than depending on how it got there.
+			RetryOf:     safeStr(it.Task.RetryOf),
+			RetryTaskID: safeStr(it.RetryTaskID),
+			Attempt:     it.Task.Attempt,
+			LastError:   safeStr(it.LastError),
 		})
 	}
 	writeJSON(w, out)

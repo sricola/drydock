@@ -258,12 +258,22 @@ func (b *Broker) ciWatchPass(errRuns map[string]int) {
 // the watch concludes (terminal state recorded, hook fired, marker deleted),
 // the marker is refreshed as still-pending, or a tolerated error is counted.
 func (b *Broker) pollCIMarker(m ciMarker, errRuns map[string]int) {
-	// A marker whose recorded state is ALREADY terminal is the crash window
-	// between "record the conclusion" and "remove the marker". Re-report the
-	// persisted conclusion and clean up; never re-decide an already-decided
-	// watch, and never spend a gh call on it.
+	// A marker whose recorded state is ALREADY terminal is the window between
+	// "record the conclusion" and "remove the marker". Re-report the persisted
+	// conclusion and clean up; never re-decide an already-decided watch, and
+	// never spend a gh call on it.
+	//
+	// The replay re-reports the persisted EVIDENCE too (m.Summary/m.Detail),
+	// not a zero summary. That is load-bearing, and the window is not only a
+	// SIGKILL: a retryable queue-write failure keeps the marker deliberately
+	// (see concludeCIWatch), so on a transiently full or read-only disk EVERY
+	// subsequent pass arrives here. Replaying CIFailed with a zero summary
+	// would hand B2's retry decision an observation whose evidence section
+	// reads "0 total, 0 failed" under a header asserting CI FAILED, and spend a
+	// whole fresh task_budget_usd on it. A marker written before Summary was
+	// persisted still replays as the zero value, which BuildRetryTask refuses.
 	if ciTerminal(m.State) {
-		b.concludeCIWatch(m, m.State, "", remote.CheckSummary{}, errRuns)
+		b.concludeCIWatch(m, m.State, m.Detail, m.Summary, errRuns)
 		return
 	}
 
@@ -422,6 +432,12 @@ func (b *Broker) concludeCIWatch(m ciMarker, st CIState, detail string, sum remo
 	now := b.nowMs()
 	if m.State != st {
 		m.State = st
+		// The EVIDENCE lands in the same atomic write as the state. A marker
+		// that persists "failed" without the rollup it was derived from cannot
+		// be replayed honestly — see ciMarker.Summary and pollCIMarker's
+		// already-terminal branch.
+		m.Summary = sum
+		m.Detail = detail
 		m.UpdatedAtMs = now
 		m.DeadlineMs = b.ciDeadline(m)
 		if err := writeCIMarker(b.AuditRoot, m); err != nil {

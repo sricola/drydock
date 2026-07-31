@@ -22,7 +22,8 @@ func queueUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage: drydock queue <add|list|cancel>
 
   drydock queue add <submit flags>   enqueue a task; returns immediately with its id
-  drydock queue list                 show queue items: id, state, age, attempts, ci, repo
+  drydock queue list                 show queue items: id, state, age, attempts,
+                                     ci, retry chain, repo
   drydock queue cancel <id>          cancel a queued item (kills it if already
                                      running; cancels the CI watch if it is
                                      parked in awaiting_ci)
@@ -147,6 +148,10 @@ type queueListItem struct {
 	Attempts     int    `json:"attempts"`
 	PRNumber     int    `json:"pr_number"`
 	CIState      string `json:"ci_state"`
+	RetryOf      string `json:"retry_of"`
+	RetryTaskID  string `json:"retry_task_id"`
+	Attempt      int    `json:"attempt"`
+	LastError    string `json:"last_error"`
 }
 
 func fetchQueue() ([]queueListItem, error) {
@@ -190,22 +195,92 @@ func queueCICell(it queueListItem) string {
 	}
 }
 
-// renderQueueTable renders the queue as ID/STATE/AGE/ATTEMPTS/CI/REPO, oldest
-// first (brokerd already sorts by enqueue time). AGE is derived from
-// enqueued_at_ms. Every broker-sourced string crosses the terminal boundary
-// through safeCell, same as the other tables.
+// queueRetryCell renders the RETRY column: this item's place in a bounded
+// CI-retry chain, which is otherwise only visible by reading the audit dir by
+// hand.
+//
+// A lone "-" means "not in a chain", which is every item on a stock install
+// (ci.max_attempts is 0 by default). Otherwise the cell leads with this item's
+// attempt number and then points: "<-" at the parent it retries, "->" at the
+// retry its own observed CI failure enqueued, or both for a middle link. So
+// "#2 <-1a2b3c4d5e6f… ->9f8e7d6c5b4a…" reads as "attempt 2, retrying that,
+// retried by this".
+//
+// Ids only, and abbreviated for width — the full ids are on `GET /queue` as
+// retry_of/retry_task_id. They are broker-minted 32-hex values, but they still
+// cross the terminal boundary through safeCell like every other cell: a
+// tampered queue file must not be able to put escapes on an operator's screen.
+func queueRetryCell(it queueListItem) string {
+	if it.RetryOf == "" && it.RetryTaskID == "" {
+		return "-"
+	}
+	parts := []string{fmt.Sprintf("#%d", it.Attempt)}
+	if it.RetryOf != "" {
+		parts = append(parts, "<-"+shortID(it.RetryOf))
+	}
+	if it.RetryTaskID != "" {
+		parts = append(parts, "->"+shortID(it.RetryTaskID))
+	}
+	return strings.Join(parts, " ")
+}
+
+// shortID abbreviates a task id to a column-sized prefix. Deliberately not
+// `shorten`, which is repo-URL-shaped (it splits on the last ':'): an id is an
+// opaque token and must be truncated from the left, not parsed. Sanitized
+// first, then cut, so the cut can never land inside a multi-byte rune the
+// sanitizer would have dropped anyway.
+func shortID(id string) string {
+	s := safeCell(id)
+	r := []rune(s)
+	if len(r) > 12 {
+		return string(r[:12]) + "…"
+	}
+	return s
+}
+
+// queueReasonCell renders the REASON column: the broker's own `last_error` for
+// an item that did not finish cleanly.
+//
+// It exists because one ending has no other operator-visible home. A CI retry
+// the dispatcher drops on the aggregate spend cap never runs, so it writes no
+// audit terminal row and appears nowhere in `drydock tasks` — its whole
+// explanation is the `last_error` the drop wrote, and before this column that
+// string lived on disk and nowhere a person would look.
+//
+// The value is broker-authored (the outcome vocabulary, or a fixed drop/cancel
+// sentence); no agent or CI text reaches it. It still goes through safeCell,
+// like every other cell, because it is read off a queue file and written to a
+// terminal. Truncated to one column's worth — `GET /queue` carries it whole.
+func queueReasonCell(it queueListItem) string {
+	s := safeCell(it.LastError)
+	if s == "" {
+		return "-"
+	}
+	r := []rune(s)
+	if len(r) > 44 {
+		return string(r[:44]) + "…"
+	}
+	return s
+}
+
+// renderQueueTable renders the queue as
+// ID/STATE/AGE/ATTEMPTS/CI/RETRY/REPO/REASON, oldest first (brokerd already
+// sorts by enqueue time). AGE is derived from enqueued_at_ms. Every
+// broker-sourced string crosses the terminal boundary through safeCell, same as
+// the other tables.
 func renderQueueTable(w io.Writer, items []queueListItem) {
 	if len(items) == 0 {
 		fmt.Fprintln(w, "(queue is empty)")
 		return
 	}
-	fmt.Fprintf(w, "%-32s  %-15s  %5s  %8s  %-16s  %s\n", "ID", "STATE", "AGE", "ATTEMPTS", "CI", "REPO")
+	fmt.Fprintf(w, "%-32s  %-15s  %5s  %8s  %-16s  %-32s  %-40s  %s\n",
+		"ID", "STATE", "AGE", "ATTEMPTS", "CI", "RETRY", "REPO", "REASON")
 	for _, it := range items {
-		fmt.Fprintf(w, "%-32s  %-15s  %5s  %8d  %-16s  %s\n",
+		fmt.Fprintf(w, "%-32s  %-15s  %5s  %8d  %-16s  %-32s  %-40s  %s\n",
 			safeCell(it.ID), safeCell(it.State),
 			relAge(time.UnixMilli(it.EnqueuedAtMs)), it.Attempts,
-			queueCICell(it),
-			safeCell(shorten(it.Repo, 40)))
+			queueCICell(it), queueRetryCell(it),
+			safeCell(shorten(it.Repo, 40)), queueReasonCell(it))
 	}
 }
 

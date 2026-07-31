@@ -253,3 +253,143 @@ func TestQueueList_DecodesCIFields(t *testing.T) {
 		t.Errorf("unwatched CI cell = %q, want -", got)
 	}
 }
+
+// TestQueueList_RetryColumn renders the bounded-CI-retry chain. The
+// load-bearing case is the first one: an item outside a chain — which is every
+// item on a stock install, where ci.max_attempts is 0 — shows "-", exactly as
+// it did before the column existed.
+func TestQueueList_RetryColumn(t *testing.T) {
+	const parent = "1111111111111111111111111111aaaa"
+	const child = "2222222222222222222222222222bbbb"
+	cases := []struct {
+		name string
+		item queueListItem
+		want string
+	}{
+		{"not in a chain", queueListItem{State: "completed"}, "-"},
+		{"a chain root that spawned a retry",
+			queueListItem{State: "ci_failed", RetryTaskID: child}, "#0 ->222222222222…"},
+		{"a retry with no child of its own",
+			queueListItem{State: "queued", RetryOf: parent, Attempt: 1}, "#1 <-111111111111…"},
+		{"a middle link, both directions",
+			queueListItem{State: "ci_failed", RetryOf: parent, RetryTaskID: child, Attempt: 2},
+			"#2 <-111111111111… ->222222222222…"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := queueRetryCell(c.item); got != c.want {
+				t.Errorf("queueRetryCell = %q, want %q", got, c.want)
+			}
+			c.item.ID = "0123456789abcdef0123456789abcdef"
+			c.item.Repo = "https://github.com/o/r.git"
+			c.item.EnqueuedAtMs = time.Now().UnixMilli()
+			var buf bytes.Buffer
+			renderQueueTable(&buf, []queueListItem{c.item})
+			if !strings.Contains(buf.String(), "RETRY") {
+				t.Errorf("table missing the RETRY header:\n%s", buf.String())
+			}
+			if !strings.Contains(buf.String(), c.want) {
+				t.Errorf("table missing %q:\n%s", c.want, buf.String())
+			}
+		})
+	}
+}
+
+// TestQueueList_RetryCellIsSanitized: the chain ids cross into an operator's
+// terminal like every other cell. They are broker-minted 32-hex values, but a
+// tampered queue file is exactly the case safeCell exists for.
+func TestQueueList_RetryCellIsSanitized(t *testing.T) {
+	got := queueRetryCell(queueListItem{
+		RetryOf:     "\x1b[31mred\x07\r\ninjected",
+		RetryTaskID: "\x1b[0mmore",
+		Attempt:     1,
+	})
+	if strings.ContainsAny(got, "\x1b\x07\r\n") {
+		t.Errorf("queueRetryCell leaked control bytes: %q", got)
+	}
+}
+
+// TestQueueList_DecodesRetryFields pins the JSON contract with brokerd's
+// queueItemView for the chain fields. Absent keys — every item outside a
+// chain, and every item written before B2 — decode to the zero value and
+// render as "-".
+func TestQueueList_DecodesRetryFields(t *testing.T) {
+	fakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":"0123456789abcdef0123456789abcdef","repo":"r","state":"ci_failed","enqueued_at_ms":1,"retry_task_id":"2222222222222222222222222222bbbb"},
+		                {"id":"2222222222222222222222222222bbbb","repo":"r","state":"queued","enqueued_at_ms":1,"retry_of":"0123456789abcdef0123456789abcdef","attempt":1},
+		                {"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":"r","state":"completed","enqueued_at_ms":1}]`)
+	})
+	items, err := fetchQueue()
+	if err != nil {
+		t.Fatalf("fetchQueue: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %+v", items)
+	}
+	if items[0].RetryTaskID != items[1].ID || items[1].RetryOf != items[0].ID {
+		t.Errorf("the chain did not decode in both directions: %+v", items)
+	}
+	if items[1].Attempt != 1 {
+		t.Errorf("attempt = %d, want 1", items[1].Attempt)
+	}
+	if items[2].RetryOf != "" || items[2].RetryTaskID != "" || items[2].Attempt != 0 {
+		t.Errorf("an item outside a chain decoded non-zero: %+v", items[2])
+	}
+	if got := queueRetryCell(items[2]); got != "-" {
+		t.Errorf("chainless retry cell = %q, want -", got)
+	}
+}
+
+// TestQueueList_ReasonColumnSurfacesLastError. One ending had no
+// operator-visible home at all: a bounded CI retry that the dispatcher drops on
+// the aggregate spend cap never runs, so it writes no audit terminal row and
+// appears nowhere in `drydock tasks` — its whole explanation is the queue item's
+// last_error. `GET /queue` did not project the field and nothing in cmd/ read
+// it, so the documented "the reason is recorded in the item's last_error" was
+// true on disk and nowhere a person would look.
+func TestQueueList_ReasonColumnSurfacesLastError(t *testing.T) {
+	fakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `[
+		 {"id":"1111111111111111111111111111aaaa","repo":"https://github.com/o/r.git","state":"dead_letter","enqueued_at_ms":%d,"retry_of":"2222222222222222222222222222bbbb","attempt":1,"last_error":"dropped before dispatch: the aggregate vendor spend cap was exhausted, and a broker-initiated ci retry is refused rather than parked"},
+		 {"id":"3333333333333333333333333333cccc","repo":"https://github.com/o/r.git","state":"queued","enqueued_at_ms":%d}
+		]`, time.Now().UnixMilli(), time.Now().UnixMilli())
+	})
+	items, err := fetchQueue()
+	if err != nil {
+		t.Fatalf("fetchQueue: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %+v", items)
+	}
+	var buf bytes.Buffer
+	renderQueueTable(&buf, items)
+	out := buf.String()
+	if !strings.Contains(out, "REASON") {
+		t.Errorf("table has no REASON column:\n%s", out)
+	}
+	if !strings.Contains(out, "dropped before dispatch") {
+		t.Errorf("the drop reason is not rendered:\n%s", out)
+	}
+	// A clean item renders "-", never a blank an operator could read as
+	// "no information available".
+	if got := queueReasonCell(items[1]); got != "-" {
+		t.Errorf("clean item reason cell = %q, want -", got)
+	}
+	// It is one column wide: the full string lives on GET /queue.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "dropped before dispatch") && len([]rune(line)) > 260 {
+			t.Errorf("the reason cell is untruncated (%d runes):\n%s", len([]rune(line)), line)
+		}
+	}
+}
+
+// The reason crosses into an operator's terminal off a disk record, so it goes
+// through safeCell like every other cell.
+func TestQueueList_ReasonCellIsSanitized(t *testing.T) {
+	got := queueReasonCell(queueListItem{LastError: "boom\x1b[31m\x07\r\ninjected"})
+	if strings.ContainsAny(got, "\x1b\x07\r\n") {
+		t.Errorf("queueReasonCell leaked control bytes: %q", got)
+	}
+}

@@ -125,10 +125,22 @@ type CIConfig struct {
 	WatchTimeout time.Duration `yaml:"watch_timeout"`
 	// MaxAttempts bounds the bounded-retry chain: on an observed CI failure
 	// the broker may enqueue up to this many fresh retry tasks. 0 (the
-	// default) disables retry entirely. Declared here in B1 so the schema is
-	// stable; the behavior lands in B2. Each attempt mints a fresh full
+	// default) disables retry entirely. Each attempt mints a fresh full
 	// task_budget_usd, so the worst-case spend for one chain is
 	// max_attempts × task_budget_usd — which is why MaxCIAttempts caps it.
+	//
+	// That per-chain product is the ONLY bound unless aggregate_budget_usd is
+	// also set: the retry's own spend refusals (the decision's gate 7 and the
+	// dispatcher's drop) both run through Broker.vendorExceeded, which reports
+	// false when no aggregate cap is wired — and the aggregate cap is
+	// api_key-mode-only, so it is absent in subscription mode. brokerd warns at
+	// boot when this is non-zero with no aggregate cap.
+	//
+	// A non-zero value REQUIRES a non-zero Config.ApprovalTimeout; validate()
+	// refuses the pair. A retry child is the daemon's only unattended task
+	// author, and it holds a concurrency slot across the human diff gate it
+	// always re-poses — so "wait at the gate forever" plus "author tasks at
+	// 03:00 unattended" is slot starvation with no warning anywhere.
 	MaxAttempts int `yaml:"max_attempts"`
 }
 
@@ -150,6 +162,11 @@ type Config struct {
 	// concurrency slot is released. 0 (the default) waits indefinitely — right
 	// for interactive use; set a value for unattended/batch runs so a forgotten
 	// approval can't pin a slot forever.
+	//
+	// It is REQUIRED (non-zero) when ci.max_attempts > 0: a bounded CI retry is
+	// an unattended task author, so "wait forever" stops being a considered
+	// choice about the operator's own submissions and becomes an unbounded park
+	// on a task nobody knows exists. validate() refuses the pair.
 	ApprovalTimeout time.Duration `yaml:"approval_timeout"`
 
 	// DefaultModel is the model passed to Claude Code and Codex tasks that don't
@@ -768,6 +785,41 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: ci.watch_timeout (%v) must be greater than the dispatch floor max(%d × ci.poll_interval, %v) = %v; with this pair every watch would expire before any CI conclusion could be believed, so every watched task would dead-letter",
 			c.CI.effectiveWatchTimeout(), CIDispatchFloorPolls, CIDispatchFloorGrace, floor)
 	}
+	// The SECOND cross-field check, and the one that costs real money: a
+	// bounded CI retry is the daemon's only UNATTENDED task author, and
+	// approval_timeout: 0 means "wait at the human gate forever".
+	//
+	// The pair starves the whole daemon under otherwise stock settings. A retry
+	// child runs the ordinary dispatcher lifecycle, which HOLDS ITS
+	// CONCURRENCY SLOT for the task's entire life (broker.runQueued), including
+	// the diff gate it always re-poses. So: two PRs fail CI at 03:00, two
+	// children dispatch, each burns a full task_budget_usd, and each then parks
+	// at a gate nobody is awake to answer — with max_concurrent_tasks at its
+	// default of 2 that is every slot on the box. Every task the operator
+	// submits afterwards sits `queued` indefinitely, with nothing anywhere
+	// warning why.
+	//
+	// The starvation is IN-PROCESS, and that is the whole of it: the semaphore
+	// is a plain channel rebuilt empty at boot, and the boot resume path
+	// (resumePush) re-drives a surviving gate WITHOUT taking a slot — the only
+	// two acquireSlot callers are HandleTask and the dispatcher. So a restart
+	// does clear the held slots. That is not a reason to drop the requirement:
+	// the daemon is meant to run for weeks, the starvation lasts as long as it
+	// does, and "restart the daemon" is not a policy for an unattended overnight
+	// queue. It is a reason not to claim more than is true.
+	//
+	// The watch itself already honors this (D4: it holds no slot and no stage);
+	// the CHILD is the new unattended actor, and it does not. Requiring a
+	// deadline is the smallest fix that closes it, and it is refused at LOAD
+	// because at runtime the symptom is indistinguishable from a wedged daemon.
+	//
+	// Checked whenever max_attempts > 0, not only when ci.watch is on: retry is
+	// inert without the watch today, and a config that arms the hazard the
+	// moment someone flips ci.watch is not a config to accept quietly.
+	if c.CI.MaxAttempts > 0 && c.ApprovalTimeout == 0 {
+		return fmt.Errorf("config: ci.max_attempts is %d, which requires a non-zero approval_timeout; a bounded CI retry is an UNATTENDED task that re-poses the human diff gate while holding one of your %d max_concurrent_tasks slots, so with approval_timeout: 0 (wait forever) an overnight retry parks at a gate nobody is at and starves every later task. Set approval_timeout (e.g. 2h), or set ci.max_attempts: 0 to disable retry",
+			c.CI.MaxAttempts, c.MaxConcurrent)
+	}
 	return nil
 }
 
@@ -814,7 +866,7 @@ anchor_image:   drydock-anchor:latest  # minimal anchor holding the vmnet gatewa
 task_budget_usd:        2.0            # soft USD cap: metered post-hoc; overshoot bounded to task_max_inflight in-flight requests (default 1); set max_request_cost_usd for a reservation-backed bound (api_key mode only; ignored in subscription mode)
 max_concurrent_tasks:   2              # excess POSTs /tasks get HTTP 503
 task_timeout:           30m            # wall-clock per task
-approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs)
+approval_timeout:       0s             # auto-deny a task waiting at an approval gate after this long (0 = wait forever; set for unattended runs, and REQUIRED non-zero when ci.max_attempts > 0)
 default_model:          ""             # model fallback for Claude Code and Codex (e.g. claude-sonnet-4-6); empty = agent picks. opencode uses openai_compat.model instead. Per-task --model overrides.
 default_agent:          claude         # sandbox CLI: claude | codex | gemini | opencode. Per-task --agent overrides.
 anthropic_auth:         api_key        # authentication mode: api_key | subscription
@@ -904,11 +956,17 @@ openai_compat:
 # uses the same curated env as every other host CLI call — but it is no longer
 # only operator-initiated. See THREAT_MODEL.md N5. Set watch: false (the
 # default) to stop it entirely.
+#
+# max_attempts REQUIRES a non-zero approval_timeout, and brokerd refuses the
+# pair at load. A retry child is an UNATTENDED task that re-poses the human
+# diff gate while holding one of your max_concurrent_tasks slots; with
+# approval_timeout: 0 (wait forever) an overnight retry parks at a gate nobody
+# is at and every task submitted after it sits queued indefinitely.
 ci:
   watch:         false          # enable the host-side CI watch (default false = off; nothing polls, no gh call on a timer)
   poll_interval: 60s            # watch tick; one gh API call per watched PR per tick. 0 = built-in default (60s); minimum 10s
   watch_timeout: 90m            # ABSOLUTE per-PR deadline anchored at push, so a restart can't extend it. 0 = built-in default (90m); must exceed the dispatch floor max(2 x poll_interval, 5m)
-  max_attempts:  0              # bounded retry on an observed CI failure (increment B2). 0 = off. Worst-case spend for one chain is max_attempts × task_budget_usd; max 10
+  max_attempts:  0              # bounded retry on an observed CI failure (increment B2). 0 = off. Worst-case spend for one chain is max_attempts × task_budget_usd; max 10. >0 requires a non-zero approval_timeout
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)

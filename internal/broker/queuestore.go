@@ -70,7 +70,12 @@ func (s QueueState) Terminal() bool {
 // (B2, D1) is therefore a NEW item that starts at queued with its own id, not
 // a re-entry of this one.
 var validTransition = map[QueueState][]QueueState{
-	QueueQueued:         {QueuePreparing, QueueCancelled},
+	// queued -> dead_letter exists for ONE writer: the dispatcher dropping a
+	// broker-initiated CI retry whose vendor spend cap exhausted before it
+	// could dispatch (dropSpendCappedRetryLocked). A human-submitted item is
+	// never dead-lettered from queued — it parks, because a person is waiting
+	// for it.
+	QueueQueued:         {QueuePreparing, QueueDeadLetter, QueueCancelled},
 	QueuePreparing:      {QueueRunning, QueueDeadLetter, QueueCancelled},
 	QueueRunning:        {QueueVerifying, QueueAwaitingReview, QueueCompleted, QueueDeadLetter, QueueCancelled},
 	QueueVerifying:      {QueueAwaitingReview, QueueDeadLetter, QueueCancelled},
@@ -125,6 +130,18 @@ type QueueItem struct {
 	// `completed` before its CI verdict exists. Empty means "no watch" — the
 	// stock, watch-disabled behavior — never "CI passed".
 	CIState string `json:"ci_state,omitempty"`
+	// RetryTaskID is the BOUNDED RETRY this item's observed CI failure enqueued
+	// (B2, D6): a NEW task with a new id, its own credential lease, and its own
+	// human diff gate — never a re-run of this one. It is the forward link an
+	// operator follows down a chain; the backward link is the child's own
+	// Task.RetryOf, written durably by Enqueue.
+	//
+	// It has a second, load-bearing job: it is the durable ENQUEUE-ONCE flag.
+	// The retry decision refuses outright when it is already set, so a crash
+	// that replays an observation cannot mint a second child. Written by
+	// linkCIRetryChild only, first-writer-wins, onto an item that is already
+	// terminal — see ciretryloop.go.
+	RetryTaskID string `json:"retry_task_id,omitempty"`
 }
 
 // queueIDRE matches newID's output shape (32 lowercase hex chars). Validated

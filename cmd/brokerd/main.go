@@ -157,6 +157,14 @@ func applyCIConfig(b *broker.Broker, ci config.CIConfig) {
 	b.CIWatch = ci.Watch
 	b.CIPollInterval = ci.PollInterval
 	b.CIWatchTimeout = ci.WatchTimeout
+	// The bounded retry (B2). Deliberately NOT gated on ci.watch here: the
+	// broker's own decision path is only ever reached from a terminal CI
+	// OBSERVATION, and observations only exist when the watch is on, so a
+	// non-zero max_attempts with the watch off is already inert. Copying it
+	// unconditionally keeps this function a straight mapping — one place, no
+	// hidden condition — and `drydock policy explain` then reports the value
+	// the operator actually wrote.
+	b.CIMaxAttempts = ci.MaxAttempts
 }
 
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
@@ -461,6 +469,23 @@ func main() {
 		slog.Info("aggregate budget cap enabled",
 			"usd", cfg.AggregateBudgetUSD, "window", cfg.AggregateWindow, "vendor_count", len(apiKeyVendors))
 	}
+	// Say plainly what arming the bounded CI retry without an aggregate cap
+	// means, because the code reads as if there were two spend bounds and
+	// there is only one. Both retry-specific spend refusals — gate 7 in the
+	// decision and the dispatcher's drop — go through Broker.vendorExceeded,
+	// which is a no-op unless AggregateExceeded is wired, and that is wired
+	// only just below, only when aggregate_budget_usd > 0. Without it the sole
+	// bound on an unattended chain is per-chain (max_attempts × task_budget_usd
+	// per failing task, with no ceiling across concurrent chains).
+	//
+	// WARN, not refuse: the aggregate cap is api_key-mode-only by design
+	// (subscription lanes are bounded by task_max_requests instead), so
+	// refusing would make the retry unusable in the auth mode most unattended
+	// installs run. The operator gets one line at boot and a documented reason.
+	if cfg.CI.MaxAttempts > 0 && cfg.AggregateBudgetUSD <= 0 {
+		slog.Warn("ci.max_attempts is on with no aggregate_budget_usd: the retry-specific spend refusals are inert, so the only bound on unattended retry spend is per-chain (max_attempts x task_budget_usd per failing task, with no ceiling across concurrent chains)",
+			"max_attempts", cfg.CI.MaxAttempts, "task_budget_usd", cfg.TaskBudgetUSD)
+	}
 	go func() {
 		l := listenWhenReady(gwAddr)
 		slog.Info("gateway listening", "addr", gwAddr)
@@ -664,7 +689,18 @@ func main() {
 	go func() {
 		<-sigCh
 		slog.Info("shutting down — cancelling in-flight tasks")
-		// Stop the CI watch first, and note what this does NOT do: it does not
+		// LATCH THE QUEUE FIRST, before anything else. This stops the
+		// dispatcher and makes the broker refuse to author or start any new
+		// work. It has to be first because the two steps below both leave a
+		// producer running otherwise: StopCIWatch does not wait for an
+		// in-flight poll, so that poll can still conclude and decide a bounded
+		// CI retry, and until this latch the dispatcher would happily take that
+		// child and boot a fresh VM AFTER CancelAll had torn every task down —
+		// an orphan VM and stage this process then exits without cleaning up.
+		// Nothing durable is lost: whatever is already `queued` stays queued and
+		// the next boot dispatches it.
+		brk.BeginQueueDrain()
+		// Then the CI watch, and note what this does NOT do: it does not
 		// wait. A poll already in flight is bounded by the vendor-CLI timeout,
 		// and blocking the drain behind a GitHub round trip is exactly the
 		// starvation D4 exists to prevent. Its markers stay on disk and are
@@ -675,6 +711,13 @@ func main() {
 		brk.CancelAll() // each task force-deletes its own VM and responds
 		ctx, c := context.WithTimeout(context.Background(), 20*time.Second)
 		_ = srv.Shutdown(ctx) // block until in-flight task handlers drain
+		// srv.Shutdown drains HTTP handlers, which a dispatched queue item is
+		// NOT — runQueued is a bare goroutine. Wait for those too, under the
+		// same deadline, so the process cannot exit while a cancelled queued
+		// task is still force-deleting its VM or cleaning its stage.
+		if !brk.WaitQueueDrain(ctx) {
+			slog.Warn("shutdown: dispatched queue tasks did not finish tearing down within the deadline; a VM or stage may be left for the next boot to reap")
+		}
 		c()
 		close(shutdownDone)
 	}()
