@@ -77,8 +77,10 @@ type ciMarker struct {
 	// is for display and operator navigation ONLY — nothing may re-parse it to
 	// recover a coordinate.
 	PRURL string `json:"pr_url"`
-	// Attempt is 1 for a first attempt, N for the Nth retry in a chain.
-	// RetryOf is the parent task id ("" for a first attempt).
+	// Attempt and RetryOf mirror the same-named Task fields (broker.go), and
+	// carry their semantics exactly: Attempt counts RETRIES, so an
+	// operator-submitted task is 0 and the Nth automatic retry is N, and
+	// RetryOf is the immediate parent task id ("" for a first attempt).
 	Attempt int    `json:"attempt,omitempty"`
 	RetryOf string `json:"retry_of,omitempty"`
 	// State is the last observation. See CIState.

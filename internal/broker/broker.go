@@ -85,6 +85,23 @@ type Task struct {
 	// --issue). Provenance only — the broker treats the instruction text as
 	// the single source of truth either way.
 	IssueURL string `json:"issue_url,omitempty"`
+	// RetryOf and Attempt carry the bounded CI-retry chain (D6). RetryOf is
+	// the IMMEDIATE parent task's id ("" for an operator-submitted task);
+	// Attempt counts RETRIES, so an operator-submitted task is 0 and the Nth
+	// automatic retry is N. BuildRetryTask (ciretry.go) is the only writer.
+	//
+	// They live on the Task, not beside it, because QueueItem persists the
+	// full Task: the bound must survive a brokerd restart and MUST NOT be
+	// launderable by a crash. A counter held only in memory, or only on the
+	// <id>.ci.json marker (which a prune could remove), would let a chain
+	// restart at zero and run forever.
+	//
+	// Client-submitted bodies may carry them — the fields are just JSON — but
+	// they buy nothing an attacker wants: a HIGHER Attempt only shortens the
+	// chain, and the retry decision (Task 6) reads the persisted queue item,
+	// never a value the agent VM can reach.
+	RetryOf string `json:"retry_of,omitempty"`
+	Attempt int    `json:"attempt,omitempty"`
 }
 
 // SquidControl registers/deregisters per-task egress widening with squid.
