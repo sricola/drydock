@@ -217,9 +217,16 @@ store is host-managed and content-addressed — each entry is keyed by repo
 identity + lockfile digests + setup-command digest + sandbox image +
 architecture (`internal/depcache`), so entries are isolated per key and
 two repos never share one, even with identical lockfiles (and a repo
-without a lockfile gets no cache at all). Entries hold only package
-payloads (npm/Go/pip/cargo caches); credentials live in the VM's
-ephemeral HOME and never touch `/deps`. Operational caveat, not a
+without a lockfile gets no cache at all). Entries hold what the setup
+phase's package managers write there (npm/Go/pip/cargo caches), and no
+credential can enter them — a property that holds by composition, not
+because the paths are mechanically payload-only: the setup VM that
+populates the cache carries no registry credentials (its env is
+proxy/gateway vars only), so none are ever written. `CARGO_HOME` in
+particular is cargo's config-and-credential home, not a pure payload
+cache, but nothing in the bearer-free setup env can write a credential
+there — and the agent VM, the only credential-carrying VM, mounts
+`/deps` read-only. Operational caveat, not a
 security one: with `/deps` read-only in the agent VM, a package manager
 that tries to write its cache mid-agent-run (e.g. installing a package
 the cache does not carry) hits a read-only filesystem error — the cache
@@ -245,6 +252,15 @@ the quota and is the only layer on non-macOS builds, where the image is a
 no-op. File-count exhaustion within an attached image is still bounded
 only by the soft polling guard, an image full of many small files can hit
 the 200k-file cap before it hits the byte quota.
+
+The same polling guard also spans the setting_up stage: setup VMs run
+untrusted repo code (npm postinstall, pip setup.py) with `/work` mounted
+rw and — when caching is active — the rw `/deps` mount, so a setup
+command that crosses the stage caps or drives host free space below the
+floor (through either mount) is cancelled mid-flight and the task fails
+closed as `setup_failed`. A hostile install script cannot fill the host
+disk during setup, and the dependency cache can never fill the disk (A8
+extended to the persistent store).
 
 **Implementation:** `internal/stage/quota_darwin.go` (`AttachQuota`,
 `QuotaImagePath`) plus `internal/broker/stagesize.go` (the polling guard).

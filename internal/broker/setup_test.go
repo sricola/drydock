@@ -499,6 +499,181 @@ func TestRunSetup_PromptWrittenAfterSetup_TamperCannotStick(t *testing.T) {
 	}
 }
 
+// A8 extended across the setting_up stage: setup VMs run untrusted repo code
+// (npm postinstall, pip setup.py) with the live /work mounted rw and — when
+// caching — the rw /deps mount, so a host-disk-floor breach during setup must
+// cancel the phase and fail the task closed (setup_failed): the agent VM
+// never boots and a disk-filling setup can never read as passed. The guard is
+// injected through the same b.watchStage seam the runSandbox wiring test
+// uses, simulating a host already below the free-space floor.
+func TestRunSetup_HostDiskFloorBreachFailsClosed(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	grant := &fakeGrant{}
+	log := &runLog{}
+	setupFn := func(ctx context.Context, _ []string, _, _ io.Writer) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	b := testBroker(t, "anthropic", st, grant, setupSplitRun(log, setupFn))
+	b.Setup = map[string]SetupProfile{
+		"github.com/o/r": {Setup: [][]string{{"npm", "ci"}, {"npm", "run", "build"}}},
+	}
+	b.watchStage = func(_, _ string, _ time.Duration, _ func()) *stageSizeGuard {
+		// Simulate a host whose free space is already below the floor: the
+		// guard reports exceeded from its first check (the real watchStageSize
+		// would fire on its first poll and cancel the in-flight command).
+		g := &stageSizeGuard{stop: func() {}}
+		g.fired.Store(true)
+		return g
+	}
+
+	rec, events, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+	if term["outcome"] != "setup_failed" {
+		t.Fatalf("outcome=%v, want setup_failed; body=%s", term["outcome"], rec.Body)
+	}
+	reason, _ := term["reason"].(string)
+	if !strings.Contains(reason, "host disk floor breached during setup") {
+		t.Errorf("reason=%q, want the disk-floor breach named", reason)
+	}
+	if log.sawPrefix("task-") {
+		t.Error("FAIL-CLOSED VIOLATION: the agent VM launched after a setup disk breach")
+	}
+	id := taskID(t, events)
+	br := readBrief(t, b, id)
+	if br.Setup.Status != trustbrief.SetupFailed {
+		t.Errorf("brief setup status=%q, want failed", br.Setup.Status)
+	}
+	if len(br.Setup.Commands) != 2 ||
+		br.Setup.Commands[0].Status != trustbrief.VerifyCmdError ||
+		br.Setup.Commands[1].Status != trustbrief.VerifyCmdSkipped {
+		t.Errorf("commands=%+v, want [error, skipped]", br.Setup.Commands)
+	}
+	if st.pushed.Load() {
+		t.Error("nothing may be pushed after a setup disk breach")
+	}
+	// The grant defer still revokes the never-injected credential.
+	if !grant.revoked {
+		t.Error("grant was not revoked on the setup disk-breach path")
+	}
+}
+
+// The real watcher, end to end: a setup command that fills /work past the
+// (lowered) stage byte cap is cancelled mid-flight by watchStageSize, the
+// wedged setup VM is force-deleted, and the task fails closed with the disk
+// reason. Mirrors TestHandleTask_StageFillTerminatesAndDoesNotPush for the
+// agent run.
+func TestRunSetup_StageFillDuringSetupCancelsAndFailsClosed(t *testing.T) {
+	ob, oi := maxStageBytes, stageSizeInterval
+	maxStageBytes = 1024
+	stageSizeInterval = 10 * time.Millisecond
+	t.Cleanup(func() { maxStageBytes = ob; stageSizeInterval = oi })
+
+	work := t.TempDir()
+	st := &fakeStage{workDir: work, diff: "d"}
+	grant := &fakeGrant{}
+	log := &runLog{}
+	setupFn := func(ctx context.Context, _ []string, _, _ io.Writer) error {
+		// The hostile install script: fill /work past the cap, then hang
+		// until the guard cancels the command.
+		if err := os.WriteFile(filepath.Join(work, "fill"), make([]byte, 4096), 0o644); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	b := testBroker(t, "anthropic", st, grant, setupSplitRun(log, setupFn))
+	b.Setup = map[string]SetupProfile{
+		"github.com/o/r": {Setup: [][]string{{"npm", "ci"}}},
+	}
+	var mu sync.Mutex
+	var deleted []string
+	b.deleteContainer = func(name string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		deleted = append(deleted, name)
+		return nil
+	}
+
+	rec, events, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+	if term["outcome"] != "setup_failed" {
+		t.Fatalf("outcome=%v, want setup_failed; body=%s", term["outcome"], rec.Body)
+	}
+	reason, _ := term["reason"].(string)
+	if !strings.Contains(reason, "disk") {
+		t.Errorf("reason=%q, want the disk breach named", reason)
+	}
+	id := taskID(t, events)
+	br := readBrief(t, b, id)
+	if br.Setup.Status != trustbrief.SetupFailed {
+		t.Errorf("brief setup status=%q, want failed", br.Setup.Status)
+	}
+	if len(br.Setup.Commands) != 1 || br.Setup.Commands[0].Status != trustbrief.VerifyCmdError {
+		t.Errorf("commands=%+v, want [error]", br.Setup.Commands)
+	}
+	if log.sawPrefix("task-") {
+		t.Error("the agent VM must not launch after a setup disk breach")
+	}
+	// The cancelled setup VM was force-deleted through the bounded path.
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, name := range deleted {
+		if name == "setup-"+id {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("deleted containers=%v, want setup-%s force-deleted on the disk breach", deleted, id)
+	}
+}
+
+// The setup-phase guard must watch BOTH rw mounts: the stage (/work, floor
+// measured on the host b.StageRoot, same as runSandbox) and, when caching is
+// active, the cache entry (/deps, floor measured on b.CacheRoot). Pins the
+// wiring through the b.watchStage seam so a silent revert fails a test, not
+// just a comment.
+func TestRunSetup_DiskGuardCoversStageAndCache(t *testing.T) {
+	st := &fakeStage{workDir: t.TempDir(), diff: "diff --git a/x b/x\n+y\n"}
+	writeLockfile(t, st.workDir, `{"lockfileVersion": 3}`)
+	grant := &fakeGrant{}
+	log := &runLog{}
+	setupFn := func(context.Context, []string, io.Writer, io.Writer) error { return nil }
+	b := cacheBroker(t, st, grant, setupSplitRun(log, setupFn))
+
+	type watched struct{ root, host string }
+	var mu sync.Mutex
+	var got []watched
+	b.watchStage = func(root, hostRoot string, iv time.Duration, onExceed func()) *stageSizeGuard {
+		mu.Lock()
+		got = append(got, watched{root, hostRoot})
+		mu.Unlock()
+		return watchStageSize(root, hostRoot, iv, onExceed)
+	}
+
+	rec, _, term := submit(b, `{"repo_ref":"https://github.com/o/r.git","instruction":"x","agent":"claude","auto_approve":true}`)
+	if term["outcome"] != "pushed" {
+		t.Fatalf("outcome=%v, want pushed; body=%s", term["outcome"], rec.Body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// Three watchers, in order: setup stage, setup cache, agent run.
+	if len(got) != 3 {
+		t.Fatalf("watchStage calls=%d (%v), want 3 (setup stage + setup cache + agent run)", len(got), got)
+	}
+	if got[0].root != st.WorkDir() || got[0].host != b.StageRoot {
+		t.Errorf("setup stage watcher=(%q,%q), want (%q,%q)", got[0].root, got[0].host, st.WorkDir(), b.StageRoot)
+	}
+	if rel, err := filepath.Rel(b.CacheRoot, got[1].root); err != nil || strings.HasPrefix(rel, "..") {
+		t.Errorf("setup cache watcher root=%q, want a dir under the cache root %q", got[1].root, b.CacheRoot)
+	}
+	if got[1].host != b.CacheRoot {
+		t.Errorf("setup cache watcher host=%q, want b.CacheRoot %q", got[1].host, b.CacheRoot)
+	}
+	if got[2].root != st.WorkDir() || got[2].host != b.StageRoot {
+		t.Errorf("agent-run watcher=(%q,%q), want (%q,%q)", got[2].root, got[2].host, st.WorkDir(), b.StageRoot)
+	}
+}
+
 // The setup VM's env carries the proxy/gateway vars (setup needs egress
 // through squid) but NEVER the grant bearer — asserted both on the pure env
 // builder and on the actual argvs the seam observed for a passing run.

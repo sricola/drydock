@@ -397,6 +397,11 @@ type taskRun struct {
 	// not run in this process.
 	setup    *trustbrief.SetupEvidence
 	setupDur time.Duration // wall-clock of the setting_up stage (metrics)
+	// setupDiskBreach records that the setup-phase disk guard cancelled the
+	// phase (stage/cache size caps or the host free-space floor, A8): the
+	// setup_failed terminal names the breach instead of a generic command
+	// error. Written and read only on the single HandleTask goroutine.
+	setupDiskBreach bool
 	// Dependency-cache participation, set by resolveCache (cache.go) before
 	// the first setup VM boots. cacheDir == "" means uncached; when set, the
 	// SAME dir is mounted rw into the setup VMs and READ-ONLY into the agent
