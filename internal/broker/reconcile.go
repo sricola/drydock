@@ -548,8 +548,14 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		// resumed path intentionally diverges from the live pushAndOpenPR path.
 		outcome, subtype := gateOutcome(cause, true)
 		tr.outcome = outcome
-		// Broker-authored (src:broker) and carrying the metered cost, so a resumed
-		// task's real spend still seeds the aggregate ledger.
+		// Broker-authored (src:broker). Its spend half comes from
+		// brokerResultSpendFields, so on THIS path — a task resumed after a
+		// restart, whose lease died with the previous process — it is
+		// `no_spend_info` rather than a figure. That marker is what keeps the
+		// aggregate-cap restart seed correct: audit.LastBrokerResult skips the
+		// marked row and finds the PREVIOUS process's genuine broker row beneath
+		// it, so the resumed task's real spend still reaches the seed without this
+		// process re-laundering a trace value through a row it stamps src:"broker".
 		fmt.Fprintf(logf,
 			`{"type":"result","subtype":%q,"is_error":false,"duration_ms":0,%s,"num_turns":0,"src":"broker"}`+"\n",
 			subtype, tr.brokerResultSpendFields())

@@ -193,19 +193,22 @@ func (b *Broker) applyCIObservation(obs CIObservation) bool {
 	// just written.
 	retryID, retryDetail, park := b.maybeEnqueueCIRetry(obs, qs)
 	if park {
-		// THE DECISION HAS NOT BEEN MADE. The global ceiling could not be
-		// MEASURED — a fault, not a verdict — and this decision runs once per
-		// observation, so recording "no retry" now would destroy the chain over
-		// something that usually clears before the next tick. Mark the parent
-		// deferred (durable, VM-unwritable) and return NOT-RECORDED so
-		// concludeCIWatch keeps the marker and the next pass re-asks. No
-		// observation row is written: there is nothing to say yet, and a row per
-		// tick would be noise in the operator's trace.
-		// Logged on the TRANSITION only: a ceiling that is unmeasurable for a
-		// lasting reason (an unreadable ledger file) re-parks on every watch
-		// tick, and a line per tick would bury the one that matters.
+		// THE DECISION HAS NOT BEEN MADE. Something the decision needs could not
+		// be MEASURED OR WRITTEN — the global usage ceiling could not be read, or
+		// the durable enqueue-once mark could not be persisted — and both are
+		// FAULTS, not verdicts. This decision runs once per observation, so
+		// recording "no retry" now would destroy the chain over something that
+		// usually clears before the next tick. Mark the parent deferred (durable
+		// where possible, process-local always — see Broker.ciRetryParked, because
+		// the mark-write fault takes the durable flag's own write down with it)
+		// and return NOT-RECORDED so concludeCIWatch keeps the marker and the next
+		// pass re-asks. No observation row is written: there is nothing to say yet,
+		// and a row per tick would be noise in the operator's trace.
+		// Logged on the TRANSITION only: a fault with a lasting cause (an
+		// unreadable ledger file, a read-only mount) re-parks on every watch tick,
+		// and a line per tick would bury the one that matters.
 		if b.setCIRetryDeferred(obs.TaskID, true) {
-			slog.Warn("ci retry: deferring the bounded-retry decision; the global ceiling could not be evaluated",
+			slog.Warn("ci retry: deferring the bounded-retry decision; it could not be made yet",
 				"task_id", obs.TaskID, "reason", retryDetail)
 		}
 		return false
@@ -241,16 +244,27 @@ func (b *Broker) recordCIQueueTerminal(obs CIObservation, to QueueState, lastErr
 		// CIRetryEnqueued is written BEFORE Enqueue, so it covers that window
 		// exactly. RetryTaskID is checked too, belt and braces, for items written
 		// by a build that predates the flag.
-		if !cur.CIRetryDeferred || cur.CIRetryEnqueued || cur.RetryTaskID != "" {
+		//
+		// "Parked" is read from the durable flag OR the process-local copy, and
+		// the second disjunct is not redundant: a decision can park BECAUSE queue-
+		// item writes are failing (an unwritable enqueue-once mark), and that same
+		// fault takes the durable flag's own write down with it. Reading only the
+		// durable flag there sees "not deferred", short-circuits, and destroys the
+		// chain over a fault that has already cleared. Note the ORDER of the
+		// disjuncts against the conjuncts: the enqueue-once checks are DURABLE
+		// reads and they still veto, so a wider "parked" can only ever re-ask a
+		// decision that provably never enqueued.
+		parked := cur.CIRetryDeferred || b.ciRetryParkedSinceMs(cur) > 0
+		if !parked || cur.CIRetryEnqueued || cur.RetryTaskID != "" {
 			return to, true, true // already applied; a crash-window replay
 		}
 		// The terminal is already durable, but the bounded-retry decision was
-		// PARKED because the global usage ceiling could not be measured, and
-		// nothing has been enqueued for it. That is the one case where a repeat
-		// pass must NOT short-circuit: the decision runs once per observation, and
-		// short-circuiting it here is what turned a transient fault into a
-		// permanently destroyed retry chain. Report it as recorded-and-not-a-replay
-		// so the caller re-asks.
+		// PARKED — the global usage ceiling could not be measured, or the durable
+		// enqueue-once mark could not be written — and nothing has been enqueued
+		// for it. That is the one case where a repeat pass must NOT short-circuit:
+		// the decision runs once per observation, and short-circuiting it here is
+		// what turned a transient fault into a permanently destroyed retry chain.
+		// Report it as recorded-and-not-a-replay so the caller re-asks.
 		return cur.State, false, true
 	}
 	// The observation's own Detail (why the watch ended without a conclusion:

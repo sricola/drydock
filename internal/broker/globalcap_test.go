@@ -1486,6 +1486,54 @@ func TestGlobalCap_TheWriteAndQueryClocksCannotDriftApart(t *testing.T) {
 			t.Errorf("the write clock accumulated %dms of skew from ten hours of 0.1%% drift, want 0", got)
 		}
 	})
+
+	// ...and the proportional half is CAPPED, which is what stops it eating the
+	// jump it was layered on top of. Uncapped, the tolerance grows with the gap
+	// between writes, so a long enough quiet period makes ANY jump look like
+	// drift: at 1%, two hundred days between two writes tolerates forty-eight —
+	// the exact NTP correction C1 is about — and clockSkew stays zero through it.
+	//
+	// This is driven through Record directly rather than through a task terminal
+	// because that is the caller the store's own contract is stated for: the
+	// monotonic guard holds "even for a caller that hands Record a raw wall
+	// clock", and a contract conditional on the write interval is not that one.
+	t.Run("the proportional tolerance cannot grow to swallow a real jump", func(t *testing.T) {
+		root := t.TempDir()
+		wall, mono := &testClock{}, &testClock{}
+		wall.set(capNow)
+		mono.set(0)
+		l, err := OpenGlobalLedgerWithClock(root, time.Hour, wall.now(), mono.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := func() {
+			if err := l.Record(wall.now(), GlobalEntry{
+				Kind: GlobalEntryTask, TaskID: newID(), Metered: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rec() // anchor the (wall, monotonic) pair
+		// Two hundred days of quiet, then a 48-hour forward jump on top of it.
+		const quiet = 200 * 24 * time.Hour
+		const jump = 48 * time.Hour
+		mono.advance(quiet)
+		wall.advance(quiet + jump)
+		rec()
+		l.mu.Lock()
+		skew := l.clockSkew
+		l.mu.Unlock()
+		if skew < jump.Milliseconds() {
+			t.Errorf("clockSkew = %dms after a %s jump across a %s write interval, want at least %dms: "+
+				"the rate-proportional tolerance grew large enough to absorb the jump as drift",
+				skew, jump, quiet, jump.Milliseconds())
+		}
+		// And the absorbed band is bounded and statable: the floor plus the cap,
+		// and nothing beyond it, however long the ledger sat idle.
+		if want := int64(ledgerClockToleranceMs) + ledgerClockDriftCapMs; want != 62_000 {
+			t.Errorf("the absorbed band is %dms; the residual documented on ledgerClockDriftCapMs says ~62s", want)
+		}
+	})
 }
 
 // A claim released only while a limb happens to be on is a claim leaked

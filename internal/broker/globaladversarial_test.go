@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -645,9 +646,15 @@ func TestGlobalCeiling_AuditTotalCostStaysDeleted(t *testing.T) {
 
 // TestGlobalCeiling_NothingInTheCeilingReadsAnAgentWritableFile.
 //
-// The ledger's inputs must trace to broker-authored values only, so NONE of the
-// ceiling's four files may touch the audit package at all. A <id>.jsonl carries
-// the agent's own stdout verbatim; there is no reader over it that changes that.
+// The ledger's inputs must trace to broker-authored values only, so NO file of
+// the ceiling may touch the audit package at all. A <id>.jsonl carries the
+// agent's own stdout verbatim; there is no reader over it that changes that.
+//
+// THE FILE SET IS A GLOB (`global*.go`), not a hand-kept list. A hardcoded list
+// leaves the NEXT ceiling file unguarded until someone remembers to add it, and
+// "until someone remembers" is how the two holes this test exists for got in.
+// A new global*.go is covered on the day it is created; the four known ones are
+// asserted present so the glob cannot silently shrink to nothing.
 //
 // globalrecord.go used to be excepted, on the grounds that a task RESUMED after a
 // restart has no lease in this process and its previous process's src=="broker"
@@ -663,7 +670,7 @@ func TestGlobalCeiling_AuditTotalCostStaysDeleted(t *testing.T) {
 // the ceiling does not read it.
 func TestGlobalCeiling_NothingInTheCeilingReadsAnAgentWritableFile(t *testing.T) {
 	fset := token.NewFileSet()
-	ceilingFiles := []string{"globalledger.go", "globalcap.go", "globalheadroom.go", "globalrecord.go"}
+	ceilingFiles := ceilingSourceFiles(t)
 
 	parsed := 0
 	for _, name := range ceilingFiles {
@@ -688,8 +695,8 @@ func TestGlobalCeiling_NothingInTheCeilingReadsAnAgentWritableFile(t *testing.T)
 			return true
 		})
 	}
-	// Vacuity guard: the walk has to have had four real files to look at, or a
-	// pass means "nothing was parsed" rather than "nothing was found".
+	// Vacuity guard: the walk has to have had real files to look at, or a pass
+	// means "nothing was parsed" rather than "nothing was found".
 	if parsed != len(ceilingFiles) {
 		t.Fatalf("parsed %d of %d ceiling files; the walk has stopped working", parsed, len(ceilingFiles))
 	}
@@ -706,6 +713,115 @@ func TestGlobalCeiling_NothingInTheCeilingReadsAnAgentWritableFile(t *testing.T)
 			}
 		}
 	}
+	// ...and ONE LEVEL OF INDIRECTION, which is the gap a same-package walk
+	// otherwise leaves wide open: moving the tail read into a helper in
+	// reconcile.go and calling THAT from globalrecord.go satisfies both checks
+	// above while doing exactly the forbidden thing. (The behavioural tests caught
+	// that when it was tried, so defence in depth held — but a structural pin that
+	// a one-line extraction defeats is not much of a pin.)
+	//
+	// THE HONEST LIMIT, stated rather than implied: this is ONE level. A helper
+	// that calls a helper that reads a trace is not caught, and no purely
+	// syntactic walk of a single package can close that in general — it wants a
+	// call graph over the whole build. What this buys is that the CHEAPEST evasion,
+	// the one a refactor arrives at by accident, now fails the build; the deeper
+	// ones remain covered by the behavioural tests and by brokerMeteredSpendUSD's
+	// own contract.
+	indirect := auditTouchingFuncs(t, fset, ceilingFiles)
+	for _, name := range ceilingFiles {
+		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			callee := ""
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				callee = fun.Name
+			case *ast.SelectorExpr:
+				// A method call on a receiver (b.helper()). A package-qualified
+				// call cannot name a function in THIS package, and audit.* is
+				// already caught above.
+				if _, ok := fun.X.(*ast.Ident); ok {
+					callee = fun.Sel.Name
+				}
+			}
+			if where, bad := indirect[callee]; bad {
+				t.Errorf("%s: calls %s, which reads the audit package in %s. A ceiling file may not reach a "+
+					"task trace THROUGH a helper either — the rule is about the value's provenance, not "+
+					"about which file the reader is spelled in (plan G2/G4).",
+					fset.Position(call.Pos()), callee, where)
+			}
+			return true
+		})
+	}
+}
+
+// ceilingSourceFiles is every non-test global*.go in package broker — the files
+// the ceiling is built out of. A glob rather than a list so a new one is guarded
+// the day it is written, with the four known files asserted present so a glob
+// that matches nothing (or that a rename empties) fails loudly instead of
+// passing vacuously.
+func ceilingSourceFiles(t *testing.T) []string {
+	t.Helper()
+	matches, err := filepath.Glob("global*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []string
+	for _, m := range matches {
+		if !strings.HasSuffix(m, "_test.go") {
+			files = append(files, m)
+		}
+	}
+	for _, want := range []string{"globalledger.go", "globalcap.go", "globalheadroom.go", "globalrecord.go"} {
+		if !slices.Contains(files, want) {
+			t.Fatalf("the ceiling glob did not match %s; it has stopped working (matched %v)", want, files)
+		}
+	}
+	return files
+}
+
+// auditTouchingFuncs maps the name of every package-broker function or method
+// whose own body names the audit package to the file it is declared in. skip
+// names files to exclude (the ceiling's own, which the caller checks directly).
+func auditTouchingFuncs(t *testing.T, fset *token.FileSet, skip []string) map[string]string {
+	t.Helper()
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") || slices.Contains(skip, name) {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "audit" {
+					out[fn.Name.Name] = name
+				}
+				return true
+			})
+		}
+	}
+	return out
 }
 
 // --- small AST helpers for the two structural tests above ---

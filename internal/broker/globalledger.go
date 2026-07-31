@@ -583,6 +583,30 @@ const ledgerClockToleranceMs = ceilingClockToleranceMs
 // seconds of drift while still catching the 48-hour NTP correction C1 is about.
 const ledgerClockDriftDivisor = 100
 
+// ledgerClockDriftCapMs is the ABSOLUTE CEILING on the proportional term, and it
+// is what keeps "1% of the interval" from eventually swallowing the jump the
+// guard exists to catch.
+//
+// Proportional-without-a-cap is unbounded in the wrong direction: the tolerance
+// grows with the gap between writes, so a long enough quiet period makes ANY
+// jump look like drift. At 1%, two hundred days between two writes tolerates
+// forty-eight — the exact NTP correction C1 names — and clockSkew stays zero
+// through it. That is not reachable from production today (every production
+// writer hands Record globalcap.ceilingNowMs, whose own fixed 2s tolerance
+// catches the jump first, and cmd/brokerd's raw-clock call only ANCHORS), but
+// this file's header states the monotonic guard holds "even for a caller that
+// hands Record a raw wall clock", and a contract that is conditional on the
+// write interval is not that contract.
+//
+// 60 seconds is chosen to keep BOTH halves true. It is still far above any real
+// clock's error across any plausible write interval — an unsynchronised crystal
+// at 100 ppm needs a week between writes to drift that far, and a host running
+// NTP never gets near it — and it is far below the hours-to-days scale of the
+// jumps and the windows this ceiling deals in. The residual is now bounded and
+// statable: at most ~62 seconds of a forward jump is absorbed as drift, ever,
+// regardless of how long the ledger sat idle.
+const ledgerClockDriftCapMs = 60_000
+
 // ledgerMonoMs is the default monotonic source: milliseconds since this
 // process's own anchor, immune to every wall-clock change.
 func ledgerMonoMs() int64 { return int64(time.Since(processStartMono) / time.Millisecond) }
@@ -611,12 +635,18 @@ func (l *GlobalLedger) writeNowLocked(nowMs int64) int64 {
 	// back and prunes less, which is the over-counting direction.
 	delta := (nowMs - l.clockWall) - (mono - l.clockMono)
 	// The tolerance is the fixed floor PLUS a rate-proportional term over the
-	// monotonic interval this delta accrued across. See ledgerClockDriftDivisor:
-	// writes are rare, so a fixed tolerance turns ordinary drift into a permanent
-	// cutoff regression.
+	// monotonic interval this delta accrued across, CAPPED. See
+	// ledgerClockDriftDivisor (writes are rare, so a fixed tolerance turns
+	// ordinary drift into a permanent cutoff regression) and
+	// ledgerClockDriftCapMs (uncapped, a long enough quiet period makes any jump
+	// look like drift).
 	tolerance := int64(ledgerClockToleranceMs)
 	if elapsed := mono - l.clockMono; elapsed > 0 {
-		tolerance += elapsed / ledgerClockDriftDivisor
+		drift := elapsed / ledgerClockDriftDivisor
+		if drift > ledgerClockDriftCapMs {
+			drift = ledgerClockDriftCapMs
+		}
+		tolerance += drift
 	}
 	l.clockWall, l.clockMono = nowMs, mono
 	if delta >= tolerance {

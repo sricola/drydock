@@ -543,6 +543,80 @@ func TestSeedAggregateFromAudit_IgnoresForgedAgentCost(t *testing.T) {
 	}
 }
 
+// TestSeedAggregateFromAudit_SeesThroughANoSpendInfoTerminal.
+//
+// A broker-authored terminal that METERED NOTHING carries `no_spend_info`: the
+// synthetic `interrupted` row a crash leaves, and — since the global ceiling
+// stopped trusting trace content — the terminal a task RESUMED at the diff gate
+// writes, because its lease died with the previous process.
+//
+// That row is broker-authored with a zero cost, so a seed that reads only the
+// LAST result row sees `src:"broker"` and `$0` and skips the WHOLE trace,
+// dropping the genuine figure the previous process metered and wrote beneath it.
+// Every other consumer of that row shape (LastBrokerResultFile, LastRowsFile)
+// already skipped the marker and kept scanning; this was the one that did not,
+// and four separate places in the tree asserted as fact that it did.
+func TestSeedAggregateFromAudit_SeesThroughANoSpendInfoTerminal(t *testing.T) {
+	const (
+		genuine = 12.50
+		cap     = 100.0
+	)
+	// Each case is one trace; the seed must count `genuine` from all of them.
+	cases := map[string]string{
+		"resumed task, push_failed terminal": `{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":0,"total_cost_usd":0,"num_turns":0,"src":"broker","no_spend_info":true}`,
+		"crashed task, interrupted terminal": `{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0,"src":"broker","no_spend_info":true}`,
+	}
+	for name, marker := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			now := time.Now()
+			p := filepath.Join(dir, "r.jsonl")
+			if err := os.WriteFile(p, []byte(
+				`{"type":"drydock_meta","subscription":false,"sensitive":false}`+"\n"+
+					`{"type":"drydock_task","agent":"claude"}`+"\n"+
+					// The agent's own (untrusted) line, then the PREVIOUS process's
+					// genuine broker row, then this process's marker row on top.
+					`{"type":"result","subtype":"success","total_cost_usd":1.0}`+"\n"+
+					fmt.Sprintf(`{"type":"result","subtype":"success","total_cost_usd":%.2f,"src":"broker"}`, genuine)+"\n"+
+					marker+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			os.Chtimes(p, now, now)
+
+			gw, _ := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey("k")})
+			gw.SetAggregateCap(cap, 24*time.Hour, []string{"anthropic"})
+			seedAggregateFromAudit(gw, dir, 24*time.Hour, "claude")
+			// Top the ledger up to exactly the cap IF the genuine figure was seeded.
+			gw.SeedAggregate("anthropic", cap-genuine, now)
+			if !gw.AggregateExceeded("anthropic") {
+				t.Errorf("the genuine $%.2f broker row beneath a no_spend_info terminal did not reach the aggregate seed", genuine)
+			}
+		})
+	}
+}
+
+// ...and the marker alone still seeds NOTHING. "We do not know what it cost" is
+// not "$0", and it is not the agent's own number either.
+func TestSeedAggregateFromAudit_ANoSpendInfoTerminalAloneSeedsNothing(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	p := filepath.Join(dir, "r.jsonl")
+	os.WriteFile(p, []byte(
+		`{"type":"drydock_meta","subscription":false,"sensitive":false}`+"\n"+
+			`{"type":"drydock_task","agent":"claude"}`+"\n"+
+			// Only an AGENT-authored figure survives beneath the marker.
+			`{"type":"result","subtype":"success","total_cost_usd":9999.0}`+"\n"+
+			`{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0,"src":"broker","no_spend_info":true}`+"\n"), 0o600)
+	os.Chtimes(p, now, now)
+
+	gw, _ := gateway.New(gateway.Backend{Vendor: gateway.AnthropicVendor(), Cred: gateway.StaticKey("k")})
+	gw.SetAggregateCap(100.0, 24*time.Hour, []string{"anthropic"})
+	seedAggregateFromAudit(gw, dir, 24*time.Hour, "claude")
+	if gw.AggregateExceeded("anthropic") {
+		t.Error("an agent-authored 9999 beneath a no_spend_info terminal reached the seed; only src:broker rows may")
+	}
+}
+
 // TestExecCmd_Timeout verifies the production container shell-out (execCmd) is
 // bounded: a command that outlives runCmdTimeout is killed and returns promptly,
 // rather than hanging boot on a wedged container daemon.

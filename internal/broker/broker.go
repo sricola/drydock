@@ -389,13 +389,38 @@ type Broker struct {
 	// wait out a full tick; queueStop ends the dispatcher goroutine.
 	// queueTick is the dispatcher poll interval (0 -> defaultQueueTick);
 	// tests set it low. now is the queue's clock seam (nil -> UnixMilli).
-	queueMu   sync.Mutex
-	queue     []QueueItem
-	queueWake chan struct{}
-	queueStop chan struct{}
-	queueOnce sync.Once
-	queueTick time.Duration
-	now       func() int64
+	queueMu sync.Mutex
+	queue   []QueueItem
+	// ciRetryParked is the PROCESS-LOCAL fallback copy of the bounded-retry
+	// park: parent task id -> the corrected instant the park started. Written
+	// and read under queueMu, like every other queue-item field it shadows.
+	//
+	// The durable copy is QueueItem.CIRetryDeferred/CIRetryDeferredAtMs and it is
+	// the authority whenever it exists. This map exists because the durable copy
+	// is written by the very operation that may be failing: the decision parks
+	// precisely because a queue-item WRITE could not be made (an unwritable
+	// enqueue-once mark), and that same fault takes the deferral flag's own write
+	// down with it. Without an in-memory record the next watch pass reads a queue
+	// item that says nothing was deferred, short-circuits as a crash-window
+	// replay, and the retry chain is destroyed by a fault that has already
+	// cleared.
+	//
+	// It CANNOT reopen the enqueue-once hole: it only ever makes the replay guard
+	// FALL THROUGH to re-ask the decision, and every later gate that could mint a
+	// child (recordCIQueueTerminal's CIRetryEnqueued/RetryTaskID checks, gate 5,
+	// and markCIRetryEnqueued's compare-and-set) reads the DURABLE record. A mark
+	// whose write landed but reported an error therefore still refuses.
+	//
+	// It does not survive a restart, and that is honest: a crash mid-park loses
+	// the retry, which is crash window W2's direction (fewer attempts, never
+	// more). Entries are removed as soon as the decision is made, so the map is
+	// bounded by the number of parents parked at once.
+	ciRetryParked map[string]int64
+	queueWake     chan struct{}
+	queueStop     chan struct{}
+	queueOnce     sync.Once
+	queueTick     time.Duration
+	now           func() int64
 	// mono is the MONOTONIC counterpart of the now seam, in milliseconds from an
 	// arbitrary epoch (nil -> time.Since a process-start anchor). It exists only
 	// so a test can drive a wall-clock jump deterministically: the global
@@ -1654,8 +1679,13 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		pushRetry{MaxRetries: b.PushMaxRetries, Backoff: b.PushRetryBackoff, FreshBranchTries: b.PushFreshBranchTries})
 	if err != nil {
 		// Nothing landed on the remote (single-ref push is atomic). Record a
-		// terminal push_failed result in the audit (carrying the metered cost so
-		// cost + the aggregate-cap seed stay correct) and stream the reason.
+		// terminal push_failed result in the audit and stream the reason. The
+		// spend half is brokerResultSpendFields': the metered figure for a live
+		// task (which is the case here), and `no_spend_info` for a resumed one
+		// whose lease died with a previous process. Either way the cost columns
+		// and the aggregate-cap restart seed stay correct — the seed
+		// (audit.LastBrokerResult) skips a `no_spend_info` row and finds the
+		// previous process's genuine one beneath it.
 		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
 			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",

@@ -632,9 +632,12 @@ func main() {
 	//   AFTER pruneOrphanTasks, which ran TerminateStuckAudits — so every trace
 	//   a crash left unterminated already carries its honest `interrupted`
 	//   terminal and the sweep sees a self-describing audit dir. (It does not
-	//   DEPEND on that row: unlike seedAggregateFromAudit it scans back to the
-	//   last src=="broker" row, so a crashed task's real metered spend is
-	//   visible through the synthetic line rather than hidden by it.)
+	//   DEPEND on that row, or on any other row: this sweep reads a trace's
+	//   EXISTENCE and its broker-written header lines only, never its tail.
+	//   seedAggregateFromAudit does read the tail, and it scans back past a
+	//   `no_spend_info` row to the last genuine src=="broker" one, so a crashed
+	//   or resumed task's real metered spend is visible THROUGH the synthetic
+	//   line rather than hidden by it.)
 	//
 	//   BEFORE ResumeAwaiting, ResumeQueue and StartDispatcher — the dispatcher
 	//   is the first thing in this process that can START a task, and a start
@@ -1095,11 +1098,36 @@ func seedAggregateFromAudit(gw *gateway.Gateway, auditRoot string, window time.D
 		if audit.ReadMeta(path).Subscription {
 			continue // subscription is out of scope for the USD cap
 		}
-		res, ok := audit.LastResult(path, info.Size())
-		// Trust only a broker-authored cost: a compromised agent CLI can forge a
-		// `result` line, so seeding the aggregate ledger from a CLI-reported
-		// total_cost_usd would let it understate the rolling cap after a restart.
-		if !ok || res.TotalCostUSD <= 0 || res.Src != "broker" {
+		// audit.LastBrokerResult, NOT audit.LastResult, and the difference is
+		// load-bearing in both directions:
+		//
+		//   - It applies the src=="broker" filter ITSELF rather than checking it
+		//     on whatever row happened to be last. A compromised agent CLI can
+		//     forge a `result` line, so seeding the aggregate ledger from a
+		//     CLI-reported total_cost_usd would let it understate the rolling cap
+		//     after a restart (F-07). Both forms refuse that; this one says so in
+		//     the reader instead of in the caller.
+		//   - It SKIPS a row marked `no_spend_info` — a broker-authored terminal
+		//     that metered nothing (a crash terminal, or a task RESUMED at the
+		//     diff gate whose lease died with the previous process) — and keeps
+		//     scanning for the genuine broker row beneath it. audit.LastResult
+		//     returns only the LAST row, so once the resumed/interrupted terminal
+		//     was given that shape the seed saw `src:"broker"` with a zero cost
+		//     and skipped the WHOLE trace, dropping a resumed task's real metered
+		//     spend from the restart seed. Every other consumer of that row shape
+		//     (LastBrokerResultFile, LastRowsFile) already had the skip; this was
+		//     the one that did not.
+		//
+		// WHAT IT DOES NOT BUY, stated plainly: `src` is a self-declared string
+		// in a file the agent's stdout is copied into, so neither form
+		// AUTHENTICATES the figure — scanning back past the marker means a forged
+		// src:"broker" row survives a synthetic terminal appended after it.
+		// That is the same caveat LastBrokerResultFile carries for every other
+		// consumer, and this cap is the in-memory, fail-open, api_key-only one.
+		// The fail-CLOSED cross-vendor control is the global usage ceiling, which
+		// reads no trace content at all (cmd/brokerd/globalreconcile.go).
+		res, ok := audit.LastBrokerResult(path)
+		if !ok || res.TotalCostUSD <= 0 {
 			continue
 		}
 		agent := audit.TaskAgent(path)

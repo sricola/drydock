@@ -627,13 +627,13 @@ Residual, stated without softening:
 - **`drydock tasks` / `drydock stats` cost columns are not the ceiling.** They
   read the trace's `src=="broker"` result row, and `src` is a self-declared
   string in a file the agent's stdout is copied into. An agent that forges one
-  can inflate a displayed figure and can also suppress the synthetic
-  `interrupted` terminal a crash would otherwise get, which reaches the
-  per-vendor `aggregate_budget_usd` restart seed. The blast radius is
-  fail-CLOSED (an inflated per-vendor cap refuses tasks, it does not admit
-  them), and the GLOBAL ceiling is unaffected in either direction because it
-  reads no trace content at all. The real fix is the broker-only sidecar named
-  above.
+  can inflate a displayed figure, and the same forged row reaches the per-vendor
+  `aggregate_budget_usd` restart seed — which scans back past a `no_spend_info`
+  terminal to the last genuine-looking broker row, so appending a synthetic
+  terminal over the forgery does not mask it. The blast radius is fail-CLOSED
+  (an inflated per-vendor cap refuses tasks, it does not admit them), and the
+  GLOBAL ceiling is unaffected in either direction because it reads no trace
+  content at all. The real fix is the broker-only sidecar named above.
 - `global_window: 0` (total mode) never ages anything out, and unlike
   `aggregate_window: 0` it is durable — an exhausted ceiling stays exhausted
   across restarts until an operator raises a limb or removes the ledger file.

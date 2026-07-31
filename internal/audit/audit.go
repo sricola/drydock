@@ -426,9 +426,12 @@ func CostIsAgentReported(m Meta, rows TailRows) bool {
 // one. The agent's stdout is copied into the trace verbatim, so an agent that
 // printed ANY result line suppressed that append. That is not merely cosmetic:
 //
-//   - the honest `interrupted` row is what stops seedAggregateFromAudit from
-//     re-seeding the per-vendor aggregate cap out of an agent-authored
-//     total_cost_usd, because it lands last and carries 0;
+//   - the honest `interrupted` row is what stops `drydock tasks` from showing a
+//     crashed task as "running?" forever, and what marks its spend UNKNOWN
+//     rather than measured-$0 (it carries no_spend_info, which every money
+//     reader skips — including seedAggregateFromAudit, via LastBrokerResult, so
+//     the crashed task's genuine broker row beneath it still seeds the
+//     per-vendor aggregate cap);
 //   - and it is what stops `drydock tasks` / `drydock stats` / the web UI from
 //     rendering a forged src:"broker" figure as MEASURED spend, with no
 //     agent-reported mark.

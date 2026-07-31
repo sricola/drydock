@@ -865,8 +865,13 @@ func TestReconcile_ForgedMetricsVendorCannotSteerTheLimbs(t *testing.T) {
 // content.
 //
 // The list is the set of audit readers whose answer comes from bytes past the
-// broker-written header lines. If a new one is added to internal/audit and used
-// here, add it here too — or, better, do not use it here.
+// broker-written header lines. It is CLOSED IN BOTH DIRECTIONS: every key must
+// name a real symbol (a misspelled key guards nothing — that is how
+// LastResultAndMetricsFile went unguarded), AND every trace-reading function
+// internal/audit exposes must appear either here or in the small, justified
+// allow-list below. The second direction is the one that has failed twice, and
+// it is the one that makes a NEW reader guarded BY DEFAULT: adding a function to
+// internal/audit that opens a trace fails this test until someone classifies it.
 func TestReconcile_NeverSourcesATrustedValueFromTraceContent(t *testing.T) {
 	forbidden := map[string]string{
 		"LastMetricsFile":      "the metrics row's ended_at_ms and vendor are agent-writable (C3)",
@@ -885,12 +890,32 @@ func TestReconcile_NeverSourcesATrustedValueFromTraceContent(t *testing.T) {
 		"TotalCost":                "deliberately absent from internal/audit; never reintroduce it here",
 		"HasBrokerResultLine":      "a tail scan; the sweep must not branch on trace content at all",
 		"scanTailForResult":        "a tail scan",
-		"AllowedSrcCostFile":       "any future tail reader belongs on this list",
+		"tailLines":                "the raw tail read every forbidden reader above is built on",
+		// Reason reads the WHOLE trace and returns raw agent stdout — the most
+		// directly attacker-controlled string internal/audit can produce. It was
+		// missed by the first two versions of this list precisely because it is
+		// not a "Last*" money reader: `e.Outcome = audit.Reason(path)` passed.
+		"Reason": "returns a raw line of AGENT STDOUT from anywhere in the trace",
+		// TaskAgent scans the whole file for a drydock_task line rather than the
+		// bounded head TaskAgentFile reads, so on a trace with no broker header it
+		// returns an agent-authored agent name — which selects the LANE an entry is
+		// counted against. The bounded form is allowed; this one is not.
+		"TaskAgent":          "scans the whole trace; use TaskAgentFile, which reads only the broker-written header",
+		"AllowedSrcCostFile": "any future tail reader belongs on this list",
 	}
-	// VACUITY GUARD ON THE LIST ITSELF. Every key that names a real audit reader
-	// must exist in internal/audit, or it is a key that can never match — which is
-	// exactly how LastResultAndMetricsFile went unguarded.
-	assertAuditSymbolsExist(t, forbidden, map[string]bool{
+	// The other side of the same rule: the readers this file MAY use, each with
+	// the reason it is safe. Anything in internal/audit that touches a trace and
+	// is in neither map fails the test below.
+	allowed := map[string]string{
+		"OpenRead":      "opens the trace O_NOFOLLOW; what is READ through the handle is what the forbidden list governs",
+		"ReadMeta":      "the broker-written drydock_meta FIRST line only",
+		"ReadMetaFile":  "the broker-written drydock_meta first line only, from an open handle",
+		"TaskAgentFile": "the broker-written drydock_task line, from the bounded first four lines",
+		"readFirstMeta": "unexported; the header-line parser ReadMeta/ReadMetaFile are built on",
+	}
+	// VACUITY GUARD ON THE LIST ITSELF, plus the INVERSION: every key must name a
+	// real symbol, and every real trace reader must be classified.
+	assertAuditReaderListIsClosed(t, forbidden, allowed, map[string]bool{
 		"TotalCost":            true, // deliberately deleted; see the tombstone test
 		"LastResultAndMetrics": true, // the shorter spelling, guarded pre-emptively
 		"AllowedSrcCostFile":   true, // a placeholder for future readers
@@ -997,14 +1022,33 @@ func TestReconcile_NeverSourcesATrustedValueFromTraceContent(t *testing.T) {
 	}
 }
 
-// assertAuditSymbolsExist fails if a key in a forbidden-symbol map names nothing
-// in internal/audit. A misspelled key matches no AST node and silently disables
-// that entry — which is how a full tail read through LastResultAndMetricsFile
-// passed a test whose list said "LastResultAndMetrics".
+// assertAuditReaderListIsClosed enforces BOTH directions of the forbidden-reader
+// pin against the real internal/audit package.
+//
+//	FORWARDS  every key in forbidden (and in allowed) names a function that
+//	          really exists. A misspelled key matches no AST node and silently
+//	          disables its own entry — which is how a full tail read through
+//	          LastResultAndMetricsFile passed a test whose list said
+//	          "LastResultAndMetrics".
+//
+//	BACKWARDS every function in internal/audit that TOUCHES A TRACE is
+//	          classified — forbidden, or allowed with a stated reason. This is
+//	          the direction that has failed twice: the list only ever grew when
+//	          someone remembered, so audit.Reason — which reads the whole file
+//	          and returns raw agent stdout — sat unguarded, and the mutation
+//	          `e.Outcome = audit.Reason(path)` passed the pin. Inverted, a NEW
+//	          reader added to internal/audit fails this test on the day it is
+//	          written, and stays failing until it is deliberately classified.
+//
+// "Touches a trace" is read off the SIGNATURE, which is what makes it decidable:
+// a function that takes an *os.File, an io.Reader, or a parameter named `path`
+// is one that can read the file. Every pure classifier in the package (OutcomeKey,
+// Cost, HasDuration, …) takes already-parsed values and is correctly ignored —
+// it cannot read anything, and the reader that produced its input is on a list.
 //
 // exempt names entries that are deliberately not real symbols (a deleted
 // function whose return is the point, or a pre-emptive spelling).
-func assertAuditSymbolsExist(t *testing.T, forbidden map[string]string, exempt map[string]bool) {
+func assertAuditReaderListIsClosed(t *testing.T, forbidden, allowed map[string]string, exempt map[string]bool) {
 	t.Helper()
 	fset := token.NewFileSet()
 	names, err := filepath.Glob("../../internal/audit/*.go")
@@ -1012,6 +1056,7 @@ func assertAuditSymbolsExist(t *testing.T, forbidden map[string]string, exempt m
 		t.Fatal(err)
 	}
 	have := map[string]bool{}
+	readers := map[string]bool{}
 	parsed := 0
 	for _, name := range names {
 		if strings.HasSuffix(name, "_test.go") {
@@ -1023,13 +1068,24 @@ func assertAuditSymbolsExist(t *testing.T, forbidden map[string]string, exempt m
 		}
 		parsed++
 		for _, decl := range af.Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok {
-				have[fn.Name.Name] = true
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			have[fn.Name.Name] = true
+			if funcTakesATraceHandle(fn) {
+				readers[fn.Name.Name] = true
 			}
 		}
 	}
 	if parsed == 0 {
 		t.Fatal("parsed no files from internal/audit; the spelling guard would be vacuous")
+	}
+	// A floor on the backwards direction too: if the signature heuristic ever
+	// stops matching (a package-wide refactor to methods, say), a pass here would
+	// mean "found no readers" rather than "every reader is classified".
+	if len(readers) < 10 {
+		t.Fatalf("found only %d trace readers in internal/audit; the inverted guard has stopped working", len(readers))
 	}
 	for name := range forbidden {
 		if exempt[name] || have[name] {
@@ -1039,4 +1095,54 @@ func assertAuditSymbolsExist(t *testing.T, forbidden map[string]string, exempt m
 			"A key that matches nothing disables its own entry — check the spelling against the real "+
 			"function name, or add it to the exempt set with a reason.", name)
 	}
+	for name := range allowed {
+		if have[name] {
+			continue
+		}
+		t.Errorf("the allow-list names %q, which does not exist in internal/audit; "+
+			"an allow-list entry for a symbol that is gone is stale permission", name)
+	}
+	for name := range readers {
+		if forbidden[name] != "" || allowed[name] != "" {
+			continue
+		}
+		t.Errorf("internal/audit.%s takes a trace handle (a path, an *os.File, or an io.Reader) but is "+
+			"classified in NEITHER the forbidden list nor the allow-list of %s.\n"+
+			"Every reader over a task trace must be classified, because the trace carries the agent's own "+
+			"stdout verbatim. Add it to `forbidden` (the default, and the right answer for anything that "+
+			"reads past the broker-written header lines), or to `allowed` with the reason it is safe.",
+			name, "TestReconcile_NeverSourcesATrustedValueFromTraceContent")
+	}
+}
+
+// funcTakesATraceHandle reports whether fn's parameters give it the means to
+// read a trace: an *os.File, an io.Reader/io.ReadSeeker, or a `path` string.
+func funcTakesATraceHandle(fn *ast.FuncDecl) bool {
+	if fn.Type.Params == nil {
+		return false
+	}
+	for _, field := range fn.Type.Params.List {
+		switch typ := field.Type.(type) {
+		case *ast.StarExpr: // *os.File
+			if sel, ok := typ.X.(*ast.SelectorExpr); ok {
+				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" && sel.Sel.Name == "File" {
+					return true
+				}
+			}
+		case *ast.SelectorExpr: // io.Reader, io.ReadSeeker, ...
+			if pkg, ok := typ.X.(*ast.Ident); ok && pkg.Name == "io" {
+				return true
+			}
+		case *ast.Ident: // path string
+			if typ.Name != "string" {
+				continue
+			}
+			for _, n := range field.Names {
+				if n.Name == "path" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

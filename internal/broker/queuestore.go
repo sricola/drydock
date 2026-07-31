@@ -164,9 +164,11 @@ type QueueItem struct {
 	// one. If the marker cannot be persisted, no enqueue happens at all.
 	CIRetryEnqueued bool `json:"ci_retry_enqueued,omitempty"`
 	// CIRetryDeferred says the bounded-retry decision for this item's observed
-	// CI failure has NOT been made yet, because the global usage ceiling could
-	// not be MEASURED at the moment it was asked (a ledger that could not be
-	// read, a store not yet opened, an agent that would not resolve).
+	// CI failure has NOT been made yet, because something it needs could not be
+	// MEASURED OR WRITTEN at the moment it was asked: the global usage ceiling
+	// could not be read (a ledger that could not be opened, a store not yet
+	// opened, an agent that would not resolve), or the durable enqueue-once mark
+	// could not be persisted (a full or read-only disk).
 	//
 	// It exists because that decision is a ONE-SHOT: applyCIObservation runs it
 	// exactly once per observation and the crash-window replay guard returns
@@ -183,13 +185,23 @@ type QueueItem struct {
 	// that had already enqueued, which minted a second child. CIRetryEnqueued is
 	// the enqueue-once flag that closes it.
 	//
-	// It is also BOUNDED (ciRetryParkBoundMs): a ceiling that is unmeasurable
-	// forever must not park forever, or the item's CI marker is kept for the
-	// daemon's life. CIRetryDeferredAtMs is when the park started.
+	// It is also BOUNDED (ciRetryParkBoundMs): a fault that never clears must not
+	// park forever, or the item's CI marker is kept for the daemon's life.
+	// CIRetryDeferredAtMs is when the park started.
+	//
+	// It has a PROCESS-LOCAL SHADOW (Broker.ciRetryParked) for the one case this
+	// durable field cannot cover: when the fault being parked on is that queue-item
+	// writes are failing, the write of THIS flag fails with it. The durable copy is
+	// authoritative whenever it exists; the shadow only ever widens "the decision is
+	// unmade", never "an enqueue happened".
 	CIRetryDeferred bool `json:"ci_retry_deferred,omitempty"`
-	// CIRetryDeferredAtMs is the broker clock at which the FIRST park of this
-	// item's retry decision happened. It is the anchor the park bound is measured
-	// from, and it is durable so a crash loop cannot keep restarting the bound.
+	// CIRetryDeferredAtMs is the CORRECTED broker clock (globalcap.ceilingNowMs, the
+	// same instant the ceiling measures its own rolling window against) at which the
+	// FIRST park of this item's retry decision happened. It is the anchor the park
+	// bound is measured from, and it is durable so a crash loop cannot keep
+	// restarting the bound. It is not the raw wall clock: on that clock a forward
+	// host-clock jump one tick into a park ended the park immediately, against a
+	// bound the ceiling itself had seen no time elapse on.
 	CIRetryDeferredAtMs int64 `json:"ci_retry_deferred_at_ms,omitempty"`
 }
 
