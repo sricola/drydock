@@ -33,6 +33,10 @@ type SetupProfile struct {
 	Setup     [][]string
 	Readiness [][]string
 	Timeout   time.Duration
+	// Cache opts this repo into the persistent dependency cache (config
+	// profiles.repos.<key>.cache). Effective only when the Broker also has
+	// CacheRoot/CacheQuotaBytes configured; see cache.go.
+	Cache bool
 }
 
 // DefaultSetupTimeout bounds each setup/readiness command when the repo's
@@ -79,6 +83,11 @@ func (tr *taskRun) runSetup() bool {
 	b.setStage(tr.id, StageSettingUp)
 	tr.sw.emit(map[string]any{"event": "stage", "stage": "setting_up",
 		"task_id": tr.id, "commands": len(cfg.Setup) + len(cfg.Readiness)})
+	// Resolve (and refcount) this task's dependency-cache entry before the
+	// first setup VM boots. The matching release is deferred in HandleTask,
+	// so the entry stays protected from eviction across the setup AND agent
+	// runs. No-op unless the profile opts in and the cache is configured.
+	tr.resolveCache(cfg)
 	start := time.Now()
 	tr.setupStart = start // ends StageMs.Preparing here (see appendMetrics)
 	s, cancelled := tr.execSetup(cfg)
@@ -142,8 +151,10 @@ func (tr *taskRun) execSetup(cfg SetupProfile) (s *trustbrief.SetupEvidence, can
 	// The egress posture is asserted only once a setup VM is actually about
 	// to launch (below, after the log-open check succeeds): the inconclusive
 	// paths that never ran a VM must not carry a posture claim for VMs that
-	// never existed.
-	s = &trustbrief.SetupEvidence{}
+	// never existed. Cache evidence, by contrast, is attached on every path:
+	// resolveCache already ran, and its outcome (hit/miss/disabled) is a
+	// fact about this task regardless of how the commands fare.
+	s = &trustbrief.SetupEvidence{Cache: tr.cacheEvidence()}
 
 	all := make([][]string, 0, len(cfg.Setup)+len(cfg.Readiness))
 	all = append(all, cfg.Setup...)
@@ -181,8 +192,12 @@ func (tr *taskRun) execSetup(cfg SetupProfile) (s *trustbrief.SetupEvidence, can
 
 	// The setup env: proxy/gateway vars only, NEVER the grant bearer. This is
 	// half of fail-closed-before-spend — the other half is runSetup's
-	// placement before the agent VM boots.
+	// placement before the agent VM boots. When this task's cache is active,
+	// the tool-cache env points each package manager at the rw /deps mount.
 	setupEnv := buildSetupEnv(tr.proxyAuth, b.GatewayIP, b.ProxyPort)
+	if tr.cacheDir != "" {
+		setupEnv = append(setupEnv, runner.CacheEnv()...)
+	}
 
 	// One shared output budget across all commands (same bound as the agent
 	// run). onExceed cancels whichever command is in flight so a log flood
@@ -221,6 +236,7 @@ func (tr *taskRun) execSetup(cfg SetupProfile) (s *trustbrief.SetupEvidence, can
 			Network:  b.Network,
 			ImageRef: b.ImageRef,
 			StageDir: tr.st.WorkDir(),
+			CacheDir: tr.cacheDir, // rw /deps — setup is the only writer of the shared cache
 			Env:      setupEnv,
 			Argv:     argv,
 			MemoryGB: 4,

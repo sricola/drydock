@@ -146,6 +146,18 @@ func (s *Store) Dir(key string) (string, error) {
 // Only direct children whose names match keyPattern are considered or
 // removed. Returns the content bytes freed.
 func (s *Store) Evict(minFreeBytes int64) (freed int64, err error) {
+	return s.EvictExcluding(minFreeBytes, nil)
+}
+
+// EvictExcluding is Evict with a protected set: entry-dir paths in protected
+// (as returned by Dir — the broker passes its in-use refcounted dirs) are
+// NEVER removed, whatever their LRU position; the sweep skips them and moves
+// to the next candidate. Their bytes still count toward the quota total, so
+// a sweep may end still-over-quota when the excess is all in-use — correct:
+// those entries are being read by live VMs and must not vanish under them.
+// Callers are responsible for serializing this against Dir (the broker holds
+// one mutex across both; see internal/broker's cache sweep).
+func (s *Store) EvictExcluding(minFreeBytes int64, protected map[string]bool) (freed int64, err error) {
 	root, err := s.safeRoot()
 	if err != nil {
 		return 0, err
@@ -190,6 +202,9 @@ func (s *Store) Evict(minFreeBytes int64) (freed int64, err error) {
 	for _, e := range entries {
 		if !overQuota() && !belowFloor() {
 			break
+		}
+		if protected[e.path] {
+			continue // in use by a live task — never removed
 		}
 		if rerr := os.RemoveAll(e.path); rerr != nil {
 			return freed, rerr
