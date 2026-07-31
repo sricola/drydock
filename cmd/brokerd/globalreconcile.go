@@ -152,9 +152,13 @@ func reconcileGlobalLedger(b *broker.Broker, nowMs int64) {
 		// the dollars. Degrade marks BOTH limbs as lower bounds, which
 		// globalcap.go turns into a refusal for whichever limbs are enforced.
 		// An install with the ceiling off is untouched.
+		// The reason is PATH-FREE on purpose: it becomes GlobalUsage's degrade
+		// reason, which globalcap.go renders into a 402 body for whoever
+		// submitted the task. The operator gets the audit root from the log line
+		// below; the submitting client does not need the host's layout.
 		l.Degrade(fmt.Sprintf(
-			"the global ledger could not be reconciled at boot: the audit directory %s could not be read (%v), so recorded usage is a lower bound",
-			b.AuditRoot, err))
+			"the global ledger could not be reconciled at boot: the audit directory could not be read (%v), so recorded usage is a lower bound",
+			err))
 		slog.Warn("global ledger: boot reconciliation could not read the audit directory; the ceiling will refuse enforced limbs",
 			"audit_root", b.AuditRoot, "err", err)
 		return
@@ -221,9 +225,10 @@ func reconcileGlobalLedger(b *broker.Broker, nowMs int64) {
 		// under-count the limb that bounds subscription mode), but its dollars
 		// are unknowable, so say so out loud rather than letting the USD limb
 		// quietly report a smaller number than the truth.
+		// Path-free for the same reason as above; the log line names the root.
 		l.Degrade(fmt.Sprintf(
-			"the global ledger could not be fully reconciled at boot: %d audit trace(s) under %s could not be read, so their spend is unknown and recorded usage is a lower bound",
-			unreadable, b.AuditRoot))
+			"the global ledger could not be fully reconciled at boot: %d audit trace(s) could not be read, so their spend is unknown and recorded usage is a lower bound",
+			unreadable))
 		slog.Warn("global ledger: boot reconciliation could not read some audit traces; the ceiling will refuse enforced limbs",
 			"count", unreadable, "audit_root", b.AuditRoot)
 	}

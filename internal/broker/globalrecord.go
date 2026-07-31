@@ -170,6 +170,19 @@ func (tr *taskRun) recordGlobalUsage() {
 	// know which lane it was.
 	e.Metered = tr.taskVendor != "" && !b.UnmeteredVendors[tr.taskVendor]
 	e.USD, e.USDTrusted = tr.brokerMeteredSpendUSD()
+	// The figure is parsed by the broker out of a PROXIED VENDOR RESPONSE BODY,
+	// so "a float" is not the same as "a number we can put in a total". A NaN
+	// makes `usage.USD >= budget` false forever — the USD limb would admit
+	// without bound — and a non-finite float also fails json.Marshal, which
+	// would wedge every later compaction and let the ledger grow unchecked. The
+	// store defends itself too (sanitizeEntryUSD); this catches it where the
+	// figure is PRODUCED, so the operator's warning names the real cause and the
+	// store's error stays about durability.
+	if !usableUSD(e.USD) {
+		slog.Warn("global ledger: the broker-metered spend figure for this task is not a usable number; the start is counted and its spend is recorded as unknown",
+			"task_id", tr.id, "usd", e.USD, "vendor", tr.taskVendor)
+		e.USD, e.USDTrusted = 0, false
+	}
 	if !e.Metered {
 		// $0 by construction is not a measured $0. Recording it as trustworthy
 		// would let an unmetered lane's zeroes look like real spend data.

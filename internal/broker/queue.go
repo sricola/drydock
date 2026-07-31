@@ -249,12 +249,35 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 		// and it differs because it must be accurate — it names the limb that
 		// tripped and the current headroom.
 		//
+		// With ONE addition the per-vendor cap has no equivalent of: this
+		// ceiling fails closed, so it also refuses when it cannot MEASURE. A
+		// refusal of that kind parks rather than drops — see the `unmeasured`
+		// branch below — because it is a fault to be waited out rather than a
+		// budget to be respected.
+		//
 		// This is admitGlobalStart, not the bare check: it CLAIMS the start, so
 		// a synchronous POST /tasks racing this pass cannot pass the same limb.
 		// Every path below that fails to dispatch releases the claim.
-		if blocked, why := b.admitGlobalStart(it.ID, it.Task.Agent); blocked {
+		if blocked, why, unmeasured := b.admitGlobalStartDetail(it.ID, it.Task.Agent); blocked {
 			if it.Task.RetryOf == "" {
 				continue // ceiling-parked: stays queued, next tick re-checks
+			}
+			// A refusal the ceiling could not MEASURE is not the same fact as a
+			// refusal it measured, and dead-lettering both alike turns a
+			// transient fault into irreversible work loss. "Over cap" is a real
+			// condition with a real remedy that arrives on its own — spend ages
+			// out, an in-flight task finishes, an operator raises the limb — and
+			// a retry that waits for it dispatches hours late against a base
+			// that has moved on, which is why it is dropped. "Cannot measure" is
+			// a FAULT: an agent that would not resolve this second, a ledger
+			// that could not be read, a store not yet opened. Those clear in
+			// seconds far more often than they persist, and there is nothing
+			// left to retry from once the item is dead-lettered. So park it and
+			// let the next tick re-ask, exactly as a human-submitted item does.
+			if unmeasured {
+				slog.Warn("queue: parking a ci retry the global ceiling could not evaluate rather than dropping it",
+					"task_id", it.ID, "retry_of", it.Task.RetryOf, "reason", why)
+				continue
 			}
 			b.dropSpendCappedRetryLocked(it, "dropped before dispatch: "+why+globalCeilingDropTail)
 			b.queue = append(b.queue[:i], b.queue[i+1:]...)

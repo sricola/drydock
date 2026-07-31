@@ -2,19 +2,21 @@ package broker
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
-
-	"drydock/internal/atomicfile"
 )
 
 // This file is the DURABLE GLOBAL LEDGER: the crash-safe, rolling-window record
@@ -25,15 +27,19 @@ import (
 // reconciliation are the task-terminal path and cmd/brokerd (Task 3).
 //
 // It is the third application of the queuestore.go idiom — id validated before
-// it is trusted, atomicfile.Write (temp + rename) for whole-file writes, 0600
-// payload under a 0700 dir, O_NOFOLLOW on every open, an idempotent sweep of
-// the stray ".tmp" a crashed atomic write leaves, a tolerant scan that warns
-// rather than failing boot, and NO time.Now anywhere: every timestamp is
-// caller-supplied through the broker's b.now/nowMs clock seam, so tests are
-// deterministic. It inherits queuestore's one acknowledged gap: the containing
-// directory is not fsync'd, so a power loss in the same instant as a rename can
-// still lose the rename. The rename's atomicity is the primary guarantee and it
-// matches the rest of the audit dir.
+// it is trusted, temp + rename for whole-file writes, 0600 payload under a 0700
+// dir, O_NOFOLLOW on every open, an idempotent sweep of the stray ".tmp" a
+// crashed atomic write leaves, a tolerant scan that warns rather than failing
+// boot, and NO time.Now anywhere: every timestamp is caller-supplied through
+// the broker's b.now/nowMs clock seam, so tests are deterministic.
+//
+// It diverges from the idiom in ONE place, deliberately: whole-file writes go
+// through writeLedgerFileDurable rather than internal/atomicfile, because
+// atomicfile fsyncs neither the temp file nor the directory and so does not
+// actually provide the "whole old file or whole new one" guarantee that
+// rewriteLocked's crash-safety argument rests on. For a credential file that
+// costs a re-mint; here it would be a silent total under-count of a safety
+// ceiling. See writeLedgerFileDurable.
 //
 // ---------------------------------------------------------------------------
 // STORAGE LAYOUT, and why it is ONE append-only file rather than one file per
@@ -48,7 +54,7 @@ import (
 //       TRAILING LINE — and that signature is bounded (at most the last entry),
 //       detectable (the line does not parse), and handled conservatively rather
 //       than dropped (see "the tolerant-scan tension" below). Whole-file writes
-//       (compaction, repair) still go through atomicfile, so the only
+//       (compaction, repair) still go through one durable temp+rename, so the only
 //       non-atomic operation in the file is a single-line append.
 //
 //   (b) Boot scan cost. One file per task loses decisively. A ceiling with a
@@ -101,14 +107,47 @@ const (
 	globalLedgerMaxBytes = 64 << 20
 
 	// globalLedgerRawKeep is how many bytes of an unreadable line are preserved
-	// inside its quarantine tombstone, for forensics.
+	// inside its quarantine tombstone, for forensics. The WHOLE pre-repair file
+	// is also copied aside before a repair rewrite (see preserveDamagedLocked),
+	// so this bound costs no unrecoverable evidence.
 	globalLedgerRawKeep = 512
+
+	// globalLedgerMaxTaskLineBytes is the largest a single task line can
+	// plausibly be. It is used only to classify DAMAGE: a damaged region longer
+	// than this cannot be one entry, so the "one damaged line is exactly one
+	// task start" identity does not hold for it. A task line is ~250 bytes with
+	// every optional field populated; 2 KiB is generous headroom.
+	globalLedgerMaxTaskLineBytes = 2048
+
+	// globalLedgerCheckpointCopies is how many identical copies of a checkpoint
+	// line a rewrite writes, consecutively, at the head of the file.
+	//
+	// A checkpoint is the ONLY line in this file whose loss is unbounded: in
+	// total mode it carries the folded Starts and USD of the entire history, so
+	// one corrupted byte in it would silently reset the start limb — the limb
+	// that is the only bound on a subscription lane — by the whole folded count,
+	// permanently, because the repair rewrite would then persist the reset. Task
+	// lines have no such property (losing one loses one start, and the tombstone
+	// stands in for it exactly), so they are not duplicated.
+	//
+	// Three copies means a single-byte corruption, a torn line, or any damage
+	// that does not hit all three is recovered EXACTLY rather than degraded. See
+	// recoverCheckpointPrefix.
+	globalLedgerCheckpointCopies = 3
 
 	// globalLedgerMinCompactEntries is the floor below which compaction never
 	// runs: rewriting a small file on every append would turn an O(1) append
 	// into O(n). Above the floor the threshold doubles off the surviving count
 	// (see compactLocked), so compaction is amortized O(1) per entry.
 	globalLedgerMinCompactEntries = 512
+
+	// globalLedgerMaxCompactEntries is an absolute ceiling on the amortized
+	// compaction threshold. Without it, compactAt doubles off the surviving
+	// count without bound, so a ledger that legitimately grew large would go
+	// arbitrarily long between rewrites — and a rewrite is what makes a repair,
+	// a fold and a failed durable append heal. The ceiling keeps the file's
+	// worst-case size bounded while leaving compaction amortized O(1).
+	globalLedgerMaxCompactEntries = 1 << 16
 
 	// globalLedgerTotalKeep is how many entries total mode (window == 0) keeps
 	// individually addressable before folding older ones into a checkpoint.
@@ -227,12 +266,30 @@ type GlobalEntry struct {
 	Damaged         int     `json:"damaged,omitempty"`
 	UntrustedUSD    float64 `json:"untrusted_usd,omitempty"`
 	FoldedThroughMs int64   `json:"folded_through_ms,omitempty"`
+	// Sum is a checksum over the checkpoint's own counts (checkpointSum). It is
+	// REQUIRED on a checkpoint and verified on read, because a checkpoint is the
+	// one line whose numbers are not reconstructible from anything else: a
+	// corruption that lands inside a digit still parses as JSON, and without the
+	// checksum the ledger would believe the corrupted count. A checkpoint whose
+	// checksum is missing or wrong is DAMAGE, not data. It also identifies the
+	// copies of one fold: identical copies share a Sum, which is how
+	// recoverCheckpointPrefix collapses them.
+	Sum string `json:"sum,omitempty"`
 
 	// --- damaged-only (GlobalEntryDamaged) ---
 	// Raw is the head of the unreadable line, preserved for forensics. It
 	// marshals as base64, so bytes that are not valid UTF-8 round-trip intact
 	// and re-reading a tombstone can never itself produce damage.
 	Raw []byte `json:"raw,omitempty"`
+	// StartsUnknown says this tombstone is NOT reliably worth exactly one task
+	// start — see damagedIsOneTaskStart. It is set when the destroyed bytes did
+	// not positively identify themselves as a single task line: they may have
+	// been a checkpoint (worth the whole folded history) or several entries
+	// whose separating newlines were destroyed (worth N starts). The start limb
+	// treats it as an "I don't know", which under G2 is a refusal — the only
+	// honest answer, since the alternative is to under-count the one limb that
+	// bounds a subscription lane.
+	StartsUnknown bool `json:"starts_unknown,omitempty"`
 }
 
 // GlobalUsage is the ceiling's query answer: both G1 limbs computed over a
@@ -259,14 +316,32 @@ type GlobalUsage struct {
 	// BOUND. Under G2 the global check must refuse a start when a limb it is
 	// enforcing is degraded: for a ceiling, "I don't know" means "no".
 	//
-	// Note the asymmetry, and it is deliberate: the Starts limb is NOT degraded
-	// by quarantine, because a damaged line is still counted as a start. Only
-	// the USD limb loses information. A deployment with global_budget_usd off
-	// therefore keeps working through damage, and one with it on refuses until
-	// the damage ages out of the window (or, in total mode, until an operator
-	// repairs the file — the reason string names it).
+	// Note the asymmetry, and it is deliberate: the Starts limb is USUALLY not
+	// degraded by quarantine, because an ordinary damaged task line is still
+	// worth exactly one start. Only the USD limb loses information. A deployment
+	// with global_budget_usd off therefore keeps working through damage, and one
+	// with it on refuses until the damage ages out of the window (or, in total
+	// mode, until an operator repairs the file — the reason string names it).
+	// The exception is StartsDegraded below, where the identity does not hold.
 	Degraded       bool
 	DegradedReason string
+	// StartsDegraded says the START count is a lower bound too, so the task-start
+	// limb must refuse as well. It is deliberately much rarer than Degraded: an
+	// ordinary quarantined task line is worth exactly one start and does not set
+	// it. It IS set when a destroyed region could not be identified as a single
+	// task line — a lost checkpoint (which carries the whole folded history of a
+	// total-mode ledger) or a region that took its separating newlines with it
+	// (which hides N entries behind one tombstone). Without it, one bad byte in
+	// a checkpoint silently resets the start limb by the entire folded count,
+	// and the repair rewrite then makes that reset permanent.
+	StartsDegraded       bool
+	StartsDegradedReason string
+	// LoadErr is LoadError()'s answer as of THIS snapshot. It is carried in the
+	// usage rather than fetched by a second call so the ceiling can decide from
+	// one consistent view taken under a single lock hold: two calls are two
+	// critical sections, and a terminal write landing between them is a task
+	// that counts zero times.
+	LoadErr string
 	// WindowMs is the configured window; 0 is total mode (no decay).
 	WindowMs int64
 	// OldestMs/NewestMs bracket the in-window entries (0 when empty).
@@ -294,10 +369,29 @@ type GlobalUsage struct {
 //
 //  1. A line that cannot be read becomes a QUARANTINE TOMBSTONE
 //     (GlobalEntryDamaged) rather than being skipped. The tombstone counts as
-//     ONE TASK START — which is not a guess: the line exists because something
-//     wrote an entry, and an entry is written per task terminal. So the Starts
-//     limb, the one that bounds subscription mode and cannot be under-reported
-//     by a metering gap (G7), NEVER under-counts from corruption.
+//     ONE TASK START, which is a LOWER BOUND rather than an equality, and the
+//     difference is load-bearing enough to state exactly. It is exact only for
+//     a damaged TASK line that is still recognisable as one line. It is NOT
+//     exact in two cases, and both are handled rather than hand-waved:
+//
+//     (a) A damaged CHECKPOINT. In total mode a checkpoint carries the folded
+//     Starts of the entire history, so scoring it as one start would erase
+//     N-1 of them — and the forced repair rewrite would then persist that
+//     erasure. Defended twice over: a checkpoint is written in
+//     globalLedgerCheckpointCopies identical copies with a checksum, so
+//     ordinary damage is RECOVERED EXACTLY from a surviving copy; and if
+//     every copy is destroyed the tombstone is marked StartsUnknown and the
+//     START limb degrades (refuses) instead of counting a smaller number.
+//
+//     (b) A damaged REGION that took its newlines with it. Lines are split on
+//     "\n", so a run of destroyed bytes spanning several entries collapses
+//     into ONE tombstone standing for N entries. Such a tombstone does not
+//     look like a single task line (damagedIsOneTaskStart), so it too is
+//     marked StartsUnknown and degrades the start limb.
+//
+//     The net guarantee is therefore: corruption never yields a start count
+//     that is silently too small. It yields either the exact count or an
+//     explicit refusal.
 //
 //  2. Its dollars are genuinely unknown, and the honest response to an unknown
 //     dollar figure is not to invent a conservative one — any number picked
@@ -311,7 +405,7 @@ type GlobalUsage struct {
 //     written and therefore the most conservative position in the window: it
 //     ages out no sooner than the real entry would have.
 //
-//  4. The repair is written back through atomicfile, which makes it IDEMPOTENT
+//  4. The repair is written back durably (temp+fsync+rename), which makes it IDEMPOTENT
 //     — a tombstone is a well-formed entry, so the next boot re-reads it as
 //     data instead of re-damaging it and minting a second one. Without the
 //     write-back, each restart would add another tombstone and the over-count
@@ -323,6 +417,12 @@ type GlobalUsage struct {
 //     is NEVER rewritten. Compaction and repair both refuse on a degraded
 //     store, because a rewrite would replace bytes we could not read and turn
 //     "we cannot see the ledger" into "the ledger is empty".
+//
+//  6. A repair rewrite PRESERVES THE BYTES IT REPLACES, copying the pre-repair
+//     file aside first (preserveDamagedLocked). A repair is the one operation
+//     here that destroys evidence — it overwrites the damaged region with a
+//     tombstone — and history that is gone is not recoverable by any later
+//     decision, so the original is kept for an operator to inspect or salvage.
 //
 // The net rule: information is only ever ADDED by the scan, never removed, and
 // where information is irrecoverable the ledger says so out loud instead of
@@ -379,26 +479,47 @@ func OpenGlobalLedger(auditRoot string, window time.Duration, nowMs int64) (*Glo
 	if window > 0 {
 		l.windowMs = window.Milliseconds()
 	}
-	if err := os.MkdirAll(filepath.Dir(l.path), 0o700); err != nil {
-		l.loadErr = "global ledger directory is unavailable: " + err.Error()
+	dir := filepath.Dir(l.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		l.loadErr = "the global ledger directory is unavailable: " + err.Error()
 		return l, fmt.Errorf("globalledger: %w", err)
 	}
-	// Sweep the stray ".tmp" a crashed atomicfile.Write leaves, exactly as
-	// removeQueueItem does. Idempotent; a missing file is success.
+	// MkdirAll only applies the mode to directories it CREATES, so a directory
+	// left behind by an older build (or by a hand-run mkdir) can be group- or
+	// world-readable and stay that way. The ledger is host-only by G4, so tighten
+	// it rather than inherit whatever is there.
+	if fi, err := os.Stat(dir); err == nil && fi.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			slog.Warn("globalledger: could not tighten the ledger directory to 0700", "path", dir, "err", err)
+		}
+	}
+	// Sweep the stray ".tmp" a crashed rewrite leaves, exactly as removeQueueItem
+	// does. Idempotent; a missing file is success.
 	if err := os.Remove(l.path + ".tmp"); err != nil && !os.IsNotExist(err) {
 		slog.Warn("globalledger: could not remove a stale temp file", "path", l.path+".tmp", "err", err)
 	}
 
+	// The lock is held for the whole load. Nothing else can reach this handle
+	// yet, so it is uncontended — it is taken because parseLocked/compactLocked
+	// say "Locked", and a name that lies about its precondition is how the next
+	// caller gets it wrong.
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	lines, truncated, err := readGlobalLedgerLines(l.path)
 	if err != nil {
-		// We cannot see the durable record. Do NOT rewrite anything.
-		l.loadErr = fmt.Sprintf("global ledger at %s could not be read (%v); usage is unknown", l.path, err)
+		// We cannot see the durable record. Do NOT rewrite anything. The reason
+		// is deliberately PATH-FREE: it is rendered into a 402 body for the
+		// submitting client, and the host's audit-root layout is not that
+		// client's business. The returned error, which goes to the operator's
+		// log, names the file.
+		l.loadErr = fmt.Sprintf("the global ledger could not be read (%v); usage is unknown", err)
 		return l, fmt.Errorf("globalledger: read %s: %w", l.path, err)
 	}
 	damaged := l.parseLocked(lines, nowMs)
 	if truncated {
-		l.loadErr = fmt.Sprintf("global ledger at %s exceeds %d bytes and was not read in full; usage is a lower bound",
-			l.path, globalLedgerMaxBytes)
+		l.loadErr = fmt.Sprintf("the global ledger exceeds %d bytes and was not read in full; usage is a lower bound",
+			globalLedgerMaxBytes)
 	}
 	// A repair is needed iff the scan quarantined something; compaction may be
 	// needed independently. Both are the same atomic rewrite.
@@ -406,6 +527,17 @@ func OpenGlobalLedger(auditRoot string, window time.Duration, nowMs int64) (*Glo
 		slog.Warn("globalledger: quarantined unreadable ledger lines",
 			"path", l.path, "count", damaged,
 			"note", "counted as task starts; the USD limb is a lower bound until they age out")
+		// The repair is about to overwrite the damaged bytes. Keep them: a
+		// tombstone records THAT a line was lost, never what it said, and an
+		// operator who wants the history back has no other copy.
+		//
+		// Skipped when the store is already degraded, because then the rewrite
+		// below refuses and there is nothing to preserve the file FROM — writing
+		// a copy per boot against a file nobody is going to overwrite would just
+		// litter the audit root.
+		if l.loadErr == "" {
+			l.preserveDamagedLocked(nowMs)
+		}
 	}
 	if err := l.compactLocked(nowMs, damaged > 0); err != nil {
 		// The in-memory state is correct and complete; only the rewrite failed.
@@ -413,10 +545,72 @@ func OpenGlobalLedger(auditRoot string, window time.Duration, nowMs int64) (*Glo
 		slog.Warn("globalledger: could not rewrite the ledger at boot", "path", l.path, "err", err)
 		return l, fmt.Errorf("globalledger: rewrite %s: %w", l.path, err)
 	}
+	// A BOOT-TIME clock check, and the honest limit of it. If the caller's clock
+	// is more than a whole window past the newest recorded event, every entry the
+	// ledger holds is out of window and the limbs read zero. Two different worlds
+	// produce that picture — a daemon that was simply idle (or down) for longer
+	// than the window, which is legitimate and must not be refused, and a host
+	// clock that moved FORWARD across the restart, which silently resets the
+	// ceiling. Nothing in the file distinguishes them: a monotonic reference does
+	// not survive a reboot, and every timestamp on disk comes from the same wall
+	// clock that moved. The IN-PROCESS case is fully handled (globalcap.go's
+	// clock-skew correction); this one is logged so an operator can see it, and
+	// the residual is documented rather than papered over.
+	if l.windowMs > 0 {
+		if ev := newestEventMs(l.entries); ev > 0 && nowMs-ev > l.windowMs {
+			slog.Warn("globalledger: every recorded entry is older than the rolling window at boot",
+				"path", l.path, "newest_event_ms", ev, "now_ms", nowMs, "window_ms", l.windowMs,
+				"note", "the global ceiling reads zero usage; this is either a genuine idle period or a forward host-clock change across the restart, which cannot be told apart from the ledger alone")
+		}
+	}
 	if l.loadErr != "" {
-		return l, errors.New(l.loadErr)
+		return l, fmt.Errorf("globalledger: %s (%s)", l.loadErr, l.path)
 	}
 	return l, nil
+}
+
+// preserveDamagedLocked copies the pre-repair file aside before a repair
+// rewrite overwrites it, as <ledger>.damaged-<nowMs>.
+//
+// The repair is the only operation in this file that destroys information: a
+// tombstone records that a line was unreadable, never what it contained, so
+// once the rewrite lands the original bytes are gone for good. For a safety
+// control whose whole argument is "never silently lose a start", overwriting
+// unrecoverable history to tidy the file is the wrong trade — the copy is one
+// read and one write, on a boot path that only runs when damage was found.
+//
+// Best effort by design: failing to preserve must not stop the repair, since a
+// file left un-repaired re-quarantines (and re-warns) on every boot. Errors are
+// logged and swallowed.
+func (l *GlobalLedger) preserveDamagedLocked(nowMs int64) {
+	data, err := os.ReadFile(l.path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("globalledger: could not preserve the pre-repair ledger", "path", l.path, "err", err)
+		}
+		return
+	}
+	backup := fmt.Sprintf("%s.damaged-%d", l.path, nowMs)
+	// O_EXCL: never clobber an earlier preservation, and never follow a planted
+	// symlink out of the audit root.
+	f, err := os.OpenFile(backup, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		if !os.IsExist(err) {
+			slog.Warn("globalledger: could not preserve the pre-repair ledger", "path", backup, "err", err)
+		}
+		return
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		slog.Warn("globalledger: could not preserve the pre-repair ledger", "path", backup, "err", err)
+		return
+	}
+	if err := f.Sync(); err != nil {
+		slog.Warn("globalledger: could not preserve the pre-repair ledger", "path", backup, "err", err)
+		return
+	}
+	slog.Warn("globalledger: preserved the damaged ledger before repairing it",
+		"path", backup, "note", "the repaired file replaces unreadable lines with tombstones; this copy is the only record of what they contained")
 }
 
 // Path is the ledger file this handle writes.
@@ -500,7 +694,10 @@ func (l *GlobalLedger) Record(nowMs int64, e GlobalEntry) error {
 	if e.Src == "" {
 		e.Src = GlobalSrcTerminal
 	}
-	e.Raw = nil // never set on a task entry
+	e.Raw = nil             // never set on a task entry
+	e.StartsUnknown = false // damaged-only
+	e.Sum = ""              // checkpoint-only
+	usdErr := sanitizeEntryUSD(&e)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -514,7 +711,57 @@ func (l *GlobalLedger) Record(nowMs int64, e GlobalEntry) error {
 	if err := l.compactLocked(nowMs, false); err != nil && appendErr == nil {
 		appendErr = err
 	}
+	if appendErr == nil {
+		appendErr = usdErr
+	}
 	return appendErr
+}
+
+// sanitizeEntryUSD forces an entry's dollar figures to be REAL, FINITE and
+// NON-NEGATIVE, downgrading anything else to "unknown" and reporting what it
+// did. It runs before an entry can reach memory or disk.
+//
+// It exists because a NaN spends the ceiling in the one direction it must never
+// fail. The USD limb compares `usage.USD >= budget`, and every comparison
+// against NaN is FALSE, so a single NaN in the running total makes the USD limb
+// admit forever — a control that fails OPEN, permanently, from one bad float.
+// The figure is not hypothetical: it is parsed by the broker out of a proxied
+// vendor response body, so it is exactly the kind of value a vendor bug or a
+// hostile upstream can make strange. A +Inf is the same failure with the
+// opposite sign (it makes the limb refuse forever), and a NEGATIVE figure
+// SUBTRACTS from the total, which is an under-count that a hand-edited or
+// replayed entry could use to buy back headroom.
+//
+// It also protects the FILE: json.Marshal refuses a non-finite float, so a NaN
+// that reached l.entries would make every subsequent rewrite fail — compaction
+// would never advance, the ledger would grow without bound, and the entry
+// would never become durable.
+//
+// The response is to SANITIZE, never to reject the entry. The task really ran;
+// dropping its record because its dollar figure is garbage would under-count
+// the start limb, which is the one direction G2/G3 forbid. So the start is kept
+// and only the money is disclaimed: USD 0, USDTrusted false — the same shape a
+// task with no metering at all gets, which the ceiling already knows how to
+// report honestly (GlobalUsage.UntrustedUSD) and which G7 names the start limb
+// as the backstop for.
+func sanitizeEntryUSD(e *GlobalEntry) error {
+	bad := ""
+	switch {
+	case math.IsNaN(e.USD):
+		bad = "not a number"
+	case math.IsInf(e.USD, 0):
+		bad = "infinite"
+	case e.USD < 0:
+		bad = "negative"
+	}
+	if bad == "" {
+		return nil
+	}
+	was := e.USD
+	e.USD, e.USDTrusted = 0, false
+	return fmt.Errorf(
+		"globalledger: task %s reported a %s spend figure (%v); the task start is still counted, but its spend is recorded as unknown rather than measured",
+		e.TaskID, bad, was)
 }
 
 // Has reports whether a task id is already recorded. Boot reconciliation (Task
@@ -545,13 +792,63 @@ func (l *GlobalLedger) Has(taskID string) bool {
 //
 // A nil store answers "degraded", which under G2 is a refusal.
 func (l *GlobalLedger) Usage(nowMs int64) GlobalUsage {
+	u, _ := l.UsageWithClaims(nowMs, nil, "")
+	return u
+}
+
+// UsageWithClaims is Usage PLUS the answer to "which of these in-flight claims
+// has the ledger not counted yet", computed under a SINGLE hold of the ledger's
+// mutex.
+//
+// The single hold is the whole point, and it is a correctness requirement rather
+// than an optimisation. The ceiling's decision is
+//
+//	starts = usage.Starts + (claims the ledger does not already have)
+//
+// and if that is assembled from two separate ledger calls, a task-terminal write
+// landing BETWEEN them counts ZERO times: the usage snapshot was taken before
+// the write, so it excludes the task, and by the time the claim set is walked
+// the ledger DOES have the id, so the claim is skipped as "already counted".
+// The task is admitted, spends, ends — and the ceiling never sees it. Holding
+// capMu does not help: the race is against the LEDGER's mutex, which the
+// two-call form drops and re-takes. Taken together under one hold, every
+// interleaving lands on one side or the other and the task counts exactly once.
+//
+// selfID is excluded from the tally: it is the id of the start being decided,
+// and a re-admission of an already-claimed task must not count itself.
+//
+// A nil store answers "degraded" AND counts every claim as uncounted — the
+// over-counting direction, which is the one a ceiling is allowed to take.
+func (l *GlobalLedger) UsageWithClaims(nowMs int64, claims map[string]struct{}, selfID string) (GlobalUsage, int) {
 	if l == nil {
-		return GlobalUsage{Degraded: true, DegradedReason: "the global ledger is unavailable; usage cannot be determined"}
+		uncounted := 0
+		for id := range claims {
+			if id != selfID {
+				uncounted++
+			}
+		}
+		return GlobalUsage{Degraded: true,
+			DegradedReason:       "the global ledger is unavailable; usage cannot be determined",
+			StartsDegraded:       true,
+			StartsDegradedReason: "the global ledger is unavailable; the task-start count cannot be determined",
+			LoadErr:              "the global ledger is unavailable; usage cannot be determined",
+		}, uncounted
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	u := GlobalUsage{WindowMs: l.windowMs}
+	uncounted := 0
+	for id := range claims {
+		if id == selfID {
+			continue
+		}
+		if _, ok := l.byID[id]; ok {
+			continue // already counted by the pass below; counting it again would tighten the ceiling
+		}
+		uncounted++
+	}
+
+	u := GlobalUsage{WindowMs: l.windowMs, LoadErr: l.loadErr}
 	// The cutoff is STRICTLY BEFORE the window: an entry counts iff
 	// EndedAtMs > now-window. This matches gateway.spendLedger.windowed's
 	// e.ts.After(cutoff) exactly, so the two ledgers cannot disagree about
@@ -562,6 +859,7 @@ func (l *GlobalLedger) Usage(nowMs int64) GlobalUsage {
 	if windowed {
 		cutoff = nowMs - l.windowMs
 	}
+	damagedUnknown := 0
 	for i := range l.entries {
 		e := &l.entries[i]
 		if windowed && e.EndedAtMs <= cutoff {
@@ -583,10 +881,15 @@ func (l *GlobalLedger) Usage(nowMs int64) GlobalUsage {
 				u.UntrustedUSD += e.USD
 			}
 		case GlobalEntryDamaged:
-			// A line existed, so a task started. Its dollars are unknown, which
-			// makes the USD limb a lower bound — see Degraded below.
+			// A line existed, so at least one task started. Its dollars are
+			// unknown, which makes the USD limb a lower bound — see Degraded
+			// below. Whether it is worth EXACTLY one start is a separate
+			// question, and StartsUnknown is the scan's answer to it.
 			u.Starts++
 			u.Damaged++
+			if e.StartsUnknown {
+				damagedUnknown++
+			}
 		case GlobalEntryCheckpoint:
 			u.Starts += e.Starts
 			u.Damaged += e.Damaged
@@ -600,10 +903,26 @@ func (l *GlobalLedger) Usage(nowMs int64) GlobalUsage {
 	case u.Damaged > 0:
 		u.Degraded = true
 		u.DegradedReason = fmt.Sprintf(
-			"%d unreadable entr%s in the global ledger (%s) are counted as task starts but their spend is unknown; the USD total is a lower bound",
-			u.Damaged, plural(u.Damaged, "y", "ies"), l.path)
+			"%d unreadable entr%s in the global ledger are counted as task starts but their spend is unknown; the USD total is a lower bound",
+			u.Damaged, plural(u.Damaged, "y", "ies"))
 	}
-	return u
+	// The START limb degrades only where the "one damaged line is one task
+	// start" identity actually breaks: bytes we never read at all, or a
+	// destroyed region the scan could not identify as a single task line (a
+	// checkpoint carrying a whole folded history, or several entries whose
+	// separating newlines went with them). An ordinary quarantined task line
+	// does NOT get here, which is what keeps one bad byte from bricking a
+	// deployment that only enforces the start limb.
+	switch {
+	case l.loadErr != "":
+		u.StartsDegraded, u.StartsDegradedReason = true, l.loadErr
+	case damagedUnknown > 0:
+		u.StartsDegraded = true
+		u.StartsDegradedReason = fmt.Sprintf(
+			"%d unreadable region%s in the global ledger could not be identified as a single task entry, so %s may stand for a folded checkpoint or several entries at once; the task-start count is a lower bound",
+			damagedUnknown, plural(damagedUnknown, "", "s"), plural(damagedUnknown, "it", "they"))
+	}
+	return u, uncounted
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +985,17 @@ func (l *GlobalLedger) RecordBatch(nowMs int64, es []GlobalEntry) (int, error) {
 			e.Src = GlobalSrcReconcile
 		}
 		e.Raw = nil
+		e.StartsUnknown = false
+		e.Sum = ""
+		// Same rule as Record: a garbage dollar figure disclaims the money and
+		// keeps the start, and it must never reach l.entries — a non-finite
+		// float there would make every later rewrite fail and wedge compaction.
+		if err := sanitizeEntryUSD(&e); err != nil {
+			slog.Warn("globalledger: a reconciled entry carried an unusable spend figure", "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
 		if _, dup := l.byID[e.TaskID]; dup {
 			continue
 		}
@@ -801,7 +1131,21 @@ func readGlobalLedgerLines(path string) (lines [][]byte, truncated bool, err err
 // and therefore the most conservative position in the rolling window.
 func (l *GlobalLedger) parseLocked(lines [][]byte, nowMs int64) int {
 	damaged := 0
-	for _, raw := range lines {
+	// A rewrite writes the checkpoint's copies consecutively at the HEAD of the
+	// file, so a damaged line inside that head region may be a lost copy rather
+	// than a lost task entry. Resolve the region first: if any copy survived, the
+	// checkpoint is recovered exactly and the destroyed copies are dropped
+	// without a tombstone (they carried nothing the survivor does not).
+	cp, cpLines, cpLost := recoverCheckpointPrefix(lines)
+	if cp != nil {
+		l.entries = append(l.entries, *cp)
+		if cpLost > 0 {
+			slog.Warn("globalledger: recovered the checkpoint from a surviving copy",
+				"path", l.path, "lost_copies", cpLost, "copies", globalLedgerCheckpointCopies,
+				"note", "the folded start and spend totals are exact; the rewrite below restores the lost copies")
+		}
+	}
+	for _, raw := range lines[cpLines:] {
 		line := bytes.TrimRight(raw, "\r")
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue // the trailing newline, or blank padding
@@ -811,6 +1155,14 @@ func (l *GlobalLedger) parseLocked(lines [][]byte, nowMs int64) int {
 			damaged++
 			l.entries = append(l.entries, quarantine(line, nowMs))
 			continue
+		}
+		if e.Kind == GlobalEntryCheckpoint {
+			// A checkpoint outside the head region: only possible in a
+			// hand-edited or concatenated file. Keep it (its counts are
+			// checksummed, so it is real) unless it duplicates the recovered one.
+			if cp != nil && e.Sum == cp.Sum {
+				continue
+			}
 		}
 		if e.Kind == GlobalEntryTask {
 			if _, dup := l.byID[e.TaskID]; dup {
@@ -849,8 +1201,32 @@ func decodeGlobalEntry(line []byte) (GlobalEntry, bool) {
 		if e.EndedAtMs <= 0 {
 			return e, false
 		}
+		// A dollar figure that is not a real, non-negative number is not data.
+		// It cannot have come from this broker (Record sanitizes), so it is a
+		// hand-edit, a replay or a corruption — and believing it would either
+		// poison the total with a NaN (which makes the USD limb admit forever,
+		// since every comparison against NaN is false) or SUBTRACT from the
+		// limb. Quarantining keeps the start and disclaims the money.
+		if !usableUSD(e.USD) {
+			return e, false
+		}
 	case GlobalEntryCheckpoint:
 		if e.EndedAtMs <= 0 || e.Starts < 0 || e.Damaged < 0 {
+			return e, false
+		}
+		// Same rule, and it matters more here: a checkpoint's USD is the folded
+		// sum of an entire history, so a negative one buys back arbitrary
+		// headroom.
+		if !usableUSD(e.USD) || !usableUSD(e.UntrustedUSD) {
+			return e, false
+		}
+		// The checksum is REQUIRED. A checkpoint is the only line whose numbers
+		// nothing else can reconstruct, and a corruption that lands inside a
+		// digit still parses as valid JSON — without this, the ledger would
+		// silently believe a smaller start count forever. A checkpoint that does
+		// not verify is damage, and the copies exist so that damage is
+		// recoverable rather than fatal.
+		if e.Sum == "" || e.Sum != checkpointSum(e) {
 			return e, false
 		}
 	case GlobalEntryDamaged:
@@ -864,17 +1240,126 @@ func decodeGlobalEntry(line []byte) (GlobalEntry, bool) {
 	return e, true
 }
 
+// usableUSD is the ledger's definition of a believable dollar figure: real,
+// finite, and not negative. Money that fails it is recorded as unknown, never
+// as a number.
+func usableUSD(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0
+}
+
+// checkpointSum is the checkpoint's self-checksum: a digest over exactly the
+// fields whose loss cannot be reconstructed from anything else in the file. It
+// deliberately excludes Sum itself and excludes nothing that carries a count.
+//
+// It is truncated to 128 bits, which is not a security boundary — the file is
+// 0600 under a 0700 host-only directory and an attacker who can write it can
+// write anything — but a corruption-detection one, and 128 bits makes an
+// accidental collision impossible in practice.
+func checkpointSum(e GlobalEntry) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "drydock-global-checkpoint-v1\x00%d\x00%d\x00%d\x00%d\x00%s\x00%s\x00%s",
+		e.EndedAtMs, e.FoldedThroughMs, e.Starts, e.Damaged,
+		strconv.FormatFloat(e.USD, 'x', -1, 64),
+		strconv.FormatFloat(e.UntrustedUSD, 'x', -1, 64),
+		e.Src)
+	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+// recoverCheckpointPrefix resolves the head of the file, where a rewrite writes
+// the checkpoint's identical copies consecutively.
+//
+// It returns the recovered checkpoint (nil if none), how many leading lines it
+// consumed, and how many copies were unreadable. When it recovers nothing it
+// consumes nothing, so a file with no checkpoint — every windowed ledger, and
+// every total-mode ledger below the fold threshold — is parsed exactly as
+// before and a damaged first line is quarantined normally.
+//
+// The point of the copies is that the folded Starts of a whole history must not
+// hinge on one byte. Damage that misses at least one copy is recovered EXACTLY:
+// the destroyed copies are dropped without a tombstone, because a tombstone for
+// them would be a phantom start, and the rewrite that follows restores the full
+// set of copies. Damage that hits EVERY copy falls through to the ordinary
+// quarantine path, where the tombstones are marked StartsUnknown and the start
+// limb refuses rather than counting a reset total.
+func recoverCheckpointPrefix(lines [][]byte) (cp *GlobalEntry, consumed, lost int) {
+	var found *GlobalEntry
+	n, missing := 0, 0
+	for i := 0; i < len(lines) && i < globalLedgerCheckpointCopies; i++ {
+		line := bytes.TrimRight(lines[i], "\r")
+		if len(bytes.TrimSpace(line)) == 0 {
+			break
+		}
+		e, ok := decodeGlobalEntry(line)
+		if !ok {
+			// Provisionally a lost copy. It only counts as one if a sibling copy
+			// turns up, which is what makes this safe: with no surviving copy
+			// nothing is consumed and the line is quarantined as usual.
+			n, missing = i+1, missing+1
+			continue
+		}
+		if e.Kind != GlobalEntryCheckpoint {
+			break // the head region is over
+		}
+		if found == nil {
+			cpy := e
+			found = &cpy
+		} else if e.Sum != found.Sum {
+			break // a different fold: not a copy, so stop consuming
+		}
+		n = i + 1
+	}
+	if found == nil {
+		return nil, 0, 0
+	}
+	return found, n, missing
+}
+
 func quarantine(line []byte, nowMs int64) GlobalEntry {
 	raw := line
 	if len(raw) > globalLedgerRawKeep {
 		raw = raw[:globalLedgerRawKeep]
 	}
 	return GlobalEntry{
-		Kind:      GlobalEntryDamaged,
-		EndedAtMs: nowMs,
-		Src:       GlobalSrcRepair,
-		Raw:       append([]byte(nil), raw...),
+		Kind:          GlobalEntryDamaged,
+		EndedAtMs:     nowMs,
+		Src:           GlobalSrcRepair,
+		Raw:           append([]byte(nil), raw...),
+		StartsUnknown: !damagedIsOneTaskStart(line),
 	}
+}
+
+// damagedIsOneTaskStart asks whether a destroyed line can still be shown to be
+// exactly ONE task entry — the claim the tombstone's "counts as one start"
+// rests on.
+//
+// It requires POSITIVE evidence rather than absence of contrary evidence,
+// because the failure mode of guessing wrong is a silent under-count of the one
+// limb that bounds a subscription lane:
+//
+//   - exactly one `"kind":` in the line. Lines are split on "\n", so a damaged
+//     region that took its newlines with it arrives here as several entries
+//     concatenated — and would otherwise be scored as one start instead of N.
+//   - that kind is `task`. A checkpoint carries the folded Starts of the whole
+//     history; scoring it as one start is the entire I1 failure.
+//   - a `task_id` field, the shape only a task entry has.
+//   - a length a single task entry can actually have.
+//
+// The common crash signature passes: an append torn mid-line leaves a PREFIX,
+// and kind and task_id are the first two fields json.Marshal emits, so a torn
+// task line still identifies itself. A random byte flip in the middle of a task
+// line passes too. Damage that lands inside `"kind":"task"` itself does not,
+// and refusing there is the conservative answer for a control.
+func damagedIsOneTaskStart(line []byte) bool {
+	if len(line) == 0 || len(line) > globalLedgerMaxTaskLineBytes {
+		return false
+	}
+	if bytes.Count(line, []byte(`"kind":`)) != 1 {
+		return false
+	}
+	if !bytes.Contains(line, []byte(`"kind":"`+string(GlobalEntryTask)+`"`)) {
+		return false
+	}
+	return bytes.Contains(line, []byte(`"task_id":"`))
 }
 
 // ---------------------------------------------------------------------------
@@ -941,7 +1426,7 @@ func (l *GlobalLedger) compactLocked(nowMs int64, force bool) error {
 }
 
 // rewriteLocked prunes/folds the in-memory entries and writes the whole file
-// through atomicfile (temp + rename).
+// durably (writeLedgerFileDurable: temp + fsync + rename + directory fsync).
 //
 // Crash safety: the rename is atomic, so a crash mid-compaction leaves either
 // the WHOLE old file — which still holds every entry the new one would have
@@ -959,15 +1444,48 @@ func (l *GlobalLedger) rewriteLocked(nowMs int64) error {
 	}
 	kept := l.pruneLocked(nowMs)
 	var buf bytes.Buffer
-	for _, e := range kept {
+	for i, e := range kept {
 		payload, err := json.Marshal(e)
 		if err != nil {
-			return err
+			// ONE unmarshalable entry must not be able to wedge compaction
+			// forever. Returning here would mean the rewrite never lands, so
+			// compactAt never advances, every later Record retries the same
+			// failing O(n) rewrite, and the file grows without bound — a single
+			// bad float would permanently disable the mechanism that keeps this
+			// ledger bounded and that makes a repair stick. So the entry is
+			// replaced, IN PLACE and in memory, by a tombstone that preserves
+			// its start and disclaims everything else.
+			slog.Warn("globalledger: an in-memory entry could not be marshalled; replacing it with a tombstone",
+				"path", l.path, "task_id", e.TaskID, "kind", e.Kind, "err", err)
+			t := GlobalEntry{
+				Kind: GlobalEntryDamaged, EndedAtMs: e.EndedAtMs, Src: GlobalSrcRepair,
+				Raw: []byte("unmarshalable in-memory entry: " + err.Error()),
+				// A task entry is worth exactly one start; anything else may be
+				// worth more, and the start limb must say so.
+				StartsUnknown: e.Kind != GlobalEntryTask,
+			}
+			if t.EndedAtMs <= 0 {
+				t.EndedAtMs = nowMs
+			}
+			kept[i] = t
+			payload, err = json.Marshal(t)
+			if err != nil {
+				return err // unreachable: the tombstone has no float fields
+			}
 		}
 		buf.Write(payload)
 		buf.WriteByte('\n')
+		// A checkpoint is written in identical copies so that the folded history
+		// of the whole ledger does not hinge on a single byte. See
+		// globalLedgerCheckpointCopies and recoverCheckpointPrefix.
+		if e.Kind == GlobalEntryCheckpoint {
+			for c := 1; c < globalLedgerCheckpointCopies; c++ {
+				buf.Write(payload)
+				buf.WriteByte('\n')
+			}
+		}
 	}
-	if err := atomicfile.Write(l.path, buf.Bytes(), 0o600); err != nil {
+	if err := writeLedgerFileDurable(l.path, buf.Bytes(), 0o600); err != nil {
 		return err
 	}
 	l.entries = kept
@@ -982,6 +1500,74 @@ func (l *GlobalLedger) rewriteLocked(nowMs int64) error {
 	l.compactAt = 2 * len(kept)
 	if l.compactAt < globalLedgerMinCompactEntries {
 		l.compactAt = globalLedgerMinCompactEntries
+	}
+	// ...but not without bound. Doubling forever would let a ledger that grew
+	// large go arbitrarily long between rewrites, and a rewrite is what makes a
+	// repair, a fold and a failed durable append heal.
+	if l.compactAt > globalLedgerMaxCompactEntries {
+		l.compactAt = globalLedgerMaxCompactEntries
+	}
+	return nil
+}
+
+// writeLedgerFileDurable is the ledger's whole-file write: temp + fsync +
+// rename + directory fsync.
+//
+// It deliberately does NOT use internal/atomicfile, which this file used
+// before. atomicfile does os.WriteFile followed by os.Rename with no fsync of
+// either the temp file or the directory, so the guarantee rewriteLocked
+// documents — a crash leaves the whole old file or the whole new one — is not
+// actually provided: a power loss can land the rename while the new file's data
+// is still in page cache, and the ledger comes back EMPTY or short. For a
+// credential file (atomicfile's other callers) that costs a re-mint; for a
+// safety ledger it is a total under-count of the ceiling, which is the one
+// direction G2/G3 forbid. atomicfile's other callers are left exactly as they
+// are; this is a local divergence, paid for by one fsync on a path that runs on
+// an amortized schedule rather than per append.
+//
+// The temp open also carries O_EXCL and O_NOFOLLOW, matching every other open in
+// this file: a pre-planted "ledger.jsonl.tmp" symlink must not be followed and
+// must not be written through.
+func writeLedgerFileDurable(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	// A stale temp from a crashed rewrite is swept at open, but a rewrite that
+	// failed after creating it within THIS process would otherwise wedge every
+	// later one on O_EXCL.
+	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	// The fsync that makes the rename mean something.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	// And the directory fsync that makes the RENAME durable. Best effort: the
+	// rename has already happened and the data is already on disk, so failing
+	// here would report a write that in fact succeeded. Some filesystems refuse
+	// a directory fsync outright.
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
+		if err := d.Sync(); err != nil {
+			slog.Debug("globalledger: could not fsync the ledger directory", "path", filepath.Dir(path), "err", err)
+		}
+		d.Close()
 	}
 	return nil
 }
@@ -1082,5 +1668,9 @@ func foldTotalMode(entries []GlobalEntry, nowMs int64) []GlobalEntry {
 	if cp.FoldedThroughMs > 0 {
 		cp.EndedAtMs = cp.FoldedThroughMs
 	}
+	// Stamped LAST, over the final values: the checksum is what lets a later
+	// read tell a real checkpoint from a corrupted one, and it must cover the
+	// EndedAtMs adjustment above.
+	cp.Sum = checkpointSum(cp)
 	return append([]GlobalEntry{cp}, ordered[split:]...)
 }

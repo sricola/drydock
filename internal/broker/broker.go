@@ -320,6 +320,19 @@ type Broker struct {
 	capMu       sync.Mutex
 	capInFlight map[string]struct{}
 
+	// capClock* is the ceiling's WALL-VS-MONOTONIC anchor: the pair captured the
+	// first time the ceiling asked for the time, and the largest amount by which
+	// wall time has since outrun monotonic time. That excess is the host clock
+	// having been MOVED rather than having passed, and the ceiling subtracts it
+	// so a forward jump cannot silently age every entry out of the rolling
+	// window and reset both limbs. See ceilingNowMs. Its own mutex, because it
+	// is read on the admission path and must not widen capMu's critical section.
+	capClockMu       sync.Mutex
+	capClockAnchored bool
+	capClockWall     int64
+	capClockMono     int64
+	capClockSkew     int64
+
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
 	// drive HandleTask without a git clone or a container run.
@@ -383,6 +396,14 @@ type Broker struct {
 	queueOnce sync.Once
 	queueTick time.Duration
 	now       func() int64
+	// mono is the MONOTONIC counterpart of the now seam, in milliseconds from an
+	// arbitrary epoch (nil -> time.Since a process-start anchor). It exists only
+	// so a test can drive a wall-clock jump deterministically: the global
+	// ceiling compares the two to tell time that PASSED from time that was SET.
+	// A broker with an injected `now` and no injected `mono` gets no jump
+	// detection at all, because a test advancing its own clock on purpose is not
+	// a clock jump.
+	mono func() int64
 
 	// draining is the shutdown latch (BeginQueueDrain). Once set, the queue
 	// accepts no further BROKER-AUTHORED work: takeDispatchable dispatches

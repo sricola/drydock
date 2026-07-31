@@ -2,6 +2,7 @@ package broker
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	"drydock/internal/provider"
@@ -29,12 +30,18 @@ import (
 //	                 the broker itself causes rather than a number a vendor
 //	                 reports.
 //
-// Either may trip on its own; both default to 0 = OFF, and with both off this
-// whole file is inert — it does not resolve an agent, does not read the ledger
-// and never takes a lock. That identity is asserted directly
+// Either may trip on its own; both default to 0 = OFF, and with both off no
+// decision path here does anything — it does not resolve an agent, does not read
+// the ledger, and never refuses. That identity is asserted directly
 // (TestGlobalCap_OffIsIdentity), including with a missing, corrupt or
 // unreadable ledger, because "off" has to mean off even when the store is
 // broken.
+//
+// releaseGlobalStart is the ONE function that still runs with the limbs off, and
+// deliberately: a claim taken while a limb was on must be released even if the
+// limb is turned off before the task ends, or the claim leaks for the life of
+// the process and counts against the ceiling forever once a limb is turned back
+// on. It takes an uncontended mutex and deletes from a map.
 //
 // ---------------------------------------------------------------------------
 // G2. FAIL-CLOSED, which is the substantive break with every existing check.
@@ -109,9 +116,21 @@ import (
 //	RESUMED at the diff-approval gate after a restart (resumePush /
 //	ResumeAwaiting): it was admitted in a previous process, so this process
 //	holds no claim for it and its ledger entry does not exist until it
-//	terminates. That is bounded by max_concurrent_tasks, is not a fresh spend
-//	decision (the task already ran), and Task 3's boot reconciliation against
-//	the audit is what makes it converge.
+//	terminates.
+//
+//	That gap is NOT bounded by max_concurrent_tasks, and an earlier version of
+//	this comment claimed it was. ResumeAwaiting spawns one goroutine per
+//	surviving gate marker with no bound at all, and resumePush takes neither a
+//	concurrency slot nor a ceiling claim. What actually bounds it is that a
+//	resume is not a spend decision: resumePush replays a diff that a previous
+//	process already produced and paid for — it never runs an agent, never mints
+//	a lease, and cannot spend — so the tasks in the gap can add to the RECORDED
+//	total (Task 3 records their terminal, and boot reconciliation against the
+//	audit converges the rest) but cannot consume budget while they sit there.
+//	The correct statement of the residual is therefore: for the interval
+//	between boot and a resumed task's terminal, its start is invisible to the
+//	start limb, and the number of such tasks is bounded by how many were parked
+//	at the diff gate when the previous process died.
 //
 //	USD LIMB: bounded overshoot, unavoidably. An admitted task's spend is not
 //	knowable until it ends, so the ceiling can be crossed by at most
@@ -150,8 +169,25 @@ func (b *Broker) globalCeilingOn() bool {
 // a task must use admitGlobalStart instead, or two of them can pass the same
 // limb.
 func (b *Broker) globalCeilingExceeded(agent string) (blocked bool, reason string) {
+	blocked, reason, _ = b.globalCeilingExceededDetail(agent)
+	return blocked, reason
+}
+
+// globalCeilingExceededDetail is globalCeilingExceeded plus WHY, reduced to the
+// one distinction a caller can act on: did the ceiling measure this start and
+// find it over a limb (`unmeasured` false), or could it not measure at all
+// (`unmeasured` true)?
+//
+// The two are the same refusal but not the same FACT, and treating them alike
+// destroys work. "Over cap" is a real, self-clearing condition — spend ages out
+// of the window, in-flight tasks finish, an operator raises the limb. "Cannot
+// measure" is a fault: an agent that would not resolve this second, a ledger
+// that could not be read, a store that has not been opened yet. Dead-lettering
+// an unattended retry for a fault makes a transient failure into irreversible
+// work loss, with nothing left to retry from.
+func (b *Broker) globalCeilingExceededDetail(agent string) (blocked bool, reason string, unmeasured bool) {
 	if !b.globalCeilingOn() {
-		return false, ""
+		return false, "", false
 	}
 	b.capMu.Lock()
 	defer b.capMu.Unlock()
@@ -170,26 +206,41 @@ func (b *Broker) globalCeilingExceeded(agent string) (blocked bool, reason strin
 // double-count (the claim is a set, and the id excludes itself from its own
 // in-flight tally).
 func (b *Broker) admitGlobalStart(taskID, agent string) (blocked bool, reason string) {
+	blocked, reason, _ = b.admitGlobalStartDetail(taskID, agent)
+	return blocked, reason
+}
+
+// admitGlobalStartDetail is admitGlobalStart with the over-cap vs cannot-measure
+// distinction described on globalCeilingExceededDetail.
+func (b *Broker) admitGlobalStartDetail(taskID, agent string) (blocked bool, reason string, unmeasured bool) {
 	if !b.globalCeilingOn() {
-		return false, ""
+		return false, "", false
 	}
 	b.capMu.Lock()
 	defer b.capMu.Unlock()
-	if blocked, reason := b.globalCeilingExceededLocked(agent, taskID); blocked {
-		return true, reason
+	if blocked, reason, unmeasured := b.globalCeilingExceededLocked(agent, taskID); blocked {
+		return true, reason, unmeasured
 	}
 	if b.capInFlight == nil {
 		b.capInFlight = make(map[string]struct{})
 	}
 	b.capInFlight[taskID] = struct{}{}
-	return false, ""
+	return false, "", false
 }
 
 // releaseGlobalStart drops taskID's in-flight claim. Idempotent, safe for an id
 // that never claimed and safe for the empty string, because it runs from
 // lifecycle defers that also fire on paths which never reached the claim.
+//
+// It deliberately does NOT gate on globalCeilingOn. A claim held by a task
+// whose limbs were turned off between its admission and its terminal would
+// otherwise never be released, and would then count permanently against the
+// ceiling the moment a limb was turned back on — a unit of budget leaked for
+// the life of the process, per task. Deleting from a map is cheap enough that
+// buying that risk back for it is not a trade worth making, and Task 4's admin
+// surface is expected to make a limb changeable at runtime.
 func (b *Broker) releaseGlobalStart(taskID string) {
-	if taskID == "" || !b.globalCeilingOn() {
+	if taskID == "" {
 		return
 	}
 	b.capMu.Lock()
@@ -215,7 +266,7 @@ func (b *Broker) inFlightStarts() int {
 // Lock order is capMu -> GlobalLedger.mu, and it is the only nesting in the
 // file. Nothing takes capMu while holding the ledger's lock, and nothing here
 // takes queueMu (the dispatcher calls in while holding it, never the reverse).
-func (b *Broker) globalCeilingExceededLocked(agent, selfID string) (bool, string) {
+func (b *Broker) globalCeilingExceededLocked(agent, selfID string) (blocked bool, reason string, unmeasured bool) {
 	// FAIL-CLOSED #1: the agent must resolve. Neither limb actually needs the
 	// vendor — the ceiling is cross-vendor and cross-auth-mode by construction
 	// — but G2 is explicit that an unresolvable identity is a refusal, and the
@@ -226,7 +277,7 @@ func (b *Broker) globalCeilingExceededLocked(agent, selfID string) (bool, string
 	if err != nil {
 		return true, fmt.Sprintf(
 			"%sthe agent could not be resolved (%s), so the ceiling cannot be evaluated for it; refusing the task start because %s is enforced (fail-closed, plan G2)",
-			globalCeilingPrefix, safeErr(err), b.enabledLimbs())
+			globalCeilingPrefix, safeErr(err), b.enabledLimbs()), true
 	}
 	// FAIL-CLOSED #2: an empty vendor. Unreachable through resolveAgent, which
 	// rejects an unknown agent first — this is the explicit mirror of
@@ -235,15 +286,27 @@ func (b *Broker) globalCeilingExceededLocked(agent, selfID string) (bool, string
 	if v, _ := provider.VendorForAgent(agentName); v == "" {
 		return true, fmt.Sprintf(
 			"%sagent %q resolves to no vendor, so the ceiling cannot be evaluated; refusing the task start because %s is enforced (fail-closed, plan G2)",
-			globalCeilingPrefix, safeStr(agentName), b.enabledLimbs())
+			globalCeilingPrefix, safeStr(agentName), b.enabledLimbs()), true
 	}
 
-	// One non-destructive pass over the in-memory ledger. A nil store answers
-	// Degraded with an "unavailable" reason, which both limbs below turn into a
-	// refusal — a configured limb with no store to measure it is exactly the
-	// "I don't know" G2 defines as "no".
-	usage := b.GlobalLedger.Usage(b.nowMs())
-	loadErr := b.GlobalLedger.LoadError()
+	// ONE non-destructive pass over the in-memory ledger, which also answers
+	// which in-flight claims the ledger has not counted yet — a single call, and
+	// therefore a single hold of the ledger's mutex, because the two halves of
+	// this decision must come from ONE view of the store.
+	//
+	// Two calls would not merely be slower, they would be WRONG. Reading usage
+	// and then asking about each claim drops and re-takes the ledger's lock, and
+	// a task terminal recording in that gap counts ZERO times: the usage
+	// snapshot predates the write so it excludes the task, and the claim walk
+	// then sees the id present and skips it as "already counted". capMu does not
+	// close that hole — the race is against the LEDGER's lock, which capMu does
+	// not hold. LoadErr rides along in the same snapshot for the same reason.
+	//
+	// A nil store answers Degraded with an "unavailable" reason, which both
+	// limbs below turn into a refusal — a configured limb with no store to
+	// measure it is exactly the "I don't know" G2 defines as "no".
+	usage, inflight := b.GlobalLedger.UsageWithClaims(b.ceilingNowMs(), b.capInFlight, selfID)
+	loadErr := usage.LoadErr
 	window := globalWindowLabel(usage.WindowMs)
 
 	// --- the USD limb ---
@@ -251,60 +314,157 @@ func (b *Broker) globalCeilingExceededLocked(agent, selfID string) (bool, string
 		if usage.Degraded {
 			return true, fmt.Sprintf(
 				"%sglobal_budget_usd is enforced and the spend total cannot be trusted, so the task start is refused (fail-closed, plan G2)%s Detail: %s",
-				globalCeilingPrefix, b.degradedRemedy(usage), safeStr(usage.DegradedReason))
+				globalCeilingPrefix, b.degradedRemedy(usage), safeStr(usage.DegradedReason)), true
 		}
 		if usage.USD >= b.GlobalBudgetUSD {
 			return true, fmt.Sprintf(
 				"%sglobal_budget_usd is exhausted: $%.2f of $%.2f broker-metered in %s (headroom $%.2f, across %d recorded task starts). The task start is refused; it is admitted again when spend ages out of the window, or raise global_budget_usd.",
 				globalCeilingPrefix, usage.USD, b.GlobalBudgetUSD, window,
-				headroomUSD(b.GlobalBudgetUSD, usage.USD), usage.Starts)
+				headroomUSD(b.GlobalBudgetUSD, usage.USD), usage.Starts), false
 		}
 	}
 
 	// --- the task-start limb ---
 	if b.GlobalMaxTasks > 0 {
-		// Only a WHOLE-FILE read failure degrades this limb. A quarantined line
-		// does not: globalledger.go counts a tombstone as one task start, which
-		// is not a guess (the line exists because an entry was written), so the
-		// count is still complete. Bytes we never read are a different matter —
-		// the starts in them are simply missing.
+		// An ordinary quarantined line does NOT degrade this limb:
+		// globalledger.go counts such a tombstone as one task start, which is
+		// not a guess (the line exists because an entry was written), so the
+		// count is still complete and one corrupt byte must not brick a
+		// deployment that is not even using the USD limb.
+		//
+		// StartsDegraded is where that identity actually breaks, and it is a
+		// refusal: bytes we never read (their starts are simply missing), a
+		// destroyed CHECKPOINT whose every copy was lost (it carried the folded
+		// start count of the entire history, so scoring it as one start would
+		// reset the limb by everything before it — permanently, in total mode,
+		// because the repair rewrite persists the reset), or a destroyed region
+		// that took its newlines with it (one tombstone standing for N entries).
+		// The ledger reports it; this refuses on it, because a smaller number we
+		// cannot justify is exactly the under-count G2 forbids.
 		if loadErr != "" {
 			return true, fmt.Sprintf(
 				"%sglobal_max_tasks is enforced and the ledger could not be read in full, so the start count is only a lower bound and the task start is refused (fail-closed, plan G2). Detail: %s",
-				globalCeilingPrefix, safeStr(loadErr))
+				globalCeilingPrefix, safeStr(loadErr)), true
 		}
-		inflight := b.uncountedInFlightLocked(selfID)
+		if usage.StartsDegraded {
+			return true, fmt.Sprintf(
+				"%sglobal_max_tasks is enforced and the recorded start count is only a lower bound, so the task start is refused (fail-closed, plan G2).%s Detail: %s",
+				globalCeilingPrefix, b.degradedRemedyStarts(usage), safeStr(usage.StartsDegradedReason)), true
+		}
 		starts := usage.Starts + inflight
 		if starts >= b.GlobalMaxTasks {
 			return true, fmt.Sprintf(
 				"%sglobal_max_tasks is exhausted: %d of %d task starts in %s (%d recorded, %d in flight and not yet recorded). The task start is refused; it is admitted again when a start ages out of the window or an in-flight task finishes, or raise global_max_tasks.",
-				globalCeilingPrefix, starts, b.GlobalMaxTasks, window, usage.Starts, inflight)
+				globalCeilingPrefix, starts, b.GlobalMaxTasks, window, usage.Starts, inflight), false
 		}
 	}
-	return false, ""
+	return false, "", false
 }
 
-// uncountedInFlightLocked counts admitted starts the ledger does not yet know
-// about. Keying on ledger presence rather than on a bare counter is what makes
-// the tally exact regardless of whether Task 3's terminal write lands before or
-// after the claim is released; see the ordering discussion above. Caller holds
-// capMu.
+// ---------------------------------------------------------------------------
+// THE HOST CLOCK, and why the ceiling does not measure against it directly.
+// ---------------------------------------------------------------------------
 //
-// It is O(in-flight), which is bounded by max_concurrent_tasks — single digits
-// — on an admission path that already does a full ledger pass.
-func (b *Broker) uncountedInFlightLocked(selfID string) int {
-	n := 0
-	for id := range b.capInFlight {
-		if id == selfID {
-			continue
-		}
-		if b.GlobalLedger.Has(id) {
-			continue // already counted by Usage(); counting it again would tighten the ceiling
-		}
-		n++
+// Both limbs are windowed, so the whole control rests on "now". A host clock
+// that jumps FORWARD by more than the window moves the query cutoff past every
+// entry the ledger holds: usage reads {USD 0, Starts 0} and the ceiling admits
+// freely, silently, for a full window. That is a fail-OPEN in a control whose
+// contract is that "I don't know" means "no", and the trigger is mundane — an
+// NTP correction on a host that booted with a bad RTC, a VM resumed from a
+// snapshot, an operator running `date`.
+//
+// The pruning path already defends itself by anchoring to the ledger's own
+// newest event (pruneLocked), because deleting the record is unrecoverable. The
+// QUERY cannot use that anchor: an anchored query would never let anything age
+// out on an idle install, so a deployment that once hit its cap would refuse
+// forever. "Every entry is older than the window" is the SAME picture for a
+// clock that jumped and for a daemon that has simply been idle, and nothing in
+// the ledger can tell them apart.
+//
+// So the ceiling asks a source the wall clock cannot corrupt: MONOTONIC time.
+// It anchors a (wall, monotonic) pair once, and the amount by which wall time
+// has outrun monotonic time since then is, by definition, the clock having been
+// moved rather than having passed. The window is then measured against a
+// jump-corrected instant. This is exact, not heuristic, and it CANNOT misfire
+// on an idle daemon: an idle hour advances both clocks equally, the skew stays
+// zero, and entries age out normally.
+//
+// The correction only ever widens the window (skew is floored at zero and never
+// decreases), so its error direction is over-counting — the direction a ceiling
+// is allowed to take.
+//
+// RESIDUAL, stated plainly: a clock change that happens while brokerd is DOWN
+// is not detectable this way, because a monotonic reading does not survive a
+// reboot and every timestamp on disk came from the same wall clock that moved.
+// That case is logged at open (globalledger.go's boot check) rather than
+// refused, because refusing it would also refuse every legitimately idle
+// install, and an unattended install that cannot start a task after a quiet
+// week is a worse failure than a one-window reset after an operator moved the
+// clock across a restart.
+
+// ceilingClockToleranceMs is how much wall-vs-monotonic movement BETWEEN TWO
+// CONSECUTIVE OBSERVATIONS is treated as drift rather than as a clock change.
+// Ordinary NTP slew and a slow crystal move the two apart by milliseconds;
+// scheduler jitter adds a few more. A jump worth correcting for is orders of
+// magnitude larger, and the ceiling's window is measured in hours.
+const ceilingClockToleranceMs = 2000
+
+// ceilingNowMs is the instant the ceiling measures its window against: the host
+// clock, less however far the host clock has jumped forward since this process
+// anchored itself. See the discussion above.
+//
+// Detection is DISABLED for a broker with an injected wall clock and no
+// injected monotonic source — that is a test driving time deliberately, and
+// calling a deliberate advance a "jump" would make the ledger's window untestable
+// while telling the operator nothing. Production installs inject neither seam
+// and get the real pair.
+func (b *Broker) ceilingNowMs() int64 {
+	now := b.nowMs()
+	if b.now != nil && b.mono == nil {
+		return now
 	}
-	return n
+	mono := b.monoMs()
+
+	b.capClockMu.Lock()
+	defer b.capClockMu.Unlock()
+	if !b.capClockAnchored {
+		b.capClockAnchored, b.capClockWall, b.capClockMono = true, now, mono
+		return now
+	}
+	// The delta is measured against the PREVIOUS observation, not against a
+	// fixed anchor, and only a delta over the tolerance is accumulated. That
+	// distinguishes a JUMP (seconds or hours appearing between two consecutive
+	// observations) from ordinary DRIFT — NTP slewing the wall clock's rate, or
+	// a crystal that runs slow — which would otherwise accumulate into the skew
+	// over a long uptime and widen the window for no reason.
+	//
+	// A negative delta is a BACKWARD wall jump. It is deliberately not
+	// corrected: a backward clock moves the cutoff back and counts MORE, which
+	// is the over-counting direction a ceiling is allowed to take.
+	delta := (now - b.capClockWall) - (mono - b.capClockMono)
+	b.capClockWall, b.capClockMono = now, mono
+	if delta >= ceilingClockToleranceMs {
+		b.capClockSkew += delta
+		slog.Warn("global ceiling: the host wall clock jumped forward relative to monotonic time",
+			"jump_ms", delta, "total_skew_ms", b.capClockSkew,
+			"note", "the ceiling's rolling window is corrected by this amount so the jump cannot silently reset either limb")
+	}
+	return now - b.capClockSkew
 }
+
+// monoMs is a monotonic millisecond reading. It is a seam only so a test can
+// drive a clock jump deterministically; nothing else overrides it.
+func (b *Broker) monoMs() int64 {
+	if b.mono != nil {
+		return b.mono()
+	}
+	return int64(time.Since(processStartMono) / time.Millisecond)
+}
+
+// processStartMono is the monotonic anchor for monoMs. time.Now carries a
+// monotonic reading, and time.Since uses it, so this is immune to every later
+// wall-clock change.
+var processStartMono = time.Now()
 
 // enabledLimbs names the configured limbs, so a refusal an operator did not
 // expect says which setting produced it.
@@ -326,18 +486,28 @@ func (b *Broker) enabledLimbs() string {
 // nothing ever ages out, so the install stays refused until an operator repairs
 // the file, and the message has to name the file and say so plainly rather than
 // implying it will clear.
+// It does NOT name the ledger's path, and that omission is deliberate. This
+// string is rendered into a 402 body for whoever submitted the task; the host's
+// audit-root layout is not theirs to learn, and a refusal is exactly the moment
+// a prober would go looking. The operator gets the path from the broker log,
+// which names the file on every degrade (globalledger.go warns with "path" on
+// quarantine, repair and preservation).
 func (b *Broker) degradedRemedy(u GlobalUsage) string {
 	if u.WindowMs > 0 {
 		return " It clears when the affected entries age out of the window; set global_budget_usd to 0 to disable the USD limb."
 	}
-	// A store that never opened has no path to name, so do not offer a file to
-	// repair that the operator cannot find.
-	if p := b.GlobalLedger.Path(); p != "" {
-		return fmt.Sprintf(
-			" global_window is total mode, so this does NOT age out: repair or remove %s, or set global_budget_usd to 0 to disable the USD limb.",
-			p)
+	return " global_window is total mode, so this does NOT age out: repair or remove the global ledger file (the broker log names it), or set global_budget_usd to 0 to disable the USD limb."
+}
+
+// degradedRemedyStarts is degradedRemedy's task-start-limb twin. It is a
+// separate string because the remedy differs: the start limb is what bounds a
+// subscription lane, so "turn the limb off" is a much heavier suggestion and the
+// file repair is the real answer.
+func (b *Broker) degradedRemedyStarts(u GlobalUsage) string {
+	if u.WindowMs > 0 {
+		return " It clears when the affected entries age out of the window; repairing the global ledger file (the broker log names it) clears it immediately."
 	}
-	return " global_window is total mode, so this does NOT age out until the ledger is readable again; set global_budget_usd to 0 to disable the USD limb."
+	return " global_window is total mode, so this does NOT age out: repair or remove the global ledger file (the broker log names it), or set global_max_tasks to 0 to disable the task-start limb."
 }
 
 // globalWindowLabel renders the window for an operator-facing message.

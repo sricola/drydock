@@ -780,7 +780,7 @@ func TestGlobalRecord_ClaimIsReleasedAfterTheEntryLands(t *testing.T) {
 		}
 		// Claimed, not yet recorded: the tally must count it.
 		b.capMu.Lock()
-		before := b.uncountedInFlightLocked("")
+		_, before := b.GlobalLedger.UsageWithClaims(b.nowMs(), b.capInFlight, "")
 		b.capMu.Unlock()
 		if before != 1 {
 			t.Fatalf("uncounted in-flight = %d before the write, want 1", before)
@@ -790,7 +790,7 @@ func TestGlobalRecord_ClaimIsReleasedAfterTheEntryLands(t *testing.T) {
 		tr.recordGlobalUsage()
 		// THE INSTANT: still claimed, now also recorded. Counted once, not twice.
 		b.capMu.Lock()
-		during := b.uncountedInFlightLocked("")
+		_, during := b.GlobalLedger.UsageWithClaims(b.nowMs(), b.capInFlight, "")
 		b.capMu.Unlock()
 		if during != 0 {
 			t.Errorf("uncounted in-flight = %d in the claimed-and-recorded instant, want 0 "+

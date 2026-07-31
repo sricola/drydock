@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -651,9 +652,12 @@ func TestGlobalLedgerTotalModeFoldsIntoCheckpoint(t *testing.T) {
 	if want := 0.5 * float64(total); !glClose(u.USD, want) {
 		t.Errorf("USD = %v, want %v", u.USD, want)
 	}
-	if lines := rawLines(t, l.Path()); len(lines) != globalLedgerTotalKeep+1 {
-		t.Errorf("ledger has %d lines, want %d (the fold + the retained tail) — total mode must stay bounded",
-			len(lines), globalLedgerTotalKeep+1)
+	// The fold's copies + the retained tail. The checkpoint is written
+	// globalLedgerCheckpointCopies times on purpose: it carries the folded
+	// start count of the entire history, so it must not hinge on one byte.
+	if want := globalLedgerTotalKeep + globalLedgerCheckpointCopies; len(rawLines(t, l.Path())) != want {
+		t.Errorf("ledger has %d lines, want %d (the fold's copies + the retained tail) — total mode must stay bounded",
+			len(rawLines(t, l.Path())), want)
 	}
 	// Restart agrees, and folding is idempotent.
 	l2 := mustOpenGL(t, root, 0, now)
@@ -684,15 +688,15 @@ func TestGlobalLedgerTotalModeStaysBoundedOnTheAppendPath(t *testing.T) {
 	}
 	seedGL(t, root, seed)
 	l := mustOpenGL(t, root, 0, int64(len(seed))+1)
-	if lines := rawLines(t, l.Path()); len(lines) > 2*globalLedgerTotalKeep+2 {
-		t.Errorf("ledger has %d lines, want <= %d", len(lines), 2*globalLedgerTotalKeep+2)
+	if want := 2*globalLedgerTotalKeep + globalLedgerCheckpointCopies + 1; len(rawLines(t, l.Path())) > want {
+		t.Errorf("ledger has %d lines, want <= %d", len(rawLines(t, l.Path())), want)
 	}
 	if err := l.Compact(int64(len(seed)) + 1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
-	if lines := rawLines(t, l.Path()); len(lines) != globalLedgerTotalKeep+1 {
+	if want := globalLedgerTotalKeep + globalLedgerCheckpointCopies; len(rawLines(t, l.Path())) != want {
 		t.Errorf("after an explicit Compact the ledger has %d lines, want %d",
-			len(lines), globalLedgerTotalKeep+1)
+			len(rawLines(t, l.Path())), want)
 	}
 }
 
@@ -961,4 +965,277 @@ func mustRecordDirect(t *testing.T, path string, e GlobalEntry) {
 		t.Fatalf("marshal: %v", err)
 	}
 	appendRawGL(t, path, string(b)+"\n")
+}
+
+// ---------------------------------------------------------------------------
+// Security-review regressions: the checkpoint's integrity, the damage
+// classification behind "one damaged line is one start", and the dollar figure
+// the ledger is willing to believe.
+// ---------------------------------------------------------------------------
+
+// glFoldedLedger builds a total-mode ledger past the fold threshold, so its
+// file starts with the checkpoint copies.
+func glFoldedLedger(t *testing.T, root string, n int, usd float64) *GlobalLedger {
+	t.Helper()
+	l := mustOpenGL(t, root, 0, capNow)
+	for i := 0; i < n; i++ {
+		mustRecord(t, l, capNow, glEntry(glTaskID(i), capNow-int64(i), usd))
+	}
+	if err := l.Compact(capNow); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if u := l.Usage(capNow); u.Starts != n {
+		t.Fatalf("seeded Starts = %d, want %d", u.Starts, n)
+	}
+	return l
+}
+
+// A CHECKPOINT carries the folded start count of the entire history, so damage
+// to it must not be scored as "one damaged line, one start". One corrupted byte
+// used to turn 2600 starts into 2001 — silently, with LoadError empty so the
+// start limb did not even refuse — and the forced repair rewrite then replaced
+// the checkpoint on disk, making the loss permanent.
+//
+// The copies make ordinary damage RECOVERABLE rather than merely detectable.
+func TestGlobalLedgerCheckpointSurvivesAOneByteEdit(t *testing.T) {
+	root := t.TempDir()
+	l := glFoldedLedger(t, root, globalLedgerTotalKeep+600, 1)
+	before := l.Usage(capNow)
+
+	path := GlobalLedgerPath(root)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(raw, []byte(`{"kind":"checkpoint"`)) {
+		t.Fatalf("the file does not start with a checkpoint: %.60s", raw)
+	}
+	raw[3] = 'X' // one byte, inside the first copy
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	l2 := mustOpenGL(t, root, 0, capNow)
+	after := l2.Usage(capNow)
+	if after.Starts != before.Starts {
+		t.Errorf("Starts = %d after a one-byte edit, want %d: the folded history was lost",
+			after.Starts, before.Starts)
+	}
+	if !glClose(after.USD, before.USD) {
+		t.Errorf("USD = %v after a one-byte edit, want %v", after.USD, before.USD)
+	}
+	if after.StartsDegraded {
+		t.Errorf("the start limb degraded on damage that was fully recovered: %s", after.StartsDegradedReason)
+	}
+	// The repair rewrite must restore the full set of copies, not persist the
+	// loss, and a third open must still agree.
+	third := mustOpenGL(t, root, 0, capNow).Usage(capNow)
+	if third.Starts != before.Starts {
+		t.Errorf("Starts = %d after the repair rewrite, want %d", third.Starts, before.Starts)
+	}
+	if got := len(rawLines(t, path)); got != globalLedgerTotalKeep+globalLedgerCheckpointCopies {
+		t.Errorf("the repaired file has %d lines, want %d: the copies were not restored",
+			got, globalLedgerTotalKeep+globalLedgerCheckpointCopies)
+	}
+}
+
+// A corruption that lands INSIDE A DIGIT still parses as JSON. Without the
+// checksum the ledger would believe the smaller number forever.
+func TestGlobalLedgerCheckpointRejectsATamperedCount(t *testing.T) {
+	root := t.TempDir()
+	l := glFoldedLedger(t, root, globalLedgerTotalKeep+600, 1)
+	before := l.Usage(capNow)
+
+	path := GlobalLedgerPath(root)
+	lines := rawLines(t, path)
+	var cp GlobalEntry
+	if err := json.Unmarshal(lines[0], &cp); err != nil {
+		t.Fatal(err)
+	}
+	cp.Starts = 1 // the tamper: valid JSON, valid shape, wrong number
+	tampered, _ := json.Marshal(cp)
+	lines[0] = tampered
+	var buf bytes.Buffer
+	for _, ln := range lines {
+		buf.Write(ln)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	after := mustOpenGL(t, root, 0, capNow).Usage(capNow)
+	if after.Starts != before.Starts {
+		t.Errorf("Starts = %d after a tampered count, want %d (recovered from a surviving copy)",
+			after.Starts, before.Starts)
+	}
+}
+
+// When EVERY copy is destroyed the counts are genuinely gone. The only honest
+// answer is to say the start count is a lower bound, which the ceiling turns
+// into a refusal — never to report the smaller number as fact.
+func TestGlobalLedgerLosingEveryCheckpointCopyDegradesTheStartLimb(t *testing.T) {
+	root := t.TempDir()
+	glFoldedLedger(t, root, globalLedgerTotalKeep+600, 1)
+	path := GlobalLedgerPath(root)
+	lines := rawLines(t, path)
+	var buf bytes.Buffer
+	for i, ln := range lines {
+		if i < globalLedgerCheckpointCopies {
+			buf.WriteString("{")
+		}
+		buf.Write(ln)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u := mustOpenGL(t, root, 0, capNow).Usage(capNow)
+	if !u.StartsDegraded {
+		t.Fatal("every checkpoint copy was destroyed and the start count was still reported as fact")
+	}
+	if u.StartsDegradedReason == "" {
+		t.Error("a degraded start limb with no reason is a refusal with no explanation")
+	}
+}
+
+// A repair overwrites the damaged bytes with tombstones. The pre-repair file is
+// the only record of what they said, so it is preserved rather than destroyed.
+func TestGlobalLedgerRepairPreservesTheDamagedBytes(t *testing.T) {
+	root := t.TempDir()
+	path := GlobalLedgerPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const junk = "{corrupted beyond recovery"
+	if err := os.WriteFile(path, []byte(junk+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenGlobalLedger(root, 24*time.Hour, capNow); err != nil {
+		t.Fatalf("OpenGlobalLedger: %v", err)
+	}
+	hits, err := filepath.Glob(path + ".damaged-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("found %d preserved copies of the damaged ledger, want 1", len(hits))
+	}
+	kept, err := os.ReadFile(hits[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(kept), junk) {
+		t.Errorf("the preserved copy does not hold the damaged bytes: %q", kept)
+	}
+	fi, err := os.Stat(hits[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("the preserved copy is mode %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+// "One damaged line is one task start" is a LOWER BOUND. A torn line that still
+// identifies itself as one task entry is worth exactly one; anything else may
+// be worth more, and the difference has to reach the start limb.
+func TestGlobalLedgerDamageClassification(t *testing.T) {
+	id := glTaskID(7)
+	cases := []struct {
+		name        string
+		line        string
+		wantOneTask bool
+	}{
+		{"a torn task line keeps kind and task_id", `{"kind":"task","task_id":"` + id + `","started_at_ms":170000`, true},
+		{"a byte flip in the middle of a task line", `{"kind":"task","task_id":"` + id + `","ended_at_msX":1700000000000}`, true},
+		{"a damaged checkpoint", `{"kind":"checkpoint","starts":2600,"usdX":12}`, false},
+		{"a byte flip inside the kind", `{"kind":"tXsk","task_id":"` + id + `","ended_at_ms":1}`, false},
+		{"two entries whose separating newline was destroyed",
+			`{"kind":"task","task_id":"` + id + `","ended_at_ms":1}{"kind":"task","task_id":"` + id + `","ended_at_ms":2}`, false},
+		{"unrecognisable junk", `{not json at all`, false},
+		{"a region longer than any single entry", `{"kind":"task","task_id":"` + id + `",` + strings.Repeat("x", globalLedgerMaxTaskLineBytes), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := quarantine([]byte(tc.line), capNow)
+			if q.StartsUnknown == tc.wantOneTask {
+				t.Errorf("StartsUnknown = %v, want %v", q.StartsUnknown, !tc.wantOneTask)
+			}
+		})
+	}
+}
+
+// A NaN spends the ceiling in the one direction it must never fail: every
+// comparison against NaN is false, so `usage.USD >= budget` is false forever and
+// the USD limb admits without bound. It also breaks json.Marshal, which would
+// wedge every later compaction and let the file grow without limit.
+func TestGlobalLedgerRejectsAnUnusableSpendFigure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		usd  float64
+	}{
+		{"NaN", math.NaN()},
+		{"+Inf", math.Inf(1)},
+		{"-Inf", math.Inf(-1)},
+		{"negative", -100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			l := mustOpenGL(t, root, time.Hour, capNow)
+			e := glEntry(glTaskID(0), capNow, 0)
+			e.USD = tc.usd
+			if err := l.Record(capNow, e); err == nil {
+				t.Error("Record accepted the figure silently; the operator learns nothing")
+			}
+			u := l.Usage(capNow)
+			if math.IsNaN(u.USD) || math.IsInf(u.USD, 0) || u.USD < 0 {
+				t.Errorf("USD = %v reached the running total", u.USD)
+			}
+			// The task still ran: the start must be counted, only the money
+			// disclaimed.
+			if u.Starts != 1 {
+				t.Errorf("Starts = %d, want 1", u.Starts)
+			}
+			// And compaction must still work, or the file grows forever.
+			if err := l.Compact(capNow); err != nil {
+				t.Errorf("compaction wedged on the bad entry: %v", err)
+			}
+			// The durable file must round-trip to the same answer.
+			if got := mustOpenGL(t, root, time.Hour, capNow).Usage(capNow); got.Starts != 1 || got.USD != 0 {
+				t.Errorf("after a reopen usage = %+v, want 1 start and $0", got)
+			}
+		})
+	}
+}
+
+// The same rule on the READ side: a hand-edited or replayed line whose dollars
+// are unusable is damage, not data. A negative figure is the sharp case — it
+// SUBTRACTS from the limb and buys back headroom.
+func TestGlobalLedgerDecodeRejectsUnusableSpendFigures(t *testing.T) {
+	cases := map[string]GlobalEntry{
+		"a negative task usd":             {Kind: GlobalEntryTask, TaskID: glTaskID(1), EndedAtMs: capNow, USD: -5},
+		"a negative checkpoint usd":       {Kind: GlobalEntryCheckpoint, EndedAtMs: capNow, Starts: 3, USD: -5000},
+		"a negative checkpoint untrusted": {Kind: GlobalEntryCheckpoint, EndedAtMs: capNow, Starts: 3, UntrustedUSD: -5000},
+		"a checkpoint with no checksum":   {Kind: GlobalEntryCheckpoint, EndedAtMs: capNow, Starts: 3, USD: 5},
+	}
+	for name, e := range cases {
+		t.Run(name, func(t *testing.T) {
+			line, err := json.Marshal(e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := decodeGlobalEntry(line); ok {
+				t.Errorf("decoded %s as data", name)
+			}
+		})
+	}
+	// ...and a well-formed checkpoint still decodes, or the copies would be
+	// unreadable and every fold would be damage.
+	good := GlobalEntry{Kind: GlobalEntryCheckpoint, Src: GlobalSrcCompact, EndedAtMs: capNow, Starts: 3, USD: 5}
+	good.Sum = checkpointSum(good)
+	line, _ := json.Marshal(good)
+	if _, ok := decodeGlobalEntry(line); !ok {
+		t.Error("a well-formed checkpoint did not decode")
+	}
 }

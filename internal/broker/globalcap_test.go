@@ -119,13 +119,47 @@ func TestGlobalCap_OffIsIdentity(t *testing.T) {
 // plantDamagedLedger writes one unreadable line into a ledger and reopens it,
 // so the store holds a quarantine tombstone: one counted task start whose
 // dollars are unknown (Usage reports Degraded).
+//
+// The planted line is the REAL crash signature — an append torn mid-line — and
+// that matters to what the fixture proves. kind and task_id are the first two
+// fields json.Marshal emits, so a torn task line still identifies itself as
+// exactly one task start; the tombstone is therefore worth exactly one start
+// and only the USD limb loses information. Damage that CANNOT be identified is
+// a different fixture (plantUnidentifiableDamagedLedger) with a different
+// answer, because scoring it as one start would be a guess.
 func plantDamagedLedger(t *testing.T, root string, window time.Duration) *GlobalLedger {
+	t.Helper()
+	torn := `{"kind":"task","task_id":"` + newID() + `","started_at_ms":1700000000000,"ended_at_ms":17000000`
+	l := plantLedgerLine(t, root, window, torn)
+	if u := l.Usage(capNow); u.StartsDegraded {
+		t.Fatalf("a torn task line degraded the START limb (%q); it is worth exactly one start",
+			u.StartsDegradedReason)
+	}
+	return l
+}
+
+// plantUnidentifiableDamagedLedger plants a destroyed line that does NOT
+// identify itself as a single task entry. The scan cannot tell whether it was
+// one task, a folded checkpoint carrying a whole history, or several entries
+// whose separating newlines went with them — so it is worth AT LEAST one start
+// and possibly many, and the start limb must refuse rather than count the
+// smaller number.
+func plantUnidentifiableDamagedLedger(t *testing.T, root string, window time.Duration) *GlobalLedger {
+	t.Helper()
+	l := plantLedgerLine(t, root, window, "{not json at all")
+	if u := l.Usage(capNow); !u.StartsDegraded {
+		t.Fatal("unidentifiable damage did not degrade the START limb")
+	}
+	return l
+}
+
+func plantLedgerLine(t *testing.T, root string, window time.Duration, line string) *GlobalLedger {
 	t.Helper()
 	p := GlobalLedgerPath(root)
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p, []byte("{not json at all\n"), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte(line+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	l, _ := OpenGlobalLedger(root, window, capNow)
@@ -335,6 +369,22 @@ func TestGlobalCap_FailsClosedPerLimb(t *testing.T) {
 			wantIn: "global_budget_usd",
 		},
 		{
+			name: "line-level damage that is not identifiably one task entry",
+			seed: func(t *testing.T, b *Broker) {
+				b.GlobalLedger = plantUnidentifiableDamagedLedger(t, b.AuditRoot, 24*time.Hour)
+			},
+			agent: "claude",
+			// The asymmetry above rests on "one damaged line is one task
+			// start", which is a LOWER BOUND, not an equality. When the
+			// destroyed bytes cannot be shown to be a single task entry they
+			// may have been a folded checkpoint (worth the whole history) or
+			// several entries at once, so the start limb is a lower bound too
+			// and refuses. Without this the start limb — the only bound on a
+			// subscription lane — silently resets on one bad byte.
+			usdOnly: true, taskOnly: true, both: true,
+			wantIn: "lower bound",
+		},
+		{
 			name:  "whole-file damage (unreadable)",
 			seed:  func(t *testing.T, b *Broker) { b.GlobalLedger = plantUnreadableLedger(t, b.AuditRoot, 24*time.Hour) },
 			agent: "claude",
@@ -418,16 +468,23 @@ func TestGlobalCap_DegradedUSDReasonIsActionable(t *testing.T) {
 			t.Errorf("windowed degraded reason %q does not say the refusal clears", why)
 		}
 	})
-	t.Run("total mode names the file and says it does not clear", func(t *testing.T) {
+	t.Run("total mode says it does not clear, without disclosing the host path", func(t *testing.T) {
 		b := capBroker(t)
 		b.GlobalBudgetUSD = 100
 		b.GlobalLedger = plantDamagedLedger(t, b.AuditRoot, 0)
 		_, why := b.globalCeilingExceeded("claude")
-		if !strings.Contains(why, GlobalLedgerPath(b.AuditRoot)) {
-			t.Errorf("total-mode degraded reason %q does not name the ledger file", why)
-		}
 		if !strings.Contains(why, "does NOT age out") {
 			t.Errorf("total-mode degraded reason %q does not say the refusal is permanent until repaired", why)
+		}
+		if !strings.Contains(why, "global ledger file") {
+			t.Errorf("total-mode degraded reason %q does not point the operator at the ledger file", why)
+		}
+		// This string is rendered into a 402 body for whoever submitted the
+		// task. The remedy has to be actionable for the OPERATOR (who reads the
+		// broker log, which names the path on every degrade) without handing
+		// the host's audit-root layout to a client that just probed the API.
+		if strings.Contains(why, b.AuditRoot) || strings.Contains(why, GlobalLedgerPath(b.AuditRoot)) {
+			t.Errorf("the refusal discloses the host audit-root path to the submitting client: %q", why)
 		}
 	})
 }
@@ -989,5 +1046,220 @@ func TestGlobalCap_EgressValidationStillPrecedesTheCeiling(t *testing.T) {
 		`{"repo_ref":"https://github.com/o/r","instruction":"x","egress_extra":[{"host":"*"}]}`)))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (validation before the ceiling); body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Security-review regressions: the check's atomicity against the ledger, the
+// host clock, the claim's release, and what a refusal the ceiling could not
+// measure does to an unattended retry.
+// ---------------------------------------------------------------------------
+
+// A task terminal recording BETWEEN the usage read and the claim walk used to
+// make that task count ZERO times: the snapshot predated the write, and the
+// claim walk then skipped the id as "already counted". Both halves now come
+// from one hold of the ledger's mutex, so every interleaving counts it once.
+//
+// The deterministic half: record exactly in the gap the old code left.
+func TestGlobalCap_ARecordCannotSlipBetweenTheUsageAndTheClaims(t *testing.T) {
+	b := capBroker(t)
+	b.GlobalMaxTasks = 5
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, capNow)
+	id := newID()
+	b.capInFlight = map[string]struct{}{id: {}}
+
+	for _, when := range []string{"before the write", "after the write"} {
+		usage, inflight := b.GlobalLedger.UsageWithClaims(b.nowMs(), b.capInFlight, "")
+		if got := usage.Starts + inflight; got != 1 {
+			t.Errorf("%s: the claimed task counted %d times, want exactly 1", when, got)
+		}
+		if when == "before the write" {
+			e := GlobalEntry{TaskID: id, EndedAtMs: b.nowMs(), USDTrusted: true}
+			if err := b.GlobalLedger.Record(b.nowMs(), e); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// The racing half: terminals landing WHILE admissions are being decided. The
+// existing overshoot test never records concurrently, so it cannot catch this.
+func TestGlobalCap_ConcurrentRecordsDuringAdmissionCannotOvershoot(t *testing.T) {
+	const limit = 8
+	b := capBroker(t)
+	b.GlobalMaxTasks = limit
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, capNow)
+
+	var admitted atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			id := newID()
+			if blocked, _ := b.admitGlobalStart(id, "claude"); blocked {
+				return
+			}
+			admitted.Add(1)
+			// The terminal path: record, THEN release, exactly as the
+			// lifecycle's defers do — so for one instant the task is both
+			// claimed and recorded, and other admissions are deciding
+			// throughout.
+			_ = b.GlobalLedger.Record(b.nowMs(), GlobalEntry{
+				TaskID: id, EndedAtMs: b.nowMs(), Vendor: "anthropic", Agent: "claude",
+				Metered: true, USDTrusted: true, Outcome: "pushed",
+			})
+			b.releaseGlobalStart(id)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := admitted.Load(); got != limit {
+		t.Errorf("%d admissions against a limb of %d, want exactly %d "+
+			"(a terminal landing mid-check must not make its task count zero times)", got, limit, limit)
+	}
+	if u := b.GlobalLedger.Usage(b.nowMs()); u.Starts != int(admitted.Load()) {
+		t.Errorf("the ledger recorded %d starts for %d admissions", u.Starts, admitted.Load())
+	}
+}
+
+// A host clock that jumps FORWARD by more than the window used to move the
+// query cutoff past every recorded entry: usage read zero, and the ceiling
+// admitted freely for a full window. Silent fail-open in a control whose
+// contract is that "I don't know" means "no".
+func TestGlobalCap_AForwardClockJumpCannotZeroTheLimbs(t *testing.T) {
+	newBroker := func(t *testing.T) (*Broker, *testClock, *testClock) {
+		b := capBroker(t)
+		b.GlobalMaxTasks = 5
+		b.GlobalBudgetUSD = 50
+		wall, mono := &testClock{}, &testClock{}
+		wall.set(capNow)
+		mono.set(0)
+		b.now, b.mono = wall.now, mono.now
+		b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 10, 100, capNow)
+		if blocked, _ := b.globalCeilingExceeded("claude"); !blocked {
+			t.Fatal("the seeded ledger is already over both limbs; it must refuse")
+		}
+		return b, wall, mono
+	}
+
+	t.Run("the wall clock jumps and monotonic time does not", func(t *testing.T) {
+		b, wall, mono := newBroker(t)
+		wall.advance(2 * time.Hour)
+		mono.advance(time.Second) // a real second passed
+		blocked, why := b.globalCeilingExceeded("claude")
+		if !blocked {
+			t.Error("FAIL-OPEN: a forward clock jump larger than the window admitted a task")
+		}
+		if blocked && !strings.Contains(why, "exhausted") {
+			t.Errorf("refused for the wrong reason after a jump: %q", why)
+		}
+	})
+
+	t.Run("an idle daemon still ages entries out", func(t *testing.T) {
+		b, wall, mono := newBroker(t)
+		// Two hours pass for real: BOTH clocks advance. Nothing has jumped, so
+		// the window must roll over normally — otherwise the correction would
+		// brick every install that goes quiet for longer than its window.
+		wall.advance(2 * time.Hour)
+		mono.advance(2 * time.Hour)
+		if blocked, why := b.globalCeilingExceeded("claude"); blocked {
+			t.Errorf("an idle daemon was refused after its entries aged out: %s", why)
+		}
+	})
+
+	t.Run("slow drift is not mistaken for a jump", func(t *testing.T) {
+		b, wall, mono := newBroker(t)
+		// A crystal that runs fast, or NTP slewing the wall clock's rate: the
+		// two clocks part by a few hundred milliseconds over many observations.
+		// Accumulating that into the correction would widen the window for no
+		// reason on a long-lived daemon.
+		for i := 0; i < 50; i++ {
+			wall.advance(time.Minute + 100*time.Millisecond)
+			mono.advance(time.Minute)
+			b.globalCeilingExceeded("claude")
+		}
+		// 50 minutes of real time have passed under a one-hour window, so the
+		// seeded starts are still in it and the refusal must stand on the
+		// NUMBERS, not on an inflated window.
+		wall.advance(20 * time.Minute)
+		mono.advance(20 * time.Minute)
+		if blocked, why := b.globalCeilingExceeded("claude"); blocked {
+			t.Errorf("drift accumulated into the window correction and kept entries alive past it: %s", why)
+		}
+	})
+
+	t.Run("a backward jump is left alone", func(t *testing.T) {
+		b, wall, mono := newBroker(t)
+		wall.advance(-2 * time.Hour)
+		mono.advance(time.Second)
+		if blocked, _ := b.globalCeilingExceeded("claude"); !blocked {
+			t.Error("a backward clock jump admitted a task; it can only over-count")
+		}
+	})
+}
+
+// A claim released only while a limb happens to be on is a claim leaked
+// forever the moment a limb is turned off mid-task — and a permanent unit of
+// ceiling once it is turned back on.
+func TestGlobalCap_ClaimIsReleasedEvenAfterALimbIsTurnedOff(t *testing.T) {
+	b := capBroker(t)
+	b.GlobalMaxTasks = 5
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, capNow)
+	id := newID()
+	if blocked, why := b.admitGlobalStart(id, "claude"); blocked {
+		t.Fatalf("admission refused: %s", why)
+	}
+	b.GlobalMaxTasks = 0 // an operator (or Task 4's admin surface) turns it off
+	b.releaseGlobalStart(id)
+	b.GlobalMaxTasks = 5 // ...and back on
+	if n := b.inFlightStarts(); n != 0 {
+		t.Errorf("%d claims leaked across a limb being turned off, want 0", n)
+	}
+}
+
+// A refusal the ceiling could not MEASURE is not the same fact as one it
+// measured, and dead-lettering both alike turns a transient fault into
+// irreversible work loss: the item is gone, there is nothing left to retry
+// from, and the ledger may be readable again a second later. Over-cap still
+// drops (it is a real condition that resolves on its own schedule, and a retry
+// that waits for it lands hours late at a gate nobody is at); cannot-measure
+// parks and the next tick re-asks.
+func TestGlobalCap_DispatcherParksARetryItCannotMeasure(t *testing.T) {
+	var agentRuns atomic.Int64
+	run := func(_ context.Context, _ []string, stdout, _ io.Writer) error {
+		agentRuns.Add(1)
+		fmt.Fprintln(stdout, `{"type":"result","subtype":"success"}`)
+		return nil
+	}
+	b, _ := globalCapQueueBroker(t, 2, run)
+	b.GlobalMaxTasks = 100 // roomy: only the measurement failure can refuse
+	b.GlobalLedger = nil   // a limb is configured and there is no store
+
+	retry, err := b.Enqueue(Task{RepoRef: "https://github.com/o/r.git", Instruction: "retry",
+		AutoApprove: true, RetryOf: newID(), Attempt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.StartDispatcher()
+	defer b.StopDispatcher()
+	time.Sleep(80 * time.Millisecond)
+
+	got := queueItemState(t, b, retry)
+	if got.State == QueueDeadLetter {
+		t.Fatal("a retry the ceiling could not MEASURE was dead-lettered; a transient fault must not destroy unattended work")
+	}
+	if got.State != QueueQueued {
+		t.Fatalf("state = %q, want queued (parked until the ceiling can be evaluated)", got.State)
+	}
+	if agentRuns.Load() != 0 {
+		t.Fatal("a task ran while the global ceiling could not be evaluated")
+	}
+	// It is a park, not an admission: the claim must not have been kept either.
+	if n := b.inFlightStarts(); n != 0 {
+		t.Errorf("%d in-flight claims held for a parked item, want 0", n)
 	}
 }
