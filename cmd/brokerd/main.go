@@ -146,6 +146,19 @@ func setupProfiles(repos map[string]config.SetupProfile) map[string]broker.Setup
 	return out
 }
 
+// applyCIConfig maps the operator's `ci:` block onto the broker's CI-watch
+// fields. Split out of the assembly literal (rather than inlined like the
+// other scalars) so the OFF-by-default wiring is directly testable: b.CIWatch
+// is the single gate brokerd consults before starting the watcher, and this is
+// the only place anything sets it. Ranges are already validated by
+// config.Load; 0 durations stay 0 here and the broker applies its own built-in
+// fallbacks, so "unset" means the same thing at both layers.
+func applyCIConfig(b *broker.Broker, ci config.CIConfig) {
+	b.CIWatch = ci.Watch
+	b.CIPollInterval = ci.PollInterval
+	b.CIWatchTimeout = ci.WatchTimeout
+}
+
 var containerVersionRE = regexp.MustCompile(`container CLI version (\d+)\.(\d+)\.(\d+)`)
 
 // taskContainerRE matches a drydock task VM name exactly (task- + a 32-hex
@@ -558,6 +571,8 @@ func main() {
 		PolicyFields:         policyFields,
 		PolicyHash:           policyHash,
 	}
+	// Host-side CI observation (increment B). Off unless ci.watch is set.
+	applyCIConfig(b, cfg.CI)
 	if squidCtl != nil {
 		b.Squid = squidCtl
 	}
@@ -605,9 +620,11 @@ func main() {
 	// reconciled queue.
 	b.StartDispatcher()
 
-	// Host-side CI observation (increment B). Started only when the watch is
-	// enabled, so a stock install runs no extra goroutine and makes no gh call
-	// on a timer. There is no separate resume step: the watcher's first pass
+	// Host-side CI observation (increment B). b.CIWatch comes from ci.watch
+	// (applyCIConfig, above) and defaults to false, so a stock install runs no
+	// extra goroutine and makes no gh call on a timer — the operator's GitHub
+	// credential is exercised on a timer only after an explicit opt-in.
+	// There is no separate resume step: the watcher's first pass
 	// reads the durable <id>.ci.json markers off disk, so a watch that survived
 	// a restart is picked up here with its ORIGINAL absolute deadline. It holds
 	// no concurrency slot and keeps no stage (D4), so it can never starve

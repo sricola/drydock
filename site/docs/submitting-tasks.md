@@ -168,6 +168,10 @@ With `ci.watch` off — the default — none of this happens: a pushed queue ite
 completes the moment it pushes, exactly as it always has, and no marker is
 written and no API call is made on a timer.
 
+Turning it on (and back off), the poll/deadline knobs, and the fact that it
+puts your host `gh` credential on a timer are covered in
+[Configuration § host-side CI observation](configuration.html#host-side-ci-observation-opt-in-off-by-default).
+
 A queued task's terminal metrics row records the wait as `stage_ms.queued`
 (enqueue → dispatch); `drydock stats` aggregates it as the queue-wait
 p50/p95 line. Synchronous tasks omit the field entirely.

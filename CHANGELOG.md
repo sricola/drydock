@@ -41,6 +41,24 @@ entry below corresponds to a Git tag of the same name.
   queue item completes at the push exactly as before, no marker is written,
   and no API call is made on a timer.
 
+- **`ci:` config block — the opt-in that turns the CI watch on.** New keys in
+  `~/.drydock/config.yaml`: `ci.watch` (default **`false`** — the feature ships
+  off), `ci.poll_interval` (`60s`, minimum `10s`), `ci.watch_timeout` (`90m`,
+  minimum `1m`, an absolute deadline anchored at push so a restart cannot
+  extend it), and `ci.max_attempts` (`0` = retry off, capped at `10`) which is
+  declared now for schema stability and consumed by the next increment. Each
+  has an env override (`DRYDOCK_CI_WATCH=1`, `DRYDOCK_CI_POLL_INTERVAL`,
+  `DRYDOCK_CI_WATCH_TIMEOUT`, `DRYDOCK_CI_MAX_ATTEMPTS`) and a row in
+  `drydock policy explain`, so which layer armed the watch is always visible.
+  Out-of-range values are rejected at load rather than silently clamped, and
+  the `max_attempts` ceiling exists because a retry chain's worst case is
+  `max_attempts × task_budget_usd` — each attempt mints a fresh full budget.
+  **Threat model updated, not weakened:** enabling `ci.watch` puts the host's
+  `gh` credential on a **timer** where it was previously only
+  operator-initiated (N5), and CI check names join staged files and issue text
+  as a documented untrusted *source* (N2). No new containment claim is made
+  and no exception is taken; B1 fetches no CI log text at all.
+
 - **Durable task queue (orchestration increment A).** `drydock queue add`
   takes the same flags as `submit` but returns the moment brokerd has
   durably persisted the task; it runs unattended when a concurrency slot

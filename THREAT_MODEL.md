@@ -16,7 +16,10 @@ For people evaluating drydock who haven't read the full doc:
   egress (deny-by-default hostname allowlist enforced on the host).
 - **What crosses back to the host**: a single `git diff`. Not commands,
   not files outside the work tree, not push events, just inert data
-  the operator reviews before it lands anywhere.
+  the operator reviews before it lands anywhere. With the opt-in CI
+  watch on (`ci.watch`, default off) one more thing crosses back, from
+  GitHub rather than from the VM: a pushed PR's check names and check
+  **conclusions**. Status, never log text — see N2 and N5.
 - **What we don't claim**: defense against a host compromise, a kernel
   or `container` 0day (guest-to-host escape defeats drydock entirely),
   or attacks that need a malicious operator.
@@ -309,6 +312,32 @@ untrusted contributors with extra suspicion. Issue-sourced instructions
 who can file an issue is writing prompt text — and the human plan+diff
 gates are the boundary there too.
 
+**CI check names and conclusions are a third documented source of the same
+kind** (`ci.watch`, off by default). When the watch is on, the broker reads a
+pushed PR's checks off GitHub; each check's **name** crosses into the broker
+alongside the broker-observed conclusion. A repository's own workflow file
+chooses those names, so a check name is attacker-influenced text in exactly the
+way issue text is. Three properties bound it: it is sanitized at ingestion
+(C0/C1 control characters, DEL, and Unicode bidi/format overrides stripped;
+length-capped, and the retained list itself is capped), it **decides nothing**
+— every control-flow decision derives only from the broker-observed
+conclusion, the same class of fact as the verifier's exit codes — and in B1
+nothing carries it onward: what is persisted and displayed is broker-authored
+state, a PR number, and a broker-authored reason string. This is a new
+*source*, not a new trust boundary, and no new claim is made: the human
+plan+diff gates are still the boundary.
+
+**In B1 the broker fetches no CI log text at all.** The only host calls on the
+watch path are `gh pr checks --json bucket,name,state` and
+`gh pr view --json statusCheckRollup`; no log, URL, output, description, or
+annotation field is ever requested, the summary types carry no field that
+could hold log content, and nothing from the watch is fed back into any
+agent's instruction. Increment B2 will put capped, sanitized, explicitly
+fenced CI **log** text into a retry task's instruction — genuinely untrusted,
+repo-controlled bytes, since a repo's own workflow can print anything into its
+own logs. The fuller wording for that lands with B2; the framing does not
+change.
+
 ### N3. Side-channel data exfiltration via the diff
 
 A clever agent can encode information (e.g. an exfiltrated bearer
@@ -378,6 +407,20 @@ requests, so a Codex subscription task is bounded by that; set
 `task_max_requests` explicitly to raise or lower it. Operators running batch
 jobs should set both.
 
+**CI retry chains (`ci.max_attempts`).** The CI watch shipped in increment B1
+adds **no model spend whatsoever**: it observes check conclusions host-side and
+enqueues nothing. Increment B2's bounded retry does add spend. A retry is a new
+task with a new credential lease and a **fresh full `task_budget_usd`** — it
+deliberately does not share the parent's budget, because sharing it would make
+a retry 402 mid-run against a budget the parent already spent. So with
+`ci.max_attempts > 0` the worst case for a single failing task is
+`max_attempts × task_budget_usd` **on top of** the parent attempt's own
+`task_budget_usd`. `ci.max_attempts` defaults to **0 (retry off)**, and config
+validation rejects anything above 10 so a typo cannot authorize an arbitrarily
+deep chain of real spend. The chain's depth is persisted with the task, so a
+crash or restart cannot launder the bound. `aggregate_budget_usd`, where set,
+still applies across the whole chain.
+
 **`openai_compat` lane (`api_key` mode).** USD metering depends on the upstream
 reporting token usage in its response. Streaming `chat/completions` responses
 commonly omit usage, so a streamed task may be metered at $0 and never trip
@@ -390,6 +433,38 @@ be set for any `openai_compat` lane where streaming is expected.
 open PRs. drydock does not isolate these. An attacker who can run
 `drydock approve` can push to any repo the operator's `gh` token can
 reach.
+
+**With `ci.watch` enabled, that credential is also used on a timer.** State
+this plainly: until increment B1, every host `gh`/`git` invocation was
+operator-initiated — a push and a PR open, both downstream of a human
+approval at the diff gate. The CI watch is the first use that is not. brokerd
+polls each watched PR every `ci.poll_interval` (default `60s`) for up to
+`ci.watch_timeout` (default `90m`) with no human in the loop, so an operator
+who enables it is consenting to unattended, recurring use of their own GitHub
+credential. That is a real change in posture, not a detail.
+
+What bounds it:
+
+- **Read-only.** The watch path issues exactly two commands,
+  `gh pr checks <n> --repo <pinned> --json bucket,name,state` and
+  `gh pr view <n> --repo <pinned> --json statusCheckRollup`. No write
+  subcommand is reachable from it.
+- **Host-pinned.** `github.com` is hard-pinned inside the `--repo` flag value,
+  so an exported `GH_HOST` cannot aim the credential at another host while
+  every persisted record still says github.com.
+- **Curated env.** The watch uses the same curated environment every other
+  host CLI call gets, never `os.Environ()`.
+- **Bounded.** Each watch runs against an absolute deadline anchored at push
+  time, which a restart or a crash loop cannot extend, and gives up after a
+  small number of consecutive read failures.
+- **Off by default.** `ci.watch: false` (the shipped default) means no marker
+  is written, no goroutine runs, and no `gh` call is made on a timer.
+
+What it does **not** change: the credential is still the operator's, still
+un-isolated, and everything N5 already said about an attacker who can run
+`drydock approve` is unchanged. The watch grants the sandboxed agent no new
+reach — it runs host-side, on a PR number and owner/repo validated at PR-open
+time, and the agent VM has no path to either the credential or the watch.
 
 ### N6. Local attacker on the same host
 
