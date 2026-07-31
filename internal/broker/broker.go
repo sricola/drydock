@@ -23,6 +23,7 @@ import (
 	"drydock/internal/audit"
 	"drydock/internal/config"
 	"drydock/internal/creds"
+	"drydock/internal/depcache"
 	"drydock/internal/egress"
 	"drydock/internal/provider"
 	"drydock/internal/remote"
@@ -142,6 +143,25 @@ type Broker struct {
 	// fails the task closed BEFORE the agent VM boots and before any bearer
 	// is injected into any VM (fail-closed-before-spend; see runSetup).
 	Setup map[string]SetupProfile
+
+	// CacheRoot/CacheQuotaBytes wire the persistent dependency cache (config
+	// cache_root/cache_quota_gb, mirrored by cmd/brokerd). The cache is
+	// active only when BOTH are set (root non-empty, quota > 0) AND the
+	// task's SetupProfile opts in with Cache: true. See cache.go for the
+	// resolve/refcount/evict machinery and its serialization invariant.
+	CacheRoot       string
+	CacheQuotaBytes int64
+
+	// cacheMu serializes EVERY cache-dir resolution (resolveCache) and every
+	// eviction sweep (sweepCache) against each other — Evict can RemoveAll
+	// any entry, so it must be exclusive against all cache use. cacheInUse
+	// refcounts entry dirs currently mounted by live tasks (resolve
+	// increments, task completion decrements); a sweep never removes an
+	// in-use dir. cacheStore is built lazily under cacheMu from
+	// CacheRoot/CacheQuotaBytes; nil means the cache is off.
+	cacheMu    sync.Mutex
+	cacheInUse map[string]int
+	cacheStore *depcache.Store
 
 	// DiffPolicy caps the size and shape of the diff a task may propose
 	// (config diff_policy, wired from cfg.DiffPolicy by cmd/brokerd). The zero
@@ -377,6 +397,21 @@ type taskRun struct {
 	// not run in this process.
 	setup    *trustbrief.SetupEvidence
 	setupDur time.Duration // wall-clock of the setting_up stage (metrics)
+	// setupDiskBreach records that the setup-phase disk guard cancelled the
+	// phase (stage/cache size caps or the host free-space floor, A8): the
+	// setup_failed terminal names the breach instead of a generic command
+	// error. Written and read only on the single HandleTask goroutine.
+	setupDiskBreach bool
+	// Dependency-cache participation, set by resolveCache (cache.go) before
+	// the first setup VM boots. cacheDir == "" means uncached; when set, the
+	// SAME dir is mounted rw into the setup VMs and READ-ONLY into the agent
+	// VM, and its in-use refcount is held until releaseCache (deferred in
+	// HandleTask) drops it at task completion.
+	cacheDir    string
+	cacheKey    string // full 64-hex cache key (Brief records a 12-hex prefix)
+	cacheHit    bool
+	cacheStatus string // "" (off) | trustbrief.CacheHit/CacheMiss/CacheDisabledNoLockfile
+
 	// setupStart is when runSetup began its first command — the moment the
 	// preparing stage ended for a task with an execution profile. Zero when no
 	// setup ran. appendMetrics uses it to end StageMs.Preparing at setup
@@ -676,6 +711,12 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	// carries no credential; runner.BuildRunArgs below is never reached), so
 	// a broken workspace costs $0 in API spend. The deferred grant.Revoke
 	// registered at mint time still fires on this return.
+	//
+	// The cache release is deferred HERE — not inside runSetup — because the
+	// entry runSetup's resolveCache refcounts stays bind-mounted through the
+	// agent run below; only at task completion may its in-use count drop
+	// (and the post-completion eviction sweep run). No-op for uncached tasks.
+	defer tr.releaseCache()
 	if !tr.runSetup() {
 		return
 	}
@@ -705,8 +746,14 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		Env:        tr.buildEnv(),
 		StageDir:   st.WorkDir(),
 		PromptFile: "/work/.task/prompt.txt",
-		MemoryGB:   4,
-		CPUs:       4,
+		// The SAME cache entry setup just populated, mounted READ-ONLY at
+		// /deps (BuildRunArgs adds the readonly flag): the agent reads the
+		// warm cache but can never write it — agent-run code must not be
+		// able to poison dependencies consumed by other tasks. Empty (no
+		// mount) when this task runs uncached.
+		CacheDir: tr.cacheDir,
+		MemoryGB: 4,
+		CPUs:     4,
 	})
 
 	if err := tr.runSandbox(args); err != nil {
@@ -851,7 +898,7 @@ func buildSetupEnv(proxyAuth, gatewayIP string, proxyPort int) []string {
 // pure (all inputs explicit) so it can be unit-tested without a Broker.
 func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
 	agentName, taskModel, openAICompatModel, operatorDefaultModel, taskVendor string,
-	planOnly bool) []string {
+	planOnly, cacheActive bool) []string {
 	env := append([]string{}, grantEnv...)
 	env = append(env, buildSetupEnv(proxyAuth, gatewayIP, proxyPort)...)
 	defaultModel := effectiveDefaultModel(operatorDefaultModel, taskVendor)
@@ -862,6 +909,12 @@ func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
 		// (consumed there; absent entirely on a normal run).
 		env = append(env, "DRYDOCK_MODE=plan")
 	}
+	if cacheActive {
+		// Point the package managers at the read-only /deps mount so the
+		// agent's installs reuse the warm cache setup populated. Absent
+		// entirely on an uncached run (no mount to point at).
+		env = append(env, runner.CacheEnv()...)
+	}
 	return env
 }
 
@@ -871,7 +924,7 @@ func buildTaskEnv(grantEnv []string, proxyAuth, gatewayIP string, proxyPort int,
 func (tr *taskRun) buildEnv() []string {
 	return buildTaskEnv(tr.grant.EnvVars(), tr.proxyAuth, tr.b.GatewayIP, tr.b.ProxyPort,
 		tr.agentName, tr.model, tr.b.OpenAICompatModel, tr.b.DefaultModel, tr.taskVendor,
-		tr.planOnly)
+		tr.planOnly, tr.cacheDir != "")
 }
 
 // appendBrokerResult writes the broker-authored terminal result for this task.

@@ -104,6 +104,7 @@ profiles:
       readiness:
         - ["node", "--version"]
       timeout: 10m      # per command; 0 = the default (10m)
+      cache: false      # true = opt in to the persistent per-repo dependency cache
 ```
 
 What the phase guarantees:
@@ -119,8 +120,9 @@ What the phase guarantees:
   gateway and no API bearer.
 - **Same workspace the agent gets.** Commands run in fresh sandbox VMs (the
   agent's image) against the live per-task work tree, so what setup installs
-  is exactly what the agent sees. The per-task stage is wiped at cleanup —
-  there is **no persistent cache yet**; setup runs from scratch each task.
+  is exactly what the agent sees. The per-task stage is wiped at cleanup;
+  setup runs from scratch each task unless the repo opts into the
+  [dependency cache](#persistent-dependency-cache-opt-in-per-repo) below.
 - **Self-contained commands.** Each command is its own argv in its own VM
   run: shell state (`cd`, exported variables, activated virtualenvs) does
   **not** carry between commands. Write each entry to stand alone.
@@ -132,6 +134,48 @@ lands in the trust brief (`drydock inspect <id>`); the combined output is
 kept display-only at `~/.drydock/audit/<id>.setup.log`. See
 [Submitting tasks](submitting-tasks.html#execution-profiles-setup-per-repo)
 for the full behavior.
+
+## Persistent dependency cache (opt-in, per repo)
+
+Set `cache: true` in a repo's profile to reuse setup's dependency downloads
+across tasks instead of re-fetching everything each run. Package-manager
+caches (npm, Go modules, pip, cargo) are pointed at `/deps`, a host-side
+store under `cache_root` (default `~/.drydock/cache`, env
+`DRYDOCK_CACHE_ROOT`) bounded by `cache_quota_gb` (default 20 GiB, env
+`DRYDOCK_CACHE_QUOTA_GB`; least-recently-used entries are evicted past the
+bound, and `0` disables the cache entirely, even for repos with
+`cache: true`).
+
+The semantics that keep it safe:
+
+- **Read-only to the agent.** Only setup VMs mount `/deps` read-write; the
+  agent VM's mount is strictly read-only, so agent-run code can never poison
+  dependencies that later tasks consume. The A7 claim in the
+  [threat model](threat-model.html) is unchanged — agent-writable state
+  still never persists between tasks — and the `TestRedteam_A7Cache_*`
+  red-team tests enforce it.
+- **No cross-repo sharing.** Entries are content-addressed: keyed by repo
+  identity + lockfile digests + the setup commands + the sandbox image +
+  architecture. Two repos never share an entry, even with identical
+  lockfiles, and any change to a key input simply misses to a fresh entry.
+- **Lockfile required (fails closed to "no cache").** A repo without a
+  recognized lockfile runs uncached — an unpinned dependency set has no
+  stable content identity to cache under. The trust brief records
+  `disabled: no lockfile` so you can see why.
+- **Payloads only, never auth.** The cache holds package payloads; registry
+  credentials and tokens live in the VM's ephemeral HOME and never touch
+  `/deps`.
+- **A speedup, never a correctness dependency.** A miss (or caching off)
+  simply re-fetches through the squid proxy. One caveat of the read-only
+  agent mount: if the *agent itself* installs a package the cache does not
+  already carry, its package manager may fail writing the read-only cache
+  dir (`EROFS`). Keep setup responsible for installing dependencies — that
+  is what the phase is for — or leave caching off for repos where the agent
+  routinely installs new packages mid-task.
+
+Cache participation lands in the trust brief's setup block (`drydock
+inspect <id>`): `hit`/`miss`/`disabled: no lockfile` plus the entry's key
+prefix.
 
 ## Bring your own model
 
@@ -195,6 +239,8 @@ with `--model gemini-2.5-flash`.
 | `sandbox_image` | `SANDBOX_IMAGE` | `drydock-sandbox:latest` | Per-task agent VM image |
 | `anchor_image` | `DRYDOCK_ANCHOR_IMAGE` | `drydock-anchor:latest` | Minimal image holding the vmnet gateway IP |
 | `stage_root` / `audit_root` / `squid_run_dir` | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `~/.drydock/{stage,audit,squid}` | Per-task scratch (audit dir `0700`; log + diff `0600`) |
+| `cache_root` | `DRYDOCK_CACHE_ROOT` | `~/.drydock/cache` | Persistent per-repo dependency caches for profiles with `cache: true` |
+| `cache_quota_gb` | `DRYDOCK_CACHE_QUOTA_GB` | `20` | Total disk bound (GiB) for the dependency cache; LRU-evicted; `0` disables caching entirely |
 | `broker.socket` | `BROKER_SOCKET` | `$TMPDIR/drydock-$UID/drydock.sock` | Unix socket (parent dir `0700`, socket `0600`) |
 | `broker.addr` | `BROKER_ADDR` | *(empty)* | `host:port` to expose over TCP (**no auth**; see [SECURITY.md § TCP exposure](https://github.com/sricola/drydock/blob/main/SECURITY.md#tcp-exposure-brokeraddr--broker_addr)) |
 | `log_json` | `DRYDOCK_LOG_JSON=1` | `false` | Force JSON logs even on a TTY |

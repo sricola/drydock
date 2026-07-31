@@ -140,6 +140,7 @@ func setupProfiles(repos map[string]config.SetupProfile) map[string]broker.Setup
 			Setup:     sp.Setup,
 			Readiness: sp.Readiness,
 			Timeout:   sp.Timeout,
+			Cache:     sp.Cache,
 		}
 	}
 	return out
@@ -551,6 +552,8 @@ func main() {
 		UnmeteredVendors:     unmeteredVendors,
 		Verify:               verifyRepos(cfg.Verify.Repos),
 		Setup:                setupProfiles(cfg.Profiles.Repos),
+		CacheRoot:            cfg.CacheRoot,
+		CacheQuotaBytes:      int64(cfg.CacheQuotaGB) << 30,
 		DiffPolicy:           cfg.DiffPolicy,
 		PolicyFields:         policyFields,
 		PolicyHash:           policyHash,
@@ -562,6 +565,13 @@ func main() {
 		b.AggregateExceeded = gw.AggregateExceeded
 	}
 	brk = b // expose to the shutdown handler
+
+	// Boot eviction sweep over the dependency cache: bring it back within
+	// quota (and the host free-space floor) before any task runs. Safe by
+	// construction — no task exists yet, so nothing is in use; later sweeps
+	// run only at task-completion boundaries under the broker's cache mutex,
+	// never while an entry is mounted. No-op when the cache is off.
+	b.SweepCache()
 	slog.Info("config",
 		"network", cfg.Network,
 		"max_concurrent_tasks", cfg.MaxConcurrent,

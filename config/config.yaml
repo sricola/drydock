@@ -22,6 +22,7 @@ openai_auth:            api_key        # authentication mode: api_key | subscrip
 task_max_requests:      0              # per-task request cap. 0 falls closed to a built-in default (1000) in every mode; set explicitly to change the bound
 task_max_inflight:      1              # concurrent gateway requests per task lease; bounds budget overshoot to this many in-flight requests (0 = unlimited)
 stage_quota_gb:         8              # hard per-task disk bound (GiB): /work lives in an APFS sparse image this big (macOS). 0 = plain host dir, polling guard only
+cache_quota_gb:         20             # total disk bound (GiB) for the persistent dependency cache under cache_root. 0 = cache disabled entirely, even for repos with cache: true
 max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)
@@ -55,8 +56,13 @@ openai_compat:
 # gate the run. Any failure fails the task closed before any model spend.
 # Commands live in this host config only — the sandboxed agent cannot edit
 # them. Each command is a self-contained argv: shell state (cd, exports) does
-# not carry between commands. No persistent cache yet — setup runs from
-# scratch on every task. Keys are canonical host/owner/repo.
+# not carry between commands. Set cache: true to opt a repo into the
+# persistent dependency cache under cache_root: setup can reuse dependencies
+# downloaded by earlier tasks instead of starting from scratch. The cache is
+# strictly per-repo (never shared across repos), is read-only to the agent,
+# and requires the repo to have a lockfile so reuse is pinned to exact
+# dependency versions. Default false — setup runs from scratch every task.
+# Keys are canonical host/owner/repo.
 # profiles:
 #   repos:
 #     "github.com/you/yourrepo":
@@ -65,6 +71,7 @@ openai_compat:
 #       readiness:
 #         - ["node", "--version"]
 #       timeout: 10m      # 0 = default
+#       cache: false      # true = opt in to the persistent per-repo dependency cache
 
 # diff_policy: host-side caps on the diff a task may propose. A diff that
 # exceeds a cap or touches a blocked path fails the task closed as
@@ -84,6 +91,7 @@ openai_compat:
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)
 audit_root:    ~/.drydock/audit        # per-task <id>.jsonl + .diff
 squid_run_dir: ~/.drydock/squid        # squid pid/conf/cache.log
+cache_root:    ~/.drydock/cache        # persistent per-repo dependency caches for profiles with cache: true (bounded by cache_quota_gb)
 
 # --- Broker listener ---
 broker:

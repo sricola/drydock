@@ -33,6 +33,10 @@ type SetupProfile struct {
 	Setup     [][]string
 	Readiness [][]string
 	Timeout   time.Duration
+	// Cache opts this repo into the persistent dependency cache (config
+	// profiles.repos.<key>.cache). Effective only when the Broker also has
+	// CacheRoot/CacheQuotaBytes configured; see cache.go.
+	Cache bool
 }
 
 // DefaultSetupTimeout bounds each setup/readiness command when the repo's
@@ -79,6 +83,11 @@ func (tr *taskRun) runSetup() bool {
 	b.setStage(tr.id, StageSettingUp)
 	tr.sw.emit(map[string]any{"event": "stage", "stage": "setting_up",
 		"task_id": tr.id, "commands": len(cfg.Setup) + len(cfg.Readiness)})
+	// Resolve (and refcount) this task's dependency-cache entry before the
+	// first setup VM boots. The matching release is deferred in HandleTask,
+	// so the entry stays protected from eviction across the setup AND agent
+	// runs. No-op unless the profile opts in and the cache is configured.
+	tr.resolveCache(cfg)
 	start := time.Now()
 	tr.setupStart = start // ends StageMs.Preparing here (see appendMetrics)
 	s, cancelled := tr.execSetup(cfg)
@@ -123,9 +132,16 @@ func (tr *taskRun) runSetup() bool {
 		if _, lerr := os.Lstat(tr.setupLogPath()); lerr == nil {
 			hint += " · setup log: " + tr.setupLogPath()
 		}
+		reason := setupFailReason(s)
+		if tr.setupDiskBreach {
+			// The disk guard, not the repo's command, ended the phase: name
+			// the breach so the operator doesn't chase a phantom build error.
+			reason = "host disk floor breached during setup (rw /work or /deps grew past the caps," +
+				" or host free space fell below the floor): " + reason
+		}
 		tr.sw.emit(map[string]any{"event": "result", "outcome": "setup_failed",
 			"task_id": tr.id, "setup_status": s.Status,
-			"reason":      setupFailReason(s),
+			"reason":      reason,
 			"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": cost,
 			"hint": hint})
 		return false
@@ -142,8 +158,10 @@ func (tr *taskRun) execSetup(cfg SetupProfile) (s *trustbrief.SetupEvidence, can
 	// The egress posture is asserted only once a setup VM is actually about
 	// to launch (below, after the log-open check succeeds): the inconclusive
 	// paths that never ran a VM must not carry a posture claim for VMs that
-	// never existed.
-	s = &trustbrief.SetupEvidence{}
+	// never existed. Cache evidence, by contrast, is attached on every path:
+	// resolveCache already ran, and its outcome (hit/miss/disabled) is a
+	// fact about this task regardless of how the commands fare.
+	s = &trustbrief.SetupEvidence{Cache: tr.cacheEvidence()}
 
 	all := make([][]string, 0, len(cfg.Setup)+len(cfg.Readiness))
 	all = append(all, cfg.Setup...)
@@ -181,22 +199,58 @@ func (tr *taskRun) execSetup(cfg SetupProfile) (s *trustbrief.SetupEvidence, can
 
 	// The setup env: proxy/gateway vars only, NEVER the grant bearer. This is
 	// half of fail-closed-before-spend — the other half is runSetup's
-	// placement before the agent VM boots.
+	// placement before the agent VM boots. When this task's cache is active,
+	// the tool-cache env points each package manager at the rw /deps mount.
 	setupEnv := buildSetupEnv(tr.proxyAuth, b.GatewayIP, b.ProxyPort)
+	if tr.cacheDir != "" {
+		setupEnv = append(setupEnv, runner.CacheEnv()...)
+	}
 
 	// One shared output budget across all commands (same bound as the agent
 	// run). onExceed cancels whichever command is in flight so a log flood
 	// terminates the VM instead of filling the host disk.
 	var curMu sync.Mutex
 	var cancelCur context.CancelFunc
-	outCap := newOutputCap(maxTaskOutputBytes, func() {
+	cancelInflight := func() {
 		curMu.Lock()
 		defer curMu.Unlock()
 		if cancelCur != nil {
 			cancelCur()
 		}
-	})
+	}
+	outCap := newOutputCap(maxTaskOutputBytes, cancelInflight)
 	capped := outCap.wrap(logf)
+
+	// A8, extended across setup: the setup VMs run untrusted repo code (npm
+	// postinstall, pip setup.py) with the live /work mounted rw AND — when
+	// caching is active — the rw /deps mount, so the same disk guard that
+	// bounds the agent run must cover this phase too; otherwise a hostile
+	// install script could exhaust the host disk before any eviction sweep
+	// runs. One watcher walks the stage against the byte/file caps and polls
+	// the host free-space floor (measured on b.StageRoot — the path that
+	// stays on the host filesystem no matter the stage layout, same as
+	// runSandbox); a second bounds the cache entry's growth and its own
+	// filesystem's floor when this task mounts /deps. On breach the in-flight
+	// command is cancelled and classified below → setup_failed (fail closed,
+	// never passed).
+	watch := b.watchStage
+	if watch == nil {
+		watch = watchStageSize
+	}
+	stageRoot := ""
+	if tr.st != nil {
+		stageRoot = tr.st.WorkDir()
+	}
+	diskGuard := watch(stageRoot, b.StageRoot, stageSizeInterval, cancelInflight)
+	defer diskGuard.stop()
+	var cacheGuard *stageSizeGuard
+	if tr.cacheDir != "" {
+		cacheGuard = watch(tr.cacheDir, b.CacheRoot, stageSizeInterval, cancelInflight)
+		defer cacheGuard.stop()
+	}
+	diskBreached := func() bool {
+		return diskGuard.exceeded() || (cacheGuard != nil && cacheGuard.exceeded())
+	}
 
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -210,6 +264,17 @@ func (tr *taskRun) execSetup(cfg SetupProfile) (s *trustbrief.SetupEvidence, can
 	cmds := make([]trustbrief.SetupCommand, 0, len(all))
 	stop := false
 	for _, argv := range all {
+		if !stop && diskBreached() {
+			// The disk guard fired between commands (nothing was in flight to
+			// cancel): fail closed here rather than launch another VM onto a
+			// nearly-full disk.
+			tr.setupDiskBreach = true
+			slog.Warn("setup: host disk floor breached during setup; phase terminated", "task_id", tr.id)
+			fmt.Fprintf(logf, "\n[drydock] host disk floor breached during setup; remaining commands not run\n")
+			cmds = append(cmds, trustbrief.SetupCommand{Argv: argv, Status: trustbrief.VerifyCmdError})
+			stop = true
+			continue
+		}
 		if stop {
 			// Fail fast: once a command failed (or timed out / errored), the
 			// rest are recorded as skipped, never run.
@@ -221,6 +286,7 @@ func (tr *taskRun) execSetup(cfg SetupProfile) (s *trustbrief.SetupEvidence, can
 			Network:  b.Network,
 			ImageRef: b.ImageRef,
 			StageDir: tr.st.WorkDir(),
+			CacheDir: tr.cacheDir, // rw /deps — setup is the only writer of the shared cache
 			Env:      setupEnv,
 			Argv:     argv,
 			MemoryGB: 4,
@@ -262,6 +328,17 @@ func (tr *taskRun) execSetup(cfg SetupProfile) (s *trustbrief.SetupEvidence, can
 				"task_id", tr.id, "cap_mib", maxTaskOutputBytes>>20)
 			fmt.Fprintf(logf, "\n[drydock] setup output exceeded the %d MiB host cap; command terminated\n",
 				maxTaskOutputBytes>>20)
+			sc.Status = trustbrief.VerifyCmdError
+			stop = true
+		case diskBreached():
+			// We cancelled the command ourselves: the stage or cache crossed
+			// the host disk caps, or host free space fell below the floor (A8
+			// extended over the rw /work and /deps mounts). Evidence absent,
+			// not failing — VerifyCmdError, which still fails the task closed.
+			tr.deleteSetupVM()
+			tr.setupDiskBreach = true
+			slog.Warn("setup: host disk floor breached during setup; command terminated", "task_id", tr.id)
+			fmt.Fprintf(logf, "\n[drydock] host disk floor breached during setup; command terminated\n")
 			sc.Status = trustbrief.VerifyCmdError
 			stop = true
 		case timedOut:

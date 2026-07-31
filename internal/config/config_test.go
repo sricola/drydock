@@ -160,9 +160,11 @@ func TestEnvOverrides_AllOperatorKnobs(t *testing.T) {
 		"DRYDOCK_PUSH_MAX_RETRIES":         "5",
 		"DRYDOCK_PUSH_RETRY_BACKOFF":       "250ms",
 		"DRYDOCK_PUSH_FRESH_BRANCH_TRIES":  "4",
+		"DRYDOCK_CACHE_QUOTA_GB":           "35",
 		"STAGE_ROOT":                       "/tmp/test-stage",
 		"AUDIT_ROOT":                       "/tmp/test-audit",
 		"SQUID_RUN_DIR":                    "/tmp/test-squid",
+		"DRYDOCK_CACHE_ROOT":               "/tmp/test-cache",
 		"BROKER_SOCKET":                    "/tmp/test-broker.sock",
 		"BROKER_ADDR":                      "127.0.0.1:8765",
 		"DRYDOCK_NO_NOTIFY":                "1",
@@ -194,8 +196,12 @@ func TestEnvOverrides_AllOperatorKnobs(t *testing.T) {
 		t.Errorf("push recovery env overrides not applied: %+v", c)
 	}
 	if c.StageRoot != "/tmp/test-stage" || c.AuditRoot != "/tmp/test-audit" || c.SquidRunDir != "/tmp/test-squid" ||
+		c.CacheRoot != "/tmp/test-cache" ||
 		c.Broker.Socket != "/tmp/test-broker.sock" || c.Broker.Addr != "127.0.0.1:8765" {
 		t.Errorf("state/listener env overrides not applied: %+v", c)
+	}
+	if c.CacheQuotaGB != 35 {
+		t.Errorf("DRYDOCK_CACHE_QUOTA_GB not applied: %d", c.CacheQuotaGB)
 	}
 	if c.Notifications || !c.LogJSON || !c.StrictContainerVersion {
 		t.Errorf("boolean env overrides not applied: %+v", c)
@@ -289,7 +295,7 @@ func TestDefaults_StateDirsUnderHomeNotTmp(t *testing.T) {
 		t.Skip("no home dir on this host")
 	}
 	d := Defaults()
-	for _, p := range []string{d.StageRoot, d.AuditRoot, d.SquidRunDir} {
+	for _, p := range []string{d.StageRoot, d.AuditRoot, d.SquidRunDir, d.CacheRoot} {
 		if !strings.HasPrefix(p, home) {
 			t.Errorf("default %q is outside %q — audit history won't survive /tmp cleanup", p, home)
 		}
@@ -554,6 +560,60 @@ func TestStageQuotaGB_DefaultEnvValidate(t *testing.T) {
 	}
 }
 
+func TestCacheRoot_DefaultExpandEnv(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	// Default: ~/.drydock/cache, same shape as stage/audit/squid.
+	if got, want := Defaults().CacheRoot, filepath.Join(home, ".drydock", "cache"); got != want {
+		t.Errorf("Defaults().CacheRoot = %q, want %q", got, want)
+	}
+	// A yaml "~/..." value must expand at load time.
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\ncache_root: ~/.drydock/cache\n"), 0o644)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := filepath.Join(home, ".drydock", "cache"); c.CacheRoot != want {
+		t.Errorf("CacheRoot = %q, want %q (tilde must expand at load time)", c.CacheRoot, want)
+	}
+	// Env override wins over file.
+	t.Setenv("DRYDOCK_CACHE_ROOT", "/tmp/test-cache")
+	c, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.CacheRoot != "/tmp/test-cache" {
+		t.Errorf("env override: CacheRoot = %q, want /tmp/test-cache", c.CacheRoot)
+	}
+}
+
+func TestCacheQuotaGB_DefaultEnvValidate(t *testing.T) {
+	if got := Defaults().CacheQuotaGB; got != 20 {
+		t.Errorf("Defaults().CacheQuotaGB = %d, want 20", got)
+	}
+	// A negative yaml value must be rejected at Load (checked before the env
+	// override below, which would win over the file value).
+	bad := filepath.Join(t.TempDir(), "bad.yaml")
+	os.WriteFile(bad, []byte("network: x\ngateway_ip: 1.2.3.4\ncache_quota_gb: -3\n"), 0o644)
+	if _, err := Load(bad); err == nil || !strings.Contains(err.Error(), "cache_quota_gb") {
+		t.Errorf("want cache_quota_gb rejection, got %v", err)
+	}
+	t.Setenv("DRYDOCK_CACHE_QUOTA_GB", "40")
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\n"), 0o644)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.CacheQuotaGB != 40 {
+		t.Errorf("env override: CacheQuotaGB = %d, want 40", c.CacheQuotaGB)
+	}
+	c.CacheQuotaGB = -1
+	if err := c.validate(); err == nil {
+		t.Error("validate accepted cache_quota_gb: -1, want error")
+	}
+}
+
 func TestVerifyConfig_LoadsAndValidates(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	yaml := "network: x\ngateway_ip: 1.2.3.4\n" +
@@ -635,7 +695,8 @@ func TestProfiles_LoadsAndValidates(t *testing.T) {
 		"profiles:\n  repos:\n    \"github.com/o/r\":\n" +
 		"      setup:\n        - [\"npm\", \"ci\"]\n" +
 		"      readiness:\n        - [\"curl\", \"-fsS\", \"localhost:3000\"]\n" +
-		"      timeout: 10m\n"
+		"      timeout: 10m\n" +
+		"      cache: true\n"
 	path := filepath.Join(t.TempDir(), "c.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
@@ -649,6 +710,29 @@ func TestProfiles_LoadsAndValidates(t *testing.T) {
 		len(sp.Setup) != 1 || strings.Join(sp.Setup[0], " ") != "npm ci" ||
 		len(sp.Readiness) != 1 || strings.Join(sp.Readiness[0], " ") != "curl -fsS localhost:3000" {
 		t.Errorf("profiles repo = %+v ok=%v", sp, ok)
+	}
+	if !sp.Cache {
+		t.Errorf("profiles repo cache = %v, want true (per-repo opt-in must load)", sp.Cache)
+	}
+}
+
+// The cache opt-in defaults to off: a profile that doesn't mention `cache`
+// keeps today's from-scratch setup behavior.
+func TestSetupProfile_CacheDefaultsOff(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	yaml := "network: x\ngateway_ip: 1.2.3.4\n" +
+		"profiles:\n  repos:\n    \"github.com/o/r\":\n" +
+		"      setup:\n        - [\"npm\", \"ci\"]\n"
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Profiles.Repos["github.com/o/r"].Cache {
+		t.Error("cache must default to false (opt-in)")
 	}
 }
 

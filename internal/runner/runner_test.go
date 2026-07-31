@@ -103,6 +103,83 @@ func TestBuildSetupArgs_ShapeAndContainment(t *testing.T) {
 	}
 }
 
+func TestBuildSetupArgs_CacheMountRW(t *testing.T) {
+	spec := SetupSpec{
+		TaskID: "abc123", Network: "drydock-egress",
+		ImageRef: "drydock-sandbox:latest", StageDir: "/stage/abc123",
+		Argv: []string{"npm", "ci"}, MemoryGB: 4, CPUs: 4,
+	}
+
+	// No CacheDir → no cache mount at all (backward compat).
+	joined := strings.Join(BuildSetupArgs(spec), " ")
+	if strings.Contains(joined, "target=/deps") {
+		t.Errorf("setup argv has a cache mount with empty CacheDir:\n%s", joined)
+	}
+
+	spec.CacheDir = "/var/cache/drydock/deps"
+	joined = strings.Join(BuildSetupArgs(spec), " ")
+	// Setup writes the cache: the mount must be RW. Apple container treats
+	// "readonly" as a presence flag, so RW means the flag is absent entirely.
+	if !strings.Contains(joined, "--mount type=bind,source=/var/cache/drydock/deps,target=/deps") {
+		t.Errorf("setup argv missing rw cache mount:\n%s", joined)
+	}
+	if strings.Contains(joined, "target=/deps,readonly") {
+		t.Errorf("setup cache mount is readonly; setup must be able to write the cache:\n%s", joined)
+	}
+}
+
+func TestBuildRunArgs_CacheMountRO(t *testing.T) {
+	spec := Spec{
+		TaskID: "abc123", Network: "drydock-egress",
+		ImageRef: "drydock-sandbox:latest", StageDir: "/stage/abc123",
+		PromptFile: "/work/.task/prompt.txt", MemoryGB: 4, CPUs: 4,
+	}
+
+	// No CacheDir → no cache mount at all (backward compat).
+	joined := strings.Join(BuildRunArgs(spec), " ")
+	if strings.Contains(joined, "target=/deps") {
+		t.Errorf("agent argv has a cache mount with empty CacheDir:\n%s", joined)
+	}
+
+	spec.CacheDir = "/var/cache/drydock/deps"
+	joined = strings.Join(BuildRunArgs(spec), " ")
+	// SECURITY: the agent's view of the shared cache MUST be read-only.
+	// Removing ",readonly" would let agent-run code write the cache other
+	// tasks consume — cache poisoning. This assertion is the regression gate.
+	if !strings.Contains(joined, "--mount type=bind,source=/var/cache/drydock/deps,target=/deps,readonly") {
+		t.Errorf("agent argv missing READONLY cache mount (agent must not write the shared cache):\n%s", joined)
+	}
+}
+
+func TestCacheEnv_PathsMatchMountTarget(t *testing.T) {
+	env := CacheEnv()
+	want := map[string]bool{
+		"npm_config_cache=/deps/npm": false,
+		"GOMODCACHE=/deps/go/mod":    false,
+		"PIP_CACHE_DIR=/deps/pip":    false,
+		"CARGO_HOME=/deps/cargo":     false,
+	}
+	for _, e := range env {
+		if _, ok := want[e]; ok {
+			want[e] = true
+		}
+		// Every cache path must live under the mount target, or the tools
+		// would write somewhere the cache mount doesn't cover.
+		_, val, ok := strings.Cut(e, "=")
+		if !ok || !strings.HasPrefix(val, cacheMountTarget+"/") {
+			t.Errorf("CacheEnv entry %q not under mount target %q", e, cacheMountTarget)
+		}
+	}
+	for k, seen := range want {
+		if !seen {
+			t.Errorf("CacheEnv missing %q; got %v", k, env)
+		}
+	}
+	if cacheMountTarget != "/deps" {
+		t.Errorf("cacheMountTarget = %q, want /deps", cacheMountTarget)
+	}
+}
+
 func TestBuildVerifyArgs_ShapeAndContainment(t *testing.T) {
 	args := BuildVerifyArgs(VerifySpec{
 		TaskID: "0123456789abcdef0123456789abcdef", Network: "drydock-egress",

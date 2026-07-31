@@ -165,6 +165,17 @@ func printSetup(b trustbrief.Brief) {
 		line += " · network " + safeCell(s.Network)
 	}
 	fmt.Printf("setup    %s\n", line)
+	if s.Cache != nil {
+		// Dependency-cache evidence (broker-observed): status is
+		// hit/miss/disabled-for-cause; the 12-hex key prefix identifies the
+		// content-addressed entry when the cache was active. A disabled
+		// cache has no key — render the status alone, never a fabrication.
+		cl := safeCell(s.Cache.Status)
+		if s.Cache.Key != "" {
+			cl += " · key " + safeCell(s.Cache.Key)
+		}
+		fmt.Printf("cache    %s\n", cl)
+	}
 	for _, c := range s.Commands {
 		argv := safeCell(strings.Join(c.Argv, " "))
 		switch c.Status {

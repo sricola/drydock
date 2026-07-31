@@ -181,7 +181,10 @@ func renderProfiles(repos map[string]SetupProfile) string {
 // profilesHash is the first 8 hex chars of sha256 over a canonical rendering
 // of the profiles map: one block per repo — the repo key, the repo's timeout
 // ("timeout=<dur>": it is a documented hard bound on setup execution, so a
-// daemon-vs-config timeout edit must read as DIVERGENT), a "setup" marker,
+// daemon-vs-config timeout edit must read as DIVERGENT), the repo's cache
+// opt-in ("cache=<bool>": it decides whether setup state persists across
+// tasks, so a daemon-vs-config cache toggle must read as DIVERGENT too), a
+// "setup" marker,
 // each setup command, a "readiness" marker, each readiness command —
 // newline-joined, with the per-repo blocks ordered by SORTED repo key.
 // Sorting the blocks makes repo ordering irrelevant (maps are unordered; two
@@ -206,6 +209,8 @@ func profilesHash(repos map[string]SetupProfile) string {
 		b.WriteString(k)
 		b.WriteString("\ntimeout=")
 		b.WriteString(renderDur(sp.Timeout))
+		b.WriteString("\ncache=")
+		b.WriteString(renderBool(sp.Cache))
 		b.WriteString("\nsetup\n")
 		for _, cmd := range sp.Setup {
 			b.WriteString(quoteArgv(cmd))
@@ -328,6 +333,9 @@ func provenanceTable() []fieldDesc {
 		{name: "StageQuotaGB", yamlKey: "stage_quota_gb", envVar: "DRYDOCK_STAGE_QUOTA_GB",
 			guardedEnv: envIntNonNegative("DRYDOCK_STAGE_QUOTA_GB"),
 			value:      func(c *Config) string { return renderInt(c.StageQuotaGB) }},
+		{name: "CacheQuotaGB", yamlKey: "cache_quota_gb", envVar: "DRYDOCK_CACHE_QUOTA_GB",
+			guardedEnv: envIntNonNegative("DRYDOCK_CACHE_QUOTA_GB"),
+			value:      func(c *Config) string { return renderInt(c.CacheQuotaGB) }},
 		{name: "MaxRequestCostUSD", yamlKey: "max_request_cost_usd", envVar: "DRYDOCK_MAX_REQUEST_COST_USD",
 			guardedEnv: envFloatNonNegative("DRYDOCK_MAX_REQUEST_COST_USD"),
 			value:      func(c *Config) string { return renderFloat(c.MaxRequestCostUSD) }},
@@ -382,6 +390,9 @@ func provenanceTable() []fieldDesc {
 		{name: "SquidRunDir", yamlKey: "squid_run_dir", envVar: "SQUID_RUN_DIR",
 			guardedEnv: envString("SQUID_RUN_DIR"),
 			value:      func(c *Config) string { return c.SquidRunDir }},
+		{name: "CacheRoot", yamlKey: "cache_root", envVar: "DRYDOCK_CACHE_ROOT",
+			guardedEnv: envString("DRYDOCK_CACHE_ROOT"),
+			value:      func(c *Config) string { return c.CacheRoot }},
 		{name: "Broker.Socket", yamlKey: "broker.socket", envVar: "BROKER_SOCKET",
 			guardedEnv: envString("BROKER_SOCKET"),
 			value:      func(c *Config) string { return c.Broker.Socket }},

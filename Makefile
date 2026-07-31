@@ -103,11 +103,13 @@ redteam-report:
 	@go test -json -count=1 -run '$(REDTEAM)' ./... | go run ./cmd/redteam-report
 
 # redteam-vm runs the VM-backed attacks (A1 key-exfil, A2 egress, A7
-# ephemerality, A8 disk-quota, V1 verifier-VM containment) inside the sandbox.
+# ephemerality + read-only dependency cache, A8 disk-quota, V1 verifier-VM
+# containment) inside the sandbox. The TestRedteam_ prefix picks up every
+# test in tests/integration, including TestRedteam_A7Cache_*.
 # macOS / Apple silicon only;
 # needs the `container` runtime + the drydock-sandbox image (`make image`).
 redteam-vm: build
-	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7, A8, V1) =="
+	@echo "== drydock red-team — VM-backed attacks (A1, A2, A7 incl. cache, A8, V1) =="
 	go test -tags=integration -count=1 -timeout=10m -run 'TestRedteam_' ./tests/...
 
 # --- Release gate ---

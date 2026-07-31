@@ -83,12 +83,34 @@ type SetupCommand struct {
 	DurationMs int64    `json:"duration_ms"`
 }
 
+// Dependency-cache statuses for SetupCache.Status. "disabled: no lockfile"
+// records why an opted-in repo still ran uncached: an unpinned dependency
+// set has no stable content identity to cache under (see internal/depcache).
+const (
+	CacheHit                = "hit"
+	CacheMiss               = "miss"
+	CacheDisabledNoLockfile = "disabled: no lockfile"
+)
+
+// SetupCache is the dependency-cache evidence for a task whose execution
+// profile opted in (cache: true). All broker-observed: Key is a 12-hex
+// prefix of the content-addressed cache key (display only — the full key is
+// the on-disk entry name), Hit records whether the entry already carried
+// payload before this run. Absent entirely when caching was off for the
+// task (no opt-in, or no cache_root/quota configured).
+type SetupCache struct {
+	Status string `json:"status"`
+	Key    string `json:"key,omitempty"`
+	Hit    bool   `json:"hit,omitempty"`
+}
+
 // SetupEvidence is the setup-phase evidence block, mirroring Verification.
 // Network records the setup container's egress posture ("egress-allowlisted"
 // — setup does have network access, unlike the verifier's "denied").
 type SetupEvidence struct {
 	Status    string         `json:"status"`
 	Network   string         `json:"network,omitempty"`
+	Cache     *SetupCache    `json:"cache,omitempty"`
 	LogSHA256 string         `json:"log_sha256,omitempty"`
 	Commands  []SetupCommand `json:"commands,omitempty"`
 }
