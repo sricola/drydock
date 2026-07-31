@@ -68,6 +68,11 @@ type SetupProfile struct {
 	Setup     [][]string    `yaml:"setup"`
 	Readiness [][]string    `yaml:"readiness"`
 	Timeout   time.Duration `yaml:"timeout"`
+	// Cache opts this repo into the persistent dependency cache under
+	// CacheRoot: setup commands can populate a per-repo cache dir that
+	// survives across tasks and is read-only to the agent. Off (the zero
+	// value) keeps today's behavior — setup runs from scratch every task.
+	Cache bool `yaml:"cache"`
 }
 
 // DiffPolicy is the host-side policy applied to the diff a task proposes.
@@ -147,6 +152,12 @@ type Config struct {
 	// polling guard only). Ignored off macOS.
 	StageQuotaGB int `yaml:"stage_quota_gb"`
 
+	// CacheQuotaGB is the total disk bound in GiB for the persistent
+	// dependency cache under CacheRoot (all opted-in repos combined).
+	// 0 disables the cache entirely, even for repos whose profile sets
+	// cache: true.
+	CacheQuotaGB int `yaml:"cache_quota_gb"`
+
 	// MaxRequestCostUSD is the worst-case USD a single request may cost,
 	// reserved against the lease budget while the request is in flight so
 	// concurrent requests cannot all admit at spend=0. 0 (default) disables the
@@ -203,6 +214,10 @@ type Config struct {
 	StageRoot   string `yaml:"stage_root"`
 	AuditRoot   string `yaml:"audit_root"`
 	SquidRunDir string `yaml:"squid_run_dir"`
+	// CacheRoot holds the persistent per-repo dependency caches for
+	// profiles that opt in with cache: true. Per-repo only — caches are
+	// never shared across repos.
+	CacheRoot string `yaml:"cache_root"`
 
 	// Broker listener
 	Broker struct {
@@ -233,6 +248,7 @@ func Defaults() *Config {
 		TaskMaxRequests:        0,
 		TaskMaxInFlight:        1,
 		StageQuotaGB:           8,
+		CacheQuotaGB:           20,
 		MaxRequestCostUSD:      0,
 		AggregateBudgetUSD:     0,
 		AggregateWindow:        24 * time.Hour,
@@ -242,6 +258,7 @@ func Defaults() *Config {
 		StageRoot:              defaultStateDir("stage"),
 		AuditRoot:              defaultStateDir("audit"),
 		SquidRunDir:            defaultStateDir("squid"),
+		CacheRoot:              defaultStateDir("cache"),
 		Notifications:          true,
 		LogJSON:                false,
 		StrictContainerVersion: false,
@@ -320,6 +337,7 @@ func (c *Config) expandHome() {
 	c.StageRoot = expand(c.StageRoot)
 	c.AuditRoot = expand(c.AuditRoot)
 	c.SquidRunDir = expand(c.SquidRunDir)
+	c.CacheRoot = expand(c.CacheRoot)
 	c.Broker.Socket = expand(c.Broker.Socket)
 }
 
@@ -411,6 +429,11 @@ func (c *Config) applyEnvOverrides() {
 			c.StageQuotaGB = n
 		}
 	}
+	if v := os.Getenv("DRYDOCK_CACHE_QUOTA_GB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.CacheQuotaGB = n
+		}
+	}
 	if v := os.Getenv("DRYDOCK_AGGREGATE_BUDGET_USD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
 			c.AggregateBudgetUSD = f
@@ -449,6 +472,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("SQUID_RUN_DIR"); v != "" {
 		c.SquidRunDir = v
+	}
+	if v := os.Getenv("DRYDOCK_CACHE_ROOT"); v != "" {
+		c.CacheRoot = v
 	}
 	if v := os.Getenv("BROKER_SOCKET"); v != "" {
 		c.Broker.Socket = v
@@ -503,6 +529,9 @@ func (c *Config) validate() error {
 	}
 	if c.StageQuotaGB < 0 {
 		return fmt.Errorf("config: stage_quota_gb must be >= 0, got %d", c.StageQuotaGB)
+	}
+	if c.CacheQuotaGB < 0 {
+		return fmt.Errorf("config: cache_quota_gb must be >= 0, got %d", c.CacheQuotaGB)
 	}
 	if oc := c.OpenAICompat; oc.BaseURL != "" {
 		if oc.APIKeyEnv == "" || oc.Model == "" {
@@ -638,6 +667,7 @@ openai_auth:            api_key        # authentication mode: api_key | subscrip
 task_max_requests:      0              # per-task request cap. 0 falls closed to a built-in default (1000) in every mode; set explicitly to change the bound
 task_max_inflight:      1              # concurrent gateway requests per task lease; bounds budget overshoot to this many in-flight requests (0 = unlimited)
 stage_quota_gb:         8              # hard per-task disk bound (GiB): /work lives in an APFS sparse image this big (macOS). 0 = plain host dir, polling guard only
+cache_quota_gb:         20             # total disk bound (GiB) for the persistent dependency cache under cache_root. 0 = cache disabled entirely, even for repos with cache: true
 max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)
@@ -671,8 +701,13 @@ openai_compat:
 # gate the run. Any failure fails the task closed before any model spend.
 # Commands live in this host config only — the sandboxed agent cannot edit
 # them. Each command is a self-contained argv: shell state (cd, exports) does
-# not carry between commands. No persistent cache yet — setup runs from
-# scratch on every task. Keys are canonical host/owner/repo.
+# not carry between commands. Set cache: true to opt a repo into the
+# persistent dependency cache under cache_root: setup can reuse dependencies
+# downloaded by earlier tasks instead of starting from scratch. The cache is
+# strictly per-repo (never shared across repos), is read-only to the agent,
+# and requires the repo to have a lockfile so reuse is pinned to exact
+# dependency versions. Default false — setup runs from scratch every task.
+# Keys are canonical host/owner/repo.
 # profiles:
 #   repos:
 #     "github.com/you/yourrepo":
@@ -681,6 +716,7 @@ openai_compat:
 #       readiness:
 #         - ["node", "--version"]
 #       timeout: 10m      # 0 = default
+#       cache: false      # true = opt in to the persistent per-repo dependency cache
 
 # diff_policy: host-side caps on the diff a task may propose. A diff that
 # exceeds a cap or touches a blocked path fails the task closed as
@@ -700,6 +736,7 @@ openai_compat:
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)
 audit_root:    ~/.drydock/audit        # per-task <id>.jsonl + .diff
 squid_run_dir: ~/.drydock/squid        # squid pid/conf/cache.log
+cache_root:    ~/.drydock/cache        # persistent per-repo dependency caches for profiles with cache: true (bounded by cache_quota_gb)
 
 # --- Broker listener ---
 broker:

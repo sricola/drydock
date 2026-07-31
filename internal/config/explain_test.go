@@ -79,6 +79,7 @@ func TestExplain_CoversEveryEnvOverride(t *testing.T) {
 		"DRYDOCK_TASK_MAX_REQUESTS", "DRYDOCK_TASK_MAX_INFLIGHT", "DRYDOCK_STAGE_QUOTA_GB",
 		"DRYDOCK_AGGREGATE_BUDGET_USD", "DRYDOCK_MAX_REQUEST_COST_USD", "DRYDOCK_AGGREGATE_WINDOW",
 		"DRYDOCK_PUSH_MAX_RETRIES", "DRYDOCK_PUSH_RETRY_BACKOFF", "DRYDOCK_PUSH_FRESH_BRANCH_TRIES",
+		"DRYDOCK_CACHE_ROOT", "DRYDOCK_CACHE_QUOTA_GB",
 		"STAGE_ROOT", "AUDIT_ROOT", "SQUID_RUN_DIR", "BROKER_SOCKET", "BROKER_ADDR",
 		"DRYDOCK_NO_NOTIFY", "DRYDOCK_LOG_JSON", "DRYDOCK_STRICT_CONTAINER_VERSION",
 	}
@@ -282,6 +283,53 @@ func TestExplain_ProfilesProvenance(t *testing.T) {
 	}
 }
 
+// CacheRoot and CacheQuotaGB are enforced host config (where the dependency
+// cache lives and how big it may grow): both must appear in the provenance
+// table with their env vars, mirroring StageRoot / StageQuotaGB.
+func TestExplain_CacheProvenance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Defaults: both present, both attributed to default.
+	fields, cfg, err := Explain(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := fieldByName(fields, "CacheRoot")
+	if !ok {
+		t.Fatal("CacheRoot missing from Explain provenance")
+	}
+	if f.YAMLKey != "cache_root" || f.EnvVar != "DRYDOCK_CACHE_ROOT" {
+		t.Errorf("CacheRoot yaml/env = %q/%q, want cache_root/DRYDOCK_CACHE_ROOT", f.YAMLKey, f.EnvVar)
+	}
+	if f.Source != SourceDefault || f.Value != cfg.CacheRoot {
+		t.Errorf("CacheRoot = %+v, want default source with resolved value %q", f, cfg.CacheRoot)
+	}
+	f, ok = fieldByName(fields, "CacheQuotaGB")
+	if !ok {
+		t.Fatal("CacheQuotaGB missing from Explain provenance")
+	}
+	if f.YAMLKey != "cache_quota_gb" || f.EnvVar != "DRYDOCK_CACHE_QUOTA_GB" {
+		t.Errorf("CacheQuotaGB yaml/env = %q/%q, want cache_quota_gb/DRYDOCK_CACHE_QUOTA_GB", f.YAMLKey, f.EnvVar)
+	}
+	if f.Source != SourceDefault || f.Value != "20" {
+		t.Errorf("CacheQuotaGB = %+v, want default source with value 20", f)
+	}
+
+	// Env set: both attribute to env; an invalid quota falls through.
+	t.Setenv("DRYDOCK_CACHE_ROOT", "/tmp/env-cache")
+	t.Setenv("DRYDOCK_CACHE_QUOTA_GB", "-4") // fails the n>=0 guard
+	fields, _, err = Explain(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, _ := fieldByName(fields, "CacheRoot"); f.Source != SourceEnv || f.Value != "/tmp/env-cache" {
+		t.Errorf("CacheRoot with env = %+v, want env source /tmp/env-cache", f)
+	}
+	if f, _ := fieldByName(fields, "CacheQuotaGB"); f.Source != SourceDefault || f.Value != "20" {
+		t.Errorf("CacheQuotaGB with invalid env = %+v, want fall-through to default 20", f)
+	}
+}
+
 // The rendered DiffPolicy value feeds EffectiveHash, which is the divergence
 // comparison unit for `drydock policy explain`. If the glob lists collapsed to
 // bare counts, editing a blocked glob (security enforcement) without changing
@@ -408,6 +456,26 @@ func TestExplain_ProfilesValueIsCommandContentSensitive(t *testing.T) {
 	}
 	if EffectiveHash([]Field{{Name: "Profiles", Value: vTimeout}}) == EffectiveHash(fBase) {
 		t.Error("EffectiveHash unchanged after a timeout-only edit — divergence would go undetected")
+	}
+
+	// Same commands, cache-only toggle → the cache flag changes what persists
+	// across tasks (a poisoned cache would survive into future runs), so a
+	// daemon-vs-config cache toggle is real divergence and MUST flip the
+	// value/hash.
+	cacheEdited := map[string]SetupProfile{
+		"github.com/o/r": {
+			Setup:     base["github.com/o/r"].Setup,
+			Readiness: base["github.com/o/r"].Readiness,
+			Cache:     true,
+		},
+		"github.com/o/s": base["github.com/o/s"],
+	}
+	vCache := renderProfiles(cacheEdited)
+	if vCache == vBase {
+		t.Errorf("cache-only toggle rendered identically (%q) — cache divergence would go undetected", vCache)
+	}
+	if EffectiveHash([]Field{{Name: "Profiles", Value: vCache}}) == EffectiveHash(fBase) {
+		t.Error("EffectiveHash unchanged after a cache-only toggle — divergence would go undetected")
 	}
 
 	// Same characters, different argv element boundaries → a space-join would
