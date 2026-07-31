@@ -195,8 +195,17 @@ squid with the extras. Setting `requires_approval: false` in the YAML
 opts you out of the gate explicitly: the operator-trust-everything
 mode for batch runs.
 
+A **bounded CI retry** (`ci.max_attempts`, N4) preserves its parent's
+`egress_extra` — it redoes the same work and needs the same reach — and
+**re-poses this gate from scratch**. The gate is per task and keys only on that
+task's own `egress_extra` plus `requires_approval`; nothing carries a prior
+approval forward, so one human "yes" can never authorize egress for a chain of
+unattended runs.
+
 **Implementation:** `internal/broker/broker.go::gateEgressWiden`. **Verified
-by** `TestRedteam_A6_EgressWidenDenied`.
+by** `TestRedteam_A6_EgressWidenDenied`,
+`TestRedteam_A6_AutoApproveCannotBypassWideningGate`, and
+`TestRedteam_A6Retry_ChildReposesTheEgressWideningGate`.
 
 ### A7. Task state persists between tasks
 
@@ -208,6 +217,18 @@ up.
 **Verified by** `TestRedteam_A7_NoStatePersistsBetweenTasks` (a marker
 written by one task is absent in the next) plus the host-side
 `TestCleanup_*` stage tests.
+
+**A bounded CI retry does not weaken this and takes no exception.** A retry
+(`ci.max_attempts`, off by default) is a new task on a fresh VM that re-clones
+the repository's **default branch HEAD**; the previous attempt's work crosses
+over only as capped, sanitized text inside the new instruction (N2), never as a
+base branch, a mounted tree, or a clone ref. Basing a retry on the previous
+`agent/<id>` branch *would* have needed a new sub-clause here — it is an
+agent-written tree entering a fresh VM, exactly what the cache carve-out below
+turns on excluding — which is why it is not done.
+**Verified by** `TestRedteam_A7Retry_ChildInheritsTextOnlyNeverTheParentsTreeOrBranch`,
+a host-side test that drives the real dispatcher and asserts the retry's stage
+root is its own and its clone ref is the parent's repo ref unchanged.
 
 **The one persistence exception — the dependency cache — is not agent
 state.** Repos that opt in (`profiles.repos.<key>.cache: true`) get a
@@ -322,21 +343,61 @@ way issue text is. Three properties bound it: it is sanitized at ingestion
 length-capped, and the retained list itself is capped), it **decides nothing**
 — every control-flow decision derives only from the broker-observed
 conclusion, the same class of fact as the verifier's exit codes — and in B1
-nothing carries it onward: what is persisted and displayed is broker-authored
+nothing carried it onward: what is persisted and displayed is broker-authored
 state, a PR number, and a broker-authored reason string. This is a new
 *source*, not a new trust boundary, and no new claim is made: the human
 plan+diff gates are still the boundary.
 
-**In B1 the broker fetches no CI log text at all.** The only host calls on the
-watch path are `gh pr checks --json bucket,name,state` and
+**The broker fetches no CI log text at all — in B1 or B2.** The only host calls
+on the watch path are `gh pr checks --json bucket,name,state` and
 `gh pr view --json statusCheckRollup`; no log, URL, output, description, or
-annotation field is ever requested, the summary types carry no field that
-could hold log content, and nothing from the watch is fed back into any
-agent's instruction. Increment B2 will put capped, sanitized, explicitly
-fenced CI **log** text into a retry task's instruction — genuinely untrusted,
-repo-controlled bytes, since a repo's own workflow can print anything into its
-own logs. The fuller wording for that lands with B2; the framing does not
-change.
+annotation field is ever requested, and the summary types carry no field that
+could hold log content. That is worth stating explicitly because an earlier
+draft of this document anticipated B2 shipping fenced CI **log** text; it does
+not, and the field list above is the enforcement.
+
+**What B2 does carry into an agent's prompt** (`ci.max_attempts > 0`, off by
+default) is two things, and both are attacker-influenceable:
+
+- the **failed check names and conclusions** described above — a repository's
+  own workflow file chooses the names;
+- the **previous attempt's own diff**, which is agent-written text.
+
+Both are dropped into the retry task's instruction, control-character
+sanitized (C0, C1, DEL, and Unicode format/bidi characters stripped; invalid
+UTF-8 dropped rather than replaced), byte-capped with an explicit truncation
+marker, and fenced under `### BEGIN/END UNTRUSTED <KIND> <token>` delimiters
+whose token is derived by SHA-256 from the fenced bytes themselves and proven
+not to occur inside them — so the untrusted text cannot terminate its own
+section with a delimiter a reader would believe. The assembled instruction is
+hashed into `InstructionSHA256` like every other instruction: provenance, not
+filtration.
+
+**None of that is a security boundary, and it is not claimed as one.** An LLM
+reading fenced text may still be steered by it. The claims that *are* made, and
+are mechanically tested, are narrower: the fence is not trivially defeated
+(`TestCIRetryAdversarial_UntrustedTextCannotTerminateItsOwnSection` drives fence
+delimiters, forged section-end headings, `SYSTEM:`- and tool-call-shaped
+payloads, nested fences, bidi overrides, zero-width characters, and
+astral-plane runes at a cap boundary through both channels), and **containment
+does not depend on the fence holding**
+(`TestCIRetryAdversarial_HostileTextChangesNoControlField` asserts that every
+control-bearing field of the enqueued child — the decision itself, the bound,
+`auto_approve`, `sensitive`, the repository, the attempt depth — is identical
+whether the CI text is benign or maximally hostile). The boundary is the human
+diff gate, which a retry always re-poses because `auto_approve` is
+force-cleared on every child.
+
+**Why this takes no A7 exception.** A retry is a new task on a fresh VM that
+re-clones the repository's **default branch HEAD**. The previous attempt's work
+crosses over only as the capped text above — never as a base branch, a mounted
+tree, or a clone ref. Nothing agent-written becomes a base tree, so the retry
+sits outside A7's single carve-out (the read-only dependency cache) rather than
+widening it, and B2 adds **no new A-claim**. Pinned host-side, without a VM, by
+`TestRedteam_A7Retry_ChildInheritsTextOnlyNeverTheParentsTreeOrBranch`, which
+drives the real dispatcher and asserts the child's stage root is its own and
+its clone ref is the parent's repo ref unchanged — no branch, no fragment, no
+reference to the parent anywhere in its persisted record.
 
 ### N3. Side-channel data exfiltration via the diff
 
@@ -409,17 +470,50 @@ jobs should set both.
 
 **CI retry chains (`ci.max_attempts`).** The CI watch shipped in increment B1
 adds **no model spend whatsoever**: it observes check conclusions host-side and
-enqueues nothing. Increment B2's bounded retry does add spend. A retry is a new
-task with a new credential lease and a **fresh full `task_budget_usd`** — it
-deliberately does not share the parent's budget, because sharing it would make
-a retry 402 mid-run against a budget the parent already spent. So with
-`ci.max_attempts > 0` the worst case for a single failing task is
-`max_attempts × task_budget_usd` **on top of** the parent attempt's own
-`task_budget_usd`. `ci.max_attempts` defaults to **0 (retry off)**, and config
-validation rejects anything above 10 so a typo cannot authorize an arbitrarily
-deep chain of real spend. The chain's depth is persisted with the task, so a
-crash or restart cannot launder the bound. `aggregate_budget_usd`, where set,
-still applies across the whole chain.
+enqueues nothing. Increment B2's bounded retry does add spend, and it is the
+first thing in drydock that spends money **unattended, on a timer, without a
+human in the loop at the moment of the decision**. The arithmetic, stated
+plainly:
+
+A retry is a new task with a new credential lease and a **fresh full
+`task_budget_usd`** — it deliberately does not share the parent's budget,
+because sharing it would make a retry 402 mid-run against a budget the parent
+already spent. So with `ci.max_attempts > 0` the worst case for a single
+failing task is
+
+```
+max_attempts × task_budget_usd    on top of the parent attempt's own task_budget_usd
+```
+
+— `task_budget_usd: 2.00` with `max_attempts: 3` is a **$8.00** ceiling for one
+task, not $2.00. Multiply by however many tasks fail CI in a window.
+
+The bounds on that:
+
+- `ci.max_attempts` defaults to **0 (retry off)**, and is inert unless
+  `ci.watch` is also on (the decision is only reachable from a terminal CI
+  observation). Config validation rejects anything above **10**, so a typo
+  cannot authorize an arbitrarily deep chain of real spend.
+- The chain's depth is persisted on the task and mirrored on its durable
+  `<id>.ci.json` marker, never held in memory, and the retry decision runs only
+  after the parent's terminal reached disk. A crash or restart therefore cannot
+  launder the bound in the expensive direction: the one crash window that
+  exists loses a child rather than duplicating one. A negative `attempt` on a
+  submitted body — the only value that could buy extra hops — is clamped to 0.
+  Neither `.queue.json` nor `.ci.json` is pruned by `drydock prune`, so an
+  age-based sweep cannot reset a counter mid-chain either.
+- At most **one child per parent, ever**, enforced by two independent durable
+  anchors on the broker-owned queue item (a replay check and a first-writer-wins
+  `retry_task_id`), neither of which anything inside a task VM can write.
+- `aggregate_budget_usd`, where set, applies across the whole chain, and a
+  retry blocked by it is **refused outright rather than parked** — an
+  operator's own queued item waits for the rolling window because a human is
+  waiting for it, whereas a broker-initiated retry that nobody asked for must
+  not sit queued for hours and then dispatch against a base that has moved on.
+  The refusal is recorded on the audit's `ci_observation` row.
+- Only an **observed** check failure retries. A watch that timed out, gave up,
+  or found no checks configured retries nothing: spending a fresh budget on
+  "we could not tell" is the failure mode this rule exists to prevent.
 
 **`openai_compat` lane (`api_key` mode).** USD metering depends on the upstream
 reporting token usage in its response. Streaming `chat/completions` responses

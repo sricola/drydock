@@ -48,7 +48,23 @@ entry below corresponds to a Git tag of the same name.
 
   Worst case for one chain is `max_attempts × task_budget_usd` **on top of**
   the parent's own budget — each attempt mints a fresh full budget. Default is
-  `0` (off); the ceiling is `10`.
+  `0` (off); the ceiling is `10`. `ci.max_attempts` needs `ci.watch` to do
+  anything — the decision is only reachable from a terminal CI observation — and
+  a plan-only parent or a synchronous `drydock submit` task is never retried.
+
+  The accepted cost, stated rather than buried: **each attempt opens its own
+  pull request**, and closing the superseded one is the operator's job. drydock
+  never closes a PR; an automatic close would be an unapproved write against
+  your remote, and the superseded PR is usually the clearest record of what
+  went wrong.
+
+  **Where a chain is surfaced:** a new `RETRY` column in `drydock queue list`
+  (attempt depth, plus abbreviated `<-` parent / `->` child ids), the new
+  `attempt` field alongside `retry_of`/`retry_task_id` on `GET /queue`, and
+  `attempt`/`retry_of`/`retry_task_id`/`retry_detail` on the audit's
+  `ci_observation` record — `retry_detail` being the broker-authored reason a
+  retry did or did not happen. All ids only: no instruction text is
+  re-broadcast anywhere.
 
 - **Host-side CI observation for pushed PRs (orchestration increment B1,
   opt-in, off by default).** With `ci.watch` enabled, a queued task no longer

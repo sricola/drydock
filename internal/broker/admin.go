@@ -170,6 +170,11 @@ type queueItemView struct {
 	// Ids only; nothing about the instruction text is re-broadcast.
 	RetryOf     string `json:"retry_of,omitempty"`
 	RetryTaskID string `json:"retry_task_id,omitempty"`
+	// Attempt is this item's DEPTH in that chain: 0 for an operator-submitted
+	// task, N for the Nth automatic retry. It is what makes a chain readable
+	// without walking every link, and it is the value ci.max_attempts is
+	// compared against. omitempty, so a stock install's items are unchanged.
+	Attempt int `json:"attempt,omitempty"`
 }
 
 // HandleQueueList returns every durable queue item (including terminals —
@@ -193,6 +198,7 @@ func (b *Broker) HandleQueueList(w http.ResponseWriter, r *http.Request) {
 			CIState:      it.CIState,
 			RetryOf:      it.Task.RetryOf,
 			RetryTaskID:  it.RetryTaskID,
+			Attempt:      it.Task.Attempt,
 		})
 	}
 	writeJSON(w, out)

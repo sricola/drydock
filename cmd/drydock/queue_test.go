@@ -253,3 +253,90 @@ func TestQueueList_DecodesCIFields(t *testing.T) {
 		t.Errorf("unwatched CI cell = %q, want -", got)
 	}
 }
+
+// TestQueueList_RetryColumn renders the bounded-CI-retry chain. The
+// load-bearing case is the first one: an item outside a chain — which is every
+// item on a stock install, where ci.max_attempts is 0 — shows "-", exactly as
+// it did before the column existed.
+func TestQueueList_RetryColumn(t *testing.T) {
+	const parent = "1111111111111111111111111111aaaa"
+	const child = "2222222222222222222222222222bbbb"
+	cases := []struct {
+		name string
+		item queueListItem
+		want string
+	}{
+		{"not in a chain", queueListItem{State: "completed"}, "-"},
+		{"a chain root that spawned a retry",
+			queueListItem{State: "ci_failed", RetryTaskID: child}, "#0 ->222222222222…"},
+		{"a retry with no child of its own",
+			queueListItem{State: "queued", RetryOf: parent, Attempt: 1}, "#1 <-111111111111…"},
+		{"a middle link, both directions",
+			queueListItem{State: "ci_failed", RetryOf: parent, RetryTaskID: child, Attempt: 2},
+			"#2 <-111111111111… ->222222222222…"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := queueRetryCell(c.item); got != c.want {
+				t.Errorf("queueRetryCell = %q, want %q", got, c.want)
+			}
+			c.item.ID = "0123456789abcdef0123456789abcdef"
+			c.item.Repo = "https://github.com/o/r.git"
+			c.item.EnqueuedAtMs = time.Now().UnixMilli()
+			var buf bytes.Buffer
+			renderQueueTable(&buf, []queueListItem{c.item})
+			if !strings.Contains(buf.String(), "RETRY") {
+				t.Errorf("table missing the RETRY header:\n%s", buf.String())
+			}
+			if !strings.Contains(buf.String(), c.want) {
+				t.Errorf("table missing %q:\n%s", c.want, buf.String())
+			}
+		})
+	}
+}
+
+// TestQueueList_RetryCellIsSanitized: the chain ids cross into an operator's
+// terminal like every other cell. They are broker-minted 32-hex values, but a
+// tampered queue file is exactly the case safeCell exists for.
+func TestQueueList_RetryCellIsSanitized(t *testing.T) {
+	got := queueRetryCell(queueListItem{
+		RetryOf:     "\x1b[31mred\x07\r\ninjected",
+		RetryTaskID: "\x1b[0mmore",
+		Attempt:     1,
+	})
+	if strings.ContainsAny(got, "\x1b\x07\r\n") {
+		t.Errorf("queueRetryCell leaked control bytes: %q", got)
+	}
+}
+
+// TestQueueList_DecodesRetryFields pins the JSON contract with brokerd's
+// queueItemView for the chain fields. Absent keys — every item outside a
+// chain, and every item written before B2 — decode to the zero value and
+// render as "-".
+func TestQueueList_DecodesRetryFields(t *testing.T) {
+	fakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":"0123456789abcdef0123456789abcdef","repo":"r","state":"ci_failed","enqueued_at_ms":1,"retry_task_id":"2222222222222222222222222222bbbb"},
+		                {"id":"2222222222222222222222222222bbbb","repo":"r","state":"queued","enqueued_at_ms":1,"retry_of":"0123456789abcdef0123456789abcdef","attempt":1},
+		                {"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":"r","state":"completed","enqueued_at_ms":1}]`)
+	})
+	items, err := fetchQueue()
+	if err != nil {
+		t.Fatalf("fetchQueue: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %+v", items)
+	}
+	if items[0].RetryTaskID != items[1].ID || items[1].RetryOf != items[0].ID {
+		t.Errorf("the chain did not decode in both directions: %+v", items)
+	}
+	if items[1].Attempt != 1 {
+		t.Errorf("attempt = %d, want 1", items[1].Attempt)
+	}
+	if items[2].RetryOf != "" || items[2].RetryTaskID != "" || items[2].Attempt != 0 {
+		t.Errorf("an item outside a chain decoded non-zero: %+v", items[2])
+	}
+	if got := queueRetryCell(items[2]); got != "-" {
+		t.Errorf("chainless retry cell = %q, want -", got)
+	}
+}
