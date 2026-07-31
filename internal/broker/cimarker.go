@@ -89,9 +89,19 @@ type ciMarker struct {
 	// DeadlineMs 0 means "no watch deadline recorded" (the timeout is wired in
 	// a later task); a watcher must treat 0 as unbounded-by-this-field and
 	// apply its own configured bound.
+	//
+	// FloorMs is the same idea for the DISPATCH FLOOR (ciwatch.go): the
+	// materialized absolute instant before which a non-failing rollup is too
+	// partial to believe. 0 means "not materialized yet"; the watcher then
+	// computes it from CreatedAtMs and its configured poll interval and writes
+	// it back on the first refresh. Persisting it is what makes the floor's
+	// LENGTH absolute and not just its anchor — an operator who changes
+	// ci.poll_interval between boots must not be able to move the floor of a
+	// watch that is already running, exactly as they cannot move its deadline.
 	CreatedAtMs int64 `json:"created_at_ms"`
 	UpdatedAtMs int64 `json:"updated_at_ms"`
 	DeadlineMs  int64 `json:"deadline_ms,omitempty"`
+	FloorMs     int64 `json:"floor_ms,omitempty"`
 }
 
 const ciSuffix = ".ci.json"

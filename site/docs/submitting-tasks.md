@@ -73,7 +73,8 @@ drydock queue add --repo git@github.com:o/r --instruction "fix the flaky test"
 drydock queue add --issue https://github.com/o/r/issues/42 --auto-approve
 
 drydock queue list           # ID / STATE / AGE / ATTEMPTS / CI / REPO
-drydock queue cancel <id>    # dequeue a waiting item, or kill it if running
+drydock queue cancel <id>    # dequeue a waiting item, kill it if running, or
+                             # cancel the CI watch if it is in awaiting_ci
 ```
 
 Each item moves through a broker-enforced state machine:
@@ -139,7 +140,7 @@ The terminals it can reach, and exactly what each one claims:
 | --- | --- | --- |
 | every check passed | `completed` | observed success |
 | the PR has no checks configured | `completed` | observed: there is no CI gate to wait for |
-| at least one check failed | `ci_failed` | **observed** failure |
+| at least one check reached a terminal non-success (failed, errored, timed out, or was cancelled) | `ci_failed` | **observed** failure |
 | the watch window expired | `dead_letter` | no conclusion was observed |
 | repeated read failures, or an unwatchable PR | `dead_letter` | no conclusion was observed |
 
@@ -155,13 +156,19 @@ only pair that says so.
 Two behaviours follow from that same rule and are worth knowing before you
 turn the watch on:
 
-- **"No checks" is not concluded immediately.** CI dispatch is asynchronous —
-  a PR's checks appear on GitHub seconds after the branch lands — so an empty
-  check list right after a push means *not yet*, not *never*. The watch keeps
-  an empty result as `pending` until at least `max(2 × ci.poll_interval, 5m)`
-  has passed since the push, measured from the durable marker so a restart
-  cannot skip it. In practice: a repository that genuinely has no CI sits in
-  `awaiting_ci` for about five minutes and then completes.
+- **A conclusion is not drawn immediately — not even a green one.** CI
+  dispatch is asynchronous *and incremental*: a PR's checks appear on GitHub
+  seconds after the branch lands, one at a time. So a poll right after a push
+  sees a partial view, and both harmless-looking readings of it are wrong. An
+  empty check list means *not yet*, not *never*. A list where everything is
+  green means *the first workflow finished*, not *CI passed* — the workflow
+  that has not been created yet can still fail. The watch therefore keeps both
+  an empty and an all-passing result as `pending` until at least
+  `max(2 × ci.poll_interval, 5m)` has passed since the push, measured from the
+  durable marker so a restart cannot skip it. An observed **failure** is
+  conclusive on sight and is never held. In practice: a repository with no CI,
+  or with CI that finishes in seconds, sits in `awaiting_ci` for about five
+  minutes and then completes.
 - **GitHub Enterprise repositories are not watched.** The watch pins its API
   calls to `github.com` on purpose (it is what stops a stray `GH_HOST` from
   aiming your credential at another host). A task whose repo lives on an
@@ -180,6 +187,20 @@ written as a `result` row: the task's own terminal row still says the task
 pushed cleanly (it did), so a CI failure never relabels a successful push in
 `drydock tasks`, `drydock stats`, or the web UI, and never disturbs the
 spend accounting those readers derive from that row.
+
+The direct consequence, worth stating plainly: **the queue is the CI surface.**
+`drydock queue list`, `GET /queue`, and the raw `ci_observation` record are
+where a CI verdict appears. `drydock tasks`, `drydock stats`, and the web UI
+classify a task from that last `result` row, so a pushed task keeps reading
+`ok` in all three regardless of what its PR's CI did. That is the intended
+reading — the task did what it was asked to; its branch's CI is a separate
+fact — but if you want the CI answer, look at the queue.
+
+**Cancelling a watch.** `drydock queue cancel <id>` works on an `awaiting_ci`
+item: it cancels the watch (no further API call is spent on that PR) and moves
+the item to `cancelled`. There is no other way out short of the deadline, which
+is why it is wired: `cancelled` really is reachable from every non-terminal
+state.
 
 With `ci.watch` off — the default — none of this happens: a pushed queue item
 completes the moment it pushes, exactly as it always has, and no marker is

@@ -190,12 +190,18 @@ func (b *Broker) HandleQueueList(w http.ResponseWriter, r *http.Request) {
 
 // HandleQueueCancel cancels a queue item. Wire as POST /queue/cancel/{id}.
 // Still queued (never dispatched) -> dequeued + durable `cancelled`, 204.
+// Parked in awaiting_ci -> the CI watch is cancelled (its marker removed) and
+// the item goes durable `cancelled`, 204. That case needs its own arm because
+// such an item has no live task AND is not in the in-memory queue: its
+// lifecycle goroutine returned at the push, so neither of the other two paths
+// can see it, and without this the only exit is waiting out ci.watch_timeout.
 // Already dispatched -> delegate to HandleKill, the SAME live-task kill path
 // /admin/kill uses (fires the stored per-task context cancel; the lifecycle's
 // terminal then lands on the queue file via runQueued): 204, or 404 when no
 // live task exists either — unknown id, or already terminal.
 func (b *Broker) HandleQueueCancel(w http.ResponseWriter, r *http.Request) {
-	if b.cancelQueued(r.PathValue("id")) {
+	id := r.PathValue("id")
+	if b.cancelQueued(id) || b.cancelAwaitingCI(id) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

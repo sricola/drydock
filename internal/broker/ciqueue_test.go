@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,9 +71,43 @@ func seedQueuedItem(t *testing.T, b *Broker, st QueueState) QueueItem {
 }
 
 // ciAuditRow returns the last broker-authored ci_observation record for id.
+//
+// It is a TEST helper on purpose: internal/audit deliberately ships no reader
+// for this row (see the note where LastMetricsFile is defined), because every
+// production caller who reached for one would be branching on an agent-writable
+// file. Tests are allowed to read what they wrote.
 func ciAuditRow(t *testing.T, b *Broker, id string) (audit.CIObservation, bool) {
 	t.Helper()
-	return audit.LastCIObservation(filepath.Join(b.AuditRoot, id+".jsonl"))
+	data, err := os.ReadFile(filepath.Join(b.AuditRoot, id+".jsonl"))
+	if err != nil {
+		return audit.CIObservation{}, false
+	}
+	return lastCIObservationIn(data)
+}
+
+// lastCIObservationIn scans raw trace bytes for the final broker-authored
+// ci_observation row.
+func lastCIObservationIn(data []byte) (audit.CIObservation, bool) {
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var c audit.CIObservation
+		if json.Unmarshal([]byte(lines[i]), &c) == nil && c.Type == "ci_observation" && c.Src == "broker" {
+			return c, true
+		}
+	}
+	return audit.CIObservation{}, false
+}
+
+// taskLive reports whether id is still in the live-task map. runQueued
+// unregisters AFTER writing its terminal (defers run last), so "no longer
+// live" is a DETERMINISTIC seam for "the lifecycle has fully returned and had
+// its chance to write a terminal" — which is what these tests actually mean by
+// the sleeps they used to use. A sleep can only ever produce a false negative.
+func taskLive(b *Broker, id string) bool {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	_, ok := b.tasks[id]
+	return ok
 }
 
 // ---- the observation -> queue terminal mapping ----
@@ -566,6 +602,9 @@ func TestQueue_PushedUnderCIWatchParksInAwaitingCI(t *testing.T) {
 			b.CIWatch = true
 			b.CIPollInterval = 200 * time.Microsecond
 			b.CIWatchTimeout = time.Hour
+			clk := &testClock{}
+			clk.set(time.Now().UnixMilli())
+			b.now = clk.now
 			b.ciEnvFn = func() []string { return []string{"PATH=/usr/bin"} }
 			b.newAdapter = func(string, string) remote.Adapter {
 				return &capturingAdapter{fakeAdapter: fakeAdapter{name: "github"}, pr: prIdentity(42, "o", "r")}
@@ -591,13 +630,21 @@ func TestQueue_PushedUnderCIWatchParksInAwaitingCI(t *testing.T) {
 			if it.PRNumber != 42 || it.CIState != string(CIPending) {
 				t.Errorf("parked item pr/ci_state = %d/%q, want 42/pending", it.PRNumber, it.CIState)
 			}
-			// Give runQueued's terminal mapping every chance to fire and be wrong.
-			time.Sleep(20 * time.Millisecond)
+			// Wait for runQueued to RETURN — its terminal mapping has then
+			// provably had its chance — and confirm it did not fire.
+			if !waitFor(5*time.Second, func() bool { return !taskLive(b, id) }) {
+				t.Fatal("the lifecycle never returned")
+			}
 			if got := queueItemState(t, b, id); got.State != QueueAwaitingCI {
 				t.Fatalf("state = %q after the lifecycle returned, want it to stay awaiting_ci", got.State)
 			}
 
 			close(blocked)
+			// The dispatch floor holds a PASSING rollup exactly as it holds an
+			// empty one (a green check seconds after a push is one workflow of
+			// N), so move the test clock past it. The failing case is
+			// conclusive on sight and needs no such wait.
+			clk.advance(ciDispatchFloorGrace + time.Minute)
 			waitForQueueState(t, b, id, c.want)
 			final := queueItemState(t, b, id)
 			if final.CIState != string(c.state) {
@@ -616,7 +663,7 @@ func TestQueue_PushedUnderCIWatchParksInAwaitingCI(t *testing.T) {
 			if key := audit.OutcomeKeyWithMetrics(r, okR, m, okM); key != "ok" {
 				t.Errorf("task outcome key = %q, want ok — the task pushed; only its PR's CI is at issue", key)
 			}
-			rec, ok := audit.LastCIObservationFile(f)
+			rec, ok := ciAuditRow(t, b, id)
 			if !ok || rec.State != string(c.state) || rec.QueueState != string(c.want) {
 				t.Errorf("ci_observation row = %+v (ok=%v)", rec, ok)
 			}
@@ -745,8 +792,10 @@ func TestQueue_EnterpriseHostRefCompletesUnwatched(t *testing.T) {
 	if !markerGone(t, b, id) {
 		t.Error("a ci marker was written for an unwatchable ref")
 	}
-	// And no gh call was ever made on its behalf.
-	time.Sleep(20 * time.Millisecond)
+	// And no gh call was ever made on its behalf. Driven synchronously rather
+	// than slept on: one full watch pass over the audit dir, which is every
+	// chance the watcher will ever get to poll something that isn't there.
+	b.ciWatchPass(map[string]int{})
 	if n := atomic.LoadInt64(&polls); n != 0 {
 		t.Errorf("check polls = %d, want 0", n)
 	}
@@ -821,7 +870,7 @@ func TestResumeQueue_WatchOnLeavesOrphanMarkersAlone(t *testing.T) {
 // replay guard must never be anchored on the audit trace.
 //
 // <id>.jsonl is AGENT-WRITABLE — the VM's stdout is copied into it verbatim —
-// and audit.LastCIObservationFile filters on type and src, both of which are
+// a tail scan for that row filters on type and src, both of which are
 // just text in that file. An earlier version skipped the append when the trace
 // tail already showed the same state, so an agent that printed one forged
 // ci_observation row would have suppressed the broker's own later, genuine
@@ -890,5 +939,249 @@ func TestApplyCIObservation_DoesNotBumpTheTraceMTime(t *testing.T) {
 	// The row is still there: the mtime restore must not have cost the write.
 	if rec, ok := ciAuditRow(t, b, it.ID); !ok || rec.State != string(CIPassed) {
 		t.Errorf("ci_observation row = %+v (ok=%v), want the passed record", rec, ok)
+	}
+}
+
+// ---- the arm -> marker-write window vs. the boot sweep (finding 3) ----
+
+// TestResumeQueue_ArmInFlightItemIsNotDeadLettered covers the half the
+// per-item marker read does NOT: recordCIMarker writes the queue transition
+// (awaiting_review -> awaiting_ci) and the marker in TWO separate disk ops, so
+// there is an instant where the item is armed and no marker exists yet. A sweep
+// that looks in exactly that instant sees "armed, unmarked", dead-letters the
+// item — and the marker write then lands ON TOP of the dead-lettered record,
+// leaving the watcher polling an item whose every transition is refused, at one
+// gh call per tick until its deadline.
+//
+// Reading the marker per item cannot fix this; only knowing that an arm is in
+// flight can.
+func TestResumeQueue_ArmInFlightItemIsNotDeadLettered(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir(), StageRoot: t.TempDir(), CIWatch: true}
+	arming := seedQueuedItem(t, b, QueueAwaitingCI)
+	// The exact mid-arm state: transitioned, marker not yet written.
+	endArm := b.beginCIArm(arming.ID)
+
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	if got := queueItemState(t, b, arming.ID); got.State != QueueAwaitingCI {
+		t.Fatalf("an item mid-arm = %q, want awaiting_ci — its marker is about to land and its watch is about to poll it", got.State)
+	}
+	// The arm completes; the marker lands over a record the sweep left alone.
+	seedMarker(t, b, ciMarker{TaskID: arming.ID})
+	endArm()
+	if got := queueItemState(t, b, arming.ID); got.State != QueueAwaitingCI {
+		t.Fatalf("state after the arm completed = %q, want awaiting_ci", got.State)
+	}
+}
+
+// TestResumeQueue_ArmThatLandsMidSweepIsNotDeadLettered is the same window
+// entered DURING the loop rather than before it: the snapshot `items` is taken
+// at entry, and a resumed auto-approve push (ResumeAwaiting hands every
+// surviving gate its own goroutine) can arm while the loop is walking.
+func TestResumeQueue_ArmThatLandsMidSweepIsNotDeadLettered(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir(), StageRoot: t.TempDir(), CIWatch: true}
+	// `early` is walked first and is the trigger; `late` is still in
+	// awaiting_review at snapshot time and arms while `early` is handled.
+	early := seedQueuedItem(t, b, QueueAwaitingCI)
+	late := seedQueuedItem(t, b, QueueAwaitingReview)
+	seedMarker(t, b, ciMarker{TaskID: early.ID})
+	// `late` still has its GATE marker, which is what makes ResumeAwaiting —
+	// not this sweep — its owner, and what puts a resumed push in flight
+	// concurrently with the sweep in the first place.
+	if err := writeGateMarker(b.AuditRoot, late.ID, gateMarker{
+		RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var endArm func()
+	b.onQueueResumeItem = func(id string) {
+		if id != early.ID {
+			return
+		}
+		// Exactly what recordCIMarker does, stopped between its two writes.
+		endArm = b.beginCIArm(late.ID)
+		if !b.armCIWatch(late.ID, 42) {
+			t.Errorf("armCIWatch declined")
+		}
+	}
+
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	if got := queueItemState(t, b, late.ID); got.State != QueueAwaitingCI {
+		t.Fatalf("item armed mid-sweep = %q, want awaiting_ci", got.State)
+	}
+	seedMarker(t, b, ciMarker{TaskID: late.ID})
+	endArm()
+	if markerGone(t, b, late.ID) {
+		t.Error("the marker written after the sweep was removed")
+	}
+}
+
+// TestResumeQueue_StaleSnapshotStateIsReReadFromDisk: `items` is a snapshot, so
+// an item that CONCLUDED between the snapshot and its turn in the loop must not
+// be terminated a second time on the strength of a state that is no longer
+// true.
+func TestResumeQueue_StaleSnapshotStateIsReReadFromDisk(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir(), StageRoot: t.TempDir(), CIWatch: true}
+	first := seedQueuedItem(t, b, QueueAwaitingCI)
+	stale := seedQueuedItem(t, b, QueueAwaitingCI)
+	seedMarker(t, b, ciMarker{TaskID: first.ID})
+	b.onQueueResumeItem = func(id string) {
+		if id != first.ID {
+			return
+		}
+		// `stale`'s watch concludes cleanly while the sweep is running.
+		b.applyCIObservation(CIObservation{TaskID: stale.ID, State: CIPassed, ObservedAtMs: b.nowMs()})
+	}
+
+	if err := b.ResumeQueue(b.StageRoot); err != nil {
+		t.Fatalf("ResumeQueue: %v", err)
+	}
+	if got := queueItemState(t, b, stale.ID); got.State != QueueCompleted {
+		t.Fatalf("item concluded mid-sweep = %q, want the completed it actually reached", got.State)
+	}
+}
+
+// ---- cancelling an awaiting_ci item (finding 4) ----
+
+// TestCancelAwaitingCI_IsTheOnlyWayOut: an awaiting_ci item has no live task
+// (runQueued already returned) and is not in the in-memory queue, so neither
+// cancelQueued nor the kill path can see it. Without this arm the state machine
+// and the docs both promise a cancelled edge that nothing can take, and an
+// operator's only recourse is waiting out ci.watch_timeout.
+func TestCancelAwaitingCI_IsTheOnlyWayOut(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir()}
+	it := seedQueuedItem(t, b, QueueAwaitingCI)
+	seedMarker(t, b, ciMarker{TaskID: it.ID})
+	// The two paths that exist for every other state cannot reach it.
+	if b.cancelQueued(it.ID) {
+		t.Fatal("cancelQueued matched an item that never was in the in-memory queue")
+	}
+
+	if !b.cancelAwaitingCI(it.ID) {
+		t.Fatal("cancelAwaitingCI declined an awaiting_ci item")
+	}
+	if got := queueItemState(t, b, it.ID); got.State != QueueCancelled {
+		t.Fatalf("state = %q, want cancelled", got.State)
+	}
+	// The watch is cancelled with it: its marker — the watch's entire state —
+	// is gone, so no further gh call is ever spent on this PR.
+	if !markerGone(t, b, it.ID) {
+		t.Error("the ci marker survived the cancel; the watch would keep polling a cancelled item")
+	}
+}
+
+// TestHandleQueueCancel_CancelsAnAwaitingCIItem is the operator-visible half:
+// `drydock queue cancel <id>` (POST /queue/cancel/{id}) must 204, not 404.
+func TestHandleQueueCancel_CancelsAnAwaitingCIItem(t *testing.T) {
+	b := &Broker{AuditRoot: t.TempDir()}
+	it := seedQueuedItem(t, b, QueueAwaitingCI)
+	seedMarker(t, b, ciMarker{TaskID: it.ID})
+
+	req := httptest.NewRequest(http.MethodPost, "/queue/cancel/"+it.ID, nil)
+	req.SetPathValue("id", it.ID)
+	rr := httptest.NewRecorder()
+	b.HandleQueueCancel(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 — an awaiting_ci item was uncancellable", rr.Code)
+	}
+	if got := queueItemState(t, b, it.ID); got.State != QueueCancelled {
+		t.Fatalf("state = %q, want cancelled", got.State)
+	}
+}
+
+// TestCancelAwaitingCI_DeclinesAnythingElse: the arm is scoped to exactly one
+// state. A terminal item, and one still in the ordinary lifecycle, must fall
+// through to the kill path rather than being force-cancelled here — and neither
+// may have a marker removed on its behalf.
+func TestCancelAwaitingCI_DeclinesAnythingElse(t *testing.T) {
+	for _, st := range []QueueState{QueueQueued, QueueRunning, QueueAwaitingReview} {
+		b := &Broker{AuditRoot: t.TempDir()}
+		it := seedQueuedItem(t, b, st)
+		seedMarker(t, b, ciMarker{TaskID: it.ID})
+		if b.cancelAwaitingCI(it.ID) {
+			t.Errorf("state %q: cancelAwaitingCI claimed an item it does not own", st)
+		}
+		if markerGone(t, b, it.ID) {
+			t.Errorf("state %q: a marker was removed by a declined cancel", st)
+		}
+	}
+}
+
+// ---- a retryable terminal-write failure keeps the marker (finding 7) ----
+
+// TestConcludeCIWatch_KeepsTheMarkerWhenTheQueueWriteFails: concludeCIWatch
+// persists the terminal, surfaces it, and then DELETES the marker. If the queue
+// write failed for a retryable reason (a full or read-only disk) and the marker
+// were deleted anyway, the item would sit in awaiting_ci with nothing left to
+// conclude it — "every armed item reaches a terminal" would hold only ACROSS a
+// restart. The marker must survive so the next pass retries.
+func TestConcludeCIWatch_KeepsTheMarkerWhenTheQueueWriteFails(t *testing.T) {
+	b, obs, _ := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+		return failing(), nil
+	})
+	it := seedQueuedItem(t, b, QueueAwaitingCI)
+	m := seedSettledMarker(t, b, ciMarker{TaskID: it.ID})
+	// Make the queue WRITE fail while leaving the read working, which is the
+	// shape a full or read-only disk has: atomicfile.Write stages through
+	// <path>.tmp, so a directory sitting on that name fails the create and the
+	// rename never happens.
+	qtmp := filepath.Join(b.AuditRoot, it.ID+".queue.json.tmp")
+	if err := os.Mkdir(qtmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	b.ciWatchPass(map[string]int{})
+	if obs.count() != 1 {
+		t.Fatalf("observations = %d, want 1", obs.count())
+	}
+	if markerGone(t, b, m.TaskID) {
+		t.Fatal("the marker was deleted after a failed terminal write; the item is stranded in awaiting_ci until the next boot")
+	}
+	live, err := readCIMarker(b.AuditRoot, m.TaskID)
+	if err != nil {
+		t.Fatalf("readCIMarker: %v", err)
+	}
+	if live.State != CIFailed {
+		t.Errorf("kept marker state = %q, want the persisted terminal %q", live.State, CIFailed)
+	}
+
+	// The disk recovers; the next pass finishes the job WITHOUT a gh call (the
+	// already-terminal branch) and only then removes the marker.
+	if err := os.Remove(qtmp); err != nil {
+		t.Fatal(err)
+	}
+	b.ciWatchPass(map[string]int{})
+	if got := queueItemState(t, b, it.ID); got.State != QueueCIFailed {
+		t.Fatalf("state after the disk recovered = %q, want ci_failed", got.State)
+	}
+	if !markerGone(t, b, m.TaskID) {
+		t.Error("the marker survived a successful terminal write")
+	}
+}
+
+// TestConcludeCIWatch_RemovesTheMarkerWhenTheTransitionIsREFUSED is the other
+// side of that distinction: an item that legitimately moved on (it was
+// cancelled) refuses the transition, and no amount of retrying will change
+// that. Keeping the marker there would poll a cancelled item until its
+// deadline, which is exactly what finding 4's cancel path exists to avoid.
+func TestConcludeCIWatch_RemovesTheMarkerWhenTheTransitionIsRefused(t *testing.T) {
+	b, _, _ := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+		return failing(), nil
+	})
+	it := seedQueuedItem(t, b, QueueAwaitingCI)
+	m := seedSettledMarker(t, b, ciMarker{TaskID: it.ID})
+	if _, err := b.setQueueState(it.ID, QueueCancelled, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	b.ciWatchPass(map[string]int{})
+	if !markerGone(t, b, m.TaskID) {
+		t.Fatal("a marker whose item is terminal was kept; the watch would poll it until its deadline")
+	}
+	if got := queueItemState(t, b, it.ID); got.State != QueueCancelled {
+		t.Errorf("state = %q, want the cancelled it already reached", got.State)
 	}
 }

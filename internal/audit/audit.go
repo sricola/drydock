@@ -297,14 +297,12 @@ func outcomeString(key string, r Result, m Meta) string {
 		// Queue terminal: the queued task exhausted its run without a clean
 		// finish and was parked as undeliverable (Increment B adds retry).
 		s = "dead-letter"
-	case "ci_failed":
-		// Queue terminal: the task pushed cleanly and the broker then
-		// OBSERVED that PR's CI conclude in failure. Deliberately NOT the
-		// rendering for a watch that ended without a conclusion (a timeout, a
-		// give-up, a marker lost to a restart) — those land on dead_letter,
-		// because missing evidence is not a failed build. See
-		// broker.QueueCIFailed.
-		s = "ci failed"
+	// NOTE what has no case here: "ci_failed". It is a QUEUE terminal, and no
+	// writer anywhere emits it as a result subtype — deliberately, so an
+	// observed CI failure can never relabel a push that landed exactly as asked
+	// (see CIObservation). A display case for a key this function cannot
+	// receive would be a claim that `drydock tasks`/`stats` surface CI verdicts.
+	// They do not; `drydock queue list` and GET /queue do.
 	case "completed":
 		// Queue terminal: the queued task finished cleanly (pushed, no_diff,
 		// or planned). Displayed as-is; the explicit case documents the
@@ -550,44 +548,16 @@ type CIObservation struct {
 	ObservedAtMs int64  `json:"observed_at_ms"`
 }
 
-// LastCIObservationFile finds the final broker-authored
-// {"type":"ci_observation"} row in an already-open file, using the same tail
-// window and last-wins scan as LastResultFile/LastMetricsFile. ok=false when
-// absent — which is the common case: no watch was armed, or the watch has not
-// concluded yet. Absence is NEVER a CI pass.
-//
-// FOR DISPLAY ONLY. Both fields this scan filters on (type, src) come from the
-// same agent-writable file, so a forged row is indistinguishable from a real
-// one here. Nothing may make a decision from what this returns — not an
-// idempotency guard, not a retry gate, nothing. See CIObservation's TRUST note.
-func LastCIObservationFile(f *os.File) (CIObservation, bool) {
-	info, err := f.Stat()
-	if err != nil {
-		return CIObservation{}, false
-	}
-	lines, err := tailLines(f, info.Size())
-	if err != nil {
-		return CIObservation{}, false
-	}
-	for i := len(lines) - 1; i >= 0; i-- {
-		var c CIObservation
-		if json.Unmarshal(lines[i], &c) == nil && c.Type == "ci_observation" && c.Src == "broker" {
-			return c, true
-		}
-	}
-	return CIObservation{}, false
-}
-
-// LastCIObservation is LastCIObservationFile by path, opened O_NOFOLLOW like
-// every other audit read.
-func LastCIObservation(path string) (CIObservation, bool) {
-	f, err := OpenRead(path)
-	if err != nil {
-		return CIObservation{}, false
-	}
-	defer f.Close()
-	return LastCIObservationFile(f)
-}
+// THERE IS DELIBERATELY NO LastCIObservation READER HERE, and adding one is a
+// decision, not a convenience. This package's tail readers exist to feed
+// CONTROL DECISIONS — the aggregate-cap reseed, the outcome classification —
+// and both fields such a scan could filter on (type, src) are attacker-supplied
+// text in an agent-writable file, so anything it returned would be unsafe for
+// exactly the callers who would reach for it. The authoritative, machine-
+// readable form of this fact is the durable queue item
+// (broker.QueueItem.CIState plus its terminal state), which nothing inside the
+// VM can write. Render the row from the raw trace if you want to show it; do
+// not build a typed reader that invites branching on it.
 
 // LastMetricsFile finds the final broker-authored {"type":"metrics"} line by
 // reading only the file tail (same 16KB window as LastResultFile). ok=false

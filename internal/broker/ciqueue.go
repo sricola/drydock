@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -54,6 +55,31 @@ import (
 // and the watcher can never observe a marker whose item has not been armed. A
 // crash in the gap leaves an armed item with no marker, which ResumeQueue
 // resolves to an honest terminal rather than a hang.
+// beginCIArm marks id as "being armed", and returns the function that clears
+// it. recordCIMarker holds this across BOTH of its writes (the queue
+// transition and the marker), which is what makes the pair look atomic to
+// ResumeQueue's boot sweep. See Broker.ciArming.
+func (b *Broker) beginCIArm(id string) func() {
+	b.ciArmingMu.Lock()
+	if b.ciArming == nil {
+		b.ciArming = map[string]bool{}
+	}
+	b.ciArming[id] = true
+	b.ciArmingMu.Unlock()
+	return func() {
+		b.ciArmingMu.Lock()
+		delete(b.ciArming, id)
+		b.ciArmingMu.Unlock()
+	}
+}
+
+// ciArmInFlight reports whether id is inside recordCIMarker's arm->write gap.
+func (b *Broker) ciArmInFlight(id string) bool {
+	b.ciArmingMu.Lock()
+	defer b.ciArmingMu.Unlock()
+	return b.ciArming[id]
+}
+
 func (b *Broker) armCIWatch(id string, prNumber int) bool {
 	if _, err := readQueueItem(b.AuditRoot, id); err != nil {
 		return true // not a queue-driven task; nothing to arm
@@ -139,25 +165,35 @@ func ciQueueTerminal(st CIState) (QueueState, string) {
 // It must also no-op cleanly for a SYNCHRONOUS (POST /tasks, non-queued) task,
 // which has no queue item at all — the same contract finalizeQueuedResume
 // holds, for the same reason: resumePush and finishPush serve both paths.
-func (b *Broker) applyCIObservation(obs CIObservation) {
+// It reports whether the observation is FULLY RECORDED — i.e. whether the
+// caller may now discard the marker that drives the retry. False means the
+// durable queue write failed for a reason that may succeed later (a full disk,
+// a read-only mount), so the marker must stay and the next pass must try again;
+// see concludeCIWatch. A REFUSED transition is not a failure in that sense: the
+// item legitimately moved on, and no amount of retrying will change it.
+func (b *Broker) applyCIObservation(obs CIObservation) bool {
 	to, lastErr := ciQueueTerminal(obs.State)
-	qs, replay := b.recordCIQueueTerminal(obs, to, lastErr)
+	qs, replay, persisted := b.recordCIQueueTerminal(obs, to, lastErr)
 	if replay {
-		return
+		return true
 	}
 	b.appendCIObservationRow(obs, qs)
+	return persisted
 }
 
 // recordCIQueueTerminal persists the queue terminal. It returns the state
-// actually persisted ("" when there is no queue item) and whether this was a
-// replay of an already-applied observation.
-func (b *Broker) recordCIQueueTerminal(obs CIObservation, to QueueState, lastErr string) (QueueState, bool) {
+// actually persisted ("" when there is no queue item), whether this was a
+// replay of an already-applied observation, and whether the durable record now
+// reflects the observation (false ONLY for a retryable write failure — a
+// refused transition counts as recorded, because the item's real state is
+// already terminal and nothing better will ever be written).
+func (b *Broker) recordCIQueueTerminal(obs CIObservation, to QueueState, lastErr string) (QueueState, bool, bool) {
 	cur, err := readQueueItem(b.AuditRoot, obs.TaskID)
 	if err != nil {
-		return "", false // synchronous task: no queue item, nothing to move
+		return "", false, true // synchronous task: no queue item, nothing to move
 	}
 	if cur.State == to && cur.CIState == string(obs.State) {
-		return to, true // already applied; a crash-window replay
+		return to, true, true // already applied; a crash-window replay
 	}
 	// The observation's own Detail (why the watch ended without a conclusion:
 	// a give-up count, a lost marker, a disabled watch) is strictly more
@@ -178,14 +214,22 @@ func (b *Broker) recordCIQueueTerminal(obs CIObservation, to QueueState, lastErr
 		}
 	})
 	if err != nil {
-		// The item moved on without us (cancelled, or a write failure). Never
-		// force it: the state machine's refusal is the guard working. The
-		// observation is still recorded in the audit below.
+		// Two very different failures share this branch, and the caller has to
+		// tell them apart:
+		//
+		//  - A REFUSED TRANSITION: the item moved on without us (it was
+		//    cancelled, or a concurrent pass already concluded it). Never force
+		//    it — the state machine's refusal is the guard working — and never
+		//    retry it either, because the item is already terminal. Recorded.
+		//  - A WRITE FAILURE: the disk is full, or read-only. Nothing durable
+		//    says what the watch observed, and the item is still sitting in
+		//    awaiting_ci. This one IS retryable, and must be, or the item is
+		//    stranded in a non-terminal state until the next boot notices.
 		slog.Warn("ci watch: could not persist the ci terminal on the queue item",
 			"task_id", obs.TaskID, "from", string(cur.State), "to", string(to), "err", err)
-		return cur.State, false
+		return cur.State, false, errors.Is(err, errInvalidTransition)
 	}
-	return it.State, false
+	return it.State, false, true
 }
 
 // appendCIObservationRow appends the broker-authored {"type":"ci_observation"}

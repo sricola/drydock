@@ -28,12 +28,7 @@ main{padding:16px;max-width:900px;margin:0 auto}
 .badge{font-size:11px;border-radius:10px;padding:1px 8px;border:1px solid var(--line)}
 .stage-running,.stage-verifying,.stage-setting_up{color:var(--blue);border-color:#274b6b}
 .stage-awaiting_approval,.stage-awaiting_egress{color:var(--amber);border-color:#7a5a12}
-/* awaiting_ci: pushed and waiting on someone else's checks. Muted, not amber —
-   nothing is blocked on the operator, unlike the two gates above. */
-.stage-pushing,.stage-queued,.stage-awaiting_ci{color:var(--muted)}
-/* ci_failed is a terminal, so it never renders as a stage badge; the red is
-   for the history rail's label, alongside dead-letter. */
-.stage-ci_failed{color:var(--red);border-color:#5a2a2a}
+.stage-pushing,.stage-queued{color:var(--muted)}
 .gate{margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
 .gate.dominant{background:#1a1710;border-color:#3a3320}
 .gate-title{font-weight:500;color:var(--amber);margin-bottom:6px}

@@ -258,15 +258,21 @@ async function renderFinishedStrip(container, liveIDs){
     // "ok" covers both a real push and a no-diff run (unchanged operator
     // muscle memory); "completed" is the queue's clean-finish terminal —
     // those two are the ONLY keys that earn a checkmark. "dead_letter" (a
-    // queued task parked as undeliverable) and "ci_failed" (a pushed PR whose
-    // CI the broker OBSERVED fail) join error/push_failed as red.
+    // queued task parked as undeliverable) joins error/push_failed as red.
     // Everything else (denied, cancelled, interrupted, running, or any
     // unexpected passthrough key) gets the neutral glyph by default: a green
     // checkmark must never be the fallback for a key this code doesn't
-    // recognize — which is also why a CI watch that ended WITHOUT a conclusion
-    // is never spelled "completed" upstream (it dead-letters).
+    // recognize.
+    //
+    // THERE IS DELIBERATELY NO "ci_failed" HERE. outcome_key is derived from a
+    // task's LAST {"type":"result"} row, and the broker never writes one for a
+    // CI observation — by design, so a CI failure cannot relabel a push that
+    // landed exactly as asked (see audit.CIObservation). A CI verdict lives on
+    // the durable queue item instead: `drydock queue list` and GET /queue. A
+    // key this map cannot receive is a lie waiting to be believed, so it stays
+    // out; internal/webui/ci_assets_test.go pins that both ways.
     const isErr = it.outcome_key === "error" || it.outcome_key === "push_failed" ||
-                  it.outcome_key === "dead_letter" || it.outcome_key === "ci_failed";
+                  it.outcome_key === "dead_letter";
     const isOk = it.outcome_key === "ok" || it.outcome_key === "completed";
     // Color via class, not a style attribute: the strict CSP (default-src
     // 'self', no style-src 'unsafe-inline') blocks inline style attributes.
@@ -280,7 +286,7 @@ async function renderFinishedStrip(container, liveIDs){
       el("code", { class: "tid", text: shortId(it.id) }),
       el("span", { class: "age", text: fmtAgeFromUnix(it.mtime_unix) }));
     if (isErr){
-      const lbl = { dead_letter: "dead-letter", ci_failed: "ci failed" }[it.outcome_key] || "error";
+      const lbl = { dead_letter: "dead-letter" }[it.outcome_key] || "error";
       const r = el("span", { class: "reason", text: lbl });
       row.append(r);
       failureReason(it.id).then(reason => { if (reason) r.textContent = lbl + " · " + reason; });
@@ -343,14 +349,16 @@ setInterval(() => {
   }
 }, 1000);
 
-// stageBadge renders one lifecycle/queue state as a badge. The map covers the
-// live TaskStage vocabulary plus the durable queue states that have no live
-// task behind them — "queued" (waiting on a slot) and "awaiting_ci" (pushed,
-// PR open, the host-side watch observing its checks). An unknown state falls
-// through to its raw name rather than being dropped, so a state this build
-// doesn't know about is still visible.
+// stageBadge renders one lifecycle state as a badge. `stage` comes from
+// /api/tasks, which is the LIVE-task stream, so the map covers the TaskStage
+// vocabulary and nothing else. In particular it has no `awaiting_ci` entry:
+// that is a durable QUEUE state whose task has already finished and been
+// unregistered, so it can never appear here — the web UI has no queue view at
+// all, and the CI observation is surfaced by `drydock queue list` and
+// GET /queue. An unknown state falls through to its raw name rather than being
+// dropped, so a state this build doesn't know about is still visible.
 function stageBadge(stage) {
-  const label = { queued: "queued", awaiting_egress: "egress?", setting_up: "setting up", running: "running", verifying: "verifying", awaiting_approval: "review?", awaiting_ci: "ci?", pushing: "pushing" }[stage] || stage;
+  const label = { queued: "queued", awaiting_egress: "egress?", setting_up: "setting up", running: "running", verifying: "verifying", awaiting_approval: "review?", pushing: "pushing" }[stage] || stage;
   return el("span", { class: "badge stage-" + stage, text: label });
 }
 

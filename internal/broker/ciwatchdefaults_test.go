@@ -20,6 +20,19 @@ func TestCIWatchDefaultsMatchConfigDefaults(t *testing.T) {
 		t.Errorf("broker defaultCIWatchTimeout = %v but config.DefaultCIWatchTimeout = %v; the seeded config would document a deadline the daemon does not use",
 			defaultCIWatchTimeout, config.DefaultCIWatchTimeout)
 	}
+	// The DISPATCH FLOOR terms matter for the same reason and one more: config's
+	// copy is what validate() uses to reject a poll/timeout pair that could
+	// never conclude. If the broker's floor grew past config's, a pair config
+	// accepted would still dead-letter every watch — the exact failure that
+	// cross-field check exists to make impossible.
+	if ciDispatchFloorPolls != config.CIDispatchFloorPolls {
+		t.Errorf("broker ciDispatchFloorPolls = %d but config.CIDispatchFloorPolls = %d; config would validate a ci.watch_timeout the watcher can never conclude within",
+			ciDispatchFloorPolls, config.CIDispatchFloorPolls)
+	}
+	if ciDispatchFloorGrace != config.CIDispatchFloorGrace {
+		t.Errorf("broker ciDispatchFloorGrace = %v but config.CIDispatchFloorGrace = %v; config would validate a ci.watch_timeout the watcher can never conclude within",
+			ciDispatchFloorGrace, config.CIDispatchFloorGrace)
+	}
 	// The configured minimum must be reachable: a poll interval the operator
 	// is allowed to set must not be one the watcher would treat as "unset".
 	if config.MinCIPollInterval <= 0 {

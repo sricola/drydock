@@ -319,23 +319,3 @@ func TestOutcomeWithMetrics_RendersDeniedAndCancelledAsThemselves(t *testing.T) 
 		t.Errorf("pushed = %q, want %q", got, "ok (4 turns)")
 	}
 }
-
-// TestOutcome_CIFailedVocabulary pins the display string for the queue's CI
-// terminal. It renders with the underscore replaced ("ci failed"), matching
-// the push_failed / setup_failed convention. Note what has NO display case:
-// there is deliberately no rendering that means "CI did not report", because
-// a watch that ended without a conclusion never produces this key — it
-// dead-letters.
-func TestOutcome_CIFailedVocabulary(t *testing.T) {
-	if got := Outcome(Result{Type: "result", Subtype: "ci_failed"}, true, Meta{}); got != "ci failed" {
-		t.Errorf("ci_failed = %q, want \"ci failed\"", got)
-	}
-	if got := Outcome(Result{Type: "result", Subtype: "ci_failed"}, true, Meta{Sensitive: true}); got != "ci failed · sensitive" {
-		t.Errorf("sensitive ci_failed = %q", got)
-	}
-	// OutcomeKey passes the raw subtype through, so `drydock stats` aggregates
-	// on exactly the key the fixed outcome list names.
-	if got := OutcomeKey(Result{Type: "result", Subtype: "ci_failed"}, true); got != "ci_failed" {
-		t.Errorf("OutcomeKey = %q, want ci_failed", got)
-	}
-}

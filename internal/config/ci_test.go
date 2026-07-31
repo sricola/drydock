@@ -131,6 +131,18 @@ func TestCI_ValidateRejects(t *testing.T) {
 		// each attempt of which mints a fresh full task_budget_usd.
 		"ci:\n  max_attempts: 10000\n": "ci.max_attempts",
 		"ci:\n  max_attempts: 11\n":    "ci.max_attempts",
+		// CROSS-FIELD: each value is individually legal and the PAIR is not.
+		// The deadline is checked before the dispatch floor, so a timeout at or
+		// under the floor makes `no_checks` and `passed` unreachable and every
+		// watched task dead-letter. At runtime that is indistinguishable from CI
+		// itself being broken, so load is the only place it can be caught.
+		"ci:\n  poll_interval: 10m\n  watch_timeout: 5m\n": "ci.watch_timeout",
+		// The floor's wall-clock term bites even at the fastest legal poll.
+		"ci:\n  poll_interval: 10s\n  watch_timeout: 1m\n": "dispatch floor",
+		// Exactly AT the floor is still no good: the deadline check wins ties.
+		"ci:\n  poll_interval: 10s\n  watch_timeout: 5m\n": "dispatch floor",
+		// And with poll_interval left to its default.
+		"ci:\n  watch_timeout: 4m\n": "dispatch floor",
 	}
 	for body, want := range cases {
 		p := filepath.Join(t.TempDir(), "c.yaml")
@@ -148,7 +160,9 @@ func TestCI_ValidateAccepts(t *testing.T) {
 	bodies := []string{
 		// 0 everywhere = "use the built-in default" / "off"
 		"ci:\n  watch: false\n  poll_interval: 0s\n  watch_timeout: 0s\n  max_attempts: 0\n",
-		"ci:\n  watch: true\n  poll_interval: 10s\n  watch_timeout: 1m\n  max_attempts: 1\n",
+		// The fastest legal poll with a timeout comfortably past the floor.
+		"ci:\n  watch: true\n  poll_interval: 10s\n  watch_timeout: 6m\n  max_attempts: 1\n",
+		// A slow poll: the floor is then 2 × 5m, still far inside 24h.
 		"ci:\n  watch: true\n  poll_interval: 5m\n  watch_timeout: 24h\n",
 		"ci:\n  max_attempts: 10\n",
 	}

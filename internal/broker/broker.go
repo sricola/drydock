@@ -302,13 +302,29 @@ type Broker struct {
 	// ciDone is closed when the watch goroutine returns. Nothing in production
 	// waits on it — shutdown must never block behind an in-flight gh call —
 	// but it makes teardown deterministic for tests.
-	// ciStopOnce makes StopCIWatch idempotent: brokerd calls it from the signal
-	// handler, tests call it from a defer, and a second close of a closed
-	// channel is a panic.
-	ciStop     chan struct{}
-	ciDone     chan struct{}
-	ciOnce     sync.Once
-	ciStopOnce sync.Once
+	// ciStartOnce/ciStopOnce make StartCIWatch and StopCIWatch idempotent:
+	// brokerd calls Stop from the signal handler, tests call it from a defer,
+	// and a second close of ciDone (or of ciStop) is a panic.
+	ciStop      chan struct{}
+	ciDone      chan struct{}
+	ciOnce      sync.Once
+	ciStartOnce sync.Once
+	ciStopOnce  sync.Once
+
+	// ciArmingMu/ciArming track the ids whose CI watch is being armed RIGHT NOW
+	// — the window inside recordCIMarker between armCIWatch's queue write
+	// (awaiting_review -> awaiting_ci) and the marker write that follows it.
+	//
+	// It exists for exactly one reader: ResumeQueue's awaiting_ci branch, which
+	// terminates an armed item that has no marker. Those two disk ops are not
+	// atomic, so a boot sweep running concurrently with a resumed auto-approve
+	// push (ResumeAwaiting hands each surviving gate its own goroutine) could
+	// observe the armed item before its marker landed, dead-letter it, and then
+	// have the live marker written on top — leaving the watcher burning gh calls
+	// on an item whose every transition is refused. The boot lock guarantees a
+	// single brokerd process, so an in-process set closes the window completely.
+	ciArmingMu sync.Mutex
+	ciArming   map[string]bool
 
 	pendingMu sync.Mutex
 	pending   map[string]chan gateReply // task_id -> approval channel
@@ -1567,6 +1583,14 @@ func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
 	// honest terminal by ResumeQueue, never a hang. No-op for a synchronous
 	// task (no queue item); declines the watch entirely if a real item could
 	// not be armed. See armCIWatch.
+	//
+	// The two writes are bracketed by beginCIArm so ResumeQueue's boot sweep,
+	// which may be walking the queue in another goroutine right now, treats them
+	// as one step: without it the sweep can see the armed item BEFORE its marker
+	// exists, dead-letter it, and then have the marker written on top of the
+	// dead-lettered record. See Broker.ciArming.
+	endArm := tr.b.beginCIArm(tr.id)
+	defer endArm()
 	if !tr.b.armCIWatch(tr.id, pr.Number) {
 		return
 	}

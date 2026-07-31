@@ -138,13 +138,28 @@ func (s *CheckSummary) count(st CheckState) {
 // and a pass requires positive evidence.
 //
 //  1. Nothing reported          -> no_checks   (not passed)
+//
 //  2. Any fail or cancel        -> failed      (a terminal failure is
 //     conclusive; the checks still running cannot un-fail it, and waiting for
 //     them only delays an honest verdict)
+//
+//     CANCELLED IS FOLDED INTO FAILED DELIBERATELY, and it is the one place
+//     `failed` means something slightly broader than "the build broke": a run
+//     cancelled by GitHub's concurrency group, or by a human, produced no pass
+//     evidence and never will. The alternatives are worse in both directions —
+//     calling it `pending` hangs the watch until its deadline for a run that
+//     is over, and calling it `passed` is the absence-of-evidence bug itself.
+//     So `ci_failed` reads precisely as "the broker observed a check reach a
+//     terminal non-success", which is what the operator docs say. The
+//     distinction survives in the counts: Cancelled is its own counter on the
+//     summary, and the queue item's ci_state carries the observation.
+//
 //  3. Any pending or unknown    -> pending     (no verdict yet)
+//
 //  4. No check actually passed  -> no_checks   (an all-skipped run produced no
 //     pass evidence; calling it "passed" would be the exact
 //     absence-of-evidence bug this rule exists to prevent)
+//
 //  5. otherwise                 -> passed
 func rollupFor(s CheckSummary) CheckRollup {
 	switch {

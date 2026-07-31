@@ -298,38 +298,3 @@ func TestWriteStats_PlannedInFixedOrder(t *testing.T) {
 		t.Errorf("planned must render in the fixed list, before the sorted passthrough outcomes:\n%s", out)
 	}
 }
-
-// TestWriteStats_CIFailedInFixedOrder: `ci_failed` is part of the declared
-// outcome vocabulary, so it renders in the fixed list (before the sorted
-// passthrough keys) rather than as an unrecognised passthrough. It sits next
-// to dead_letter, which is the terminal a CI watch that reached NO conclusion
-// produces — the two must be distinguishable in the report, because one means
-// "the build broke" and the other means "we never found out".
-func TestWriteStats_CIFailedInFixedOrder(t *testing.T) {
-	dir := t.TempDir()
-	ciFailed := `{"type":"drydock_meta","subscription":false,"sensitive":false}
-{"type":"drydock_task","agent":"claude"}
-{"type":"result","subtype":"ci_failed","is_error":false,"duration_ms":0,"total_cost_usd":0.02,"num_turns":0,"src":"broker"}
-`
-	denied := `{"type":"drydock_meta","subscription":false,"sensitive":false}
-{"type":"drydock_task","agent":"claude"}
-{"type":"result","subtype":"denied","is_error":false,"duration_ms":0,"total_cost_usd":0.02,"num_turns":0,"src":"broker"}
-`
-	for id, content := range map[string]string{"cif1": ciFailed, "denied1": denied} {
-		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var buf bytes.Buffer
-	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
-		t.Fatal(err)
-	}
-	out := buf.String()
-	if !strings.Contains(out, "ci_failed: 1") {
-		t.Fatalf("output missing %q:\n%s", "ci_failed: 1", out)
-	}
-	ci, dn := strings.Index(out, "ci_failed: 1"), strings.Index(out, "denied: 1")
-	if dn < 0 || ci > dn {
-		t.Errorf("ci_failed must render in the fixed list, before the sorted passthrough outcomes:\n%s", out)
-	}
-}

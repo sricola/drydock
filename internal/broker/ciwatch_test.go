@@ -140,6 +140,19 @@ func markerGone(t *testing.T, b *Broker, id string) bool {
 	return err != nil
 }
 
+// seedSettledMarker seeds a marker whose DISPATCH FLOOR has already elapsed, by
+// materializing FloorMs the way the watcher's first refresh does. It is the
+// right fixture for every test that is NOT about the floor: those tests assert
+// what a rollup MEANS, and holding a partial view is a separate question with
+// its own tests below.
+func seedSettledMarker(t *testing.T, b *Broker, m ciMarker) ciMarker {
+	t.Helper()
+	if m.FloorMs == 0 {
+		m.FloorMs = b.nowMs()
+	}
+	return seedMarker(t, b, m)
+}
+
 func passing() remote.CheckSummary {
 	return remote.CheckSummary{Rollup: remote.RollupPassed, Total: 1, Passed: 1,
 		Checks: []remote.Check{{Name: "build", State: remote.CheckPassed}}}
@@ -296,7 +309,7 @@ func TestCIWatch_NoChecksIsRecordedAndIsNotPassed(t *testing.T) {
 		return remote.CheckSummary{Rollup: remote.RollupNoChecks}, nil
 	})
 	m := seedMarker(t, b, ciMarker{})
-	clk.advance(ciNoChecksMinGrace + time.Minute) // past the dispatch floor
+	clk.advance(ciDispatchFloorGrace + time.Minute) // past the dispatch floor
 	b.StartCIWatch()
 	defer stopWatch(t, b)
 
@@ -353,7 +366,7 @@ func TestCIWatch_NoChecksBelowTheFloorIsPendingThenConcludes(t *testing.T) {
 	}
 
 	// Cross the floor. The rollup the fake returns has not changed at all.
-	clk.advance(ciNoChecksMinGrace + time.Second)
+	clk.advance(ciDispatchFloorGrace + time.Second)
 	if !waitFor(5*time.Second, func() bool { return obs.count() == 1 }) {
 		t.Fatal("no observation after the dispatch floor elapsed")
 	}
@@ -390,7 +403,7 @@ func TestCIWatch_NoChecksFloorIsAbsolute(t *testing.T) {
 		t.Fatalf("the marker did not survive the restarts: %v", err)
 	}
 	// Only real elapsed time from CreatedAtMs releases it.
-	clk.set(b.ciNoChecksFloor(m))
+	clk.set(b.ciDispatchFloor(m))
 	b.ciWatchPass(map[string]int{})
 	if obs.count() != 1 || obs.all()[0].State != CINoChecks {
 		t.Fatalf("observations at the floor = %+v, want exactly one no_checks", obs.all())
@@ -408,17 +421,17 @@ func TestCINoChecksFloor(t *testing.T) {
 		want     time.Duration
 	}{
 		// Unset -> the 60s default; 2 polls is under the grace, so grace wins.
-		{"default interval", 0, ciNoChecksMinGrace},
+		{"default interval", 0, ciDispatchFloorGrace},
 		// A fast poll interval must NOT be able to shrink the dispatch window.
-		{"very fast poll", 5 * time.Millisecond, ciNoChecksMinGrace},
+		{"very fast poll", 5 * time.Millisecond, ciDispatchFloorGrace},
 		// A slow operator interval wins: the guarantee is "more than one
 		// independent look", whatever the operator's cadence.
-		{"slow poll", 10 * time.Minute, time.Duration(ciNoChecksMinPolls) * 10 * time.Minute},
+		{"slow poll", 10 * time.Minute, time.Duration(ciDispatchFloorPolls) * 10 * time.Minute},
 	}
 	for _, c := range cases {
 		b := &Broker{CIPollInterval: c.interval}
-		if got, want := b.ciNoChecksFloor(m), created+c.want.Milliseconds(); got != want {
-			t.Errorf("%s: ciNoChecksFloor = %d, want %d (created + %s)", c.name, got, want, c.want)
+		if got, want := b.ciDispatchFloor(m), created+c.want.Milliseconds(); got != want {
+			t.Errorf("%s: ciDispatchFloor = %d, want %d (created + %s)", c.name, got, want, c.want)
 		}
 	}
 }
@@ -445,6 +458,145 @@ func TestCIWatch_NoChecksFloorNeverOutlivesTheDeadline(t *testing.T) {
 	}
 	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, m.TaskID) }) {
 		t.Fatal("marker survived a terminal observation")
+	}
+}
+
+// TestCIWatch_PassingRollupBelowTheFloorIsPendingThenConcludes is the floor's
+// OTHER half, and the one a "no_checks is the only terminal derived from seeing
+// nothing" framing misses entirely: a PASSING rollup read inside the dispatch
+// window is exactly as partial as an empty one.
+//
+// The scenario is the ordinary one, not a corner case. Workflow A's check run
+// is created and succeeds; workflow B's has not been created yet. remote's
+// rollup sees Total=1, Failed=0, Pending=0, Passed=1 and says `passed` —
+// truthfully, about the one check that exists. Concluding on it maps to
+// `completed`, deletes the marker, and makes workflow B's later failure
+// permanently invisible. Same shape as an external status app that posts
+// success in a second while Actions dispatches, and as a fork PR whose ungated
+// workflow runs while the approval-gated ones wait.
+func TestCIWatch_PassingRollupBelowTheFloorIsPendingThenConcludes(t *testing.T) {
+	var polls int64
+	b, obs, clk := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+		atomic.AddInt64(&polls, 1)
+		// The ONE-OF-N view: the only check that exists so far is green.
+		return remote.CheckSummary{Rollup: remote.RollupPassed, Total: 1, Passed: 1}, nil
+	})
+	m := seedMarker(t, b, ciMarker{})
+	b.StartCIWatch()
+	defer stopWatch(t, b)
+
+	if !waitFor(5*time.Second, func() bool { return atomic.LoadInt64(&polls) >= 4 }) {
+		t.Fatal("the watch did not keep polling below the floor")
+	}
+	if n := obs.count(); n != 0 {
+		t.Fatalf("observations below the dispatch floor = %d, want 0 — a green check seconds after a push is one workflow of N, not a verdict", n)
+	}
+	live, err := readCIMarker(b.AuditRoot, m.TaskID)
+	if err != nil {
+		t.Fatalf("the marker was removed below the floor: %v", err)
+	}
+	if live.State != CIPending {
+		t.Fatalf("marker state below the floor = %q, want %q", live.State, CIPending)
+	}
+
+	// Above the floor the same rollup is a real observation.
+	clk.advance(ciDispatchFloorGrace + time.Second)
+	if !waitFor(5*time.Second, func() bool { return obs.count() == 1 }) {
+		t.Fatal("no observation after the dispatch floor elapsed")
+	}
+	if got := obs.all()[0]; got.State != CIPassed {
+		t.Fatalf("state after the floor = %q, want %q", got.State, CIPassed)
+	}
+}
+
+// TestCIWatch_PassingPrefixThatLaterFailsIsRecordedAsFailed is the same window
+// told as the bug it prevents: the FIRST poll sees one green check, the checks
+// that had not dispatched yet then fail, and the watch must record `failed`.
+// Without the floor holding `passed`, the first poll concluded, the marker was
+// deleted, and the queue item read `completed` forever.
+func TestCIWatch_PassingPrefixThatLaterFailsIsRecordedAsFailed(t *testing.T) {
+	var polls int64
+	b, obs, _ := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+		if atomic.AddInt64(&polls, 1) <= 3 {
+			return remote.CheckSummary{Rollup: remote.RollupPassed, Total: 1, Passed: 1}, nil
+		}
+		// Workflow B finally appears — and fails.
+		return remote.CheckSummary{Rollup: remote.RollupFailed, Total: 2, Passed: 1, Failed: 1}, nil
+	})
+	seedMarker(t, b, ciMarker{})
+	b.StartCIWatch()
+	defer stopWatch(t, b)
+
+	if !waitFor(5*time.Second, func() bool { return obs.count() == 1 }) {
+		t.Fatal("no observation")
+	}
+	got := obs.all()[0]
+	if got.State != CIFailed {
+		t.Fatalf("state = %q, want %q — the passing prefix must not have ended the watch", got.State, CIFailed)
+	}
+	if got.Summary.Failed != 1 {
+		t.Errorf("summary = %+v, want the failing rollup", got.Summary)
+	}
+}
+
+// TestCIWatch_FailedIsNotHeldByTheFloor: the floor holds NON-FAILING partial
+// views only. An observed terminal failure is conclusive — the workflows still
+// dispatching cannot un-fail it — so it short-circuits immediately, exactly as
+// remote.rollupFor's own precedence does.
+func TestCIWatch_FailedIsNotHeldByTheFloor(t *testing.T) {
+	b, obs, _ := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+		return remote.CheckSummary{Rollup: remote.RollupFailed, Total: 1, Failed: 1}, nil
+	})
+	m := seedMarker(t, b, ciMarker{}) // created "now": deep below the floor
+	b.StartCIWatch()
+	defer stopWatch(t, b)
+
+	if !waitFor(5*time.Second, func() bool { return obs.count() == 1 }) {
+		t.Fatal("an observed failure was held by the dispatch floor; it is conclusive on sight")
+	}
+	if got := obs.all()[0]; got.State != CIFailed {
+		t.Fatalf("state = %q, want %q", got.State, CIFailed)
+	}
+	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, m.TaskID) }) {
+		t.Fatal("marker survived a terminal observation")
+	}
+}
+
+// TestCIDispatchFloor_IsMaterializedOntoTheMarker: the floor's LENGTH is
+// absolute, not just its anchor. The watcher reads b.CIPollInterval live, so
+// without persisting the computed instant an operator who edited
+// ci.poll_interval between boots would lengthen (or shorten) a watch that was
+// already running — the very thing the anchor exists to prevent. Same treatment
+// DeadlineMs already gets.
+func TestCIDispatchFloor_IsMaterializedOntoTheMarker(t *testing.T) {
+	b, _, _ := watchBroker(t, func([]string, string, string, int) (remote.CheckSummary, error) {
+		return remote.CheckSummary{Rollup: remote.RollupPending, Total: 1, Pending: 1}, nil
+	})
+	b.CIPollInterval = 10 * time.Minute // floor = 2 × 10m
+	created := b.nowMs()
+	m := seedMarker(t, b, ciMarker{CreatedAtMs: created, UpdatedAtMs: created})
+	want := created + (20 * time.Minute).Milliseconds()
+
+	b.ciWatchPass(map[string]int{})
+	live, err := readCIMarker(b.AuditRoot, m.TaskID)
+	if err != nil {
+		t.Fatalf("readCIMarker: %v", err)
+	}
+	if live.FloorMs != want {
+		t.Fatalf("materialized floor_ms = %d, want %d", live.FloorMs, want)
+	}
+	// A "restart" with a different ci.poll_interval must not move it.
+	b.CIPollInterval = 30 * time.Second
+	if got := b.ciDispatchFloor(live); got != want {
+		t.Errorf("floor after a config change = %d, want the persisted %d — a live watch's floor must not move", got, want)
+	}
+	b.ciWatchPass(map[string]int{})
+	again, err := readCIMarker(b.AuditRoot, m.TaskID)
+	if err != nil {
+		t.Fatalf("readCIMarker: %v", err)
+	}
+	if again.FloorMs != want {
+		t.Errorf("floor_ms after a re-poll = %d, want the persisted %d", again.FloorMs, want)
 	}
 }
 
@@ -500,7 +652,7 @@ func TestCIWatch_BootResumeRewatchesSurvivingMarker(t *testing.T) {
 	})
 	// A marker created long before this "boot", as a crashed daemon would leave.
 	created := b.nowMs() - 60_000
-	m := seedMarker(t, b, ciMarker{CreatedAtMs: created, UpdatedAtMs: created,
+	m := seedSettledMarker(t, b, ciMarker{CreatedAtMs: created, UpdatedAtMs: created,
 		DeadlineMs: created + int64(time.Hour/time.Millisecond)})
 
 	b.StartCIWatch()
@@ -645,7 +797,7 @@ func TestCIWatch_ErrorRunResetsOnSuccess(t *testing.T) {
 			return passing(), nil
 		}
 	})
-	seedMarker(t, b, ciMarker{})
+	seedSettledMarker(t, b, ciMarker{})
 	b.StartCIWatch()
 	defer stopWatch(t, b)
 
@@ -764,7 +916,7 @@ func TestCIWatch_QueriesTheValidatedPRRepoNotTheTaskRepo(t *testing.T) {
 	// The task cloned the fork; the PR was opened against the upstream. The
 	// PR URL is deliberately a THIRD value, so a watcher that re-parsed it
 	// instead of reading the validated fields would be caught too.
-	seedMarker(t, b, ciMarker{
+	seedSettledMarker(t, b, ciMarker{
 		RepoRef: "https://github.com/myfork/proj.git",
 		PROwner: "upstream", PRRepo: "proj",
 		PRURL: "https://github.com/decoy/decoy/pull/42",
@@ -841,9 +993,9 @@ func TestCIWatch_MultipleMarkersEachConcluded(t *testing.T) {
 		}
 		return passing(), nil
 	})
-	bad := seedMarker(t, b, ciMarker{RepoRef: "https://gitlab.com/o/r.git"})
-	one := seedMarker(t, b, ciMarker{PRNumber: 1})
-	two := seedMarker(t, b, ciMarker{PRNumber: 2})
+	bad := seedSettledMarker(t, b, ciMarker{RepoRef: "https://gitlab.com/o/r.git"})
+	one := seedSettledMarker(t, b, ciMarker{PRNumber: 1})
+	two := seedSettledMarker(t, b, ciMarker{PRNumber: 2})
 
 	b.StartCIWatch()
 	defer stopWatch(t, b)

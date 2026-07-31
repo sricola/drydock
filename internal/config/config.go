@@ -287,8 +287,17 @@ const (
 	MinCIPollInterval = 10 * time.Second
 	// MinCIWatchTimeout floors ci.watch_timeout. A window shorter than this
 	// cannot contain a single poll, so every watch would expire unobserved
-	// and every watched task would dead-letter.
+	// and every watched task would dead-letter. It is the per-field floor;
+	// validate() additionally requires the timeout to clear the DISPATCH FLOOR,
+	// which for the shipped poll interval is stricter (5m).
 	MinCIWatchTimeout = time.Minute
+	// CIDispatchFloorPolls and CIDispatchFloorGrace mirror the broker's
+	// DISPATCH FLOOR (internal/broker/ciwatch.go): the earliest a non-failing
+	// check rollup may be believed, max(polls × poll_interval, grace) after the
+	// push. They live here so validate() can reject a poll/timeout PAIR that
+	// can never conclude; a broker-side test pins them equal to the broker's.
+	CIDispatchFloorPolls = 2
+	CIDispatchFloorGrace = 5 * time.Minute
 	// MaxCIAttempts caps ci.max_attempts. The bound exists because a retry
 	// chain's worst-case spend is max_attempts × task_budget_usd (each
 	// attempt mints a fresh full budget), so a typo'd "10000" would authorize
@@ -747,7 +756,43 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: ci.max_attempts must be <= %d, got %d; each attempt mints a fresh task_budget_usd, so the worst-case spend for one chain is max_attempts × task_budget_usd",
 			MaxCIAttempts, c.CI.MaxAttempts)
 	}
+	// The CROSS-FIELD check, which neither range check above can catch: each of
+	// `poll_interval: 10m` and `watch_timeout: 5m` is individually legal, and
+	// TOGETHER they make every single watch dead-letter. The watch checks its
+	// deadline before it checks the dispatch floor, so a timeout at or below the
+	// floor means no non-failing conclusion is ever reachable — `no_checks` and
+	// `passed` both become unreachable states and every watched task ends
+	// "no conclusion was observed". Rejecting the pair at load is the only place
+	// an operator finds out; at runtime it looks exactly like CI being broken.
+	if floor := ciDispatchFloor(c.CI.PollInterval); c.CI.effectiveWatchTimeout() <= floor {
+		return fmt.Errorf("config: ci.watch_timeout (%v) must be greater than the dispatch floor max(%d × ci.poll_interval, %v) = %v; with this pair every watch would expire before any CI conclusion could be believed, so every watched task would dead-letter",
+			c.CI.effectiveWatchTimeout(), CIDispatchFloorPolls, CIDispatchFloorGrace, floor)
+	}
 	return nil
+}
+
+// effectiveWatchTimeout is the deadline the daemon actually applies: the
+// configured value, or the built-in default when it is 0.
+func (c CIConfig) effectiveWatchTimeout() time.Duration {
+	if c.WatchTimeout <= 0 {
+		return DefaultCIWatchTimeout
+	}
+	return c.WatchTimeout
+}
+
+// ciDispatchFloor is the broker's floor arithmetic (broker.ciDispatchFloor),
+// duplicated here so validate() can reason about a config pair without the
+// import cycle a broker dependency would create. The two are pinned equal by a
+// broker-side test.
+func ciDispatchFloor(poll time.Duration) time.Duration {
+	if poll <= 0 {
+		poll = DefaultCIPollInterval
+	}
+	floor := CIDispatchFloorPolls * poll
+	if floor < CIDispatchFloorGrace {
+		floor = CIDispatchFloorGrace
+	}
+	return floor
 }
 
 // SeedTemplate is the comment-rich YAML written by `drydock init` when
@@ -862,7 +907,7 @@ openai_compat:
 ci:
   watch:         false          # enable the host-side CI watch (default false = off; nothing polls, no gh call on a timer)
   poll_interval: 60s            # watch tick; one gh API call per watched PR per tick. 0 = built-in default (60s); minimum 10s
-  watch_timeout: 90m            # ABSOLUTE per-PR deadline anchored at push, so a restart can't extend it. 0 = built-in default (90m); minimum 1m
+  watch_timeout: 90m            # ABSOLUTE per-PR deadline anchored at push, so a restart can't extend it. 0 = built-in default (90m); must exceed the dispatch floor max(2 x poll_interval, 5m)
   max_attempts:  0              # bounded retry on an observed CI failure (increment B2). 0 = off. Worst-case spend for one chain is max_attempts × task_budget_usd; max 10
 
 # --- Where state lives ---

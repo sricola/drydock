@@ -28,11 +28,14 @@ entry below corresponds to a Git tag of the same name.
   stays forward-only and acyclic (asserted mechanically, not by inspection);
   terminals remain sinks. Only check *conclusions* are read — no CI log text
   is fetched, parsed, stored, or displayed anywhere on the path, and none can
-  influence a decision. Surfaces: a `CI` column in `drydock queue list`
-  (observed conclusion + PR number, `-` when nothing was observed),
-  `ci_state`/`pr_number` on `GET /queue`, an `awaiting_ci` badge and a
-  `ci_failed` history classification in the web UI, and `ci_failed` in
-  `drydock stats`' outcome vocabulary. The observation is appended to the
+  influence a decision. **Where the observation is surfaced**, exactly: a `CI`
+  column in `drydock queue list` (observed conclusion + PR number, `-` when
+  nothing was observed), `ci_state`/`pr_number` on `GET /queue`, and the raw
+  `ci_observation` record in the task's audit trace. It is deliberately **not**
+  surfaced in the web UI, `drydock tasks`, or `drydock stats`: all three
+  classify a task from its last `result` row, and a CI observation is not one
+  (see below), so a pushed task keeps reading `ok` in those views no matter
+  what its PR's CI did. The queue is the CI surface. The observation is appended to the
   task's audit as a broker-authored `{"type":"ci_observation","src":"broker"}`
   record — deliberately **not** a late `result` row, so a CI failure never
   relabels a successful push in `drydock tasks`/`stats`/the web UI and never
@@ -49,10 +52,18 @@ entry below corresponds to a Git tag of the same name.
     checks appearing sees an empty rollup that means *not yet*. An empty rollup
     is therefore recorded as `pending` until a **dispatch floor** —
     `max(2 × ci.poll_interval, 5m)`, measured from the marker's persisted push
-    time so a restart or crash loop cannot dodge it — has elapsed. Only above
-    that floor is "this PR has no checks" a conclusion. A repository with
-    genuinely no CI now sits in `awaiting_ci` for those few minutes before
-    completing.
+    time so a restart or crash loop cannot dodge it — has elapsed. The floor
+    holds a **passing** rollup for exactly the same reason: a poll that lands
+    while workflow A's check is green and workflow B's has not been created yet
+    sees a real `passed`, about one workflow of N, and concluding on it would
+    make B's later failure permanently invisible. An observed **failure** is
+    conclusive on sight and is never held. Only above the floor are "this PR
+    has no checks" and "this PR passed" conclusions. A repository with
+    genuinely no CI — or with very fast CI — now sits in `awaiting_ci` for
+    those few minutes before completing. The pair `ci.poll_interval` /
+    `ci.watch_timeout` is cross-validated at load so a timeout inside the floor
+    (which would dead-letter every watch) is rejected rather than discovered in
+    production.
   - **Enterprise hosts are not watched, and are not failed either.** The
     watch's `gh` calls hard-pin `github.com` (the `GH_HOST` defense), so a task
     whose repo ref names a GitHub Enterprise host writes no marker and arms no
@@ -62,6 +73,10 @@ entry below corresponds to a Git tag of the same name.
     with `ci.watch` off, where every row simply shows `-`. The column is part
     of the table now, not conditional on the feature; scripts that parse that
     output by column position should be updated.
+  - **`drydock queue cancel` works on an `awaiting_ci` item**, cancelling the
+    watch (its marker is removed, so no further API call is spent on that PR)
+    and moving the item to `cancelled`. `cancelled` therefore remains reachable
+    from every non-terminal state, as documented.
 
 - **`ci:` config block — the opt-in that turns the CI watch on.** New keys in
   `~/.drydock/config.yaml`: `ci.watch` (default **`false`** — the feature ships

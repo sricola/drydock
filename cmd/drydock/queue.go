@@ -23,7 +23,9 @@ func queueUsage(w io.Writer) {
 
   drydock queue add <submit flags>   enqueue a task; returns immediately with its id
   drydock queue list                 show queue items: id, state, age, attempts, ci, repo
-  drydock queue cancel <id>          cancel a queued item (kills it if already running)
+  drydock queue cancel <id>          cancel a queued item (kills it if already
+                                     running; cancels the CI watch if it is
+                                     parked in awaiting_ci)
 
 'queue add' takes the same flags as 'drydock submit' (drydock queue add -h).
 Queued tasks survive brokerd restarts and run unattended when a concurrency
@@ -232,7 +234,7 @@ func postQueueCancel(id string) int {
 		fmt.Printf("task %s cancelled\n", id)
 		return 0
 	case http.StatusNotFound:
-		fmt.Fprintf(errOut, "drydock queue cancel: no such queued or running task: %s\n", id)
+		fmt.Fprintf(errOut, "drydock queue cancel: no such queued, running, or ci-watched task: %s\n", id)
 		return 1
 	default:
 		fmt.Fprintf(errOut, "drydock queue cancel: brokerd returned %s\n", resp.Status)

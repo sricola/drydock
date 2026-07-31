@@ -247,6 +247,33 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 			// watcher disagreeing about the same task, which is the one state
 			// this reconciliation exists to prevent.
 			//
+			// Two live-state re-reads before anything is terminated, because
+			// `items` is a SNAPSHOT taken at entry and both halves of an arming
+			// push can land after it:
+			//
+			//  1. A stale snapshot state. The item may have left awaiting_ci
+			//     entirely since the snapshot (a concurrent conclusion), in
+			//     which case there is nothing here to terminate.
+			//  2. The arm->write gap. recordCIMarker's queue write and marker
+			//     write are two separate disk ops; observing an armed item
+			//     between them and terminating it would be immediately
+			//     overwritten by the marker write, leaving the watcher polling a
+			//     dead-lettered item whose every transition is refused.
+			//     beginCIArm publishes that gap; we skip it and let the watch
+			//     (started right after this sweep) pick the marker up.
+			//
+			// THE ORDER OF THESE TWO IS LOAD-BEARING and is the state re-read
+			// FIRST. An arm that begins after the in-flight check would slip
+			// through if the check came first; but an arm that has not yet
+			// written awaiting_ci cannot pass the state re-read at all, and one
+			// that has written it is inside the bracket the second check sees.
+			fresh, ferr := readQueueItem(b.AuditRoot, it.ID)
+			if ferr != nil || fresh.State != QueueAwaitingCI {
+				continue
+			}
+			if b.ciArmInFlight(it.ID) {
+				continue
+			}
 			// A read error is treated as "no marker", which fails toward
 			// terminating the item honestly rather than leaving it parked on a
 			// watch that may not exist.
@@ -267,7 +294,7 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 				}
 			}
 			b.applyCIObservation(CIObservation{
-				TaskID: it.ID, RepoRef: it.Task.RepoRef, PRNumber: it.PRNumber,
+				TaskID: fresh.ID, RepoRef: fresh.Task.RepoRef, PRNumber: fresh.PRNumber,
 				State: CIUnknown, Detail: reason, ObservedAtMs: b.nowMs(),
 			})
 		default:
@@ -324,13 +351,20 @@ func (b *Broker) reclaimOrphanCIMarkers() {
 		return
 	}
 	for _, m := range ms {
-		b.applyCIObservation(CIObservation{
+		if !b.applyCIObservation(CIObservation{
 			TaskID: m.TaskID, RepoRef: m.RepoRef, Branch: m.Branch,
 			PRNumber: m.PRNumber, PRURL: m.PRURL, Attempt: m.Attempt, RetryOf: m.RetryOf,
 			State:        CIUnknown,
 			Detail:       "ci watch is disabled; no CI conclusion will be observed for this push",
 			ObservedAtMs: b.nowMs(),
-		})
+		}) {
+			// The terminal did not reach disk for a retryable reason. Keep the
+			// marker so the NEXT boot's sweep retries it; removing it now would
+			// leave the item parked in awaiting_ci with nothing that even knows
+			// to look at it. Same rule concludeCIWatch applies.
+			slog.Warn("queue resume: keeping an orphan ci marker whose terminal write failed", "task_id", m.TaskID)
+			continue
+		}
 		if err := removeCIMarker(b.AuditRoot, m.TaskID); err != nil {
 			slog.Warn("queue resume: could not remove an orphaned ci marker", "task_id", m.TaskID, "err", err)
 			continue

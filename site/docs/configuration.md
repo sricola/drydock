@@ -188,7 +188,7 @@ makes no API call on a timer.
 ci:
   watch:         false          # enable the watch (default false = off)
   poll_interval: 60s            # watch tick; 0 = built-in default (60s), minimum 10s
-  watch_timeout: 90m            # absolute per-PR deadline; 0 = built-in default (90m), minimum 1m
+  watch_timeout: 90m            # absolute per-PR deadline; 0 = built-in default (90m); must exceed max(2 x poll_interval, 5m)
   max_attempts:  0              # bounded retry on an observed CI failure; 0 = off
 ```
 
@@ -196,7 +196,7 @@ ci:
 |---|---|---|---|
 | `watch` | `DRYDOCK_CI_WATCH=1` | `false` | Enable the host-side CI watch. Only the exact value `1` enables it via env |
 | `poll_interval` | `DRYDOCK_CI_POLL_INTERVAL` | `60s` | Watch tick. One GitHub API call per watched PR per tick; `0` = the built-in default, minimum `10s` |
-| `watch_timeout` | `DRYDOCK_CI_WATCH_TIMEOUT` | `90m` | Per-PR deadline, absolute and anchored at push, so a restart cannot extend it; `0` = the built-in default, minimum `1m` |
+| `watch_timeout` | `DRYDOCK_CI_WATCH_TIMEOUT` | `90m` | Per-PR deadline, absolute and anchored at push, so a restart cannot extend it; `0` = the built-in default. Must exceed the dispatch floor `max(2 × poll_interval, 5m)` — a shorter window makes every watch dead-letter, so the pair is rejected at load |
 | `max_attempts` | `DRYDOCK_CI_MAX_ATTEMPTS` | `0` (off) | Bounded retry on an observed CI failure. **Not yet wired** — the key is declared so the schema is stable; the behavior ships in the next increment. Capped at `10` |
 
 ### What the watch does, and what it does not
@@ -207,8 +207,11 @@ ci:
   check passed, *or* the PR has no checks configured), `ci_failed` (the broker
   **observed** a check fail), and `dead_letter` when the watch ended with *no*
   conclusion — a timeout, repeated read failures, or a marker lost to a
-  restart. An unobserved outcome never reads as success. The full state
-  table is in
+  restart. An unobserved outcome never reads as success. The verdict is
+  surfaced on the **queue** — `drydock queue list` and `GET /queue` — and in
+  the raw audit record; `drydock tasks`, `drydock stats`, and the web UI
+  classify a task from its own terminal row and keep reading `ok` for a clean
+  push regardless of its CI. The full state table is in
   [Submitting tasks](submitting-tasks.html#watching-the-pr-s-ci-opt-in-off-by-default).
 - **It does not read CI logs.** Only conclusions are fetched. No CI log text
   is retrieved, parsed, stored, or displayed anywhere on this path, and
@@ -222,11 +225,15 @@ ci:
   parent's own budget. That is why the default is `0` and the cap is `10`.
 - **It holds no concurrency slot and keeps no stage.** The watch is a
   separate bounded poll, so other tasks keep dispatching normally.
-- **It waits before believing "no checks".** CI dispatch is asynchronous, so
-  an empty check list right after a push means *not yet*. An empty result is
-  kept as `pending` until `max(2 × poll_interval, 5m)` has elapsed since the
-  push — raising `poll_interval` therefore raises that floor too. Only after
-  it does "this PR has no checks" become a conclusion.
+- **It waits before believing a non-failing answer.** CI dispatch is
+  asynchronous and incremental, so a poll right after a push sees only part of
+  what will run. An empty check list means *not yet*; a list where everything
+  is green means *the first workflow finished*. Both are kept as `pending`
+  until `max(2 × poll_interval, 5m)` has elapsed since the push — raising
+  `poll_interval` therefore raises that floor too, and `watch_timeout` must
+  exceed it (the pair is validated at load). Only after the floor do "this PR
+  has no checks" and "this PR passed" become conclusions. An observed
+  **failure** is conclusive immediately.
 - **It only watches `github.com`.** The host is pinned inside the API call
   (see below), so a task on a GitHub Enterprise host is never watched: it
   pushes and completes on the unwatched path, and is never dead-lettered for
