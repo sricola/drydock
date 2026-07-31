@@ -299,6 +299,19 @@ func (b *Broker) runQueued(it QueueItem) {
 		}
 	}
 
+	// A push that armed the CI watch is NOT terminal here: finishPush already
+	// moved the item awaiting_review -> awaiting_ci, and its real terminal is
+	// whatever the watcher observes (ciqueue.go). Writing queueTerminal's
+	// `pushed -> completed` now would mark the item clean before any CI
+	// evidence exists — the exact "absence of evidence reads as success"
+	// failure the watch exists to prevent. Everything else (no watch, watch
+	// disabled, watch declined, a non-push outcome) falls through unchanged.
+	if b.ciOwnsTerminal(it.ID) {
+		slog.Info("queue: push is under ci observation; the watch owns this item's terminal",
+			"task_id", it.ID)
+		return
+	}
+
 	to, lastErr := queueTerminal(tr.outcome, ctx.Err() != nil)
 	if _, err := b.setQueueState(it.ID, to, func(q *QueueItem) {
 		q.LastError = lastErr
@@ -313,6 +326,14 @@ func (b *Broker) runQueued(it QueueItem) {
 // failure outcome dead-letters immediately (Increment B turns retryable
 // ones into re-queues). cancelled covers the pre-outcome aborts too when
 // the task context was cancelled (kill/shutdown before a terminal emit).
+//
+// `pushed -> completed` stays exactly as written, and is deliberately NOT
+// conditioned on the CI watch: the diversion to awaiting_ci is made by the
+// CALLERS (runQueued, finalizeQueuedResume), which skip this mapping entirely
+// when ciOwnsTerminal reports the watch owns the item. Keeping the condition
+// out of here means this function stays a pure outcome->state mapping with no
+// disk read in it, and the one place that decides "is this item finished at
+// all" is the one place that reads the durable item.
 func queueTerminal(outcome string, ctxCancelled bool) (QueueState, string) {
 	switch outcome {
 	case "pushed", "no_diff", "planned":

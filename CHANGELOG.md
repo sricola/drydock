@@ -9,6 +9,38 @@ entry below corresponds to a Git tag of the same name.
 
 ### Added
 
+- **Host-side CI observation for pushed PRs (orchestration increment B1,
+  opt-in, off by default).** With `ci.watch` enabled, a queued task no longer
+  finishes at the push: once its branch is pushed and the PR is open, the item
+  moves to the new **`awaiting_ci`** state and brokerd polls that PR's check
+  conclusions host-side until they conclude. The watch holds **no concurrency
+  slot and keeps no stage** — it is a bounded poll keyed off a durable
+  `<id>.ci.json` marker, so a restart re-watches with the *original* absolute
+  deadline and a crash loop cannot extend the window. Terminals:
+  `completed` for an observed pass **or** an observed "this PR has no checks
+  configured", the new terminal **`ci_failed`** for an **observed** check
+  failure, and `dead_letter` for a watch that ended with *no* conclusion (a
+  timeout, repeated read failures, a marker lost to a restart, or the watch
+  being disabled under a parked item), with the reason in `last_error`. The
+  asymmetry is the feature: `ci_failed` means the broker watched a check fail
+  and nothing else produces it, and **an unobserved CI outcome never reaches
+  `completed`** — absence of evidence is not success. The queue state machine
+  stays forward-only and acyclic (asserted mechanically, not by inspection);
+  terminals remain sinks. Only check *conclusions* are read — no CI log text
+  is fetched, parsed, stored, or displayed anywhere on the path, and none can
+  influence a decision. Surfaces: a `CI` column in `drydock queue list`
+  (observed conclusion + PR number, `-` when nothing was observed),
+  `ci_state`/`pr_number` on `GET /queue`, an `awaiting_ci` badge and a
+  `ci_failed` history classification in the web UI, and `ci_failed` in
+  `drydock stats`' outcome vocabulary. The observation is appended to the
+  task's audit as a broker-authored `{"type":"ci_observation","src":"broker"}`
+  record — deliberately **not** a late `result` row, so a CI failure never
+  relabels a successful push in `drydock tasks`/`stats`/the web UI and never
+  disturbs the restart-seeded aggregate spend ledger (F-07), both of which
+  read the last `result` line. With `ci.watch` off (the default) a pushed
+  queue item completes at the push exactly as before, no marker is written,
+  and no API call is made on a timer.
+
 - **Durable task queue (orchestration increment A).** `drydock queue add`
   takes the same flags as `submit` but returns the moment brokerd has
   durably persisted the task; it runs unattended when a concurrency slot

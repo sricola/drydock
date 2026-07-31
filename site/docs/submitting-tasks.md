@@ -72,7 +72,7 @@ moment brokerd has durably persisted the task:
 drydock queue add --repo git@github.com:o/r --instruction "fix the flaky test"
 drydock queue add --issue https://github.com/o/r/issues/42 --auto-approve
 
-drydock queue list           # ID / STATE / AGE / ATTEMPTS / REPO
+drydock queue list           # ID / STATE / AGE / ATTEMPTS / CI / REPO
 drydock queue cancel <id>    # dequeue a waiting item, or kill it if running
 ```
 
@@ -80,7 +80,11 @@ Each item moves through a broker-enforced state machine:
 
 ```
 queued → preparing → running → verifying → awaiting_review → completed
-                                                           ↘ dead_letter
+                                                    │      ↘ dead_letter
+                                                    ↓
+                                              awaiting_ci → completed
+                                                          ↘ ci_failed
+                                                          ↘ dead_letter
         (cancelled is reachable from every non-terminal state)
 ```
 
@@ -103,6 +107,66 @@ queued → preparing → running → verifying → awaiting_review → completed
 - **Terminals.** A clean finish (pushed, no-diff, or a plan) lands
   `completed`; any failure lands `dead_letter` with the reason in
   `last_error`. Terminal items stay in `drydock queue list` as history.
+- **Forward-only.** No state ever goes backwards and the graph has no cycle,
+  so an item's state always answers "how far did this get", never "which lap
+  is it on". A bounded CI retry is therefore always a *new* queue item with
+  its own id, never a re-entry of this one.
+
+### Watching the PR's CI (opt-in, off by default)
+
+With `ci.watch` enabled, a queued task does not finish at the push. Once the
+branch is pushed and the PR is open, the item moves to **`awaiting_ci`** and
+brokerd observes that PR's checks host-side, on a timer, until they conclude.
+
+The watch holds **no concurrency slot and keeps no stage** — it is a separate
+bounded poll keyed off a durable marker in the audit dir, so other tasks keep
+dispatching normally and a restart resumes the watch with its *original*
+deadline (a crash loop cannot extend the window).
+
+`drydock queue list` gains a **CI** column showing the last observed
+conclusion and the PR number:
+
+```
+ID                                STATE            AGE  ATTEMPTS  CI                REPO
+0123…                             awaiting_ci      12m         1  pending #431      o/r
+89ab…                             ci_failed        41m         1  failed #430       o/r
+cdef…                             completed         2h         1  passed #429       o/r
+```
+
+The terminals it can reach, and exactly what each one claims:
+
+| observation | terminal | means |
+| --- | --- | --- |
+| every check passed | `completed` | observed success |
+| the PR has no checks configured | `completed` | observed: there is no CI gate to wait for |
+| at least one check failed | `ci_failed` | **observed** failure |
+| the watch window expired | `dead_letter` | no conclusion was observed |
+| repeated read failures, or an unwatchable PR | `dead_letter` | no conclusion was observed |
+
+The asymmetry is deliberate and is the whole point of the feature:
+**`ci_failed` means the broker watched a check fail**, and nothing else ever
+produces it. A watch that ends without an answer — a timeout, a run of API
+errors, a marker lost to a restart, or the watch being switched off while an
+item was parked — lands on `dead_letter` with the reason in `last_error`. It
+never lands on `completed`, because *absence of evidence is not success*. If
+you want to know whether CI passed, `completed` plus `ci_state: passed` is the
+only pair that says so.
+
+Only the check **conclusions** are read. No CI log text is fetched, parsed,
+stored, or displayed anywhere on this path, and no log content can influence
+any decision. What you see in the CI column is broker-authored vocabulary and
+a PR number.
+
+The observation is also appended to the task's audit trail as a
+`{"type":"ci_observation","src":"broker",…}` record. It is deliberately *not*
+written as a `result` row: the task's own terminal row still says the task
+pushed cleanly (it did), so a CI failure never relabels a successful push in
+`drydock tasks`, `drydock stats`, or the web UI, and never disturbs the
+spend accounting those readers derive from that row.
+
+With `ci.watch` off — the default — none of this happens: a pushed queue item
+completes the moment it pushes, exactly as it always has, and no marker is
+written and no API call is made on a timer.
 
 A queued task's terminal metrics row records the wait as `stage_ms.queued`
 (enqueue → dispatch); `drydock stats` aggregates it as the queue-wait

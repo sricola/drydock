@@ -304,20 +304,27 @@ func (b *Broker) concludeCIWatch(m ciMarker, st CIState, detail string, sum remo
 				"task_id", m.TaskID, "state", string(st), "err", err)
 		}
 	}
+	obs := CIObservation{
+		TaskID:       m.TaskID,
+		RepoRef:      m.RepoRef,
+		Branch:       m.Branch,
+		PRNumber:     m.PRNumber,
+		PRURL:        m.PRURL,
+		Attempt:      m.Attempt,
+		RetryOf:      m.RetryOf,
+		State:        st,
+		Summary:      sum,
+		Detail:       detail,
+		ObservedAtMs: now,
+	}
+	// Surface it (ciqueue.go): the durable queue terminal plus the audit
+	// record. Idempotent, and a clean no-op for a synchronous task that has no
+	// queue item. This runs unconditionally — it is the observation's whole
+	// point — whereas OnCIObserved stays the optional extension seam (B2's
+	// bounded retry hangs off it).
+	b.applyCIObservation(obs)
 	if b.OnCIObserved != nil {
-		b.OnCIObserved(CIObservation{
-			TaskID:       m.TaskID,
-			RepoRef:      m.RepoRef,
-			Branch:       m.Branch,
-			PRNumber:     m.PRNumber,
-			PRURL:        m.PRURL,
-			Attempt:      m.Attempt,
-			RetryOf:      m.RetryOf,
-			State:        st,
-			Summary:      sum,
-			Detail:       detail,
-			ObservedAtMs: now,
-		})
+		b.OnCIObserved(obs)
 	}
 	if err := removeCIMarker(b.AuditRoot, m.TaskID); err != nil {
 		slog.Warn("ci watch: could not remove a concluded marker",

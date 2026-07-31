@@ -16,8 +16,8 @@ import (
 )
 
 // QueueState is the lifecycle state of a queued orchestration item. States
-// only ever move forward through validTransition; the three terminal states
-// (completed, dead_letter, cancelled) are sinks.
+// only ever move forward through validTransition; the four terminal states
+// (completed, ci_failed, dead_letter, cancelled) are sinks.
 type QueueState string
 
 const (
@@ -26,15 +26,29 @@ const (
 	QueueRunning        QueueState = "running"
 	QueueVerifying      QueueState = "verifying"
 	QueueAwaitingReview QueueState = "awaiting_review"
-	QueueCompleted      QueueState = "completed"
-	QueueDeadLetter     QueueState = "dead_letter"
-	QueueCancelled      QueueState = "cancelled"
+	// QueueAwaitingCI: the item's branch is PUSHED and its PR is open; the
+	// host-side CI watcher (ciwatch.go) is observing that PR's checks. The
+	// work is done — nothing is dispatched, no slot is held, no stage is kept
+	// (D4) — but the item is not terminal, because no CI conclusion has been
+	// observed yet. Reached only from awaiting_review, and only when a
+	// <id>.ci.json marker was actually armed for the item.
+	QueueAwaitingCI QueueState = "awaiting_ci"
+	QueueCompleted  QueueState = "completed"
+	// QueueCIFailed is TERMINAL and means exactly one thing: the broker
+	// OBSERVED at least one of the PR's checks conclude in failure. It is
+	// never written for a watch that ended without a conclusion — a timeout,
+	// a run of gh errors, or a marker that did not survive a restart all land
+	// on dead_letter instead, because "we never found out" is missing
+	// evidence, not a failed build (and, symmetrically, not a passing one).
+	QueueCIFailed   QueueState = "ci_failed"
+	QueueDeadLetter QueueState = "dead_letter"
+	QueueCancelled  QueueState = "cancelled"
 )
 
 // Terminal reports whether s is a sink state — no further transitions.
 func (s QueueState) Terminal() bool {
 	switch s {
-	case QueueCompleted, QueueDeadLetter, QueueCancelled:
+	case QueueCompleted, QueueCIFailed, QueueDeadLetter, QueueCancelled:
 		return true
 	}
 	return false
@@ -45,12 +59,28 @@ func (s QueueState) Terminal() bool {
 // running -> completed exists because some lifecycle terminals are normal
 // finishes that never enter verify or review: a run that produced no diff
 // (no_diff) and a plan-only run (planned) both complete straight from running.
+//
+// The machine is FORWARD-ONLY and ACYCLIC, and both properties are asserted
+// mechanically by TestQueueStateMachineIsForwardOnly rather than trusted to a
+// reader. This is what makes the queue safe to reconcile at boot: a state can
+// be reasoned about as "how far did this item get", never "which lap is it
+// on". The CI arc keeps it that way — awaiting_review -> awaiting_ci is a step
+// FORWARD past the push, and every edge out of awaiting_ci is terminal, so
+// there is no awaiting_ci -> queued (or any other) back-edge. A bounded retry
+// (B2, D1) is therefore a NEW item that starts at queued with its own id, not
+// a re-entry of this one.
 var validTransition = map[QueueState][]QueueState{
 	QueueQueued:         {QueuePreparing, QueueCancelled},
 	QueuePreparing:      {QueueRunning, QueueDeadLetter, QueueCancelled},
 	QueueRunning:        {QueueVerifying, QueueAwaitingReview, QueueCompleted, QueueDeadLetter, QueueCancelled},
 	QueueVerifying:      {QueueAwaitingReview, QueueDeadLetter, QueueCancelled},
-	QueueAwaitingReview: {QueueCompleted, QueueDeadLetter, QueueCancelled},
+	QueueAwaitingReview: {QueueCompleted, QueueAwaitingCI, QueueDeadLetter, QueueCancelled},
+	// The four honest endings of a CI watch. Note what is NOT here: there is
+	// no edge that turns an unobserved watch into `completed`. completed is
+	// reachable only from an OBSERVED pass or an OBSERVED "this PR has no
+	// checks configured"; every other ending routes to ci_failed (observed
+	// failure) or dead_letter (no conclusion).
+	QueueAwaitingCI: {QueueCompleted, QueueCIFailed, QueueDeadLetter, QueueCancelled},
 }
 
 // CanTransitionTo reports whether the state machine permits s -> to. Unknown
@@ -79,6 +109,22 @@ type QueueItem struct {
 	UpdatedAtMs  int64      `json:"updated_at_ms"`
 	Attempts     int        `json:"attempts"`
 	LastError    string     `json:"last_error"`
+	// PRNumber is the pull request this item's push opened, recorded when the
+	// CI watch is armed. Display only (`drydock queue list`); the watch's own
+	// query coordinate lives on the <id>.ci.json marker, which is the ONLY
+	// thing that may aim a gh call.
+	PRNumber int `json:"pr_number,omitempty"`
+	// CIState is the broker's last OBSERVED CI conclusion for PRNumber, in the
+	// ciwatch vocabulary (pending/passed/failed/no_checks/timed_out/unknown).
+	//
+	// It has a second, load-bearing job beyond display: a NON-EMPTY CIState is
+	// the durable record that the CI watch took ownership of this item's
+	// terminal. runQueued and finalizeQueuedResume both consult it (see
+	// Broker.ciOwnsTerminal) and decline to write their own `completed` when
+	// it is set, which is what stops a pushed-and-watched item from racing to
+	// `completed` before its CI verdict exists. Empty means "no watch" — the
+	// stock, watch-disabled behavior — never "CI passed".
+	CIState string `json:"ci_state,omitempty"`
 }
 
 // queueIDRE matches newID's output shape (32 lowercase hex chars). Validated

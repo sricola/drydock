@@ -155,6 +155,13 @@ type queueItemView struct {
 	State        QueueState `json:"state"`
 	EnqueuedAtMs int64      `json:"enqueued_at_ms"`
 	Attempts     int        `json:"attempts"`
+	// PRNumber/CIState surface the CI observation. Both are omitempty, so an
+	// item that was never watched (the default, and every item written before
+	// the CI arc existed) serialises to exactly its previous shape. CIState is
+	// the broker's OBSERVED conclusion only — an empty value means "not
+	// watched / nothing observed", never "passed".
+	PRNumber int    `json:"pr_number,omitempty"`
+	CIState  string `json:"ci_state,omitempty"`
 }
 
 // HandleQueueList returns every durable queue item (including terminals —
@@ -174,6 +181,8 @@ func (b *Broker) HandleQueueList(w http.ResponseWriter, r *http.Request) {
 			State:        it.State,
 			EnqueuedAtMs: it.EnqueuedAtMs,
 			Attempts:     it.Attempts,
+			PRNumber:     it.PRNumber,
+			CIState:      it.CIState,
 		})
 	}
 	writeJSON(w, out)

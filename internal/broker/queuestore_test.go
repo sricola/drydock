@@ -230,11 +230,13 @@ func TestQueueStateTerminal(t *testing.T) {
 		QueueCompleted:      true,
 		QueueDeadLetter:     true,
 		QueueCancelled:      true,
+		QueueCIFailed:       true,
 		QueueQueued:         false,
 		QueuePreparing:      false,
 		QueueRunning:        false,
 		QueueVerifying:      false,
 		QueueAwaitingReview: false,
+		QueueAwaitingCI:     false,
 		QueueState("bogus"): false,
 	}
 	for s, want := range terminals {
@@ -244,11 +246,16 @@ func TestQueueStateTerminal(t *testing.T) {
 	}
 }
 
+// allQueueStates is every declared state, so the table test below is exhaustive
+// by construction: a new state added to queuestore.go without a row in `valid`
+// makes every edge out of it assert "forbidden", which is the safe direction.
+var allQueueStates = []QueueState{
+	QueueQueued, QueuePreparing, QueueRunning, QueueVerifying,
+	QueueAwaitingReview, QueueAwaitingCI,
+	QueueCompleted, QueueCIFailed, QueueDeadLetter, QueueCancelled,
+}
+
 func TestQueueStateCanTransitionTo(t *testing.T) {
-	all := []QueueState{
-		QueueQueued, QueuePreparing, QueueRunning, QueueVerifying,
-		QueueAwaitingReview, QueueCompleted, QueueDeadLetter, QueueCancelled,
-	}
 	valid := map[QueueState][]QueueState{
 		QueueQueued:    {QueuePreparing, QueueCancelled},
 		QueuePreparing: {QueueRunning, QueueDeadLetter, QueueCancelled},
@@ -256,17 +263,23 @@ func TestQueueStateCanTransitionTo(t *testing.T) {
 		// ever entering verify or review.
 		QueueRunning:        {QueueVerifying, QueueAwaitingReview, QueueCompleted, QueueDeadLetter, QueueCancelled},
 		QueueVerifying:      {QueueAwaitingReview, QueueDeadLetter, QueueCancelled},
-		QueueAwaitingReview: {QueueCompleted, QueueDeadLetter, QueueCancelled},
-		QueueCompleted:      {},
-		QueueDeadLetter:     {},
-		QueueCancelled:      {},
+		QueueAwaitingReview: {QueueCompleted, QueueAwaitingCI, QueueDeadLetter, QueueCancelled},
+		// awaiting_ci -> completed (observed pass / observed no-checks),
+		// ci_failed (an OBSERVED failure), dead_letter (the watch ended with
+		// NO conclusion — timed out, gave up, or its marker did not survive a
+		// restart), cancelled.
+		QueueAwaitingCI: {QueueCompleted, QueueCIFailed, QueueDeadLetter, QueueCancelled},
+		QueueCompleted:  {},
+		QueueCIFailed:   {},
+		QueueDeadLetter: {},
+		QueueCancelled:  {},
 	}
-	for _, from := range all {
+	for _, from := range allQueueStates {
 		allowed := map[QueueState]bool{}
 		for _, to := range valid[from] {
 			allowed[to] = true
 		}
-		for _, to := range all {
+		for _, to := range allQueueStates {
 			if got := from.CanTransitionTo(to); got != allowed[to] {
 				t.Errorf("%q -> %q = %v, want %v", from, to, got, allowed[to])
 			}
@@ -280,9 +293,73 @@ func TestQueueStateCanTransitionTo(t *testing.T) {
 		t.Error("transition to bogus state allowed")
 	}
 	// Self-transitions are not valid anywhere.
-	for _, s := range all {
+	for _, s := range allQueueStates {
 		if s.CanTransitionTo(s) {
 			t.Errorf("%q self-transition allowed", s)
+		}
+	}
+}
+
+// TestQueueStateMachineIsForwardOnly is the structural guard the doc comment on
+// validTransition asserts, checked mechanically rather than by reading:
+//
+//   - every terminal state (Terminal() == true) has ZERO outgoing edges, so a
+//     concluded item can never be re-opened; and
+//   - the graph is acyclic, so no sequence of legal transitions can return an
+//     item to a state it already left (which is what would let a retry
+//     laundering loop exist, D1).
+//
+// Both are asserted over the DECLARED table, so adding an edge that creates a
+// cycle — awaiting_ci -> queued, say — fails here without anyone remembering to
+// extend a case list.
+func TestQueueStateMachineIsForwardOnly(t *testing.T) {
+	for _, s := range allQueueStates {
+		if s.Terminal() && len(validTransition[s]) != 0 {
+			t.Errorf("terminal state %q has outgoing edges %v; terminals must be sinks", s, validTransition[s])
+		}
+	}
+	// Depth-first cycle detection over the declared edges (white/grey/black).
+	const (
+		white = 0
+		grey  = 1
+		black = 2
+	)
+	color := map[QueueState]int{}
+	var path []QueueState
+	var visit func(QueueState)
+	visit = func(s QueueState) {
+		color[s] = grey
+		path = append(path, s)
+		for _, next := range validTransition[s] {
+			switch color[next] {
+			case grey:
+				t.Errorf("cycle in the queue state machine: %v -> %q", path, next)
+			case white:
+				visit(next)
+			}
+		}
+		path = path[:len(path)-1]
+		color[s] = black
+	}
+	for _, s := range allQueueStates {
+		if color[s] == white {
+			visit(s)
+		}
+	}
+	// Every state named in an edge must be a declared state: a typo'd target
+	// would otherwise be an unreachable dead end nothing could ever leave.
+	declared := map[QueueState]bool{}
+	for _, s := range allQueueStates {
+		declared[s] = true
+	}
+	for from, tos := range validTransition {
+		if !declared[from] {
+			t.Errorf("validTransition has an edge FROM undeclared state %q", from)
+		}
+		for _, to := range tos {
+			if !declared[to] {
+				t.Errorf("validTransition has an edge %q -> undeclared state %q", from, to)
+			}
 		}
 	}
 }

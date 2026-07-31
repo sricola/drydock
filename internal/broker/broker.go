@@ -1501,6 +1501,17 @@ func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
 			"task_id", tr.id, "branch", branch, "pr", pr.Number)
 		return
 	}
+	// Take ownership of the queue item's terminal FIRST (awaiting_review ->
+	// awaiting_ci), then write the marker. That order is what makes "a live CI
+	// marker implies an armed item" true at every instant, so the watcher can
+	// never observe a marker for an item still sitting in awaiting_review. A
+	// crash in the gap leaves an armed item with no marker — resolved to an
+	// honest terminal by ResumeQueue, never a hang. No-op for a synchronous
+	// task (no queue item); declines the watch entirely if a real item could
+	// not be armed. See armCIWatch.
+	if !tr.b.armCIWatch(tr.id, pr.Number) {
+		return
+	}
 	now := tr.b.nowMs()
 	m := ciMarker{
 		TaskID: tr.id,
@@ -1523,6 +1534,19 @@ func (tr *taskRun) recordCIMarker(branch string, pr remote.PullRequest) {
 	if err := writeCIMarker(tr.b.AuditRoot, m); err != nil {
 		slog.Warn("ci watch: could not persist marker; this push will not be watched",
 			"task_id", tr.id, "branch", branch, "pr", pr.Number, "err", err)
+		// The item was armed a moment ago and no marker exists, so nothing will
+		// ever conclude its watch. Unwind it to an honest terminal NOW rather
+		// than leaving it parked in awaiting_ci until some future boot notices.
+		// dead_letter, not completed: the operator turned the watch on, it did
+		// not happen, and a silent `completed` would be an unobserved CI
+		// outcome reading as success. The push itself is unaffected — the
+		// terminal `pushed` event and audit row are already written.
+		tr.b.applyCIObservation(CIObservation{
+			TaskID: tr.id, RepoRef: m.RepoRef, Branch: branch,
+			PRNumber: pr.Number, PRURL: pr.URL, State: CIUnknown,
+			Detail:       "could not persist the ci watch marker; this push was never watched",
+			ObservedAtMs: now,
+		})
 	}
 }
 

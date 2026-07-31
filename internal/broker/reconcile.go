@@ -151,8 +151,21 @@ func (b *Broker) ResumeAwaiting(stageRoot string) {
 //     With no marker the gate can never be re-posed (ResumeAwaiting's
 //     fail-safe dropped it and wrote an interrupted audit line), so the item
 //     dead-letters honestly.
-//   - terminal (completed/dead_letter/cancelled): untouched — history for
-//     `drydock queue list`.
+//   - awaiting_ci: the SAME reasoning, one marker over. The item has already
+//     PUSHED, so it is never re-dispatched under any condition; the only
+//     question is who finishes it. The <id>.ci.json marker — not the gate
+//     marker — owns that re-drive: it is the watch's entire cross-restart
+//     state, and StartCIWatch's first pass re-reads it off disk with its
+//     ORIGINAL absolute deadline. So a marked item is left exactly as it is.
+//     With no surviving marker nothing will ever conclude the watch, so the
+//     item must reach an honest terminal here rather than hang forever in a
+//     non-terminal state: it becomes dead_letter with "no CI conclusion was
+//     observed", never `completed`. The same applies when the watch has since
+//     been turned OFF in config — a surviving marker will never be polled, so
+//     leaving the item parked would strand it; it is terminated honestly and
+//     the orphaned marker is removed.
+//   - terminal (completed/ci_failed/dead_letter/cancelled): untouched —
+//     history for `drydock queue list`.
 //
 // stageRoot is accepted for signature parity with ResumeAwaiting (and for
 // future increments that reconcile against the stage); this sweep decides
@@ -167,6 +180,19 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 		return nil
 	}
 	markers := ListGateMarkers(b.AuditRoot)
+	// The CI markers are a SEPARATE set from the gate markers and answer a
+	// different question: not "did this item reach the approval gate" but "is
+	// there a live watch that will still conclude it". A read error is treated
+	// as "no markers", which fails toward terminating awaiting_ci items rather
+	// than leaving them parked on a watch that may not exist.
+	ciMarked := map[string]bool{}
+	if ms, err := listCIMarkers(b.AuditRoot); err != nil {
+		slog.Warn("queue resume: could not scan ci markers; awaiting_ci items will be terminated honestly", "err", err)
+	} else {
+		for _, m := range ms {
+			ciMarked[m.TaskID] = true
+		}
+	}
 	b.initQueueChans()
 	deadLetter := func(id string) {
 		if _, err := b.setQueueState(id, QueueDeadLetter, func(q *QueueItem) {
@@ -209,6 +235,27 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 				continue // ResumeAwaiting re-drives the gate; its resolution finalizes the record
 			}
 			deadLetter(it.ID)
+		case QueueAwaitingCI:
+			// NEVER re-dispatched: this item already pushed. The only question
+			// is whether anything will still conclude its watch.
+			if ciMarked[it.ID] && b.CIWatch {
+				continue // the marker survived and the watch is on: StartCIWatch re-watches it
+			}
+			reason := "ci watch marker did not survive the restart; no CI conclusion was observed"
+			if ciMarked[it.ID] {
+				// Marker present but the watch is disabled — nothing will ever
+				// poll it. Terminate honestly and drop the orphan, which is the
+				// one thing that would otherwise accumulate (the marker is
+				// deliberately not prunable by age; see cmd/drydock/prune.go).
+				reason = "ci watch is disabled; no CI conclusion will be observed for this push"
+				if err := removeCIMarker(b.AuditRoot, it.ID); err != nil {
+					slog.Warn("queue resume: could not remove an orphaned ci marker", "task_id", it.ID, "err", err)
+				}
+			}
+			b.applyCIObservation(CIObservation{
+				TaskID: it.ID, RepoRef: it.Task.RepoRef, PRNumber: it.PRNumber,
+				State: CIUnknown, Detail: reason, ObservedAtMs: b.nowMs(),
+			})
 		default:
 			// Terminal — history. (An unknown state also lands here: with no
 			// valid outgoing transition it cannot be moved, and it can never
@@ -235,6 +282,15 @@ func (b *Broker) ResumeQueue(stageRoot string) error {
 func (b *Broker) finalizeQueuedResume(id, outcome string) {
 	if _, err := readQueueItem(b.AuditRoot, id); err != nil {
 		return // not a queue-driven task
+	}
+	// Same rule as runQueued's: a resumed gate that ended in a push under an
+	// armed CI watch has already moved the item to awaiting_ci, and the watch
+	// owns its terminal. Writing `completed` here would mark it clean with no
+	// CI evidence.
+	if b.ciOwnsTerminal(id) {
+		slog.Info("queue: resumed push is under ci observation; the watch owns this item's terminal",
+			"task_id", id)
+		return
 	}
 	to, lastErr := queueTerminal(outcome, false)
 	if outcome == "" {
