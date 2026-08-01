@@ -32,13 +32,20 @@ gate-wait percentiles, spend, and egress-widen frequency.`)
 	if err != nil {
 		die("--since: %v", err)
 	}
-	if err := writeStats(os.Stdout, auditDir(), d, *by, *asJSON); err != nil {
+	// The global ceiling's live headroom (plan G6). Best-effort by design: the
+	// audit-derived report below works with brokerd stopped, so an unreachable
+	// daemon simply omits the section rather than failing the command or
+	// printing a fabricated zero. See ceiling.go.
+	ceiling, _ := fetchCeiling()
+	if err := writeStats(os.Stdout, auditDir(), d, *by, *asJSON, ceiling); err != nil {
 		die("stats: %v", err)
 	}
 }
 
-// writeStats is the testable core: collect, aggregate, render to w.
-func writeStats(w io.Writer, dir string, since time.Duration, by string, asJSON bool) error {
+// writeStats is the testable core: collect, aggregate, render to w. ceiling is
+// the daemon's live global-ceiling headroom, or nil when brokerd could not be
+// asked (in which case the section is omitted entirely).
+func writeStats(w io.Writer, dir string, since time.Duration, by string, asJSON bool, ceiling *ceilingStatus) error {
 	cutoff := time.Time{}
 	if since > 0 {
 		cutoff = time.Now().Add(-since)
@@ -55,12 +62,28 @@ func writeStats(w io.Writer, dir string, since time.Duration, by string, asJSON 
 		}
 		rep.Groups, rep.GroupBy = groups, by
 	}
+	// OFF MEANS ABSENT, in JSON exactly as in the text rendering. renderCeiling
+	// already suppresses a disabled ceiling; without the same rule here a stock
+	// install's `stats --json` grew a global_ceiling object full of zeroes for a
+	// feature it has not enabled, which reads as "configured, at zero" rather
+	// than "not configured".
+	if ceiling != nil && !ceiling.Enabled {
+		ceiling = nil
+	}
 	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		return enc.Encode(rep)
+		// stats.Report is embedded (not nested) so every existing key keeps its
+		// exact position in the object and any consumer parsing today's shape is
+		// unaffected; global_ceiling is additive and omitted when the daemon
+		// could not be asked, or when neither limb is configured.
+		return enc.Encode(struct {
+			stats.Report
+			GlobalCeiling *ceilingStatus `json:"global_ceiling,omitempty"`
+		}{Report: rep, GlobalCeiling: ceiling})
 	}
 	renderStats(w, rep)
+	renderCeiling(w, ceiling)
 	return nil
 }
 
@@ -136,8 +159,16 @@ func pair(p50, p95 int64, n int) string {
 	return shortDur(p50) + "/" + shortDur(p95)
 }
 
-// renderSpend prints the spend line. Unmetered (subscription) tasks are never
-// folded into the dollar total; their count is appended as a parenthetical.
+// renderSpend prints the spend line. The dollar total is BROKER-OBSERVED spend
+// only (G4) — the gateway lease's own metering, never a total_cost_usd an agent
+// printed to its stdout.
+//
+// Two categories are therefore kept OUT of the total and named beside it, for
+// opposite reasons. Unmetered (subscription) tasks have no dollars to meter, so
+// folding their $0 in would drag the number toward zero and misread as "free".
+// Agent-reported tasks DO have a number, but not one the broker measured; it is
+// shown rather than dropped, because silently printing $0 where a real figure
+// existed trades one dishonesty for another.
 func renderSpend(w io.Writer, s stats.Summary) {
 	if s.Tasks-s.UnmeteredTasks > 0 {
 		fmt.Fprintf(w, "spend: $%.2f total, $%.2f/day", s.SpendUSD, s.SpendPerDayUSD)
@@ -150,6 +181,10 @@ func renderSpend(w io.Writer, s stats.Summary) {
 		fmt.Fprintf(w, " (+%d unmetered subscription task(s))", s.UnmeteredTasks)
 	}
 	fmt.Fprintln(w)
+	if s.AgentReportedTasks > 0 {
+		fmt.Fprintf(w, "  not included: $%.2f self-reported by %d task(s) the broker never metered (agent-reported, not verified)\n",
+			s.AgentReportedUSD, s.AgentReportedTasks)
+	}
 }
 
 // renderWidens prints the egress-widen line, appending the orphan

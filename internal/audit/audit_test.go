@@ -32,12 +32,19 @@ func TestOutcomeAndCost(t *testing.T) {
 		wantCost    string
 		wantDur     bool
 	}{
-		{"success with turns", []string{meta, `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0.0731,"num_turns":2}`}, "ok (2 turns)", "$0.0731", true},
-		{"success no turns", []string{meta, `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0,"num_turns":0}`}, "ok", "$0.0000", true},
-		{"error", []string{meta, `{"type":"result","subtype":"error","is_error":true,"duration_ms":5,"total_cost_usd":0.01,"num_turns":1}`}, "error", "$0.0100", true},
-		{"interrupted", []string{meta, `{"type":"result","subtype":"interrupted","is_error":false,"duration_ms":0,"total_cost_usd":0,"num_turns":0}`}, "interrupted", "$0.0000", false},
-		{"subscription", []string{subMeta, `{"type":"result","subtype":"success","is_error":false,"duration_ms":3,"total_cost_usd":0,"num_turns":1}`}, "ok (1 turn)", "subscription", true},
-		{"sensitive suffix", []string{sens, `{"type":"result","subtype":"success","is_error":false,"duration_ms":3,"total_cost_usd":0,"num_turns":1}`}, "ok (1 turn) · sensitive", "$0.0000", true},
+		// The terminal rows carry src:"broker" because that is what the broker
+		// writes (appendBrokerResult) — and after G4 that provenance is what
+		// decides whether the cost renders as measured or gets the
+		// agent-reported mark.
+		{"success with turns", []string{meta, `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0.0731,"num_turns":2,"src":"broker"}`}, "ok (2 turns)", "$0.0731", true},
+		{"success no turns", []string{meta, `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"total_cost_usd":0,"num_turns":0,"src":"broker"}`}, "ok", "$0.0000", true},
+		{"error", []string{meta, `{"type":"result","subtype":"error","is_error":true,"duration_ms":5,"total_cost_usd":0.01,"num_turns":1,"src":"broker"}`}, "error", "$0.0100", true},
+		// TerminateStuckAudits' synthetic interrupted row carries NO src, and
+		// this fixture has no broker row above it — so there is no
+		// broker-metered figure and the $0 is marked rather than asserted.
+		{"interrupted", []string{meta, `{"type":"result","subtype":"interrupted","is_error":false,"duration_ms":0,"total_cost_usd":0,"num_turns":0}`}, "interrupted", "$0.0000?", false},
+		{"subscription", []string{subMeta, `{"type":"result","subtype":"success","is_error":false,"duration_ms":3,"total_cost_usd":0,"num_turns":1,"src":"broker"}`}, "ok (1 turn)", "subscription", true},
+		{"sensitive suffix", []string{sens, `{"type":"result","subtype":"success","is_error":false,"duration_ms":3,"total_cost_usd":0,"num_turns":1,"src":"broker"}`}, "ok (1 turn) · sensitive", "$0.0000", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,7 +57,11 @@ func TestOutcomeAndCost(t *testing.T) {
 			if got := Outcome(last, ok, m); got != tc.wantOutcome {
 				t.Errorf("Outcome = %q, want %q", got, tc.wantOutcome)
 			}
-			if got := Cost(m, last, ok); got != tc.wantCost {
+			rows := TailRows{Result: last, HasResult: ok}
+			if last.Src == "broker" {
+				rows.Broker, rows.HasBroker = last, true
+			}
+			if got := Cost(m, rows); got != tc.wantCost {
 				t.Errorf("Cost = %q, want %q", got, tc.wantCost)
 			}
 			if got := HasDuration(last, ok); got != tc.wantDur {
@@ -69,63 +80,157 @@ func TestNoResultLine(t *testing.T) {
 	if Outcome(last, ok, ReadMeta(p)) != "running?" {
 		t.Errorf("Outcome should be running? when no result")
 	}
-	if Cost(ReadMeta(p), last, ok) != "-" {
+	if Cost(ReadMeta(p), TailRows{Result: last, HasResult: ok}) != "-" {
 		t.Errorf("Cost should be - when no result")
 	}
 }
 
-// --- TotalCost ---
+// --- G4: Cost is BROKER-OBSERVED, and an agent-reported figure is MARKED ---
 
-func TestTotalCost_LastResultLine(t *testing.T) {
+// The exact defect: an agent prints its own result line with a cost of its
+// choosing. Where a broker row exists, that row wins outright. Where none does,
+// the agent's number is still shown (it is the only one there is) but carries
+// the mark, so it can never be read as measured spend.
+func TestCost_PrefersTheBrokerRowAndMarksAgentReported(t *testing.T) {
+	agentLine := `{"type":"result","subtype":"success","is_error":false,"duration_ms":9,"total_cost_usd":0.0001,"num_turns":1}`
+	brokerLine := `{"type":"result","subtype":"success","is_error":false,"duration_ms":9,"total_cost_usd":42.5,"num_turns":1,"src":"broker"}`
+	meta := `{"type":"drydock_meta","subscription":false,"sensitive":false}`
+
+	t.Run("broker row wins over the agent's", func(t *testing.T) {
+		p, _ := writeJSONL(t, meta, agentLine, brokerLine)
+		f, err := OpenRead(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		rows := LastRowsFile(f)
+		if !rows.HasBroker || rows.Broker.TotalCostUSD != 42.5 {
+			t.Fatalf("broker row = %+v, want the 42.5 one", rows.Broker)
+		}
+		if got := Cost(ReadMeta(p), rows); got != "$42.5000" {
+			t.Errorf("Cost = %q, want the broker figure $42.5000 — an agent-printed cost must never be shown as measured", got)
+		}
+		if CostIsAgentReported(ReadMeta(p), rows) {
+			t.Error("CostIsAgentReported = true with a broker row present")
+		}
+	})
+
+	// The agent's line LAST, which is the ordering that used to win: the old
+	// last-result-of-any-src read would have returned 0.0001 here even though
+	// the broker metered 42.50.
+	t.Run("agent row after the broker's still loses", func(t *testing.T) {
+		p, _ := writeJSONL(t, meta, brokerLine, agentLine)
+		f, err := OpenRead(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		rows := LastRowsFile(f)
+		if got := Cost(ReadMeta(p), rows); got != "$42.5000" {
+			t.Errorf("Cost = %q, want $42.5000", got)
+		}
+	})
+
+	t.Run("agent only is shown but marked", func(t *testing.T) {
+		p, _ := writeJSONL(t, meta, agentLine)
+		f, err := OpenRead(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		rows := LastRowsFile(f)
+		if rows.HasBroker {
+			t.Fatal("no broker row was written; HasBroker must be false")
+		}
+		got := Cost(ReadMeta(p), rows)
+		if got != "$0.0001"+AgentReportedCostMark {
+			t.Errorf("Cost = %q, want the agent figure carrying %q", got, AgentReportedCostMark)
+		}
+		if !CostIsAgentReported(ReadMeta(p), rows) {
+			t.Error("CostIsAgentReported = false for an agent-only figure")
+		}
+	})
+
+	t.Run("subscription lane says so, marks nothing", func(t *testing.T) {
+		p, _ := writeJSONL(t, `{"type":"drydock_meta","subscription":true}`, agentLine)
+		f, err := OpenRead(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		rows := LastRowsFile(f)
+		if got := Cost(ReadMeta(p), rows); got != "subscription" {
+			t.Errorf("Cost = %q, want subscription", got)
+		}
+		if CostIsAgentReported(ReadMeta(p), rows) {
+			t.Error("a subscription lane shows no number, so nothing to mark")
+		}
+	})
+}
+
+// LastRowsFile must find all three rows in ONE pass, and its Result/Metrics
+// projection must stay identical to LastResultAndMetricsFile's.
+func TestLastRowsFile_FindsEveryTerminalRowInOnePass(t *testing.T) {
 	p, _ := writeJSONL(t,
-		`{"type":"result","total_cost_usd":0.05}`,
-		`{"type":"result","total_cost_usd":0.11}`,
+		`{"type":"drydock_meta","subscription":false}`,
+		`{"type":"result","subtype":"success","total_cost_usd":0.01}`,
+		`{"type":"result","subtype":"success","total_cost_usd":2.5,"src":"broker"}`,
+		`{"type":"metrics","src":"broker","task_id":"abc","agent":"claude","cost_usd":2.5}`,
 	)
-	if c := TotalCost(p); c != 0.11 {
-		t.Errorf("TotalCost = %v, want 0.11", c)
+	f, err := OpenRead(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	rows := LastRowsFile(f)
+	if !rows.HasResult || !rows.HasBroker || !rows.HasMetrics {
+		t.Fatalf("rows = %+v, want all three present", rows)
+	}
+	if rows.Result.TotalCostUSD != 2.5 || rows.Broker.TotalCostUSD != 2.5 {
+		t.Errorf("result/broker = %v/%v, want 2.5/2.5", rows.Result.TotalCostUSD, rows.Broker.TotalCostUSD)
+	}
+	if rows.Metrics.Agent != "claude" {
+		t.Errorf("metrics agent = %q, want claude", rows.Metrics.Agent)
+	}
+	r2, ok2, m2, mok2 := LastResultAndMetricsFile(f)
+	if ok2 != rows.HasResult || mok2 != rows.HasMetrics || r2 != rows.Result || m2 != rows.Metrics {
+		t.Error("LastResultAndMetricsFile must stay an exact projection of LastRowsFile")
 	}
 }
 
-func TestTotalCost_NoResult(t *testing.T) {
-	p, _ := writeJSONL(t, `{"type":"drydock_meta"}`)
-	if c := TotalCost(p); c != 0 {
-		t.Errorf("TotalCost with no result = %v, want 0", c)
-	}
-}
+// --- HasBrokerResultLine ---
 
-// --- HasResultLine ---
-
-func TestHasResultLine_Present(t *testing.T) {
+func TestHasBrokerResultLine_Present(t *testing.T) {
 	p, _ := writeJSONL(t,
 		`{"type":"stream_event"}`,
-		`{"type":"result","subtype":"success","is_error":false}`,
+		`{"type":"result","subtype":"success","is_error":false,"src":"broker"}`,
 	)
-	has, err := HasResultLine(p)
+	has, err := HasBrokerResultLine(p)
 	if err != nil || !has {
-		t.Errorf("HasResultLine = (%v,%v), want (true,nil)", has, err)
+		t.Errorf("HasBrokerResultLine = (%v,%v), want (true,nil)", has, err)
 	}
 }
 
-func TestHasResultLine_Absent(t *testing.T) {
+func TestHasBrokerResultLine_Absent(t *testing.T) {
 	p, _ := writeJSONL(t, `{"type":"stream_event"}`)
-	has, err := HasResultLine(p)
+	has, err := HasBrokerResultLine(p)
 	if err != nil || has {
-		t.Errorf("HasResultLine = (%v,%v), want (false,nil)", has, err)
+		t.Errorf("HasBrokerResultLine = (%v,%v), want (false,nil)", has, err)
 	}
 }
 
-func TestHasResultLine_SubstringInPayloadNotCounted(t *testing.T) {
+func TestHasBrokerResultLine_SubstringInPayloadNotCounted(t *testing.T) {
 	// A line whose text payload contains "type":"result" must NOT be mistaken
 	// for a real terminal result line.
 	p, _ := writeJSONL(t, `{"type":"stream_event","text":"emitted {\"type\":\"result\"} as text"}`)
-	has, err := HasResultLine(p)
+	has, err := HasBrokerResultLine(p)
 	if err != nil || has {
-		t.Errorf("HasResultLine with substring-only = (%v,%v), want (false,nil)", has, err)
+		t.Errorf("HasBrokerResultLine with substring-only = (%v,%v), want (false,nil)", has, err)
 	}
 }
 
-func TestHasResultLine_MissingFile(t *testing.T) {
-	_, err := HasResultLine("/nonexistent/path/task.jsonl")
+func TestHasBrokerResultLine_MissingFile(t *testing.T) {
+	_, err := HasBrokerResultLine("/nonexistent/path/task.jsonl")
 	if err == nil {
 		t.Error("expected error for missing file, got nil")
 	}
@@ -201,20 +306,20 @@ func TestTaskAgent(t *testing.T) {
 	}
 }
 
-// TestHasResultLine_RefusesSymlink verifies audit reads use O_NOFOLLOW: a
+// TestHasBrokerResultLine_RefusesSymlink verifies audit reads use O_NOFOLLOW: a
 // planted symlink in the audit dir can't redirect the outcome read.
-func TestHasResultLine_RefusesSymlink(t *testing.T) {
+func TestHasBrokerResultLine_RefusesSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "t.jsonl")
-	if err := os.WriteFile(target, []byte(`{"type":"result","subtype":"success"}`+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte(`{"type":"result","subtype":"success","src":"broker"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "l.jsonl")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := HasResultLine(link); err == nil {
-		t.Error("HasResultLine should refuse a symlinked audit path (O_NOFOLLOW)")
+	if _, err := HasBrokerResultLine(link); err == nil {
+		t.Error("HasBrokerResultLine should refuse a symlinked audit path (O_NOFOLLOW)")
 	}
 }
 
@@ -318,4 +423,62 @@ func TestOutcomeWithMetrics_RendersDeniedAndCancelledAsThemselves(t *testing.T) 
 	if got := OutcomeWithMetrics(r, true, Meta{}, Metrics{Outcome: "pushed"}, true); got != "ok (4 turns)" {
 		t.Errorf("pushed = %q, want %q", got, "ok (4 turns)")
 	}
+}
+
+// The synthetic `interrupted` terminal is broker-authored — TerminateStuckAudits
+// writes it, and its idempotency check needs src:"broker" to see it — but the
+// daemon died under that task without metering anything, so its
+// total_cost_usd:0 is a placeholder. Every reader that answers "what did the
+// broker meter" must skip it, or a crashed task reads as a measured $0.00 and a
+// real broker row beneath it is shadowed.
+func TestNoSpendInfoRowIsNeverTheBrokerMeteredFigure(t *testing.T) {
+	const synthetic = `{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0,"src":"broker","no_spend_info":true}`
+
+	t.Run("alone: there is no broker-metered figure", func(t *testing.T) {
+		p, _ := writeJSONL(t, `{"type":"stream_event"}`, synthetic)
+		f, err := OpenRead(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if res, ok := LastBrokerResultFile(f); ok {
+			t.Errorf("LastBrokerResultFile = (%+v,true), want ok=false", res)
+		}
+		if rows := LastRowsFile(f); rows.HasBroker {
+			t.Errorf("TailRows.HasBroker = true off the synthetic terminal (%+v)", rows.Broker)
+		}
+		// It is still a result row, so the outcome column resolves.
+		f.Seek(0, 0)
+		if rows := LastRowsFile(f); !rows.HasResult || rows.Result.Subtype != "interrupted" {
+			t.Errorf("the synthetic terminal did not resolve the outcome: %+v", rows.Result)
+		}
+	})
+
+	t.Run("above a real broker row: the real one still wins", func(t *testing.T) {
+		p, _ := writeJSONL(t,
+			`{"type":"result","subtype":"success","is_error":false,"total_cost_usd":4.25,"num_turns":1,"src":"broker"}`,
+			synthetic)
+		f, err := OpenRead(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		res, ok := LastBrokerResultFile(f)
+		if !ok || res.TotalCostUSD != 4.25 {
+			t.Errorf("LastBrokerResultFile = (%+v,%v), want the 4.25 row beneath the synthetic terminal", res, ok)
+		}
+		f.Seek(0, 0)
+		if rows := LastRowsFile(f); !rows.HasBroker || rows.Broker.TotalCostUSD != 4.25 {
+			t.Errorf("TailRows.Broker = %+v (has=%v), want the 4.25 row", rows.Broker, rows.HasBroker)
+		}
+	})
+
+	// ...and TerminateStuckAudits' idempotency check DOES see it, or every boot
+	// would append another one.
+	t.Run("HasBrokerResultLine still sees it", func(t *testing.T) {
+		p, _ := writeJSONL(t, `{"type":"stream_event"}`, synthetic)
+		if has, err := HasBrokerResultLine(p); err != nil || !has {
+			t.Errorf("HasBrokerResultLine = (%v,%v), want (true,nil): the sweep would not be idempotent", has, err)
+		}
+	})
 }

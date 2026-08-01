@@ -18,6 +18,10 @@ type taskRow struct {
 	dur     string
 	cost    string
 	outcome string
+	// costAgentReported marks a cost that came from the AGENT's own result
+	// line, not from a broker-authored one (G4). Such a cell carries
+	// audit.AgentReportedCostMark and the table prints the legend beneath it.
+	costAgentReported bool
 }
 
 // runTasks lists recent runs by scanning AUDIT_ROOT. brokerd doesn't keep
@@ -58,8 +62,15 @@ func runTasks() {
 	})
 
 	fmt.Printf("%-14s  %5s  %8s  %8s  %s\n", "ID", "AGE", "DUR", "COST", "OUTCOME")
+	anyAgentReported := false
 	for _, r := range rows {
 		fmt.Printf("%-14s  %5s  %8s  %8s  %s\n", r.id, r.age, r.dur, r.cost, r.outcome)
+		anyAgentReported = anyAgentReported || r.costAgentReported
+	}
+	// Printed only when a marked cell is actually on screen, so a table of
+	// broker-metered tasks (the normal case) is byte-identical to before.
+	if anyAgentReported {
+		fmt.Println("\n" + audit.AgentReportedCostLegend)
 	}
 }
 
@@ -74,10 +85,15 @@ func summarize(id, path string, info os.FileInfo) taskRow {
 		return r // unreadable or a symlink — leave as "running?"
 	}
 	defer f.Close()
-	last, ok, m, hasMetrics := audit.LastResultAndMetricsFile(f)
+	rows := audit.LastRowsFile(f)
+	last, ok := rows.Result, rows.HasResult
 	meta := audit.ReadMetaFile(f)
-	r.outcome = audit.OutcomeWithMetrics(last, ok, meta, m, hasMetrics)
-	r.cost = audit.Cost(meta, last, ok)
+	r.outcome = audit.OutcomeWithMetrics(last, ok, meta, rows.Metrics, rows.HasMetrics)
+	// Spend is BROKER-OBSERVED (G4): audit.Cost reads the src=="broker" row and
+	// marks anything the agent merely reported, so a compromised CLI cannot make
+	// this column say what it likes.
+	r.cost = audit.Cost(meta, rows)
+	r.costAgentReported = audit.CostIsAgentReported(meta, rows)
 	if audit.HasDuration(last, ok) {
 		r.dur = shortDur(last.DurationMs)
 	}

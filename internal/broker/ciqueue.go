@@ -179,13 +179,42 @@ func (b *Broker) applyCIObservation(obs CIObservation) bool {
 		// enqueue-once: the decision below never runs a second time for an
 		// observation whose terminal is already on the parent's record. See
 		// ciretryloop.go's crash-window analysis.
+		//
+		// Clear a STALE deferral on the way out. A parent that reaches here with
+		// the flag still set is one whose enqueue landed but whose flag-clearing
+		// write did not; the decision is over, and leaving the flag would tell an
+		// operator the retry is still pending forever. A no-op when already clear.
+		b.setCIRetryDeferred(obs.TaskID, false)
 		return true
 	}
 	// The bounded retry (B2, D6), and note the ORDER: the parent's terminal is
 	// already durable at this point, so a crash between the two can only lose a
 	// child, never duplicate one. Nothing here can change the terminal that was
 	// just written.
-	retryID, retryDetail := b.maybeEnqueueCIRetry(obs, qs)
+	retryID, retryDetail, park := b.maybeEnqueueCIRetry(obs, qs)
+	if park {
+		// THE DECISION HAS NOT BEEN MADE. Something the decision needs could not
+		// be MEASURED OR WRITTEN — the global usage ceiling could not be read, or
+		// the durable enqueue-once mark could not be persisted — and both are
+		// FAULTS, not verdicts. This decision runs once per observation, so
+		// recording "no retry" now would destroy the chain over something that
+		// usually clears before the next tick. Mark the parent deferred (durable
+		// where possible, process-local always — see Broker.ciRetryParked, because
+		// the mark-write fault takes the durable flag's own write down with it)
+		// and return NOT-RECORDED so concludeCIWatch keeps the marker and the next
+		// pass re-asks. No observation row is written: there is nothing to say yet,
+		// and a row per tick would be noise in the operator's trace.
+		// Logged on the TRANSITION only: a fault with a lasting cause (an
+		// unreadable ledger file, a read-only mount) re-parks on every watch tick,
+		// and a line per tick would bury the one that matters.
+		if b.setCIRetryDeferred(obs.TaskID, true) {
+			slog.Warn("ci retry: deferring the bounded-retry decision; it could not be made yet",
+				"task_id", obs.TaskID, "reason", retryDetail)
+		}
+		return false
+	}
+	// The decision is made either way now, so the deferral (if any) is over.
+	b.setCIRetryDeferred(obs.TaskID, false)
 	b.appendCIObservationRow(obs, qs, retryID, retryDetail)
 	return persisted
 }
@@ -202,7 +231,41 @@ func (b *Broker) recordCIQueueTerminal(obs CIObservation, to QueueState, lastErr
 		return "", false, true // synchronous task: no queue item, nothing to move
 	}
 	if cur.State == to && cur.CIState == string(obs.State) {
-		return to, true, true // already applied; a crash-window replay
+		// THE FALL-THROUGH IS NARROW, AND THE NARROWNESS IS THE FIX. A parked
+		// decision must be re-asked (see below), but a decision that ALREADY
+		// ENQUEUED must never be, and "parked" alone does not distinguish the two:
+		// the deferral flag and the parent's link are separate best-effort writes,
+		// so a crash — or one correlated write failure — between Enqueue and those
+		// writes leaves a parent that has a child, still says `CIRetryDeferred`,
+		// and has an empty `RetryTaskID`. Falling through on the deferral alone
+		// re-ran the decision for that parent and minted a SECOND child, breaking
+		// "at most one child per parent, ever" — ciretryloop.go's crash window W3.
+		//
+		// CIRetryEnqueued is written BEFORE Enqueue, so it covers that window
+		// exactly. RetryTaskID is checked too, belt and braces, for items written
+		// by a build that predates the flag.
+		//
+		// "Parked" is read from the durable flag OR the process-local copy, and
+		// the second disjunct is not redundant: a decision can park BECAUSE queue-
+		// item writes are failing (an unwritable enqueue-once mark), and that same
+		// fault takes the durable flag's own write down with it. Reading only the
+		// durable flag there sees "not deferred", short-circuits, and destroys the
+		// chain over a fault that has already cleared. Note the ORDER of the
+		// disjuncts against the conjuncts: the enqueue-once checks are DURABLE
+		// reads and they still veto, so a wider "parked" can only ever re-ask a
+		// decision that provably never enqueued.
+		parked := cur.CIRetryDeferred || b.ciRetryParkedSinceMs(cur) > 0
+		if !parked || cur.CIRetryEnqueued || cur.RetryTaskID != "" {
+			return to, true, true // already applied; a crash-window replay
+		}
+		// The terminal is already durable, but the bounded-retry decision was
+		// PARKED — the global usage ceiling could not be measured, or the durable
+		// enqueue-once mark could not be written — and nothing has been enqueued
+		// for it. That is the one case where a repeat pass must NOT short-circuit:
+		// the decision runs once per observation, and short-circuiting it here is
+		// what turned a transient fault into a permanently destroyed retry chain.
+		// Report it as recorded-and-not-a-replay so the caller re-asks.
+		return cur.State, false, true
 	}
 	// The observation's own Detail (why the watch ended without a conclusion:
 	// a give-up count, a lost marker, a disabled watch) is strictly more

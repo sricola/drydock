@@ -26,6 +26,20 @@ cache_quota_gb:         20             # total disk bound (GiB) for the persiste
 max_request_cost_usd:   0              # worst-case USD reserved per in-flight request so concurrent requests can't admit past the budget; 0 = disabled (post-hoc metering only)
 aggregate_budget_usd:   0              # cross-task USD ceiling per api_key provider over aggregate_window; 0 = disabled. subscription is out of scope (bounded per task by task_max_requests)
 aggregate_window:       24h            # rolling window for aggregate_budget_usd; 0 = total since brokerd boot (resets on restart)
+
+# --- Global usage ceiling (opt-in; OFF by default) ---
+# Two limbs over one rolling window, either of which refuses a task START
+# (never kills a running task). Unlike aggregate_budget_usd these are
+# CROSS-VENDOR, cross-auth-mode, DURABLE across restarts (the ledger lives
+# under audit_root), and FAIL-CLOSED: a ledger that cannot be read refuses
+# rather than admits. Both may be set alongside aggregate_budget_usd; the
+# stricter answer wins. Only BROKER-METERED spend counts — an agent-reported
+# total_cost_usd never reaches either limb. See THREAT_MODEL.md N4 for what
+# the USD limb does and does not cover, and why the task limb is its backstop.
+global_budget_usd:      0              # cumulative broker-metered USD across ALL vendors over global_window; 0 = disabled
+global_max_tasks:       0              # cumulative TASK STARTS across all vendors and both auth modes over global_window; 0 = disabled. This is the limb that bounds subscription mode. Must be >= max_concurrent_tasks when set
+global_window:          24h            # rolling window for BOTH global limbs; 0s = total, nothing ages out (DURABLE — unlike aggregate_window it survives restart, so an exhausted ceiling stays exhausted until you raise a limb or remove the ledger)
+
 push_max_retries:       3              # retry a transient (network) push failure N times with backoff; 0 = no retry
 push_retry_backoff:     1s             # base delay for push retry backoff (doubles each retry)
 push_fresh_branch_tries: 2             # on a branch-name collision, try agent/<id>-2, -3, ...; 0 = no fresh-branch retry

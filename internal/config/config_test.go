@@ -794,3 +794,171 @@ func TestDiffPolicy_Rejects(t *testing.T) {
 		}
 	}
 }
+
+// --- the global usage ceiling (plan G1/G7): config surface ---
+
+// OFF BY DEFAULT is the identity claim the whole feature rests on (G7): a
+// stock install must resolve both limbs to 0, so brokerd opens no ledger,
+// creates no file, and behaves exactly as it did before the ceiling existed.
+func TestGlobalCeiling_DefaultsAreOff(t *testing.T) {
+	d := Defaults()
+	if d.GlobalBudgetUSD != 0 {
+		t.Errorf("global_budget_usd default = %v, want 0 (off)", d.GlobalBudgetUSD)
+	}
+	if d.GlobalMaxTasks != 0 {
+		t.Errorf("global_max_tasks default = %d, want 0 (off)", d.GlobalMaxTasks)
+	}
+	if d.GlobalWindow != 24*time.Hour {
+		t.Errorf("global_window default = %v, want 24h", d.GlobalWindow)
+	}
+}
+
+// The shipped seed template must also resolve to "off": SeedTemplate is what
+// `drydock init` writes, so a seeded value of anything but 0 would arm a
+// financial control on a first-time install.
+func TestGlobalCeiling_SeedTemplateShipsOff(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte(SeedTemplate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("seeded config rejected: %v", err)
+	}
+	if c.GlobalBudgetUSD != 0 || c.GlobalMaxTasks != 0 {
+		t.Errorf("seeded ceiling = $%v / %d tasks, want 0/0 (the feature ships OFF)",
+			c.GlobalBudgetUSD, c.GlobalMaxTasks)
+	}
+	if c.GlobalWindow != 24*time.Hour {
+		t.Errorf("seeded global_window = %v, want 24h", c.GlobalWindow)
+	}
+}
+
+func TestGlobalCeiling_LoadsFromYAML(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\n"+
+		"global_budget_usd: 25.5\nglobal_max_tasks: 40\nglobal_window: 6h\n"), 0o644)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.GlobalBudgetUSD != 25.5 || c.GlobalMaxTasks != 40 || c.GlobalWindow != 6*time.Hour {
+		t.Errorf("loaded ceiling = %v/%d/%v, want 25.5/40/6h",
+			c.GlobalBudgetUSD, c.GlobalMaxTasks, c.GlobalWindow)
+	}
+}
+
+func TestGlobalCeiling_EnvOverrides(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("DRYDOCK_GLOBAL_BUDGET_USD", "12.25")
+	t.Setenv("DRYDOCK_GLOBAL_MAX_TASKS", "9")
+	t.Setenv("DRYDOCK_GLOBAL_WINDOW", "90m")
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\n"+
+		"global_budget_usd: 1\nglobal_max_tasks: 2\nglobal_window: 1h\n"), 0o644)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.GlobalBudgetUSD != 12.25 || c.GlobalMaxTasks != 9 || c.GlobalWindow != 90*time.Minute {
+		t.Errorf("env-overridden ceiling = %v/%d/%v, want 12.25/9/90m",
+			c.GlobalBudgetUSD, c.GlobalMaxTasks, c.GlobalWindow)
+	}
+}
+
+// A set-but-INVALID env var must fall through to the yaml/default value rather
+// than silently disabling the limb — the guards are >= 0 / parseable, exactly
+// as applyEnvOverrides writes them.
+func TestGlobalCeiling_EnvIgnoresInvalid(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("DRYDOCK_GLOBAL_BUDGET_USD", "-5")
+	t.Setenv("DRYDOCK_GLOBAL_MAX_TASKS", "notanumber")
+	t.Setenv("DRYDOCK_GLOBAL_WINDOW", "24")
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\n"+
+		"global_budget_usd: 7\nglobal_max_tasks: 8\nglobal_window: 3h\n"), 0o644)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.GlobalBudgetUSD != 7 || c.GlobalMaxTasks != 8 || c.GlobalWindow != 3*time.Hour {
+		t.Errorf("invalid env must not win: got %v/%d/%v, want the yaml 7/8/3h",
+			c.GlobalBudgetUSD, c.GlobalMaxTasks, c.GlobalWindow)
+	}
+}
+
+func TestGlobalCeiling_ValidateRejects(t *testing.T) {
+	for _, tc := range []struct{ yaml, want string }{
+		{"global_budget_usd: -1\n", "global_budget_usd"},
+		{"global_max_tasks: -1\n", "global_max_tasks"},
+		{"global_window: -5m\n", "global_window"},
+	} {
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\n"+tc.yaml), 0o644)
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("yaml=%q: want %q rejection, got %v", tc.yaml, tc.want, err)
+		}
+	}
+}
+
+// TOTAL mode (global_window: 0) is ACCEPTED, deliberately: the durable ledger
+// implements it (it folds history into a checkpoint rather than decaying), and
+// "a total ceiling that survives restart" is the semantic a crash-looping
+// unattended install actually wants. The hazard — nothing ages out — is a boot
+// warning and a documented behavior, not a load-time refusal.
+func TestGlobalCeiling_TotalModeIsAccepted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\n"+
+		"global_budget_usd: 100\nglobal_window: 0s\n"), 0o644)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("global_window: 0 (total mode) must load: %v", err)
+	}
+	if c.GlobalWindow != 0 {
+		t.Errorf("GlobalWindow = %v, want 0 (total mode)", c.GlobalWindow)
+	}
+}
+
+// The CROSS-FIELD check: a task limb below max_concurrent_tasks can never fill
+// the configured concurrency and parks every later item until the window rolls.
+// Refused at load, because at runtime it is indistinguishable from a wedged
+// daemon.
+func TestGlobalCeiling_RejectsLimbBelowConcurrency(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\n"+
+		"max_concurrent_tasks: 4\nglobal_max_tasks: 3\n"), 0o644)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "global_max_tasks") ||
+		!strings.Contains(err.Error(), "max_concurrent_tasks") {
+		t.Fatalf("want a cross-field rejection naming both keys, got %v", err)
+	}
+	// Equal is fine (exactly one dispatch pass fits), and so is off.
+	for _, y := range []string{
+		"max_concurrent_tasks: 4\nglobal_max_tasks: 4\n",
+		"max_concurrent_tasks: 4\nglobal_max_tasks: 0\n",
+	} {
+		p := filepath.Join(t.TempDir(), "c.yaml")
+		os.WriteFile(p, []byte("network: x\ngateway_ip: 1.2.3.4\n"+y), 0o644)
+		if _, err := Load(p); err != nil {
+			t.Errorf("yaml=%q must load, got %v", y, err)
+		}
+	}
+}
+
+// The env layer must be subject to the same cross-field check: an operator who
+// exports DRYDOCK_GLOBAL_MAX_TASKS=1 on a 2-slot daemon gets the refusal, not a
+// silently starving queue. (validate() runs after applyEnvOverrides.)
+func TestGlobalCeiling_CrossFieldAppliesToEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("DRYDOCK_GLOBAL_MAX_TASKS", "1")
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	os.WriteFile(path, []byte("network: x\ngateway_ip: 1.2.3.4\nmax_concurrent_tasks: 2\n"), 0o644)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "global_max_tasks") {
+		t.Fatalf("want the cross-field rejection from the env layer, got %v", err)
+	}
+}

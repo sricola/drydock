@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"drydock/internal/audit"
 )
 
 // A failing task whose entrypoint dies before claude can write a `result`
@@ -41,7 +43,7 @@ func TestSummarize_FindsResultPastTailSeek(t *testing.T) {
 	for b.Len() < 64*1024 { // well past the 16KB tail window
 		b.WriteString(`{"type":"stream_event","delta":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}` + "\n")
 	}
-	b.WriteString(`{"type":"result","subtype":"success","duration_ms":1000,"total_cost_usd":0.0500,"num_turns":3}` + "\n")
+	b.WriteString(`{"type":"result","subtype":"success","duration_ms":1000,"total_cost_usd":0.0500,"num_turns":3,"src":"broker"}` + "\n")
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -167,5 +169,37 @@ func TestSummarize_InterruptedShowsInterruptedAndUnknownDur(t *testing.T) {
 	}
 	if got.dur != "-" {
 		t.Errorf("dur = %q, want %q (unknown, not synthetic 0ms)", got.dur, "-")
+	}
+}
+
+// G4: `drydock tasks`' COST column is BROKER-OBSERVED. A trace whose only
+// result row is the agent's own (still running, or ended before the broker
+// wrote its terminal row) shows the number MARKED, never as measured spend —
+// and a forged agent row cannot displace a broker one that exists.
+func TestSummarize_CostIsBrokerObserved(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) os.FileInfo {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fi, _ := os.Stat(p)
+		return fi
+	}
+	agent := `{"type":"result","subtype":"success","duration_ms":10,"total_cost_usd":9999.99,"num_turns":1}` + "\n"
+	broker := `{"type":"result","subtype":"success","duration_ms":10,"total_cost_usd":1.25,"num_turns":1,"src":"broker"}` + "\n"
+
+	fi := write("a.jsonl", agent)
+	got := summarize("a", filepath.Join(dir, "a.jsonl"), fi)
+	if got.cost != "$9999.9900"+audit.AgentReportedCostMark || !got.costAgentReported {
+		t.Errorf("agent-only cost = %q (marked=%v), want the marked figure", got.cost, got.costAgentReported)
+	}
+
+	// Broker row first, forged agent row LAST — the ordering the old
+	// last-result-of-any-src read would have lost to.
+	fi = write("b.jsonl", broker+agent)
+	got = summarize("b", filepath.Join(dir, "b.jsonl"), fi)
+	if got.cost != "$1.2500" || got.costAgentReported {
+		t.Errorf("cost = %q (marked=%v), want the broker-metered $1.2500 unmarked", got.cost, got.costAgentReported)
 	}
 }

@@ -17,18 +17,38 @@ import (
 )
 
 // interruptedResultLine is the synthetic terminal event appended to a task
-// trace that a brokerd crash left without a result line. subtype "interrupted"
-// (distinct from "error") tells `drydock tasks` the daemon died under the task
-// rather than the task itself failing; duration_ms is 0 (death time unknown).
-const interruptedResultLine = `{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0}` + "\n"
+// trace that a brokerd crash left without a BROKER-AUTHORED result line.
+// subtype "interrupted" (distinct from "error") tells `drydock tasks` the
+// daemon died under the task rather than the task itself failing; duration_ms
+// is 0 (death time unknown).
+//
+// It carries src:"broker" because it IS broker-authored — the daemon wrote it —
+// and because TerminateStuckAudits' idempotency check is now "does a
+// broker-authored result row exist", which this row has to satisfy or every
+// boot would append another one.
+//
+// It also carries no_spend_info, which is the honest half: the daemon died
+// under this task, so its total_cost_usd of 0 is a placeholder and not a
+// measurement. LastBrokerResultFile skips rows marked that way, so this row can
+// neither shadow a real broker row beneath it nor be read as a trusted $0.
+const interruptedResultLine = `{"type":"result","subtype":"interrupted","is_error":true,"duration_ms":0,"total_cost_usd":0,"num_turns":0,"src":"broker","no_spend_info":true}` + "\n"
 
-// TerminateStuckAudits scans auditRoot for <id>.jsonl traces with no terminal
-// result line — tasks that were running when a prior brokerd crashed — and
-// appends a synthetic "interrupted" result so `drydock tasks` resolves them
-// instead of showing "running?" forever. Idempotent: a trace that already has a
-// result line is left untouched. SAFE ONLY AT BOOT, when no task is live.
-// Returns the count terminated and the first error (per-file errors are
-// non-fatal).
+// TerminateStuckAudits scans auditRoot for <id>.jsonl traces with no
+// BROKER-AUTHORED terminal result line — tasks that were running when a prior
+// brokerd crashed — and appends a synthetic "interrupted" result so
+// `drydock tasks` resolves them instead of showing "running?" forever.
+// Idempotent: a trace that already has a broker result row is left untouched.
+// SAFE ONLY AT BOOT, when no task is live. Returns the count terminated and the
+// first error (per-file errors are non-fatal).
+//
+// THE src FILTER ON THE CHECK IS LOAD-BEARING, and it used to be absent. The
+// agent's stdout is copied into the trace verbatim, so an agent that printed
+// any {"type":"result"} line — every agent CLI does — suppressed this append.
+// A crashed task's trace then ended on the AGENT's row, which is what
+// seedAggregateFromAudit and every cost renderer read last. An agent that
+// printed {"type":"result","src":"broker","total_cost_usd":999999} at the start
+// of its run and then died left that as the whole story. See
+// audit.HasBrokerResultLine.
 func TerminateStuckAudits(auditRoot string) (int, error) {
 	entries, err := os.ReadDir(auditRoot)
 	if err != nil {
@@ -44,7 +64,7 @@ func TerminateStuckAudits(auditRoot string) (int, error) {
 			continue
 		}
 		path := filepath.Join(auditRoot, e.Name())
-		has, herr := audit.HasResultLine(path)
+		has, herr := audit.HasBrokerResultLine(path)
 		if herr != nil {
 			if firstErr == nil {
 				firstErr = herr
@@ -459,14 +479,40 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		draft: m.Draft, agentName: m.Agent, st: st, logf: logf,
 		auditPath: filepath.Join(b.AuditRoot, id+".jsonl"),
 		taskStart: time.UnixMilli(m.TaskStartMs),
+		// This task's agent ran in a PREVIOUS brokerd life, so there is no
+		// lease here to meter it. recordGlobalUsage reads that as "recover the
+		// broker-metered figure from the previous process's own src:"broker"
+		// result row" rather than as a measured $0. See globalrecord.go.
+		resumed: true,
 	}
 	tr.subscription = audit.ReadMeta(tr.auditPath).Subscription
 	if v, ok := provider.VendorForAgent(m.Agent); ok {
 		tr.taskVendor = v
 	}
+	// THE GLOBAL CEILING'S TERMINAL WRITE for the resume path. resumePush is
+	// the ONLY task terminal that does not run through taskRun.runLifecycle
+	// (which defers the same call on its FIRST line), so it needs its own, and
+	// it is registered here — immediately after tr exists and before any exit
+	// from this function — so every path out of the resumed gate records:
+	// approve, deny, timeout, kill, push_failed, and the shutdown re-park.
+	//
+	// This is also what closes globalcap.go's documented residual: a task
+	// resumed at the diff gate was admitted in a PREVIOUS process, so this one
+	// holds no in-flight claim for it and the ledger entry is the only thing
+	// that makes it visible to the ceiling. The shutdown re-park records too,
+	// deliberately — the task already ran and its spend is already real, and
+	// GlobalLedger.Record is idempotent on task id, so the next boot's re-drive
+	// resolves the same task without counting it twice. No-op with no ledger.
+	defer tr.recordGlobalUsage()
 	// Registered after the Sync/Close defer above, so it runs before them
 	// (LIFO): the metrics row lands as the last line, matching the live path.
 	defer tr.appendMetrics()
+	// The resumed task re-poses the same human diff gate, so it needs the same
+	// broker-metered spend published on its live state as the live path does
+	// (G4). tr.resumed makes brokerMeteredSpendUSD recover the figure from the
+	// PREVIOUS process's src=="broker" result row; where there is none it
+	// publishes "unknown" rather than a $0 that would read as measured.
+	tr.publishGateSpend()
 	if c, ok := st.(interface{ Cleanup() error }); ok {
 		defer func() {
 			if !tr.keepStage {
@@ -502,11 +548,17 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		// resumed path intentionally diverges from the live pushAndOpenPR path.
 		outcome, subtype := gateOutcome(cause, true)
 		tr.outcome = outcome
-		// Broker-authored (src:broker) and carrying the metered cost, so a resumed
-		// task's real spend still seeds the aggregate ledger.
+		// Broker-authored (src:broker). Its spend half comes from
+		// brokerResultSpendFields, so on THIS path — a task resumed after a
+		// restart, whose lease died with the previous process — it is
+		// `no_spend_info` rather than a figure. That marker is what keeps the
+		// aggregate-cap restart seed correct: audit.LastBrokerResult skips the
+		// marked row and finds the PREVIOUS process's genuine broker row beneath
+		// it, so the resumed task's real spend still reaches the seed without this
+		// process re-laundering a trace value through a row it stamps src:"broker".
 		fmt.Fprintf(logf,
-			`{"type":"result","subtype":%q,"is_error":false,"duration_ms":0,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-			subtype, audit.TotalCost(tr.auditPath))
+			`{"type":"result","subtype":%q,"is_error":false,"duration_ms":0,%s,"num_turns":0,"src":"broker"}`+"\n",
+			subtype, tr.brokerResultSpendFields())
 		b.finalizeQueuedResume(id, tr.outcome)
 		return
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -502,8 +503,17 @@ func TestCIRetry_ChildReposesTheHumanGate(t *testing.T) {
 
 	// It is a NORMAL queued task: it took a slot, ran, and is now blocked at
 	// the gate with a durable gate marker and a persisted diff for the human.
-	if _, err := os.Stat(gateMarkerPath(b.AuditRoot, child.ID)); err != nil {
-		t.Fatalf("the retry did not pose the human diff gate (no gate marker): %v", err)
+	//
+	// The marker is POLLED for, not stat'ed once. awaiting_review is persisted
+	// by runQueued's onAwaitingReview hook, which fires on the way INTO
+	// gatePushMarked — i.e. strictly before the marker it writes exists. Reading
+	// the durable state as a signal that the marker has landed is a race, and it
+	// is the reason this test was intermittently failing before the wait.
+	if !waitFor(2*time.Second, func() bool {
+		_, err := os.Stat(gateMarkerPath(b.AuditRoot, child.ID))
+		return err == nil
+	}) {
+		t.Fatal("the retry did not pose the human diff gate (no gate marker)")
 	}
 	if _, err := os.Stat(filepath.Join(b.AuditRoot, child.ID+".diff")); err != nil {
 		t.Fatalf("the retry did not persist a diff for review: %v", err)
@@ -931,5 +941,581 @@ func TestCIRetry_NegativeAttemptCannotLengthenTheChain(t *testing.T) {
 	}
 	if n != maxAttempts {
 		t.Fatalf("a negative seed attempt produced %d retries, want exactly %d", n, maxAttempts)
+	}
+}
+
+// TestCIRetry_AnUnmeasurableCeilingParksTheDecisionRatherThanDroppingIt.
+//
+// The retry decision runs EXACTLY ONCE per observation — applyCIObservation's
+// replay guard returns before it on every later pass — so "the ceiling could
+// not be evaluated" being treated as "no retry" destroyed the chain
+// permanently, over a fault that usually clears in seconds. The dispatcher
+// already splits park-from-drop on exactly this bit (queue.go); this is the
+// same split, on the other side of the same decision.
+func TestCIRetry_AnUnmeasurableCeilingParksTheDecisionRatherThanDroppingIt(t *testing.T) {
+	b := retryBroker(t, 3)
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	obs, parentID := failedObs(b, it), it.ID
+	b.GlobalMaxTasks = 100 // a limb is enforced...
+	b.GlobalLedger = nil   // ...and there is no store, so it cannot be measured
+
+	if recorded := b.applyCIObservation(obs); recorded {
+		t.Error("an unmeasurable ceiling reported the observation as fully recorded; concludeCIWatch would drop the marker")
+	}
+	it, err := readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !it.CIRetryDeferred {
+		t.Fatal("the parent was not marked deferred; the next tick would short-circuit on the replay guard and the chain is gone")
+	}
+	if it.RetryTaskID != "" {
+		t.Errorf("a retry was enqueued while the ceiling could not be evaluated: %s", it.RetryTaskID)
+	}
+
+	// The fault clears, the watch re-applies the SAME observation, and the retry
+	// is enqueued after all.
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+	if recorded := b.applyCIObservation(obs); !recorded {
+		t.Error("the re-asked observation still reports not-recorded")
+	}
+	it, err = readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.RetryTaskID == "" {
+		t.Fatal("the deferred retry was never enqueued once the ceiling became measurable")
+	}
+	if it.CIRetryDeferred {
+		t.Error("the deferred flag was not cleared once the decision was made")
+	}
+
+	// ...and re-asking a third time cannot mint a second child.
+	first := it.RetryTaskID
+	b.applyCIObservation(obs)
+	again, _ := readQueueItem(b.AuditRoot, parentID)
+	if again.RetryTaskID != first {
+		t.Errorf("a replay repointed the parent at a second child: %s -> %s", first, again.RetryTaskID)
+	}
+}
+
+// TestCIRetry_EnqueueOnceSurvivesTheParkedReplayWindow is the regression test for
+// the hole the PARK fix opened, which was a straight violation of this file's
+// strongest invariant: AT MOST ONE CHILD PER PARENT, EVER.
+//
+// ciretryloop.go's crash window W3 ("killed between Enqueue and the parent's link
+// write") is documented as safe PRECISELY BECAUSE the replay guard returns before
+// the decision. With a deferral in play it stopped returning: the guard fell
+// through on CIRetryDeferred alone, and RetryTaskID — which was doing duty as the
+// enqueue-once flag — is written AFTER Enqueue, so a parent whose child existed
+// but whose link write was lost read as "parked, nothing enqueued" and the
+// decision ran a second time.
+//
+// A crash is not even required. linkCIRetryChild and setCIRetryDeferred(false)
+// are both best-effort writes to the SAME file, so one correlated write failure
+// (a full or read-only disk) leaves exactly that state.
+//
+// The fix is CIRetryEnqueued, written BEFORE Enqueue.
+func TestCIRetry_EnqueueOnceSurvivesTheParkedReplayWindow(t *testing.T) {
+	// crashAfterEnqueue reproduces the state the W3 kill — and the correlated
+	// write failure — both leave behind: the child is durable, the parent's link
+	// write never landed, and the deferral was never cleared.
+	crashAfterEnqueue := func(t *testing.T, b *Broker, parentID string) string {
+		t.Helper()
+		it, err := readQueueItem(b.AuditRoot, parentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		child := it.RetryTaskID
+		if child == "" {
+			t.Fatal("precondition: no child was enqueued")
+		}
+		it.RetryTaskID = ""
+		it.CIRetryDeferred = true
+		it.CIRetryDeferredAtMs = b.nowMs()
+		if err := writeQueueItem(b.AuditRoot, it); err != nil {
+			t.Fatal(err)
+		}
+		return child
+	}
+
+	childCount := func(t *testing.T, b *Broker, parentID string) int {
+		t.Helper()
+		items, err := listQueueItems(b.AuditRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, q := range items {
+			if q.Task.RetryOf == parentID {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("a park, then a crash between Enqueue and the link write", func(t *testing.T) {
+		b := retryBroker(t, 3)
+		it := seedTaskAwaitingCI(t, b, baseTask())
+		obs, parentID := failedObs(b, it), it.ID
+
+		b.GlobalMaxTasks = 100 // a limb is enforced...
+		b.GlobalLedger = nil   // ...and unmeasurable, so the decision parks
+		b.applyCIObservation(obs)
+
+		// The fault clears and the re-asked decision enqueues, exactly as the park
+		// is designed to allow.
+		b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+		b.applyCIObservation(obs)
+		if n := childCount(t, b, parentID); n != 1 {
+			t.Fatalf("precondition: %d children after the deferred decision was re-asked, want 1", n)
+		}
+		crashAfterEnqueue(t, b, parentID)
+
+		// THE REPLAY. Before the fix this minted a second child, doubling an
+		// unattended spend loop.
+		b.applyCIObservation(obs)
+		if n := childCount(t, b, parentID); n != 1 {
+			t.Fatalf("parent %s has %d children after a replay through the parked W3 window, want exactly 1: "+
+				"AT MOST ONE CHILD PER PARENT, EVER", parentID, n)
+		}
+		// ...and every further tick is refused too, not just the first.
+		for i := 0; i < 5; i++ {
+			b.applyCIObservation(obs)
+		}
+		if n := childCount(t, b, parentID); n != 1 {
+			t.Fatalf("%d children after five more replays, want 1", n)
+		}
+		// The stale deferral is cleared on the way out, so an operator is not told
+		// a decision that is over is still pending.
+		final, err := readQueueItem(b.AuditRoot, parentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if final.CIRetryDeferred {
+			t.Error("the parent still reads as deferred after the decision was settled")
+		}
+		if !final.CIRetryEnqueued {
+			t.Error("the parent does not record that an enqueue was attempted")
+		}
+	})
+
+	// The same state reached with NO crash at all: the two best-effort writes that
+	// follow Enqueue both fail, which one full or read-only disk does.
+	t.Run("a correlated failure of both post-Enqueue writes", func(t *testing.T) {
+		b := retryBroker(t, 3)
+		it := seedTaskAwaitingCI(t, b, baseTask())
+		obs, parentID := failedObs(b, it), it.ID
+		b.GlobalMaxTasks = 100
+		b.GlobalLedger = nil
+		b.applyCIObservation(obs) // park
+		b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+		b.applyCIObservation(obs) // enqueue
+		crashAfterEnqueue(t, b, parentID)
+
+		// The disk recovers and the watch keeps ticking.
+		for i := 0; i < 3; i++ {
+			b.applyCIObservation(obs)
+		}
+		if n := childCount(t, b, parentID); n != 1 {
+			t.Fatalf("parent %s minted %d children after a correlated write failure, want 1", parentID, n)
+		}
+	})
+
+	// The legitimate re-ask must survive the fix: a decision that GENUINELY never
+	// enqueued is still re-asked, which is the whole point of the park.
+	t.Run("a park that never enqueued is still re-asked", func(t *testing.T) {
+		b := retryBroker(t, 3)
+		it := seedTaskAwaitingCI(t, b, baseTask())
+		obs, parentID := failedObs(b, it), it.ID
+		b.GlobalMaxTasks = 100
+		b.GlobalLedger = nil
+		for i := 0; i < 4; i++ { // four ticks against a lasting fault
+			if recorded := b.applyCIObservation(obs); recorded {
+				t.Fatal("a parked decision reported the observation as fully recorded")
+			}
+		}
+		if n := childCount(t, b, parentID); n != 0 {
+			t.Fatalf("%d children were minted while the ceiling could not be measured", n)
+		}
+		b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+		if recorded := b.applyCIObservation(obs); !recorded {
+			t.Error("the re-asked observation still reports not-recorded")
+		}
+		if n := childCount(t, b, parentID); n != 1 {
+			t.Fatalf("%d children after the fault cleared, want exactly 1", n)
+		}
+	})
+
+	// And the mark is a PRECONDITION, not a record: if it cannot be persisted, no
+	// enqueue happens. A child whose parent does not durably say "an enqueue was
+	// attempted" is a child a replay can duplicate. But an unwritable mark is a
+	// FAULT, not a verdict, so it PARKS — see the next test for why refusing on it
+	// destroyed the chain.
+	t.Run("an unwritable enqueue-once mark parks rather than enqueuing", func(t *testing.T) {
+		b := retryBroker(t, 3)
+		it := seedTaskAwaitingCI(t, b, baseTask())
+		obs, parentID := failedObs(b, it), it.ID
+		b.GlobalMaxTasks = 100
+		b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+
+		// Reads still work, writes do not — a read-only mount.
+		if err := os.Chmod(b.AuditRoot, 0o500); err != nil {
+			t.Skipf("cannot make the audit root read-only: %v", err)
+		}
+		t.Cleanup(func() { os.Chmod(b.AuditRoot, 0o700) })
+
+		retryID, detail, park := b.maybeEnqueueCIRetry(obs, QueueCIFailed)
+		if retryID != "" {
+			t.Errorf("a retry was enqueued without a durable enqueue-once mark: %s", retryID)
+		}
+		if !park {
+			t.Errorf("an unwritable mark refused (%q); a fault that may clear must park", detail)
+		}
+		if !strings.Contains(detail, "enqueue-once") {
+			t.Errorf("detail = %q, want it to name the enqueue-once marker", detail)
+		}
+		if n := childCount(t, b, parentID); n != 0 {
+			t.Errorf("%d children were minted with no durable mark", n)
+		}
+	})
+
+	// THE OTHER HALF: a mark whose write FAILED is not the same as a mark that was
+	// ALREADY CLAIMED. The first is a fault and parks; the second is a verdict —
+	// another decision owns the enqueue — and must refuse terminally, or two
+	// racing decisions could each mint a child.
+	t.Run("an already-claimed enqueue-once mark refuses terminally", func(t *testing.T) {
+		b := retryBroker(t, 3)
+		it := seedTaskAwaitingCI(t, b, baseTask())
+		obs := failedObs(b, it)
+		b.GlobalMaxTasks = 100
+		b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+
+		claimed, transient := b.markCIRetryEnqueued(it.ID)
+		if !claimed || transient {
+			t.Fatalf("setup: first claim = (%v, %v), want (true, false)", claimed, transient)
+		}
+		claimed, transient = b.markCIRetryEnqueued(it.ID)
+		if claimed || transient {
+			t.Fatalf("a second claim = (%v, %v), want (false, false) — already claimed is a VERDICT", claimed, transient)
+		}
+		// And through the decision: gate 5 refuses it before the mark is reached.
+		if _, _, park := b.maybeEnqueueCIRetry(obs, QueueCIFailed); park {
+			t.Error("a parent whose enqueue-once flag is already claimed parked; it must not be re-asked")
+		}
+	})
+}
+
+// TestCIRetry_ATransientMarkWriteFailureDoesNotDestroyTheChain is the round-4
+// regression, and it is the same fault class the round-3 park was built for
+// applied one step later in the decision.
+//
+// The shape: the decision parks once on an unmeasurable ceiling (so the parent's
+// terminal is durable and the marker survives), the ceiling recovers, and a
+// queue-item WRITE fault lands on the very next pass — a directory on the
+// atomic-write temp path, which is what a full or read-only disk looks like from
+// here. The enqueue-once mark could not be written.
+//
+// Refusing there reported the observation as fully recorded, concludeCIWatch
+// dropped the <id>.ci.json marker, and the replay guard short-circuited every
+// later pass: the retry chain was destroyed PERMANENTLY by a fault that cleared
+// a second later. The direction was safe (nothing spent) but "unrecoverable
+// after the fault clears" was never the intent.
+func TestCIRetry_ATransientMarkWriteFailureDoesNotDestroyTheChain(t *testing.T) {
+	b := retryBroker(t, 3)
+	b.CIWatchTimeout = time.Hour
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	parentID := it.ID
+	b.GlobalMaxTasks = 100
+
+	// Park once on an unmeasurable ceiling. The marker must survive.
+	b.GlobalLedger = nil
+	seedSettledMarker(t, b, ciMarker{TaskID: parentID, State: CIFailed,
+		Summary: failing(), RepoRef: it.Task.RepoRef, PRNumber: 7, PROwner: "o", PRRepo: "r"})
+	b.ciWatchPass(map[string]int{})
+	if markerGone(t, b, parentID) {
+		t.Fatal("setup: the parked marker was removed")
+	}
+
+	// The ceiling recovers; the disk does not. atomicfile.Write stages through
+	// <path>.tmp, so a directory on that name fails the create and the rename
+	// never happens — reads keep working throughout.
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+	qtmp := filepath.Join(b.AuditRoot, parentID+".queue.json.tmp")
+	if err := os.Mkdir(qtmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b.ciWatchPass(map[string]int{})
+	if _, ok := childOf(t, b, parentID); ok {
+		t.Fatal("a child was minted while the enqueue-once mark could not be written")
+	}
+	if markerGone(t, b, parentID) {
+		t.Fatal("the marker was dropped on an unwritable enqueue-once mark; nothing can re-ask the decision")
+	}
+
+	// The fault clears, and the decision is re-asked.
+	if err := os.Remove(qtmp); err != nil {
+		t.Fatal(err)
+	}
+	b.ciWatchPass(map[string]int{})
+	child, ok := childOf(t, b, parentID)
+	if !ok {
+		t.Fatal("the retry chain did not recover after the write fault cleared")
+	}
+	// ...exactly once. Every later pass is a replay, and none of them may mint a
+	// second child — the enqueue-once property is what the refusal was protecting.
+	for i := 0; i < 5; i++ {
+		b.ciWatchPass(map[string]int{})
+	}
+	if again, _ := childOf(t, b, parentID); again.ID != child.ID {
+		t.Fatalf("the parent's child changed identity across replays: %s -> %s", child.ID, again.ID)
+	}
+	if markerGone(t, b, parentID) != true {
+		t.Error("the marker outlived a concluded decision")
+	}
+}
+
+// TestCIRetry_AParkWhoseOwnFlagCouldNotBePersistedIsStillReAsked isolates the
+// nastiest corner of the fault above: the park's cause is that queue-item WRITES
+// are failing, so the write of the deferral flag fails with it. The durable
+// record then says nothing was deferred, and a replay guard that reads only the
+// durable record short-circuits the next pass and destroys the chain — over a
+// fault that has already cleared.
+//
+// The process-local shadow (Broker.ciRetryParked) is what closes it, and this is
+// the interleaving that reaches the shadow and nothing else: the parent's
+// terminal is durable, its deferral flag is NOT, and no enqueue has happened.
+func TestCIRetry_AParkWhoseOwnFlagCouldNotBePersistedIsStillReAsked(t *testing.T) {
+	b := retryBroker(t, 3)
+	b.CIWatchTimeout = time.Hour
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	obs, parentID := failedObs(b, it), it.ID
+	b.GlobalMaxTasks = 100
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+
+	// The parent's terminal lands (recordCIQueueTerminal's write succeeded)...
+	if _, err := b.setQueueState(parentID, QueueCIFailed, func(q *QueueItem) {
+		q.CIState = string(CIFailed)
+	}); err != nil {
+		t.Fatalf("setup: terminal transition: %v", err)
+	}
+	// ...and only THEN does the disk go away, so the park's own flag cannot be
+	// written. A directory on the atomic-write temp path is a full/read-only disk.
+	qtmp := filepath.Join(b.AuditRoot, parentID+".queue.json.tmp")
+	if err := os.Mkdir(qtmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b.setCIRetryDeferred(parentID, true)
+	if err := os.Remove(qtmp); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.CIRetryDeferred {
+		t.Fatal("setup: the deferral flag reached disk, so the process-local shadow is not what is under test")
+	}
+
+	// The fault has cleared. The decision must be re-asked, not short-circuited.
+	b.applyCIObservation(obs)
+	child, ok := childOf(t, b, parentID)
+	if !ok {
+		t.Fatal("the decision was short-circuited as a replay; a park whose flag could not be persisted destroyed the chain")
+	}
+	// ...and still exactly once.
+	for i := 0; i < 3; i++ {
+		b.applyCIObservation(obs)
+	}
+	if again, _ := childOf(t, b, parentID); again.ID != child.ID {
+		t.Fatalf("the parent's child changed identity across replays: %s -> %s", child.ID, again.ID)
+	}
+}
+
+// TestCIRetry_AMarkThatLandedButReportedAnErrorStillRefuses is the interleaving
+// the park above must not reopen: writeQueueItem's rename succeeded but the call
+// reported an error (an fsync that failed after the data was durable, a racing
+// reader's view). The parent's CIRetryEnqueued is durably TRUE and no child
+// exists. Re-asking must NOT mint one — every gate between the re-ask and an
+// Enqueue reads the DURABLE flag, not the process-local park.
+func TestCIRetry_AMarkThatLandedButReportedAnErrorStillRefuses(t *testing.T) {
+	b := retryBroker(t, 3)
+	b.CIWatchTimeout = time.Hour
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	parentID := it.ID
+	b.GlobalMaxTasks = 100
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+	seedSettledMarker(t, b, ciMarker{TaskID: parentID, State: CIFailed,
+		Summary: failing(), RepoRef: it.Task.RepoRef, PRNumber: 7, PROwner: "o", PRRepo: "r"})
+
+	// The mark landed. The park did too, as it would if the caller believed the
+	// write had failed — this is the "wrote, then reported an error" state.
+	if claimed, _ := b.markCIRetryEnqueued(parentID); !claimed {
+		t.Fatal("setup: the mark did not land")
+	}
+	b.setCIRetryDeferred(parentID, true)
+
+	for i := 0; i < 5; i++ {
+		b.ciWatchPass(map[string]int{})
+	}
+	if child, ok := childOf(t, b, parentID); ok {
+		t.Fatalf("a re-asked decision minted a child (%s) for a parent whose enqueue-once flag was already durable", child.ID)
+	}
+}
+
+// TestCIRetry_TheParkBoundIsMeasuredOnTheSameClockTheCeilingIs.
+//
+// The park waits on the global ceiling, which measures its rolling window
+// against a JUMP-CORRECTED instant (ceilingNowMs). The bound used to be measured
+// against the RAW wall clock, so the two disagreed about time: a forward host
+// clock jump one tick into a park ended the park immediately, against a bound no
+// real time had elapsed on. Safe direction (fewer retries), but a bound that a
+// clock change can satisfy is not a bound.
+func TestCIRetry_TheParkBoundIsMeasuredOnTheSameClockTheCeilingIs(t *testing.T) {
+	wall, mono := &testClock{}, &testClock{}
+	wall.set(1_700_000_000_000)
+	mono.set(0)
+	b := retryBroker(t, 3)
+	b.now, b.mono = wall.now, mono.now
+	b.CIWatchTimeout = time.Hour // the park bound IS the watch timeout
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	obs := failedObs(b, it)
+	b.GlobalMaxTasks = 100
+	b.GlobalLedger = nil // unmeasurable -> park
+	_ = b.CeilingNowMs() // anchor the correction, as the ceiling's wiring does at boot
+
+	if recorded := b.applyCIObservation(obs); recorded {
+		t.Fatal("setup: the first decision was not parked")
+	}
+	// One minute of REAL time later, the host wall clock jumps two hours forward.
+	mono.advance(time.Minute)
+	wall.advance(2*time.Hour + time.Minute)
+	if _, detail, park := b.maybeEnqueueCIRetry(obs, QueueCIFailed); !park {
+		t.Errorf("a 2h wall-clock jump one minute into a 1h park ended the park (detail=%q)", detail)
+	}
+	// ...and the bound still bites on real elapsed time.
+	mono.advance(time.Hour)
+	wall.advance(time.Hour)
+	if _, _, park := b.maybeEnqueueCIRetry(obs, QueueCIFailed); park {
+		t.Error("the park outlived its bound in real (monotonic) time")
+	}
+}
+
+// TestCIRetry_ConcurrentDecisionsOnOneParentMintOneChild closes the last
+// interleaving of the enqueue-once rule: gate 5 reads the flag OUTSIDE the queue
+// lock, so two decisions racing on one parent can both pass it. Only the writer
+// that actually flips the durable marker may enqueue — which is why
+// markCIRetryEnqueued is a compare-and-set rather than an idempotent write.
+func TestCIRetry_ConcurrentDecisionsOnOneParentMintOneChild(t *testing.T) {
+	b := retryBroker(t, 5)
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	obs, parentID := failedObs(b, it), it.ID
+	b.GlobalMaxTasks = 100
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
+
+	const racers = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			b.maybeEnqueueCIRetry(obs, QueueCIFailed)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	items, err := listQueueItems(b.AuditRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, q := range items {
+		if q.Task.RetryOf == parentID {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d concurrent decisions on one parent minted %d children, want exactly 1", racers, n)
+	}
+}
+
+// TestCIRetry_TheParkIsBounded. A park keeps the item's CI marker alive
+// (concludeCIWatch keeps it on a not-recorded return) and pollCIMarker's
+// already-terminal branch short-circuits BEFORE the deadline check, so a marker
+// held open by a park is never timed out either. A ceiling that is unmeasurable
+// for a lasting reason therefore parked forever and leaked the marker for the
+// daemon's life. Nothing spends, but nothing ever finishes.
+func TestCIRetry_TheParkIsBounded(t *testing.T) {
+	b := retryBroker(t, 3)
+	clk := &testClock{}
+	clk.set(1_700_000_000_000)
+	b.now = clk.now
+	b.CIWatchTimeout = 30 * time.Minute
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	obs, parentID := failedObs(b, it), it.ID
+	b.GlobalMaxTasks = 100
+	b.GlobalLedger = nil // unmeasurable, and it stays that way
+
+	if recorded := b.applyCIObservation(obs); recorded {
+		t.Fatal("the first park reported the observation as fully recorded")
+	}
+	parked, err := readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.CIRetryDeferredAtMs == 0 {
+		t.Fatal("the park was not stamped with an anchor; the bound has nothing to measure from")
+	}
+
+	// Ticks inside the bound keep parking, which is the behaviour the park exists
+	// for: the common fault clears in seconds.
+	clk.advance(29 * time.Minute)
+	if recorded := b.applyCIObservation(obs); recorded {
+		t.Error("a park inside the bound concluded early; a transient fault would destroy the chain")
+	}
+
+	// Past the bound it becomes an honest refusal, which lets concludeCIWatch drop
+	// the marker instead of holding it for the daemon's life.
+	clk.advance(2 * time.Minute)
+	if recorded := b.applyCIObservation(obs); !recorded {
+		t.Fatal("the park is UNBOUNDED: an unmeasurable ceiling still holds the marker past the watch's own timeout")
+	}
+	final, err := readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.CIRetryDeferred {
+		t.Error("the deferral was not cleared once the park gave up")
+	}
+	if final.RetryTaskID != "" {
+		t.Errorf("a retry was enqueued against a ceiling that was never measurable: %s", final.RetryTaskID)
+	}
+}
+
+// The MEASURED refusal keeps its existing behaviour: over the limb is a real
+// condition with a remedy that arrives on its own schedule, and an unattended
+// retry that waits hours for it lands at a gate nobody is at.
+func TestCIRetry_AMeasuredCeilingRefusalStillEndsTheChain(t *testing.T) {
+	b := retryBroker(t, 3)
+	it := seedTaskAwaitingCI(t, b, baseTask())
+	obs, parentID := failedObs(b, it), it.ID
+	b.GlobalMaxTasks = 1
+	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 5, 1, b.nowMs()) // over the limb
+
+	if recorded := b.applyCIObservation(obs); !recorded {
+		t.Error("a MEASURED over-limb refusal parked; it must conclude")
+	}
+	it, err := readQueueItem(b.AuditRoot, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.CIRetryDeferred {
+		t.Error("a measured refusal set the deferred flag")
+	}
+	if it.RetryTaskID != "" {
+		t.Errorf("a retry was enqueued over an exhausted limb: %s", it.RetryTaskID)
 	}
 }

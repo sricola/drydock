@@ -448,6 +448,222 @@ See the [security defaults](https://sricola.github.io/drydock/docs/security-defa
 page for the full table of shipped bounds (budget, request caps, timeouts,
 disk quota), generated from code, and the test that enforces each one.
 
+**The global usage ceiling (`global_budget_usd` / `global_max_tasks`, opt-in,
+OFF by default).** Every other bound on this page is per-task or per-vendor. The
+global ceiling is the only one that is neither: it bounds the daemon as a whole,
+across every vendor and both auth modes, over a rolling `global_window`
+(default `24h`). It exists because bounded CI retry made drydock spend money
+unattended, and the honest answer to "what stops a retry storm?" was *nothing
+global* — `aggregate_budget_usd` is per-vendor (so with N vendors the real
+ceiling is N × the configured number), `api_key`-mode only, in-memory, and
+fail-open at every broker-side check.
+
+It has **two limbs**, either of which refuses a task start:
+
+- **`global_budget_usd`** — cumulative **broker-metered** USD across all
+  vendors. "Broker-metered" is exact: the figure is the gateway lease's own
+  `SpentUSD`, parsed host-side out of proxied response bodies. An agent-reported
+  `total_cost_usd` never reaches it, and cannot inflate or deflate it.
+- **`global_max_tasks`** — cumulative **task starts** across all vendors and
+  both auth modes. Retries and their parents count alike.
+
+What it does, precisely:
+
+- **It refuses task STARTS. It never kills a running task.** The three admission
+  points are `POST /tasks` (which returns **402** with the reason — the limb,
+  both numbers and the window, plus the remaining headroom on the USD limb and
+  the recorded-versus-in-flight split on the task limb; a refusal the ceiling
+  could not *evaluate* names the enforced limb and the fault instead, since
+  there are no numbers to give), the queue dispatcher, and the CI-retry gate. At the
+  dispatcher a human-submitted item **parks** (it stays `queued`, its attempt
+  count untouched, and it dispatches when the window rolls); a **retry** over
+  the cap is **dropped** to `dead_letter` rather than parked, because an
+  unattended item parked at a ceiling would dispatch hours later against a base
+  that has moved on. A retry the ceiling could not *measure* — as opposed to one
+  it measured and refused — parks instead, so a transient fault does not destroy
+  unattended work. Money already spent is already spent; terminating in-flight
+  work would create half-finished trees for no saving.
+- **It fails CLOSED, per limb.** This is the deliberate break with every
+  existing spend check: for a ceiling, "I don't know" must mean "no". If the
+  durable ledger **cannot be read at all** — a symlink where the file should be,
+  a permission failure, a file past the read cap — or the agent cannot be
+  resolved, the start is **refused on both limbs**. A **corrupt line** refuses
+  the **USD** limb only: it is quarantined rather than dropped and still counts
+  as exactly one task **start** (the line exists because a task ran), so the
+  start count stays complete while the spend total becomes a lower bound.
+  Refusing both there would let one bad byte brick an install that is not using
+  the dollar limb — permanently, in total mode. Damage that cannot be identified
+  as a single entry (a destroyed checkpoint, which carries a whole folded
+  history, or a region that took its line breaks with it) refuses **both**,
+  because the start count is then a lower bound too. An **absent** ledger
+  admits: an install that has never run a task has provably spent nothing and
+  started nothing, and empty is a fact rather than an unknown.
+  `aggregate_budget_usd` keeps its existing fail-open behavior; the two coexist
+  and the stricter answer wins.
+- **It is durable.** The ledger lives under `audit_root` (host-only, `0600` in a
+  `0700` directory, never read or written by anything in a VM) and survives
+  restart in both window modes. A crash loop cannot reset it, which is a hole
+  the in-memory `aggregate_window: 0` still has.
+- **Headroom is visible.** `GET /admin/ceiling` and `drydock stats` report spend
+  and starts against each limb, the window, in-flight starts not yet recorded,
+  and whether either number is degraded.
+
+**What it does NOT cover.** The USD limb can only count dollars the broker
+actually measured. The list below is the set known today and is **not claimed to
+be exhaustive** — it is a metering surface, and any future response shape whose
+usage the broker cannot parse joins it:
+
+- **Spend metered after a task's broker result row** — a request still in flight
+  when the task terminates. The same post-hoc bound `task_budget_usd` carries.
+- **Responses whose usage block exceeds the 1 MiB parse buffer.** Beyond that
+  the usage is not read and the request meters at $0.
+- **Streaming responses that omit a usage block**, or place it where the
+  broker's parse does not reach. Nothing is metered for such a request.
+- **A non-finite or negative figure.** A NaN, an infinity or a negative
+  `total_cost_usd` is sanitised to an UNTRUSTED $0 rather than believed — a NaN
+  in the running total would make `usage.USD >= budget` false forever and the
+  limb would admit without bound. The start is still counted, but the entry does
+  **not** raise the degraded flag, so the USD limb is quietly a lower bound.
+- **EVERY RESUMED task.** A task resumed at the diff gate after a restart ran
+  its agent in a previous process, whose lease is gone. The only surviving copy
+  of what that lease metered is a `src:"broker"` row in the task's own trace —
+  an append-only file the agent's own stdout is copied into, in which `src` is
+  a self-declared string. The ceiling therefore does **not** read it: a resumed
+  task's spend is recorded as **unknown**, never invented and never taken from
+  the trace. (It used to be read, and marked trusted; a forged row claiming
+  `total_cost_usd: 999999` went straight into the trusted USD limb and refused
+  every start on the install until it aged out. What kept that out in practice
+  was ordering, not authentication.) The resumed task's own broker result row
+  now carries `no_spend_info`, so the cost columns and the per-vendor
+  `aggregate_budget_usd` restart seed still read the previous process's genuine
+  row beneath it — only the global USD limb declines the figure.
+- **Every BOOT-RECONCILED entry.** A task killed between its audit terminal and
+  its ledger write is recovered from the audit trail — but a task trace is an
+  append-only file the agent's own stdout is copied into, so no figure in it can
+  be authenticated. Reconciliation therefore records the START exactly and the
+  dollars as **unknown**, for every such task, and deliberately does not raise
+  the degraded flag: degrading is sticky for the daemon's life, so doing it on
+  every crash-recovered task would refuse every subsequent start after an
+  ordinary crash. **The blind spot is bounded by the tasks in flight at the
+  crash ONLY IF `global_max_tasks` is also set** — that limb is what counts
+  them. On a USD-only install (`global_max_tasks: 0`) nothing counts them at
+  all, so the under-count is real money and is not even bounded at
+  `max_concurrent_tasks`: it repeats on every crash. Ten crash-recovery cycles
+  with four tasks in flight leaves forty invisible starts and a ceiling that
+  admits freely. brokerd warns at boot for exactly this configuration; the
+  remedy is to set `global_max_tasks`. Closing it properly means the broker
+  recording its metered figure somewhere a sandbox cannot append to — a
+  broker-only sidecar — rather than re-trusting the trace.
+- **Batch-style routes on an `openai_compat` lane**, where usage is not in the
+  response the broker proxies at all. For the built-in vendors this is *closed*
+  rather than open: the gateway's route allowlist deliberately omits
+  `/v1/messages/batches` (F-03) and answers it `403`, so it is never proxied and
+  never spends. `openai_compat` vendors carry no route allowlist — unlike the
+  built-in vendors, which do — and a batch-style route there would meter nothing.
+- **`openai_compat` lanes configured with no `prices`**, which meter at **$0 by
+  construction** — there is no rate table to price tokens against.
+- **Subscription lanes**, where there is no USD to meter at all.
+
+None of these is fixed by the USD limb, and pretending otherwise would be the
+dangerous claim. **`global_max_tasks` is the backstop for all of them**: it
+counts an event the broker itself causes — a task start — rather than dollars a
+response reported, so no metering gap, missing price table, oversized usage
+block or batch route can under-report it. That is why the ceiling has two limbs
+rather than one, and why an operator running subscription or unpriced
+`openai_compat` lanes should set the task limb rather than the dollar one.
+
+Stated plainly, because it is the change that matters most here: **before this,
+subscription lanes had NO cross-task bound of any kind** — only per-task limits
+(`task_max_requests`, one in-flight request, `task_timeout`) plus
+`max_concurrent_tasks`. Nothing bounded cumulative usage over a day, which is
+the likeliest configuration for an unattended install. They have one now, if the
+operator sets `global_max_tasks`.
+
+Residual, stated without softening:
+
+- **Both limbs default to `0` (off).** A stock install has exactly the bounds it
+  had before: no ledger file is created and no admission path changes.
+- The USD limb is **soft in the same post-hoc sense as `task_budget_usd`**: an
+  admitted task's spend is unknown until it ends, so the ceiling can be crossed
+  by at most `max_concurrent_tasks × task_budget_usd`. The task limb is **hard**
+  — the start is claimed in the same critical section as the check, so
+  concurrent admissions cannot race through it.
+- **A task RESUMED at the diff-approval gate after a restart is invisible to the
+  start limb until it terminates.** It was admitted in a previous process, so
+  this one holds no in-flight claim for it and its ledger entry does not exist
+  yet. The number of such tasks is bounded by how many were parked at the gate
+  when the previous process died, and none of them can spend — a resume replays
+  a diff a previous process already produced and paid for, and never runs an
+  agent or mints a lease. Boot reconciliation converges the count.
+- A wall-clock jump **forward** would move a rolling window past every recorded
+  entry, and — worse — a jump that reached the ledger's WRITE path would delete
+  the durable record, because pruning drops everything older than
+  `now - window` from the file as well as from memory. Both the query clock and
+  the write clock are now measured against monotonic time and corrected, and no
+  entry may be dated later than the clock that recorded it, so a jump can
+  neither zero a limb nor delete an entry. A clock change made while brokerd is
+  **down** is still not detectable (a monotonic reading does not survive a
+  reboot); it is logged loudly at open rather than refused, because refusing it
+  would also refuse every legitimately idle install.
+- **The write clock's correction applies to the PRUNE CUTOFF only, never to an
+  entry's timestamp.** An entry is stamped against the same clock the window is
+  later queried against. Correcting the stamp too created a SECOND skew
+  accumulator sampled at a different rate from the query clock's — writes happen
+  once per task terminal, queries once per admission — and the two drifted apart
+  monotonically until the gap exceeded `global_window` and the window saw
+  *nothing*. That was a permanent fail-open reachable with no clock jump and no
+  attacker, only uptime.
+- **Clock-skew correction only ever grows.** The accumulated forward-jump
+  correction is floored at zero and never decreases, so repeated back-and-forth
+  clock moves widen the effective prune cutoff each time. That is the over-counting
+  direction — entries are kept longer than the configured window, never shorter
+  — but an install whose clock is moved repeatedly will refuse on entries an
+  operator expects to have aged out. The remedy is a restart, which re-anchors.
+- **A documented remedy usually needs a restart.** The ledger's entries live in
+  memory as well as on disk and the next compaction rewrites the file from
+  memory, so removing or hand-editing `<audit_root>/global/ledger.jsonl` under a
+  RUNNING daemon does not clear a limb — the file comes back. Stop brokerd,
+  then remove the file.
+- **`drydock tasks` / `drydock stats` cost columns are not the ceiling.** They
+  read the trace's `src=="broker"` result row, and `src` is a self-declared
+  string in a file the agent's stdout is copied into. An agent that forges one
+  can inflate a displayed figure, and the same forged row reaches the per-vendor
+  `aggregate_budget_usd` restart seed — which scans back past a `no_spend_info`
+  terminal to the last genuine-looking broker row, so appending a synthetic
+  terminal over the forgery does not mask it. The blast radius is fail-CLOSED
+  (an inflated per-vendor cap refuses tasks, it does not admit them), and the
+  GLOBAL ceiling is unaffected in either direction because it reads no trace
+  content at all. The real fix is the broker-only sidecar named above.
+- `global_window: 0` (total mode) never ages anything out, and unlike
+  `aggregate_window: 0` it is durable — an exhausted ceiling stays exhausted
+  across restarts until an operator raises a limb or removes the ledger file.
+  brokerd warns at boot when a limb is armed in total mode.
+
+This stays an **N4 mitigation rather than a new A-claim**, deliberately. The A
+claims are containment boundaries: an agent attempts something and drydock's
+isolation stops it, each verified by an adversarial red-team probe. The global
+ceiling is a **safety control on operator-authorized work** — it bounds a loop
+the operator asked for, and the "attacker" in the retry-storm scenario is a
+failing test suite, not the agent. The agent cannot evade it (the ledger is
+host-only and reads only broker-metered spend, which is claim **A1**'s property,
+not a new one), but non-evadability of a budget is not a containment boundary.
+Its enforcement is pinned by the generated
+[security defaults](https://sricola.github.io/drydock/docs/security-defaults.html)
+table, which now carries a row per limb naming the tests that enforce it.
+
+**Operator-facing spend is broker-observed.** Related, and worth stating here
+because it is a trust property rather than a bound: every surface that shows a
+dollar figure now shows one the broker produced. `drydock stats`, `drydock
+tasks` and the web UI's history table read the broker-authored `src=="broker"`
+audit row, which carries the gateway lease's own metering; the web UI's
+**push-approval gate** shows the live lease figure the broker publishes onto the
+task state at gate entry, so it parses nothing at all. The agent's stdout is
+copied verbatim into the audit stream, so a `total_cost_usd` it printed is
+untrusted text; it is still displayed where it is the only figure that exists
+(a task with no broker terminal row yet), but it is explicitly marked as
+agent-reported and is never summed into a spend total. The push gate previously
+rendered exactly that untrusted number beside the Approve button.
+
 **`api_key` mode (default).** The per-task USD ceiling (`task_budget_usd` /
 `DRYDOCK_TASK_BUDGET_USD`) caps spend but does not cap usefulness. An agent
 that burns $2 on no-op API calls hits the cap and produces no diff. Operators
@@ -481,6 +697,9 @@ meter. The runaway controls are:
   gateway will allow for a single task before returning `429`. Set this
   explicitly; there is no equivalent to the API-key budget sentinel.
 - `task_timeout`: wall-clock ceiling (default `30m`), unchanged.
+- `global_max_tasks`: the only CROSS-TASK bound available here (see the global
+  usage ceiling above). Off by default. Both of the controls above are
+  per-task; without this one nothing bounds cumulative usage over a day.
 
 Without `task_max_requests`, brokerd applies a built-in default cap of 1,000
 requests, so a subscription task is bounded by that; set `task_max_requests`
@@ -498,6 +717,8 @@ there is no spend to meter. The runaway controls are identical:
   gateway will allow for a single task before returning `429`. Set this
   explicitly when using subscription mode.
 - `task_timeout`: wall-clock ceiling (default `30m`), unchanged.
+- `global_max_tasks`: the only CROSS-TASK bound available here (see the global
+  usage ceiling above). Off by default.
 
 Without `task_max_requests`, brokerd applies a built-in default cap of 1,000
 requests, so a Codex subscription task is bounded by that; set
@@ -548,16 +769,24 @@ The bounds on that:
   not sit queued for hours and then dispatch against a base that has moved on.
   The refusal is recorded on the audit's `ci_observation` row.
 
-  **Where it is not set, that refusal is a no-op, and the per-chain product
-  above is the ONLY spend bound there is.** Both retry-specific refusals — the
-  decision's and the dispatcher's drop — test the same aggregate cap, which is
+  **Where neither that cap nor the global ceiling is set, the per-chain product
+  above is the ONLY spend bound there is.** The two retry-specific aggregate-cap
+  refusals — the decision's and the dispatcher's drop — test a cap that is
   unwired when `aggregate_budget_usd` is `0` (the default) and is
-  `api_key`-mode-only by design, so it is absent entirely in subscription mode.
-  Nothing bounds the number of chains running concurrently:
+  `api_key`-mode-only by design, so it is absent entirely in subscription mode,
+  and neither bounds the number of chains running CONCURRENTLY:
   `max_attempts × task_budget_usd` is per failing task, and ten tasks failing
   CI overnight is ten of them. brokerd warns at boot when `ci.max_attempts > 0` with no
   aggregate cap; it does not refuse, because refusing would make the feature
   unusable in the auth mode most unattended installs run.
+
+  **`global_max_tasks` is what actually bounds the concurrent-chains case**, and
+  it is the reason the global ceiling was built: it counts task starts across
+  every chain, every vendor and both auth modes, so ten overnight chains consume
+  one shared allowance rather than ten independent ones. A retry the ceiling
+  refuses is declined at the decision (recorded on the `ci_observation` row) or
+  dropped to `dead_letter` at the dispatcher, matching the aggregate cap's
+  refuse-rather-than-park rule. It is also off by default.
 - Only an **observed** check failure retries. A watch that timed out, gave up,
   or found no checks configured retries nothing: spending a fresh budget on
   "we could not tell" is the failure mode this rule exists to prevent.
@@ -565,8 +794,11 @@ The bounds on that:
 **`openai_compat` lane (`api_key` mode).** USD metering depends on the upstream
 reporting token usage in its response. Streaming `chat/completions` responses
 commonly omit usage, so a streamed task may be metered at $0 and never trip
-`task_budget_usd`. `task_max_requests` is the usage-independent cap and should
-be set for any `openai_compat` lane where streaming is expected.
+`task_budget_usd`. `task_max_requests` is the usage-independent per-task cap and should
+be set for any `openai_compat` lane where streaming is expected;
+`global_max_tasks` is its cross-task counterpart, and is the only global bound
+that holds for a lane configured with no `prices` (which meters at $0 by
+construction, so `global_budget_usd` can never trip on it).
 
 ### N5. Compromise of the host's git remote credentials
 

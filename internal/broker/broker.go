@@ -288,6 +288,51 @@ type Broker struct {
 	// the pre-check. Wired to the gateway's AggregateExceeded by brokerd.
 	AggregateExceeded func(vendor string) bool
 
+	// GlobalBudgetUSD and GlobalMaxTasks are the two limbs of the GLOBAL usage
+	// ceiling (globalcap.go, plan G1). Unlike AggregateExceeded above they are
+	// cross-vendor, cross-auth-mode, durable and FAIL-CLOSED, and they refuse a
+	// task START at all three admission points (POST /tasks, the dispatcher,
+	// the CI-retry gate) — never a running task (G5).
+	//
+	// GlobalBudgetUSD bounds windowed broker-metered spend; GlobalMaxTasks
+	// bounds windowed task STARTS, which is the limb that reaches subscription
+	// lanes where USD is meaningless. BOTH DEFAULT TO 0 = OFF, and with both
+	// off the ceiling is inert: nothing is locked, no agent is resolved and the
+	// ledger is never read, so a stock install behaves exactly as it did
+	// before. Config (`global_budget_usd` / `global_max_tasks`) lands in Task 4;
+	// until then brokerd leaves them zero, as it did with CIWatch before B1.
+	GlobalBudgetUSD float64
+	GlobalMaxTasks  int
+
+	// GlobalLedger is the durable rolling-window store both limbs are measured
+	// against (globalledger.go). nil with a limb enabled is itself a refusal:
+	// a configured ceiling with no store to measure it is the "I don't know"
+	// G2 defines as "no". Entries are written by Task 3's task-terminal path.
+	GlobalLedger *GlobalLedger
+
+	// capMu guards capInFlight, the set of task ids this process has ADMITTED
+	// past the ceiling but whose ledger entry has not landed yet. It exists
+	// because the ledger is only written at task terminal, so without it N
+	// concurrent admissions would all read the same pre-state and all pass one
+	// limb — see the ordering discussion at the top of globalcap.go. The check
+	// and the claim happen in one capMu critical section, which is what makes
+	// the task-start limb overshoot-free.
+	capMu       sync.Mutex
+	capInFlight map[string]struct{}
+
+	// capClock* is the ceiling's WALL-VS-MONOTONIC anchor: the pair captured the
+	// first time the ceiling asked for the time, and the largest amount by which
+	// wall time has since outrun monotonic time. That excess is the host clock
+	// having been MOVED rather than having passed, and the ceiling subtracts it
+	// so a forward jump cannot silently age every entry out of the rolling
+	// window and reset both limbs. See ceilingNowMs. Its own mutex, because it
+	// is read on the admission path and must not widen capMu's critical section.
+	capClockMu       sync.Mutex
+	capClockAnchored bool
+	capClockWall     int64
+	capClockMono     int64
+	capClockSkew     int64
+
 	// Test seams. nil in production -> the real implementations
 	// (defaultPrepareStage / runContainer). White-box tests inject fakes to
 	// drive HandleTask without a git clone or a container run.
@@ -344,13 +389,60 @@ type Broker struct {
 	// wait out a full tick; queueStop ends the dispatcher goroutine.
 	// queueTick is the dispatcher poll interval (0 -> defaultQueueTick);
 	// tests set it low. now is the queue's clock seam (nil -> UnixMilli).
-	queueMu   sync.Mutex
-	queue     []QueueItem
-	queueWake chan struct{}
-	queueStop chan struct{}
-	queueOnce sync.Once
-	queueTick time.Duration
-	now       func() int64
+	queueMu sync.Mutex
+	queue   []QueueItem
+	// ciRetryParked is the PROCESS-LOCAL fallback copy of the bounded-retry
+	// park: parent task id -> the corrected instant the park started. Written
+	// and read under queueMu, like every other queue-item field it shadows.
+	//
+	// The durable copy is QueueItem.CIRetryDeferred/CIRetryDeferredAtMs and it is
+	// the authority whenever it exists. This map exists because the durable copy
+	// is written by the very operation that may be failing: the decision parks
+	// precisely because a queue-item WRITE could not be made (an unwritable
+	// enqueue-once mark), and that same fault takes the deferral flag's own write
+	// down with it. Without an in-memory record the next watch pass reads a queue
+	// item that says nothing was deferred, short-circuits as a crash-window
+	// replay, and the retry chain is destroyed by a fault that has already
+	// cleared.
+	//
+	// It CANNOT reopen the enqueue-once hole: it only ever makes the replay guard
+	// FALL THROUGH to re-ask the decision, and every later gate that could mint a
+	// child (recordCIQueueTerminal's CIRetryEnqueued/RetryTaskID checks, gate 5,
+	// and markCIRetryEnqueued's compare-and-set) reads the DURABLE record. A mark
+	// whose write landed but reported an error therefore still refuses.
+	//
+	// It does not survive a restart, and that is honest: a crash mid-park loses
+	// the retry, which is crash window W2's direction (fewer attempts, never
+	// more).
+	//
+	// LIFETIME, stated exactly, because the obvious statement ("entries go as soon
+	// as the decision is made") is true only of parks that REACH a decision. Two
+	// kinds never do — a parent whose marker was cancelled or pruned mid-park, and
+	// a parent whose queue item vanished — and they used to retain their entry for
+	// the daemon's life. Both are reaped by ciWatchPass, which drops every shadow
+	// with no live `<id>.ci.json` marker: a park cannot be re-asked without its
+	// marker, so a shadow without one can never be read again. The map is
+	// therefore bounded by the number of parents parked at once, as claimed.
+	//
+	// ciRetryParkedMono is its monotonic twin: parent task id -> the monotonic
+	// instant the park began, the measure that bounds a park against a host clock
+	// that repeatedly steps BACKWARDS. Same lock, same lifetime, same reap. See
+	// ciRetryParkMonoSinceMs.
+	ciRetryParked     map[string]int64
+	ciRetryParkedMono map[string]int64
+	queueWake         chan struct{}
+	queueStop         chan struct{}
+	queueOnce         sync.Once
+	queueTick         time.Duration
+	now               func() int64
+	// mono is the MONOTONIC counterpart of the now seam, in milliseconds from an
+	// arbitrary epoch (nil -> time.Since a process-start anchor). It exists only
+	// so a test can drive a wall-clock jump deterministically: the global
+	// ceiling compares the two to tell time that PASSED from time that was SET.
+	// A broker with an injected `now` and no injected `mono` gets no jump
+	// detection at all, because a test advancing its own clock on purpose is not
+	// a clock jump.
+	mono func() int64
 
 	// draining is the shutdown latch (BeginQueueDrain). Once set, the queue
 	// accepts no further BROKER-AUTHORED work: takeDispatchable dispatches
@@ -637,6 +729,31 @@ type taskRun struct {
 	// directory survives a brokerd shutdown and can be resumed at next boot.
 	// Set by pushAndOpenPR and resumePush when gatePushMarked returns gateShutdown.
 	keepStage bool
+
+	// --- global usage ceiling (globalrecord.go, plan Task 3) ---
+
+	// leaseSpentUSD is this task's BROKER-METERED spend, snapshotted off the
+	// gateway lease by captureLeaseSpend the instant the agent run ends —
+	// while the lease is still alive, since `defer grant.Revoke()` fires
+	// before the ledger write and grant.Spent() answers 0 on a revoked lease.
+	// leaseCaptured distinguishes "the lease metered zero" from "no lease
+	// existed", which are different facts about a $0 task. Written and read
+	// only on the single task goroutine.
+	leaseSpentUSD float64
+	leaseCaptured bool
+	// resumed marks a taskRun driven by resumePush — a task whose agent ran in
+	// a PREVIOUS brokerd life and which therefore has no lease in this process.
+	// Its broker-metered spend is recovered from the previous process's own
+	// src:"broker" result row instead.
+	resumed bool
+	// attempt and retryOf mirror Task's same-named bounded-retry fields, for
+	// the ledger entry only: they let an operator see WHICH retry chain
+	// consumed the ceiling. The counting itself treats a retry and its parent
+	// identically (G1). Set on the QUEUED path only, where BuildRetryTask is
+	// the sole writer — the HTTP surface's copies are caller-supplied text and
+	// have no business in a durable broker artifact.
+	attempt int
+	retryOf string
 }
 
 // errTaskTerminated signals that a lifecycle method has already emitted the
@@ -703,6 +820,22 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The GLOBAL usage ceiling (globalcap.go). It runs ALONGSIDE the per-vendor
+	// pre-check above, never instead of it: both answer and the stricter answer
+	// wins, so an install that has not enabled the ceiling gets byte-identical
+	// behavior — including the per-vendor 402's exact wording, which is why the
+	// order is vendor-first. Unlike that check this one FAILS CLOSED (G2), and
+	// unlike it, it CLAIMS the start: the ledger is only written at terminal, so
+	// without a claim taken in the same critical section as the check, N
+	// concurrent submissions would all pass one limb. Released on every exit
+	// path by the defer below, which fires after runLifecycle's own defers (and
+	// so after Task 3's terminal write).
+	if blocked, why := b.admitGlobalStart(taskID, t.Agent); blocked {
+		http.Error(w, why, http.StatusPaymentRequired)
+		return
+	}
+	defer b.releaseGlobalStart(taskID)
+
 	sw := newStream(w)
 	sw.emit(map[string]any{"event": "accepted", "task_id": taskID, "repo": t.RepoRef})
 
@@ -743,6 +876,19 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 // revoke, cache release, metrics row, audit sync/close) fire when it returns,
 // which on both paths is immediately before the caller's own defers.
 func (tr *taskRun) runLifecycle() {
+	// THE GLOBAL CEILING'S TERMINAL WRITE, and it is deliberately the FIRST
+	// statement in this function. Every terminal path out of the task lifecycle
+	// — the five in runSandbox, setup.go's two, verify.go's two, the synthetic
+	// planned/policy_blocked/push_failed rows, and every early abort BEFORE the
+	// audit log even opens — returns through this defer, so "every terminal
+	// records" is structural rather than a list someone has to remember to
+	// update. A path that skipped it would under-count the ceiling, which is the
+	// one direction G2/G3 forbid. See globalrecord.go for why it is not folded
+	// into the deferred appendMetrics below (that one starts at the audit-log
+	// open and misses every pre-audit terminal, all of which are real task
+	// starts) and for the LIFO ordering this produces. No-op with no ledger.
+	defer tr.recordGlobalUsage()
+
 	b, taskID, sw := tr.b, tr.id, tr.sw
 
 	// Egress widening: block at the same kind of human-driven gate as the
@@ -1006,7 +1152,7 @@ func (tr *taskRun) runLifecycle() {
 		tr.outcome = "no_diff"
 		sw.emit(map[string]any{"event": "result", "outcome": "no_diff",
 			"task_id": taskID, "duration_ms": time.Since(tr.taskStart).Milliseconds(),
-			"cost_usd": audit.TotalCost(tr.auditPath)})
+			"cost_usd": tr.meteredCostUSD()})
 		return
 	}
 
@@ -1047,10 +1193,10 @@ func (tr *taskRun) finishPlanned(diff string) {
 	b.writeBrief(tr, diff)
 	// Synthetic audit result row mirrors runVerify's verify_failed pattern
 	// (last-wins over the agent's own success row, carrying metered cost).
-	cost := audit.TotalCost(tr.auditPath)
+	cost := tr.meteredCostUSD()
 	fmt.Fprintf(tr.logf,
-		`{"type":"result","subtype":"planned","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-		time.Since(tr.taskStart).Milliseconds(), cost)
+		`{"type":"result","subtype":"planned","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+		time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
 	tr.outcome = "planned"
 	tr.sw.emit(map[string]any{"event": "result", "outcome": "planned",
 		"task_id": tr.id, "plan_bytes": len(plan), "has_plan": ok,
@@ -1175,9 +1321,20 @@ func (tr *taskRun) appendBrokerResult(isError bool) {
 	if rc, ok := tr.grant.(interface{ Requests() int }); ok {
 		turns = rc.Requests()
 	}
-	_, _ = fmt.Fprintf(tr.logf,
+	// THE WRITE ERROR IS LOGGED, NOT DISCARDED, and that is a control matter
+	// rather than tidiness. This row being last is what makes every tail reader
+	// prefer the broker's own figure over whatever the agent printed; a row that
+	// did not land leaves an AGENT-AUTHORED result as the last one in the trace,
+	// which is the state the resumed-task and aggregate-cap-reseed paths were
+	// relying on ordering — not authentication — to avoid. Nothing here can fix
+	// it (the trace is the only place this figure exists), but an operator whose
+	// disk filled at exactly the wrong moment should be able to find out.
+	if _, err := fmt.Fprintf(tr.logf,
 		`{"type":"result","subtype":"%s","is_error":%t,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":%d,"src":"broker"}`+"\n",
-		subtype, isError, time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent(), turns)
+		subtype, isError, time.Since(tr.taskStart).Milliseconds(), tr.grant.Spent(), turns); err != nil {
+		slog.Warn("audit: the broker-authored result row could not be written; this task's metered spend is not recorded in its trace, and the last result row in it is the AGENT's",
+			"task_id", tr.id, "err", err)
+	}
 }
 
 // runSandbox runs the agent container, writes to the audit log, and emits the
@@ -1227,6 +1384,14 @@ func (tr *taskRun) runSandbox(args []string) error {
 	defer sizeGuard.stop()
 	err := run(runCtx, args, outCap.wrap(io.MultiWriter(tr.logf, os.Stdout)), outCap.wrap(tr.logf))
 	tr.runEnd = time.Now()
+	// Snapshot the gateway lease's broker-metered spend HERE, before any of the
+	// branches below and before `defer grant.Revoke()` can tear the lease down
+	// (a revoked lease reports 0, so reading it from the terminal ledger write
+	// would silently record $0 for every task). This is the one instant the
+	// figure is both FINAL and READABLE: the agent VM is the only VM a bearer is
+	// ever injected into, so nothing can spend before it starts or after it
+	// exits. See globalrecord.go's G4 discussion.
+	tr.captureLeaseSpend()
 	if err != nil {
 		// --rm covers a graceful exit; on timeout/kill the VM may survive,
 		// so force-remove it (best effort) to honor the ephemeral-VM backstop.
@@ -1425,10 +1590,10 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	// row mirrors runVerify's verify_failed pattern (last-wins over the
 	// agent's own success row, carrying metered cost).
 	if blocked, reason := tr.checkDiffCaps(facts, diff); blocked {
-		cost := audit.TotalCost(tr.auditPath)
+		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
-			`{"type":"result","subtype":"policy_blocked","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-			time.Since(tr.taskStart).Milliseconds(), cost)
+			`{"type":"result","subtype":"policy_blocked","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+			time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
 		tr.outcome = "policy_blocked"
 		tr.sw.emit(map[string]any{"event": "result", "outcome": "policy_blocked",
 			"task_id": tr.id, "reason": reason,
@@ -1445,6 +1610,11 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	// second-look is a human-gate aid, and the hard enforcement that even
 	// auto-approve cannot bypass is checkDiffCaps above.
 	tr.requiredAcks = requiredAcks(facts, b.DiffPolicy)
+	// Publish the BROKER-METERED spend before the stage flips to StagePending,
+	// so the first poll that sees the gate already sees the number (plan G4).
+	// The web UI's push gate renders this instead of scraping the live jsonl for
+	// whatever total_cost_usd the agent last printed.
+	tr.publishGateSpend()
 	b.setStage(tr.id, StagePending)
 	// Bridge the gate entry into the durable queue state for a queued task
 	// (running -> awaiting_review). nil on the synchronous and resume paths.
@@ -1523,12 +1693,17 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		pushRetry{MaxRetries: b.PushMaxRetries, Backoff: b.PushRetryBackoff, FreshBranchTries: b.PushFreshBranchTries})
 	if err != nil {
 		// Nothing landed on the remote (single-ref push is atomic). Record a
-		// terminal push_failed result in the audit (carrying the metered cost so
-		// cost + the aggregate-cap seed stay correct) and stream the reason.
-		cost := audit.TotalCost(tr.auditPath)
+		// terminal push_failed result in the audit and stream the reason. The
+		// spend half is brokerResultSpendFields': the metered figure for a live
+		// task (which is the case here), and `no_spend_info` for a resumed one
+		// whose lease died with a previous process. Either way the cost columns
+		// and the aggregate-cap restart seed stay correct — the seed
+		// (audit.LastBrokerResult) skips a `no_spend_info` row and finds the
+		// previous process's genuine one beneath it.
+		cost := tr.meteredCostUSD()
 		fmt.Fprintf(tr.logf,
-			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,"total_cost_usd":%.6f,"num_turns":0,"src":"broker"}`+"\n",
-			time.Since(tr.taskStart).Milliseconds(), cost)
+			`{"type":"result","subtype":"push_failed","is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+			time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
 		tr.outcome = "push_failed"
 		tr.sw.emit(map[string]any{"event": "result", "outcome": "push_failed",
 			"task_id": tr.id, "reason": string(reason), "push_attempts": attempts,
@@ -1569,7 +1744,7 @@ func (tr *taskRun) finishPush(files, insertions, deletions int) {
 		"task_id": tr.id, "branch": branch, "platform": adapter.Name(),
 		"pr_opened": prErr == nil, "push_attempts": attempts,
 		"files": files, "insertions": insertions, "deletions": deletions,
-		"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": audit.TotalCost(tr.auditPath)}
+		"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": tr.meteredCostUSD()}
 	if prErr != nil {
 		ev["pr_error"] = safeErr(prErr)
 		ev["pr_hint"] = "branch '" + branch + "' was pushed; open a PR manually (" + adapter.Name() + ")"

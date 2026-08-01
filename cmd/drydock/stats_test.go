@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"drydock/internal/stats"
 )
 
 const statsNewFixture = `{"type":"drydock_meta","subscription":false,"sensitive":false}
@@ -35,7 +37,7 @@ func statsDir(t *testing.T) string {
 
 func TestWriteStats_Text(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "agent", false); err != nil {
+	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "agent", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -70,7 +72,7 @@ func TestWriteStats_AllOldFormat(t *testing.T) {
 		}
 	}
 	var buf bytes.Buffer
-	if err := writeStats(&buf, dir, 30*24*time.Hour, "agent", false); err != nil {
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "agent", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -101,7 +103,7 @@ func TestWriteStats_DeniedOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -129,7 +131,7 @@ func TestWriteStats_SetupFailedInFixedOrder(t *testing.T) {
 		}
 	}
 	var buf bytes.Buffer
-	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -162,7 +164,7 @@ func TestWriteStats_PolicyBlockedInFixedOrder(t *testing.T) {
 		}
 	}
 	var buf bytes.Buffer
-	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -206,7 +208,7 @@ func TestWriteStats_QueueWaitAndOutcomes(t *testing.T) {
 		}
 	}
 	var buf bytes.Buffer
-	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -226,7 +228,7 @@ func TestWriteStats_QueueWaitAndOutcomes(t *testing.T) {
 
 func TestWriteStats_JSON(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "", true); err != nil {
+	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "", true, nil); err != nil {
 		t.Fatal(err)
 	}
 	var rep map[string]any
@@ -241,7 +243,7 @@ func TestWriteStats_JSON(t *testing.T) {
 
 func TestWriteStats_BadDimension(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writeStats(&buf, statsDir(t), 0, "flavor", false); err == nil {
+	if err := writeStats(&buf, statsDir(t), 0, "flavor", false, nil); err == nil {
 		t.Fatal("unknown --by dimension must error")
 	}
 }
@@ -255,7 +257,7 @@ func TestWriteStats_AllUnmeteredSpendNotZeroDollar(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := writeStats(&buf, dir, 0, "", false); err != nil {
+	if err := writeStats(&buf, dir, 0, "", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -286,7 +288,7 @@ func TestWriteStats_PlannedInFixedOrder(t *testing.T) {
 		}
 	}
 	var buf bytes.Buffer
-	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false); err != nil {
+	if err := writeStats(&buf, dir, 30*24*time.Hour, "", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -296,5 +298,145 @@ func TestWriteStats_PlannedInFixedOrder(t *testing.T) {
 	pl, dn := strings.Index(out, "planned: 1"), strings.Index(out, "denied: 1")
 	if dn < 0 || pl > dn {
 		t.Errorf("planned must render in the fixed list, before the sorted passthrough outcomes:\n%s", out)
+	}
+}
+
+// --- the global ceiling's headroom line (plan G6) ---
+
+// The section must actually FIRE with real values — the B1 lesson is that a
+// surface nobody can observe is worse than none. Both limbs, both headrooms,
+// and the in-flight breakdown.
+func TestRenderCeiling_ShowsBothLimbs(t *testing.T) {
+	var buf bytes.Buffer
+	renderCeiling(&buf, &ceilingStatus{
+		Enabled: true, Window: "the last 24h0m0s", WindowMs: 86400000,
+		BudgetUSD: 50, SpentUSD: 12.5, HeadroomUSD: 37.5,
+		MaxTasks: 20, Starts: 7, RecordedStarts: 6, InFlightStarts: 1, HeadroomStarts: 13,
+	})
+	out := buf.String()
+	for _, want := range []string{
+		"global ceiling (the last 24h0m0s)",
+		"$12.50 of $50.00 broker-metered — $37.50 left",
+		"starts: 7 of 20 — 13 left (6 recorded, 1 in flight)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("headroom output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// Off, and unreachable, both render NOTHING: `drydock stats` on a stock install
+// (or with brokerd stopped) is byte-identical to what it printed before.
+func TestRenderCeiling_SilentWhenOffOrAbsent(t *testing.T) {
+	for name, s := range map[string]*ceilingStatus{
+		"brokerd unreachable": nil,
+		"ceiling off":         {Enabled: false},
+	} {
+		var buf bytes.Buffer
+		renderCeiling(&buf, s)
+		if buf.Len() != 0 {
+			t.Errorf("%s: rendered %q, want nothing", name, buf.String())
+		}
+	}
+}
+
+// A degraded ledger, a blocked verdict and quarantined entries must be visible
+// beside the numbers: an operator seeing "$3 of $50" AND a refusal needs both
+// facts, or the daemon just looks broken.
+func TestRenderCeiling_ShowsDegradedAndBlocked(t *testing.T) {
+	var buf bytes.Buffer
+	renderCeiling(&buf, &ceilingStatus{
+		Enabled: true, Window: "the last 1h0m0s",
+		BudgetUSD: 50, SpentUSD: 3, HeadroomUSD: 47,
+		Degraded: true, DegradedReason: "a line was quarantined",
+		StartsDegraded: true, StartsDegradedReason: "a checkpoint was lost",
+		LoadError: "the ledger could not be read",
+		Damaged:   2,
+		Blocked:   true, Reason: "global ceiling: refused",
+	})
+	out := buf.String()
+	for _, want := range []string{
+		"DEGRADED: the spend total is a lower bound — a line was quarantined",
+		"DEGRADED: the start count is a lower bound — a checkpoint was lost",
+		"DEGRADED: the ledger could not be read in full",
+		"2 quarantined ledger entr(ies) in window",
+		"BLOCKED: global ceiling: refused",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("headroom output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// Only the configured limb is reported. A USD-only install must not see a
+// "starts: 0 of 0" line that reads like an exhausted cap.
+func TestRenderCeiling_OmitsAnUnconfiguredLimb(t *testing.T) {
+	var buf bytes.Buffer
+	renderCeiling(&buf, &ceilingStatus{Enabled: true, Window: "total", MaxTasks: 5, Starts: 1, HeadroomStarts: 4})
+	if out := buf.String(); strings.Contains(out, "spend:") {
+		t.Errorf("USD limb off but a spend line was printed:\n%s", out)
+	}
+	buf.Reset()
+	renderCeiling(&buf, &ceilingStatus{Enabled: true, Window: "total", BudgetUSD: 5, SpentUSD: 1, HeadroomUSD: 4})
+	if out := buf.String(); strings.Contains(out, "starts:") {
+		t.Errorf("task limb off but a starts line was printed:\n%s", out)
+	}
+}
+
+// --- G4: the spend line ---
+
+// An agent-reported figure must not be inside the "spend: $X total" number, and
+// must not vanish either — it gets its own labelled line.
+func TestRenderSpend_AgentReportedIsSeparateAndLabelled(t *testing.T) {
+	var buf bytes.Buffer
+	renderSpend(&buf, stats.Summary{
+		Tasks: 2, SpendUSD: 1.5, SpendPerDayUSD: 1.5,
+		AgentReportedUSD: 9999.99, AgentReportedTasks: 1,
+	})
+	out := buf.String()
+	if !strings.Contains(out, "spend: $1.50 total") {
+		t.Errorf("total must be the broker-metered $1.50 only:\n%s", out)
+	}
+	if !strings.Contains(out, "not included: $9999.99 self-reported by 1 task(s)") {
+		t.Errorf("the agent-reported figure must be shown and labelled:\n%s", out)
+	}
+	// And nothing extra when there is none.
+	buf.Reset()
+	renderSpend(&buf, stats.Summary{Tasks: 1, SpendUSD: 1.5, SpendPerDayUSD: 1.5})
+	if strings.Contains(buf.String(), "not included") {
+		t.Errorf("no agent-reported tasks, but a line was printed:\n%s", buf.String())
+	}
+}
+
+// --json gains global_ceiling ADDITIVELY: stats.Report is embedded, so every
+// existing key stays exactly where it was and a consumer parsing today's shape
+// is unaffected. Omitted entirely when the daemon could not be asked.
+func TestWriteStats_JSONCarriesTheCeilingAdditively(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "", true,
+		&ceilingStatus{Enabled: true, MaxTasks: 9, Starts: 2, HeadroomStarts: 7}); err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, buf.String())
+	}
+	if _, ok := body["overall"]; !ok {
+		t.Error("the existing top-level `overall` key moved or disappeared")
+	}
+	gc, ok := body["global_ceiling"].(map[string]any)
+	if !ok {
+		t.Fatalf("global_ceiling missing or not an object: %s", buf.String())
+	}
+	if gc["max_tasks"] != float64(9) || gc["headroom_starts"] != float64(7) {
+		t.Errorf("global_ceiling = %v, want the limb and headroom", gc)
+	}
+
+	buf.Reset()
+	if err := writeStats(&buf, statsDir(t), 30*24*time.Hour, "", true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "global_ceiling") {
+		t.Errorf("brokerd unreachable but global_ceiling was emitted: %s", buf.String())
 	}
 }

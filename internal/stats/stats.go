@@ -19,12 +19,23 @@ import (
 // Sample is one task's aggregated view, derived from its audit file (and, if
 // present, its terminal metrics row).
 type Sample struct {
-	ID                        string
-	MTime                     time.Time
-	Outcome                   string // "ok"|"error"|"push_failed"|"interrupted"|"running", or a passthrough subtype (e.g. "denied")
-	DurationMs                int64
-	HasDuration               bool
-	CostUSD                   float64
+	ID          string
+	MTime       time.Time
+	Outcome     string // "ok"|"error"|"push_failed"|"interrupted"|"running", or a passthrough subtype (e.g. "denied")
+	DurationMs  int64
+	HasDuration bool
+	// CostUSD is BROKER-OBSERVED spend only: the src=="broker" result row's
+	// total_cost_usd, which is the gateway lease's own figure. It is NEVER the
+	// agent's self-reported number (G4) — an agent's stdout is untrusted, and
+	// this value is summed into the spend total an operator reads.
+	CostUSD float64
+	// AgentReportedUSD is the figure the AGENT printed, kept only for traces
+	// with no broker row yet (a running task, or one that ended before its
+	// terminal row was written). It is reported SEPARATELY and never summed
+	// into SpendUSD — but it is not thrown away either, because silently
+	// showing $0 where a real number existed is its own dishonesty.
+	AgentReportedUSD          float64
+	HasAgentReportedUSD       bool
 	Metered                   bool
 	Agent, Vendor, Auth, Repo string
 	HasMetrics                bool
@@ -47,13 +58,19 @@ type Summary struct {
 	QueueWaitP50Ms      int64          `json:"queue_wait_p50_ms"`
 	QueueWaitP95Ms      int64          `json:"queue_wait_p95_ms"`
 	QueueWaitSamples    int            `json:"queue_wait_samples"`
-	SpendUSD            float64        `json:"spend_usd"`
-	SpendPerDayUSD      float64        `json:"spend_per_day_usd"`
-	UnmeteredTasks      int            `json:"unmetered_tasks"`
-	Requests            int            `json:"requests"`
-	WidenRequested      int            `json:"widen_requested"`
-	WidenApproved       int            `json:"widen_approved"`
-	PreMetricsTasks     int            `json:"pre_metrics_tasks"`
+	// SpendUSD sums BROKER-OBSERVED cost only (G4). AgentReportedUSD is the
+	// separate total of what agents claimed on tasks the broker never metered,
+	// over AgentReportedTasks traces; it is reported so the number is visible,
+	// and kept out of SpendUSD so it is never presented as measured spend.
+	SpendUSD           float64 `json:"spend_usd"`
+	SpendPerDayUSD     float64 `json:"spend_per_day_usd"`
+	AgentReportedUSD   float64 `json:"agent_reported_usd"`
+	AgentReportedTasks int     `json:"agent_reported_tasks"`
+	UnmeteredTasks     int     `json:"unmetered_tasks"`
+	Requests           int     `json:"requests"`
+	WidenRequested     int     `json:"widen_requested"`
+	WidenApproved      int     `json:"widen_approved"`
+	PreMetricsTasks    int     `json:"pre_metrics_tasks"`
 }
 
 // Group is a Summary keyed by one value of a grouping dimension.
@@ -145,9 +162,12 @@ func buildSample(path, id string, mtime time.Time) (Sample, bool) {
 	}
 	defer f.Close()
 
-	last, hasResult := audit.LastResultFile(f)
+	// One tail read for every terminal row, including the src=="broker" result
+	// row the spend figure must come from.
+	rows := audit.LastRowsFile(f)
+	last, hasResult := rows.Result, rows.HasResult
+	m, hasMetrics := rows.Metrics, rows.HasMetrics
 	meta := audit.ReadMetaFile(f)
-	m, hasMetrics := audit.LastMetricsFile(f)
 
 	s := Sample{
 		ID:          id,
@@ -159,8 +179,18 @@ func buildSample(path, id string, mtime time.Time) (Sample, bool) {
 		HasMetrics:  hasMetrics,
 		M:           m,
 	}
+	// G4: the spend total `drydock stats` prints is BROKER-OBSERVED. This used
+	// to read the last result row of any src, so an agent that printed
+	// {"type":"result","total_cost_usd":9999} moved the operator's spend total.
+	// Only the src=="broker" row counts now; an agent-only figure is carried
+	// separately and rendered as agent-reported rather than dropped.
 	if s.Metered {
-		s.CostUSD = last.TotalCostUSD
+		switch {
+		case rows.HasBroker:
+			s.CostUSD = rows.Broker.TotalCostUSD
+		case hasResult:
+			s.AgentReportedUSD, s.HasAgentReportedUSD = last.TotalCostUSD, true
+		}
 	}
 	if meta.Subscription {
 		s.Auth = "subscription"
@@ -225,6 +255,10 @@ func Summarize(samples []Sample) Summary {
 
 		if sm.Metered {
 			s.SpendUSD += sm.CostUSD
+			if sm.HasAgentReportedUSD {
+				s.AgentReportedUSD += sm.AgentReportedUSD
+				s.AgentReportedTasks++
+			}
 		} else {
 			s.UnmeteredTasks++
 		}

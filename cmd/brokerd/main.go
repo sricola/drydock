@@ -604,6 +604,14 @@ func main() {
 	if cfg.AggregateBudgetUSD > 0 {
 		b.AggregateExceeded = gw.AggregateExceeded
 	}
+	// The GLOBAL USAGE CEILING (plan Task 4): both limbs and the durable ledger,
+	// from config. Called here rather than folded into the Broker literal so ONE
+	// function owns the whole wiring — the limbs and the store must arm together,
+	// and a literal that set the limbs while a separate call opened the store
+	// could drift into "configured but unmeasured". It must run before the
+	// dispatcher and the HTTP listener start (further down): the ceiling reads
+	// the limbs unsynchronized, boot-set, like MaxConcurrent.
+	applyGlobalCeiling(b, cfg)
 	brk = b // expose to the shutdown handler
 
 	// Boot eviction sweep over the dependency cache: bring it back within
@@ -617,6 +625,39 @@ func main() {
 		"max_concurrent_tasks", cfg.MaxConcurrent,
 		"task_budget_usd", cfg.TaskBudgetUSD,
 		"default_model", cfg.DefaultModel)
+
+	// Reconcile the GLOBAL USAGE CEILING's durable ledger against the audit
+	// trail (plan G3). Placement is load-bearing in both directions:
+	//
+	//   AFTER pruneOrphanTasks, which ran TerminateStuckAudits — so every trace
+	//   a crash left unterminated already carries its honest `interrupted`
+	//   terminal and the sweep sees a self-describing audit dir. (It does not
+	//   DEPEND on that row, or on any other row: this sweep reads a trace's
+	//   EXISTENCE and its broker-written header lines only, never its tail.
+	//   seedAggregateFromAudit does read the tail, and it scans back past a
+	//   `no_spend_info` row to the last genuine src=="broker" one, so a crashed
+	//   or resumed task's real metered spend is visible THROUGH the synthetic
+	//   line rather than hidden by it.)
+	//
+	//   BEFORE ResumeAwaiting, ResumeQueue and StartDispatcher — the dispatcher
+	//   is the first thing in this process that can START a task, and a start
+	//   admitted against an under-counted ledger is exactly the hole the ceiling
+	//   exists to close. Running it here also converges globalcap.go's one
+	//   documented residual: a task resumed at the diff gate was admitted in a
+	//   PREVIOUS process, so this one holds no in-flight claim for it, and its
+	//   ledger entry is the only thing that makes it visible to the ceiling.
+	//   ResumeAwaiting's own terminal write later is deduped by task id.
+	//
+	// It is a no-op until b.GlobalLedger is set from config (Task 4), so a stock
+	// install reads no traces and writes nothing. On a read failure it degrades
+	// the ledger rather than failing open, which globalcap.go turns into a
+	// refusal on every enforced limb (G2).
+	// b.CeilingNowMs(), not time.Now(): this sweep is the ledger's other WRITER,
+	// and a write reaches pruneLocked, which deletes. It measures against the
+	// same jump-corrected instant the enforcement path does. (It is also what
+	// bounds the timestamp reconciliation is allowed to stamp an entry with —
+	// see reconcileEntryFromAudit.)
+	reconcileGlobalLedger(b, b.CeilingNowMs())
 
 	// Resume any tasks that were awaiting approval when the previous brokerd
 	// shut down. Called after the broker is fully wired but before Serve.
@@ -672,6 +713,9 @@ func main() {
 	mux.HandleFunc("GET /admin/pending", b.HandlePending)
 	mux.HandleFunc("GET /admin/tasks", b.HandleTasks)
 	mux.HandleFunc("GET /admin/policy", b.HandlePolicy)
+	// Global usage ceiling headroom (plan G6). Live rather than boot-frozen:
+	// it is the one part of the ceiling that moves while the daemon runs.
+	mux.HandleFunc("GET /admin/ceiling", b.HandleCeiling)
 	mux.HandleFunc("GET /healthz", b.HandleHealth)
 
 	srv = hardenedServer(brokerHandler(cfg, mux))
@@ -1054,11 +1098,36 @@ func seedAggregateFromAudit(gw *gateway.Gateway, auditRoot string, window time.D
 		if audit.ReadMeta(path).Subscription {
 			continue // subscription is out of scope for the USD cap
 		}
-		res, ok := audit.LastResult(path, info.Size())
-		// Trust only a broker-authored cost: a compromised agent CLI can forge a
-		// `result` line, so seeding the aggregate ledger from a CLI-reported
-		// total_cost_usd would let it understate the rolling cap after a restart.
-		if !ok || res.TotalCostUSD <= 0 || res.Src != "broker" {
+		// audit.LastBrokerResult, NOT audit.LastResult, and the difference is
+		// load-bearing in both directions:
+		//
+		//   - It applies the src=="broker" filter ITSELF rather than checking it
+		//     on whatever row happened to be last. A compromised agent CLI can
+		//     forge a `result` line, so seeding the aggregate ledger from a
+		//     CLI-reported total_cost_usd would let it understate the rolling cap
+		//     after a restart (F-07). Both forms refuse that; this one says so in
+		//     the reader instead of in the caller.
+		//   - It SKIPS a row marked `no_spend_info` — a broker-authored terminal
+		//     that metered nothing (a crash terminal, or a task RESUMED at the
+		//     diff gate whose lease died with the previous process) — and keeps
+		//     scanning for the genuine broker row beneath it. audit.LastResult
+		//     returns only the LAST row, so once the resumed/interrupted terminal
+		//     was given that shape the seed saw `src:"broker"` with a zero cost
+		//     and skipped the WHOLE trace, dropping a resumed task's real metered
+		//     spend from the restart seed. Every other consumer of that row shape
+		//     (LastBrokerResultFile, LastRowsFile) already had the skip; this was
+		//     the one that did not.
+		//
+		// WHAT IT DOES NOT BUY, stated plainly: `src` is a self-declared string
+		// in a file the agent's stdout is copied into, so neither form
+		// AUTHENTICATES the figure — scanning back past the marker means a forged
+		// src:"broker" row survives a synthetic terminal appended after it.
+		// That is the same caveat LastBrokerResultFile carries for every other
+		// consumer, and this cap is the in-memory, fail-open, api_key-only one.
+		// The fail-CLOSED cross-vendor control is the global usage ceiling, which
+		// reads no trace content at all (cmd/brokerd/globalreconcile.go).
+		res, ok := audit.LastBrokerResult(path)
+		if !ok || res.TotalCostUSD <= 0 {
 			continue
 		}
 		agent := audit.TaskAgent(path)

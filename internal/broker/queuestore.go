@@ -136,12 +136,79 @@ type QueueItem struct {
 	// operator follows down a chain; the backward link is the child's own
 	// Task.RetryOf, written durably by Enqueue.
 	//
-	// It has a second, load-bearing job: it is the durable ENQUEUE-ONCE flag.
-	// The retry decision refuses outright when it is already set, so a crash
-	// that replays an observation cannot mint a second child. Written by
-	// linkCIRetryChild only, first-writer-wins, onto an item that is already
-	// terminal — see ciretryloop.go.
+	// It is written by linkCIRetryChild only, first-writer-wins, onto an item
+	// that is already terminal — see ciretryloop.go.
+	//
+	// IT IS NOT THE ENQUEUE-ONCE FLAG. It cannot be: it is written AFTER Enqueue
+	// returns, so between those two instants a crash — or one failed write —
+	// leaves a parent with a real child and an empty link. CIRetryEnqueued is the
+	// enqueue-once flag, and it is written BEFORE Enqueue for exactly that reason.
 	RetryTaskID string `json:"retry_task_id,omitempty"`
+	// CIRetryEnqueued is the durable ENQUEUE-ONCE flag: "an enqueue was ATTEMPTED
+	// for this parent". It is written BEFORE broker.Enqueue is called, and the
+	// retry decision refuses outright when it is already set.
+	//
+	// It is separate from RetryTaskID, and the separation is the whole point.
+	// RetryTaskID is written AFTER the child exists, so the interval between
+	// Enqueue returning and the link landing is a window in which the parent has
+	// a child and does not say so. That window used to be harmless because the
+	// replay guard returned before the decision could run again — but a PARKED
+	// decision makes the guard fall through (CIRetryDeferred), and then a crash in
+	// that window, or a single correlated write failure across the two
+	// best-effort writes that follow Enqueue, re-asked a decision that had already
+	// enqueued and minted a SECOND child. That violates "at most one child per
+	// parent, ever", which is the bound on an unattended spend loop.
+	//
+	// Written before rather than after, so the failure direction is a LOST retry
+	// (the same direction crash window W2 already takes) rather than a doubled
+	// one. If the marker cannot be persisted, no enqueue happens at all.
+	CIRetryEnqueued bool `json:"ci_retry_enqueued,omitempty"`
+	// CIRetryDeferred says the bounded-retry decision for this item's observed
+	// CI failure has NOT been made yet, because something it needs could not be
+	// MEASURED OR WRITTEN at the moment it was asked: the global usage ceiling
+	// could not be read (a ledger that could not be opened, a store not yet
+	// opened, an agent that would not resolve), or the durable enqueue-once mark
+	// could not be persisted (a full or read-only disk).
+	//
+	// It exists because that decision is a ONE-SHOT: applyCIObservation runs it
+	// exactly once per observation and the crash-window replay guard returns
+	// before it on every later pass. Treating "I could not tell" as "no retry"
+	// therefore destroyed the chain permanently over a fault that usually clears
+	// in seconds — the same conflation the dispatcher carefully avoids
+	// (queue.go's `unmeasured` branch parks rather than drops), and the opposite
+	// of what docs/configuration.md and docs/THREAT_MODEL.md promise about a
+	// transient fault never destroying unattended work.
+	//
+	// While it is set AND no enqueue has been attempted, the replay guard falls
+	// THROUGH to the retry decision so the next watch tick re-asks. Both halves
+	// are required: falling through on the deferral ALONE re-opened a decision
+	// that had already enqueued, which minted a second child. CIRetryEnqueued is
+	// the enqueue-once flag that closes it.
+	//
+	// It is also BOUNDED (ciRetryParkBoundMs): a fault that never clears must not
+	// park forever, or the item's CI marker is kept for the daemon's life.
+	// CIRetryDeferredAtMs is when the park started.
+	//
+	// It has a PROCESS-LOCAL SHADOW (Broker.ciRetryParked) for the one case this
+	// durable field cannot cover: when the fault being parked on is that queue-item
+	// writes are failing, the write of THIS flag fails with it. The durable copy is
+	// authoritative whenever it exists; the shadow only ever widens "the decision is
+	// unmade", never "an enqueue happened".
+	CIRetryDeferred bool `json:"ci_retry_deferred,omitempty"`
+	// CIRetryDeferredAtMs is the CORRECTED broker clock (globalcap.ceilingNowMs, the
+	// same instant the ceiling measures its own rolling window against) at which the
+	// FIRST park of this item's retry decision happened. It is the anchor the park
+	// bound is measured from, and it is durable so a crash loop cannot keep
+	// restarting the bound. It is not the raw wall clock: on that clock a forward
+	// host-clock jump one tick into a park ended the park immediately, against a
+	// bound the ceiling itself had seen no time elapse on.
+	//
+	// It is not the ONLY anchor, because a corrected clock is no measure at all
+	// against a host that repeatedly steps BACKWARDS (ceilingNowMs deliberately
+	// leaves backward jumps uncorrected). A process-local MONOTONIC anchor is kept
+	// alongside it and the bound expires on whichever elapsed measure is longer.
+	// See Broker.ciRetryParkMonoSinceMs.
+	CIRetryDeferredAtMs int64 `json:"ci_retry_deferred_at_ms,omitempty"`
 }
 
 // queueIDRE matches newID's output shape (32 lowercase hex chars). Validated

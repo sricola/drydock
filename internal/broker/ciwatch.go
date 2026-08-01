@@ -252,6 +252,46 @@ func (b *Broker) ciWatchPass(errRuns map[string]int) {
 			delete(errRuns, id)
 		}
 	}
+	b.reapCIRetryParks(live)
+}
+
+// reapCIRetryParks drops the process-local park shadows (Broker.ciRetryParked
+// and its monotonic twin) whose parent has no live `<id>.ci.json` marker.
+//
+// The shadow's normal exit is setCIRetryDeferred(id, false), which runs when the
+// decision is finally MADE. Two parks never reach a decision at all: one whose
+// marker an operator cancelled or a prune removed, and one whose queue item
+// vanished underneath it. Their entries used to be retained for the daemon's
+// life — small (~50 bytes) and bounded by parents-ever-parked, but a leak, and
+// one that made the map's own "bounded by the parents parked at once" claim
+// false.
+//
+// A MARKER IS THE RIGHT LIVENESS SIGNAL, and it is the only one that is exactly
+// right: every park is created inside pollCIMarker, so a park with no marker can
+// never be re-asked, and the shadow's one job — making the replay guard fall
+// through on the next pass — has no next pass to do it on. The reap therefore
+// cannot destroy a chain that could still have run.
+//
+// It runs AFTER the poll loop, over the SAME listing the loop consumed, so a
+// park created during this pass is always live: the marker was listed before
+// pollCIMarker was called for it, and a parked decision returns not-recorded,
+// which is exactly the case concludeCIWatch KEEPS the marker for.
+func (b *Broker) reapCIRetryParks(live map[string]bool) {
+	b.queueMu.Lock()
+	defer b.queueMu.Unlock()
+	for id := range b.ciRetryParked {
+		if !live[id] {
+			delete(b.ciRetryParked, id)
+			delete(b.ciRetryParkedMono, id)
+		}
+	}
+	// The monotonic twin can outlive its wall-clock entry by one interleaving:
+	// ciRetryParkMonoSinceMs anchors a DURABLE park that has no shadow at all.
+	for id := range b.ciRetryParkedMono {
+		if !live[id] {
+			delete(b.ciRetryParkedMono, id)
+		}
+	}
 }
 
 // pollCIMarker advances one marker by one poll. Exactly one of these happens:

@@ -59,8 +59,14 @@ func TestSecurityDefaultsPageCurrent(t *testing.T) {
 	}
 }
 
-// Every claim row must cite a real enforcing test: an affirmative check, not
+// Every claim row must cite real enforcing tests: an affirmative check, not
 // just a forbidden-phrase blacklist. A renamed or deleted test surfaces here.
+//
+// A row states several distinct properties (fail-closed AND durable AND a
+// stated overshoot bound), and the page promises "the tests that enforce it".
+// Existence is what can be checked mechanically; that each named test actually
+// enforces one of the row's claims is a review obligation, and the reason the
+// list is per-property rather than one test per row.
 func TestSecurityDefaultsVerifiedByTestsExist(t *testing.T) {
 	root := repoRoot(t)
 	var testSrc strings.Builder
@@ -89,12 +95,23 @@ func TestSecurityDefaultsVerifiedByTestsExist(t *testing.T) {
 	}
 	all := testSrc.String()
 	for _, c := range securityClaims() {
-		if c.Test == "" {
+		if len(c.Tests) == 0 {
 			t.Errorf("claim %q cites no enforcing test; every row must", c.Setting)
 			continue
 		}
-		if !strings.Contains(all, "func "+c.Test+"(") {
-			t.Errorf("claim %q cites test %q, which no longer exists", c.Setting, c.Test)
+		seen := map[string]bool{}
+		for _, name := range c.Tests {
+			if name == "" {
+				t.Errorf("claim %q has an empty test name", c.Setting)
+				continue
+			}
+			if seen[name] {
+				t.Errorf("claim %q cites %q twice", c.Setting, name)
+			}
+			seen[name] = true
+			if !strings.Contains(all, "func "+name+"(") {
+				t.Errorf("claim %q cites test %q, which no longer exists", c.Setting, name)
+			}
 		}
 	}
 }

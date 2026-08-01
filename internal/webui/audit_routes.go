@@ -19,11 +19,18 @@ type HistoryItem struct {
 	// "ok", "error", "push_failed", "denied", "cancelled", "interrupted",
 	// or "running". The UI icon logic keys off this, not the display string
 	// in Outcome, which may carry a " · sensitive" suffix or turn count.
-	OutcomeKey  string `json:"outcome_key"`
-	Cost        string `json:"cost"`
-	DurationMs  int64  `json:"duration_ms"`
-	HasDuration bool   `json:"has_duration"`
-	MtimeUnix   int64  `json:"mtime_unix"`
+	OutcomeKey string `json:"outcome_key"`
+	// Cost is BROKER-OBSERVED spend (G4): the src=="broker" result row's
+	// figure, which the broker metered off proxied response bodies. A trace
+	// with no broker row yet (still running, or ended before one was written)
+	// shows the agent's own number suffixed with audit.AgentReportedCostMark
+	// and sets CostAgentReported — visible, but visibly unverified. The agent's
+	// stdout is untrusted, so it must never be rendered as measured spend.
+	Cost              string `json:"cost"`
+	CostAgentReported bool   `json:"cost_agent_reported,omitempty"`
+	DurationMs        int64  `json:"duration_ms"`
+	HasDuration       bool   `json:"has_duration"`
+	MtimeUnix         int64  `json:"mtime_unix"`
 }
 
 // openAuditFile opens <AuditRoot>/<id><suffix>, refusing symlinks (O_NOFOLLOW)
@@ -84,17 +91,24 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		if f == nil {
 			continue // missing or symlink — skip silently
 		}
-		last, ok, m, hasMetrics := audit.LastResultAndMetricsFile(f)
+		rows := audit.LastRowsFile(f)
+		last, ok := rows.Result, rows.HasResult
 		meta := audit.ReadMetaFile(f)
 		f.Close()
 		items = append(items, HistoryItem{
-			ID:          id,
-			Outcome:     audit.OutcomeWithMetrics(last, ok, meta, m, hasMetrics),
-			OutcomeKey:  audit.OutcomeKeyWithMetrics(last, ok, m, hasMetrics),
-			Cost:        audit.Cost(meta, last, ok),
-			DurationMs:  last.DurationMs,
-			HasDuration: audit.HasDuration(last, ok),
-			MtimeUnix:   info.ModTime().Unix(),
+			ID:         id,
+			Outcome:    audit.OutcomeWithMetrics(last, ok, meta, rows.Metrics, rows.HasMetrics),
+			OutcomeKey: audit.OutcomeKeyWithMetrics(last, ok, rows.Metrics, rows.HasMetrics),
+			// BROKER-OBSERVED spend (G4). audit.Cost reads the src=="broker"
+			// row; a figure the agent merely printed carries
+			// audit.AgentReportedCostMark and sets CostAgentReported, so the UI
+			// can say which it is instead of rendering an untrusted number as
+			// fact.
+			Cost:              audit.Cost(meta, rows),
+			CostAgentReported: audit.CostIsAgentReported(meta, rows),
+			DurationMs:        last.DurationMs,
+			HasDuration:       audit.HasDuration(last, ok),
+			MtimeUnix:         info.ModTime().Unix(),
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].MtimeUnix > items[j].MtimeUnix })

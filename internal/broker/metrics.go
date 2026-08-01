@@ -21,6 +21,22 @@ import (
 // registered later run first, so it still precedes the log Sync/Close
 // pair). Cost is re-read from the audit's own last result row so live and
 // resume paths agree with the displayed cost.
+//
+// NOTE for the global usage ceiling: this hook runs on every exit path FROM
+// THE AUDIT-LOG OPEN ONWARD, and returns immediately when tr.logf is nil.
+// That is why the ceiling's durable ledger write is NOT folded in here —
+// every terminal before the audit log exists (a denied egress widen, a clone
+// or quota failure, the disk/push preflights, an unresolvable agent, a mint
+// failure) is still a real task START and must be counted. See
+// globalrecord.go, which defers its write on runLifecycle's first line
+// instead.
+//
+// CostUSD below is display-only and deliberately unused by the ceiling, which
+// carries its own figure on the ledger entry. It is nonetheless BROKER-OBSERVED
+// (tr.meteredCostUSD, i.e. the gateway lease): it used to be audit.TotalCost,
+// which does not filter Src, so an agent-printed total_cost_usd could land in a
+// row stamped src:"broker" (G4). A display value is still a value an operator
+// reads, and a broker-stamped row must not carry an agent's number.
 func (tr *taskRun) appendMetrics() {
 	if tr.logf == nil {
 		return
@@ -28,15 +44,21 @@ func (tr *taskRun) appendMetrics() {
 	m := audit.Metrics{
 		Type: "metrics", Src: "broker", TaskID: tr.id,
 		Agent: tr.agentName, Vendor: tr.taskVendor,
-		Auth:               "api_key",
-		Outcome:            tr.outcome,
+		Auth:    "api_key",
+		Outcome: tr.outcome,
+		// The one BROKER-AUTHORED absolute instant in the whole trace. Boot
+		// reconciliation (cmd/brokerd) reads it so the ceiling's rolling
+		// window is computed from when the task RAN, instead of falling back
+		// to the file's mtime the way seedAggregateFromAudit still does.
+		// Taken from the b.now clock seam, like every other broker timestamp.
+		EndedAtMs:          tr.b.nowMs(),
 		Repo:               trustbrief.RedactRepoRef(tr.repoRef),
 		Model:              tr.model,
 		EgressGateWaitMs:   tr.egressGateWait.Milliseconds(),
 		ApprovalGateWaitMs: tr.approvalGateWait.Milliseconds(),
 		DiffFiles:          tr.diffFiles,
 		DiffBytes:          tr.diffBytes,
-		CostUSD:            audit.TotalCost(tr.auditPath),
+		CostUSD:            tr.meteredCostUSD(),
 		WidenRequested:     len(tr.egressExtra),
 		WidenOutcome:       tr.widenOutcome,
 	}
