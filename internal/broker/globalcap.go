@@ -401,12 +401,38 @@ func (b *Broker) globalCeilingExceededLocked(agent, selfID string) (blocked bool
 // install, and an unattended install that cannot start a task after a quiet
 // week is a worse failure than a one-window reset after an operator moved the
 // clock across a restart.
+//
+// THE SECOND RESIDUAL, and it is the price of the fixed tolerance below rather
+// than a bug in it: movement UNDER the tolerance is discarded, not banked, so a
+// wall clock that gains just under ceilingClockToleranceMs between every two
+// CONSECUTIVE observations walks the query cutoff forward without ever being
+// corrected. Measured, so the shape is on the record rather than guessed at:
+// 4000 samples of +1.9 s wall against +1 ms monotonic bought 2106 admissions
+// against an exhausted 1-hour window.
+//
+// What that costs an attacker is the reason it is a documented trade and not a
+// finding. The rate it requires is ~1900x real time SUSTAINED — every sample,
+// for the length of the window — where a slewing NTP client is capped at 500 ppm
+// (1.0005x) and a step correction is a JUMP the tolerance catches on the first
+// sample. It is not reachable by drift, not reachable from inside a task VM
+// (nothing in a VM can set the host clock), and reachable on the host only by
+// root, who can move the ledger instead. Widening the tolerance would make it
+// harder and the far likelier failure — a real 2-second scheduler stall or NTP
+// step charged to skew, widening the window forever — more common; a
+// rate-proportional tolerance is the WRITE clock's shape (see
+// ledgerClockDriftDivisor) and is wrong here, where observations are frequent
+// and the interval between them carries no information.
 
 // ceilingClockToleranceMs is how much wall-vs-monotonic movement BETWEEN TWO
 // CONSECUTIVE OBSERVATIONS is treated as drift rather than as a clock change.
 // Ordinary NTP slew and a slow crystal move the two apart by milliseconds;
 // scheduler jitter adds a few more. A jump worth correcting for is orders of
 // magnitude larger, and the ceiling's window is measured in hours.
+//
+// It is FIXED, and sub-tolerance movement is discarded rather than banked, which
+// is a real (measured) residual and a deliberate trade. See "THE SECOND
+// RESIDUAL" above for the rate it takes to walk and why widening it would cost
+// more than it bought.
 const ceilingClockToleranceMs = 2000
 
 // ceilingNowMs is the instant the ceiling measures its window against: the host

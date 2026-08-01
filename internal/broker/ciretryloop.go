@@ -447,6 +447,34 @@ func (b *Broker) ciRetryParkedSinceMs(it QueueItem) int64 {
 	return b.ciRetryParked[it.ID]
 }
 
+// ciRetryParkMonoSinceMs is the MONOTONIC anchor of a park on it, taken the
+// first time this process sees the park and kept until the park ends.
+//
+// It exists because the corrected wall clock alone cannot bound a park against a
+// host clock that keeps moving BACKWARDS. ceilingNowMs deliberately leaves a
+// backward jump uncorrected (a backward clock counts MORE, the direction a
+// ceiling is allowed to take), so a host that steps back an hour every tick
+// keeps `ceilingNowMs() - since` pinned below the bound forever: measured, 100
+// ticks over 100 real minutes and still parked. Nothing spends, but the
+// `<id>.ci.json` marker the bound exists to release leaks for the daemon's life.
+//
+// The anchor is process-local and re-taken after a restart, which cannot weaken
+// the bound: expiry is the OR of the two elapsed measures, so the DURABLE
+// corrected-wall stamp still bites on its own.
+func (b *Broker) ciRetryParkMonoSinceMs(id string) int64 {
+	b.queueMu.Lock()
+	defer b.queueMu.Unlock()
+	if b.ciRetryParkedMono == nil {
+		b.ciRetryParkedMono = map[string]int64{}
+	}
+	if at, ok := b.ciRetryParkedMono[id]; ok {
+		return at
+	}
+	at := b.monoMs()
+	b.ciRetryParkedMono[id] = at
+	return at
+}
+
 // ciRetryParkExpired reports whether a bounded-retry park on it has outlived
 // ciRetryParkBoundMs, and how long it has been parked. False for a decision that
 // is not parked at all — the first park of a decision is never expired.
@@ -456,12 +484,21 @@ func (b *Broker) ciRetryParkedSinceMs(it QueueItem) int64 {
 // park with. On the raw wall clock the two disagreed: a forward host-clock jump
 // one tick into a park ended the park immediately, against a bound no real time
 // had elapsed on.
+//
+// And on the MONOTONIC elapsed time as well, whichever is LONGER. The corrected
+// wall clock is the right measure against a forward jump and no measure at all
+// against a host that repeatedly steps BACKWARDS — see ciRetryParkMonoSinceMs.
+// Taking the larger of the two can only ever end a park EARLIER, which is the
+// safe direction: the end of a park is a refusal, and a refusal spends nothing.
 func (b *Broker) ciRetryParkExpired(it QueueItem) (expired bool, parkedMs int64) {
 	since := b.ciRetryParkedSinceMs(it)
 	if since <= 0 {
 		return false, 0
 	}
 	parkedMs = b.ceilingNowMs() - since
+	if monoMs := b.monoMs() - b.ciRetryParkMonoSinceMs(it.ID); monoMs > parkedMs {
+		parkedMs = monoMs
+	}
 	return parkedMs >= b.ciRetryParkBoundMs(), parkedMs
 }
 
@@ -502,23 +539,52 @@ func (b *Broker) ciRetryParkBoundMs() int64 {
 func (b *Broker) setCIRetryDeferred(parentID string, deferred bool) (changed bool) {
 	b.queueMu.Lock()
 	defer b.queueMu.Unlock()
-	// The in-memory copy is maintained UNCONDITIONALLY and BEFORE the durable
-	// write, including for a parent with no queue item (a synchronous task, whose
+	// RECORDING a park is unconditional and happens BEFORE the durable write,
+	// including for a parent with no queue item (a synchronous task, whose
 	// decision never gets this far anyway) — recording an unmade decision costs
 	// nothing and failing to record one destroys a chain.
 	if deferred {
 		if b.ciRetryParked == nil {
 			b.ciRetryParked = map[string]int64{}
 		}
+		if b.ciRetryParkedMono == nil {
+			b.ciRetryParkedMono = map[string]int64{}
+		}
 		if _, ok := b.ciRetryParked[parentID]; !ok {
 			b.ciRetryParked[parentID] = b.ceilingNowMs()
 		}
-	} else {
-		delete(b.ciRetryParked, parentID)
+		// The park's monotonic anchor, taken at the same instant, so the bound's
+		// backward-jump half measures from the START of the park rather than from
+		// the first pass that happened to ask. Written directly rather than through
+		// ciRetryParkMonoSinceMs, which takes the lock this call already holds.
+		if _, ok := b.ciRetryParkedMono[parentID]; !ok {
+			b.ciRetryParkedMono[parentID] = b.monoMs()
+		}
 	}
 	it, err := readQueueItem(b.AuditRoot, parentID)
 	if err != nil {
 		return false // a synchronous task has no queue item; nothing to defer
+	}
+	// CLEARING one is the opposite, and the asymmetry is the whole point: it
+	// happens only BELOW a SUCCESSFUL read, because a read fault here is not
+	// evidence that the decision was made — it is the same "could not reach the
+	// record" fault the park exists for. Clearing above the read wiped a
+	// shadow-only park on ONE transient read of `<id>.queue.json`: the durable
+	// flag said nothing had been deferred (its own write had failed, which is why
+	// the park was shadow-only), so every later pass short-circuited as a replay
+	// and no child was ever minted. A DURABLE park survives the identical fault —
+	// this clear cannot reach the file either — and the shadow now survives it too.
+	//
+	// It cannot mint a second child. A retained shadow only ever makes
+	// recordCIQueueTerminal's replay guard FALL THROUGH and re-ask; every gate
+	// between a re-ask and an Enqueue (gate 4's read, gate 5's CIRetryEnqueued /
+	// RetryTaskID, markCIRetryEnqueued's compare-and-set) reads the DURABLE item,
+	// so a parent whose enqueue already happened is refused, and a parent whose
+	// item cannot be read is refused at gate 4. The leak direction is bounded by
+	// ciWatchPass's reap of shadows with no live marker.
+	if !deferred {
+		delete(b.ciRetryParked, parentID)
+		delete(b.ciRetryParkedMono, parentID)
 	}
 	if it.CIRetryDeferred == deferred {
 		return false

@@ -867,11 +867,20 @@ func TestReconcile_ForgedMetricsVendorCannotSteerTheLimbs(t *testing.T) {
 // The list is the set of audit readers whose answer comes from bytes past the
 // broker-written header lines. It is CLOSED IN BOTH DIRECTIONS: every key must
 // name a real symbol (a misspelled key guards nothing — that is how
-// LastResultAndMetricsFile went unguarded), AND every trace-reading function
-// internal/audit exposes must appear either here or in the small, justified
-// allow-list below. The second direction is the one that has failed twice, and
-// it is the one that makes a NEW reader guarded BY DEFAULT: adding a function to
-// internal/audit that opens a trace fails this test until someone classifies it.
+// LastResultAndMetricsFile went unguarded), AND every function internal/audit
+// declares must appear either here or in the justified allow-list below. The
+// second direction is the one that has failed twice, and it is the one that makes
+// a NEW reader guarded BY DEFAULT: adding ANY function to internal/audit fails
+// this test until someone classifies it.
+//
+// "Any function", not "any function that looks like a reader", and the
+// difference is a hole that was open until this round. The inversion used to
+// classify by SIGNATURE — an *os.File, an io.Reader, or a string parameter
+// literally NAMED `path` — so a new tail reader written as
+// `func LastTail(trace string) (Result, bool)` was invisible to it and the whole
+// suite passed with it wired into reconcileEntryFromAudit. A one-word rename
+// walked through the pin. Names are not a type system; the classification is now
+// over the DECLARATION SET, which nothing can rename its way out of.
 func TestReconcile_NeverSourcesATrustedValueFromTraceContent(t *testing.T) {
 	forbidden := map[string]string{
 		"LastMetricsFile":      "the metrics row's ended_at_ms and vendor are agent-writable (C3)",
@@ -903,18 +912,40 @@ func TestReconcile_NeverSourcesATrustedValueFromTraceContent(t *testing.T) {
 		"TaskAgent":          "scans the whole trace; use TaskAgentFile, which reads only the broker-written header",
 		"AllowedSrcCostFile": "any future tail reader belongs on this list",
 	}
-	// The other side of the same rule: the readers this file MAY use, each with
-	// the reason it is safe. Anything in internal/audit that touches a trace and
-	// is in neither map fails the test below.
+	// The other side of the same rule: everything else internal/audit declares,
+	// each with the reason it is safe for this file to name. Anything in
+	// internal/audit that is in neither map fails the test below — including a
+	// function that reads nothing at all, because "reads nothing at all" is a
+	// judgement about a body, and the whole point of the inversion is that no new
+	// symbol gets that judgement by default.
+	//
+	// Two groups, and the distinction is the reason each is safe:
+	//
+	//	BOUNDED READERS  they open the trace but read only the broker-written
+	//	                 header lines. Safe because the broker wrote those bytes.
+	//	PURE             they take ALREADY-PARSED values and cannot open anything.
+	//	                 Safe because the reader that produced their input is
+	//	                 itself on one of these two lists — a pure classifier can
+	//	                 only ever launder trace content that a FORBIDDEN reader
+	//	                 fetched, and that call is what fails the scan below.
 	allowed := map[string]string{
-		"OpenRead":      "opens the trace O_NOFOLLOW; what is READ through the handle is what the forbidden list governs",
-		"ReadMeta":      "the broker-written drydock_meta FIRST line only",
-		"ReadMetaFile":  "the broker-written drydock_meta first line only, from an open handle",
-		"TaskAgentFile": "the broker-written drydock_task line, from the bounded first four lines",
-		"readFirstMeta": "unexported; the header-line parser ReadMeta/ReadMetaFile are built on",
+		"OpenRead":              "bounded: opens the trace O_NOFOLLOW; what is READ through the handle is what the forbidden list governs",
+		"ReadMeta":              "bounded: the broker-written drydock_meta FIRST line only",
+		"ReadMetaFile":          "bounded: the broker-written drydock_meta first line only, from an open handle",
+		"TaskAgentFile":         "bounded: the broker-written drydock_task line, from the bounded first four lines",
+		"readFirstMeta":         "bounded: unexported; the header-line parser ReadMeta/ReadMetaFile are built on",
+		"HasDuration":           "pure: a predicate over an already-parsed Result",
+		"OutcomeKey":            "pure: classifies an already-parsed Result into a fixed key set",
+		"Outcome":               "pure: renders an already-parsed Result and Meta",
+		"OutcomeKeyWithMetrics": "pure: classifies already-parsed Result/Metrics",
+		"OutcomeWithMetrics":    "pure: renders already-parsed Result/Meta/Metrics",
+		"outcomeString":         "pure: unexported renderer over already-parsed values",
+		"Cost":                  "pure: formats an already-parsed Meta/TailRows pair",
+		"CostIsAgentReported":   "pure: a predicate over an already-parsed Meta/TailRows pair",
+		"looksLikeError":        "pure: unexported string predicate over a line the caller already has",
 	}
 	// VACUITY GUARD ON THE LIST ITSELF, plus the INVERSION: every key must name a
-	// real symbol, and every real trace reader must be classified.
+	// real symbol, and every symbol internal/audit declares must be classified.
 	assertAuditReaderListIsClosed(t, forbidden, allowed, map[string]bool{
 		"TotalCost":            true, // deliberately deleted; see the tombstone test
 		"LastResultAndMetrics": true, // the shorter spelling, guarded pre-emptively
@@ -1031,20 +1062,33 @@ func TestReconcile_NeverSourcesATrustedValueFromTraceContent(t *testing.T) {
 //	          LastResultAndMetricsFile passed a test whose list said
 //	          "LastResultAndMetrics".
 //
-//	BACKWARDS every function in internal/audit that TOUCHES A TRACE is
-//	          classified — forbidden, or allowed with a stated reason. This is
-//	          the direction that has failed twice: the list only ever grew when
-//	          someone remembered, so audit.Reason — which reads the whole file
-//	          and returns raw agent stdout — sat unguarded, and the mutation
+//	BACKWARDS every function internal/audit DECLARES is classified — forbidden,
+//	          or allowed with a stated reason. This is the direction that has
+//	          failed twice: the list only ever grew when someone remembered, so
+//	          audit.Reason — which reads the whole file and returns raw agent
+//	          stdout — sat unguarded, and the mutation
 //	          `e.Outcome = audit.Reason(path)` passed the pin. Inverted, a NEW
-//	          reader added to internal/audit fails this test on the day it is
+//	          function added to internal/audit fails this test on the day it is
 //	          written, and stays failing until it is deliberately classified.
 //
-// "Touches a trace" is read off the SIGNATURE, which is what makes it decidable:
-// a function that takes an *os.File, an io.Reader, or a parameter named `path`
-// is one that can read the file. Every pure classifier in the package (OutcomeKey,
-// Cost, HasDuration, …) takes already-parsed values and is correctly ignored —
-// it cannot read anything, and the reader that produced its input is on a list.
+// THE UNIT OF CLASSIFICATION IS THE DECLARATION, NOT THE SIGNATURE, and that
+// changed this round because the signature version was evadable. It classified a
+// function as a trace reader if it took an *os.File, an io.Reader, or a string
+// parameter literally NAMED `path` — so
+//
+//	func LastTail(trace string) (Result, bool) { return LastResult(trace, 1<<20) }
+//
+// was not a "reader" at all: `go build ./...` and the entire suite passed with
+// `audit.LastTail(path)` wired into reconcileEntryFromAudit. The parameter name
+// is not a type, and a rule keyed on it is a rule an author can leave by
+// accident. Every func decl in the package must now be named on one of the two
+// lists, so the only way past this test is to write the name down.
+//
+// THE PRICE, stated so nobody is surprised by it: the pure classifiers
+// (OutcomeKey, Cost, HasDuration, …) now need allow-list entries too, and a
+// genuinely harmless helper added to internal/audit will fail this test until
+// someone adds a line. That is the intended trade — the failure mode of the old
+// rule was silence.
 //
 // exempt names entries that are deliberately not real symbols (a deleted
 // function whose return is the point, or a pre-emptive spelling).
@@ -1073,19 +1117,20 @@ func assertAuditReaderListIsClosed(t *testing.T, forbidden, allowed map[string]s
 				continue
 			}
 			have[fn.Name.Name] = true
-			if funcTakesATraceHandle(fn) {
-				readers[fn.Name.Name] = true
-			}
+			// EVERY declaration, with no signature heuristic in front of it. A
+			// method is included by name too: a receiver does not make a body
+			// safer, and the classification is over what the package declares.
+			readers[fn.Name.Name] = true
 		}
 	}
 	if parsed == 0 {
 		t.Fatal("parsed no files from internal/audit; the spelling guard would be vacuous")
 	}
-	// A floor on the backwards direction too: if the signature heuristic ever
-	// stops matching (a package-wide refactor to methods, say), a pass here would
-	// mean "found no readers" rather than "every reader is classified".
-	if len(readers) < 10 {
-		t.Fatalf("found only %d trace readers in internal/audit; the inverted guard has stopped working", len(readers))
+	// A floor on the backwards direction too: if the walk ever stops finding
+	// declarations (a bad glob, a parse that yields nothing), a pass here would
+	// mean "found nothing" rather than "everything is classified".
+	if len(readers) < 20 {
+		t.Fatalf("found only %d function declarations in internal/audit; the inverted guard has stopped working", len(readers))
 	}
 	for name := range forbidden {
 		if exempt[name] || have[name] {
@@ -1106,43 +1151,13 @@ func assertAuditReaderListIsClosed(t *testing.T, forbidden, allowed map[string]s
 		if forbidden[name] != "" || allowed[name] != "" {
 			continue
 		}
-		t.Errorf("internal/audit.%s takes a trace handle (a path, an *os.File, or an io.Reader) but is "+
-			"classified in NEITHER the forbidden list nor the allow-list of %s.\n"+
-			"Every reader over a task trace must be classified, because the trace carries the agent's own "+
-			"stdout verbatim. Add it to `forbidden` (the default, and the right answer for anything that "+
-			"reads past the broker-written header lines), or to `allowed` with the reason it is safe.",
+		t.Errorf("internal/audit.%s is declared but classified in NEITHER the forbidden list nor the "+
+			"allow-list of %s.\n"+
+			"EVERY function internal/audit declares must be classified, because the trace carries the "+
+			"agent's own stdout verbatim and a signature is not evidence about a body — the previous rule "+
+			"classified by parameter name and a reader spelled `func LastTail(trace string)` walked "+
+			"straight through it. Add it to `forbidden` (the default, and the right answer for anything "+
+			"that reads past the broker-written header lines), or to `allowed` with the reason it is safe.",
 			name, "TestReconcile_NeverSourcesATrustedValueFromTraceContent")
 	}
-}
-
-// funcTakesATraceHandle reports whether fn's parameters give it the means to
-// read a trace: an *os.File, an io.Reader/io.ReadSeeker, or a `path` string.
-func funcTakesATraceHandle(fn *ast.FuncDecl) bool {
-	if fn.Type.Params == nil {
-		return false
-	}
-	for _, field := range fn.Type.Params.List {
-		switch typ := field.Type.(type) {
-		case *ast.StarExpr: // *os.File
-			if sel, ok := typ.X.(*ast.SelectorExpr); ok {
-				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" && sel.Sel.Name == "File" {
-					return true
-				}
-			}
-		case *ast.SelectorExpr: // io.Reader, io.ReadSeeker, ...
-			if pkg, ok := typ.X.(*ast.Ident); ok && pkg.Name == "io" {
-				return true
-			}
-		case *ast.Ident: // path string
-			if typ.Name != "string" {
-				continue
-			}
-			for _, n := range field.Names {
-				if n.Name == "path" {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }

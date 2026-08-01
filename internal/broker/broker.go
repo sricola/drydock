@@ -413,14 +413,28 @@ type Broker struct {
 	//
 	// It does not survive a restart, and that is honest: a crash mid-park loses
 	// the retry, which is crash window W2's direction (fewer attempts, never
-	// more). Entries are removed as soon as the decision is made, so the map is
-	// bounded by the number of parents parked at once.
-	ciRetryParked map[string]int64
-	queueWake     chan struct{}
-	queueStop     chan struct{}
-	queueOnce     sync.Once
-	queueTick     time.Duration
-	now           func() int64
+	// more).
+	//
+	// LIFETIME, stated exactly, because the obvious statement ("entries go as soon
+	// as the decision is made") is true only of parks that REACH a decision. Two
+	// kinds never do — a parent whose marker was cancelled or pruned mid-park, and
+	// a parent whose queue item vanished — and they used to retain their entry for
+	// the daemon's life. Both are reaped by ciWatchPass, which drops every shadow
+	// with no live `<id>.ci.json` marker: a park cannot be re-asked without its
+	// marker, so a shadow without one can never be read again. The map is
+	// therefore bounded by the number of parents parked at once, as claimed.
+	//
+	// ciRetryParkedMono is its monotonic twin: parent task id -> the monotonic
+	// instant the park began, the measure that bounds a park against a host clock
+	// that repeatedly steps BACKWARDS. Same lock, same lifetime, same reap. See
+	// ciRetryParkMonoSinceMs.
+	ciRetryParked     map[string]int64
+	ciRetryParkedMono map[string]int64
+	queueWake         chan struct{}
+	queueStop         chan struct{}
+	queueOnce         sync.Once
+	queueTick         time.Duration
+	now               func() int64
 	// mono is the MONOTONIC counterpart of the now seam, in milliseconds from an
 	// arbitrary epoch (nil -> time.Since a process-start anchor). It exists only
 	// so a test can drive a wall-clock jump deterministically: the global

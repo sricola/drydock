@@ -202,6 +202,12 @@ type QueueItem struct {
 	// restarting the bound. It is not the raw wall clock: on that clock a forward
 	// host-clock jump one tick into a park ended the park immediately, against a
 	// bound the ceiling itself had seen no time elapse on.
+	//
+	// It is not the ONLY anchor, because a corrected clock is no measure at all
+	// against a host that repeatedly steps BACKWARDS (ceilingNowMs deliberately
+	// leaves backward jumps uncorrected). A process-local MONOTONIC anchor is kept
+	// alongside it and the bound expires on whichever elapsed measure is longer.
+	// See Broker.ciRetryParkMonoSinceMs.
 	CIRetryDeferredAtMs int64 `json:"ci_retry_deferred_at_ms,omitempty"`
 }
 
