@@ -5,7 +5,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.7.0 (2026-08-07)
+
+A minor release built around the orchestration arc: a durable task queue,
+host-side CI observation with a bounded retry loop, execution profiles that
+fail closed before spend, GitHub issue ingestion behind a plan-mode scope
+gate, and a content-addressed dependency cache. Around it: the first global
+spend ceiling (durable, fail-closed, across all vendors and auth modes),
+broker-enforced diff-policy caps with a second-look acknowledgment, a trust
+brief in the web UI review overlay, `drydock policy explain`, and
+`drydock doctor --repo`. Fixes include honest cost provenance in every
+terminal row and a fresh-machine installability break: Homebrew retired the
+`container` cask, so `drydock setup` now installs the runtime as a formula.
 
 ### Added
 
