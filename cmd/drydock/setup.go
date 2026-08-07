@@ -59,10 +59,12 @@ func runSetup(args []string) {
 		os.Exit(1)
 	}
 
-	// 1. Apple container CLI (cask).
+	// 1. Apple container CLI. Homebrew ships it as a formula (bottled, no
+	// admin prompt); the old `--cask container` no longer exists, so the cask
+	// spelling fails on a fresh machine.
 	if _, err := exec.LookPath("container"); err == nil {
 		step("Apple container CLI", true, "already installed")
-	} else if !ensurePrereq(yes, "container", "Apple container runtime", "brew", "install", "--cask", "container") {
+	} else if !ensurePrereq(yes, "container", "Apple container runtime", "brew", "install", "container") {
 		os.Exit(1)
 	}
 

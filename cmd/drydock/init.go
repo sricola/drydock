@@ -26,7 +26,7 @@ func runInit() {
 	fmt.Println()
 
 	checkPlatform()
-	checkBinary("container", "Apple container CLI", "Install: brew install --cask container (https://github.com/apple/container)")
+	checkBinary("container", "Apple container CLI", "Install: brew install container (https://github.com/apple/container)")
 	checkSquid()
 	checkBinary("git", "git", "Install: xcode-select --install")
 

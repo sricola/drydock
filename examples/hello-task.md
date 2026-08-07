@@ -11,7 +11,7 @@ A copy-paste-ready first task. Designed to:
 
 ```bash
 # Apple-silicon prerequisites you may not have yet
-brew install --cask container
+brew install container
 brew install squid
 brew install gh   # (or glab / tea if you push to GitLab / Gitea)
 gh auth login     # adapter expects this
