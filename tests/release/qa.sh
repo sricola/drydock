@@ -28,6 +28,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Fail fast on an unclonable --live repo. The broker clones host-side and
+# non-interactively, so a bad URL, or a private https repo on a machine whose
+# keychain holds no https credential, would otherwise send every live-phase
+# task to "clone failed" and burn the phase's full wait deadlines (~30 min
+# observed in the v0.7.0 QA) before reporting. A 2-second ls-remote against
+# the exact URL the broker will use catches it up front.
+if [ -n "$LIVE_REPO" ]; then
+  if ! GIT_TERMINAL_PROMPT=0 git ls-remote "$LIVE_REPO" HEAD >/dev/null 2>&1; then
+    echo "--live repo is not clonable non-interactively: $LIVE_REPO" >&2
+    echo "(a private https repo needs an https credential in the keychain; try the ssh form: git@github.com:owner/repo)" >&2
+    exit 2
+  fi
+fi
+
 export DRYDOCK_NO_NOTIFY=1
 PASS=0; FAIL=0; WARN=0
 QA_TMP="$(mktemp -d /tmp/drydock-release-qa.XXXXXX)"
