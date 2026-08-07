@@ -999,6 +999,7 @@ func (tr *taskRun) runLifecycle() {
 	defer grant.Revoke()
 	tr.grant = grant
 	tr.agentName = agentName
+	b.setAgent(taskID, agentName) // label the live row with the lane that actually runs
 
 	// 0o700 keeps another local process from enumerating task IDs and
 	// racing /admin/approve before the operator. The audit dir contains

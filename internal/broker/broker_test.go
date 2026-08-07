@@ -269,6 +269,7 @@ func TestHandleTasks_ReturnsRegisteredState(t *testing.T) {
 	b.registerTask("t-running", "git@github.com:o/r", "do thing 1", nil)
 	b.registerTask("t-pending", "git@github.com:o/r2", "do thing 2", nil)
 	b.setStage("t-pending", StagePending)
+	b.setAgent("t-running", "codex")
 
 	req := httptest.NewRequest("GET", "/admin/tasks", nil)
 	rr := httptest.NewRecorder()
@@ -293,6 +294,16 @@ func TestHandleTasks_ReturnsRegisteredState(t *testing.T) {
 	}
 	if stages["t-pending"] != StagePending {
 		t.Errorf("t-pending stage = %q, want %q", stages["t-pending"], StagePending)
+	}
+	agents := map[string]string{}
+	for _, ts := range got {
+		agents[ts.ID] = ts.Agent
+	}
+	if agents["t-running"] != "codex" {
+		t.Errorf("t-running agent = %q, want %q (setAgent should surface on /admin/tasks)", agents["t-running"], "codex")
+	}
+	if agents["t-pending"] != "" {
+		t.Errorf("t-pending agent = %q, want empty before the runner resolves", agents["t-pending"])
 	}
 }
 

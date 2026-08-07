@@ -150,7 +150,7 @@ function parseProgress(jsonl){
 const cardMap = new Map(); // id -> { el, sig, ageEl, liveEl, _prog }
 let boardTasks = new Map(); // id -> task (kept fresh each poll; a later keyboard layer needs it)
 function gateRank(s){ return (s === "awaiting_approval" || s === "awaiting_egress") ? 0 : 1; }
-function progressSig(t){ const p = t._prog || {}; return [t.stage, p.turns, p.cost, p.action].join("|"); }
+function progressSig(t){ const p = t._prog || {}; return [t.stage, t.agent, p.turns, p.cost, p.action].join("|"); }
 
 function reconcile(container, tasks){
   tasks.sort((a, b) => gateRank(a.stage) - gateRank(b.stage));
@@ -196,7 +196,7 @@ function paintBody(rec, t){
   rec.el.classList.toggle("gate-host", t.stage.startsWith("awaiting"));
   if (t.stage === "running"){
     const p = t._prog || {};
-    const parts = ["claude", p.turns ? p.turns + " turns" : "", p.cost != null ? "~$" + p.cost.toFixed(2) : "", p.action || ""].filter(Boolean);
+    const parts = [t.agent || "", p.turns ? p.turns + " turns" : "", p.cost != null ? "~$" + p.cost.toFixed(2) : "", p.action || ""].filter(Boolean);
     rec.liveEl.textContent = parts.join(" · ");
     rec.el.append(el("div", { class: "bar" }, el("i", {})));
   } else { rec.liveEl.textContent = ""; }

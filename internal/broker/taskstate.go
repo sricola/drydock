@@ -28,10 +28,16 @@ const (
 // EgressExtra is populated only when the task is at the egress gate so
 // the operator can see what's being asked before approving.
 type TaskState struct {
-	ID          string          `json:"id"`
-	Repo        string          `json:"repo"`
-	Instruction string          `json:"instruction"` // truncated for display
-	Stage       TaskStage       `json:"stage"`
+	ID          string    `json:"id"`
+	Repo        string    `json:"repo"`
+	Instruction string    `json:"instruction"` // truncated for display
+	Stage       TaskStage `json:"stage"`
+	// Agent is the RESOLVED sandbox agent (claude, codex, gemini, opencode),
+	// stamped by the runner once credentials resolve (setAgent). Empty until
+	// then, and for tasks resumed straight into a gate; omitempty keeps those
+	// serialisations byte-identical to before the field existed. The web UI
+	// used to hardcode a "claude" label here regardless of the actual lane.
+	Agent       string          `json:"agent,omitempty"`
 	StartedAt   time.Time       `json:"started_at"`
 	EgressExtra []egress.Domain `json:"egress_extra,omitempty"`
 	// SecondLook lists the diff-policy second-look categories the approver
@@ -191,6 +197,17 @@ func (b *Broker) setStage(id string, s TaskStage) {
 	defer b.pendingMu.Unlock()
 	if t, ok := b.tasks[id]; ok {
 		t.Stage = s
+	}
+}
+
+// setAgent records the resolved agent on the live task row so operator
+// surfaces (drydock tasks, the web UI board) label the run with the lane
+// that is actually executing instead of guessing.
+func (b *Broker) setAgent(id, agent string) {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	if t, ok := b.tasks[id]; ok {
+		t.Agent = agent
 	}
 }
 
