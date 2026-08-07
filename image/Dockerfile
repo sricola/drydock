@@ -1,7 +1,7 @@
 # Pinned by digest for a reproducible base. Bump deliberately: re-pull
 # node:22-bookworm-slim, read its digest (`container image inspect`), and update
 # here. See docs/ROADMAP.md (Phase 2.5) for the dependency-pinning policy.
-FROM node:22-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
 # Base toolchain + Python 3.11 (Debian default). Python lives next to Node so
 # the egress allowlist's pypi.org slot has a runtime to land on.
 # Privilege drop uses setpriv (util-linux, already in the base) — not gosu — so
