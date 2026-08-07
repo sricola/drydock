@@ -535,6 +535,14 @@ entry below corresponds to a Git tag of the same name.
   come from the gateway lease, so a new terminal path cannot reintroduce the
   laundering.
 
+- **`drydock setup` installs the Apple `container` runtime as a Homebrew
+  formula, not the departed cask.** Homebrew now ships `container` as a
+  bottled formula (no admin prompt) and `brew install --cask container` fails
+  with "Cask 'container' is unavailable", which killed `drydock setup` at
+  step 1 on a fresh machine. Caught by a bare-machine end-to-end install
+  before cutting this release; the init hint and the docs' install snippets
+  are updated to match.
+
 ## v0.6.7 (2026-07-28)
 
 A patch release closing the findings from the v0.6.5 release QA pass. Three

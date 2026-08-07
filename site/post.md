@@ -212,7 +212,7 @@ so.
 ## Try it
 
 ```bash
-brew install --cask container
+brew install container
 brew install sricola/drydock/drydock
 export ANTHROPIC_API_KEY=sk-ant-...
 drydock init
