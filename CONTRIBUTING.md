@@ -29,11 +29,12 @@ tests/integration # //go:build integration: boots brokerd against the real conta
 site/             # landing page + docs (site/docs/*.md, rendered by make docs)
 ```
 
-The design specs and implementation plans from the build-out are archived
-on the `design-archive` branch (`git show design-archive:docs/superpowers/`),
-kept out of the working tree so the checkout stays focused on the shipped
-code. They record *why* decisions were made; the code, `THREAT_MODEL.md`, and
-this file carry what a contributor needs day to day.
+The design specs and implementation plans behind each feature live in
+`docs/superpowers/specs/` and `docs/superpowers/plans/` (dated by the day the
+work was planned), and the red-team audit that drove the v0.6.x hardening is
+in `docs/audits/`. They record *why* decisions were made and which
+alternatives were rejected; the code, `THREAT_MODEL.md`, `docs/ROADMAP.md`,
+and this file carry what a contributor needs day to day.
 
 Three good entry points for understanding the system: **`internal/broker/`**
 (the task lifecycle: gates, concurrency, the egress widening hook),
@@ -52,7 +53,9 @@ make image-anchor       # minimal anchor image (FROM scratch + static binary)
 make test-integration   # boot brokerd as a subprocess; macOS only, needs the container runtime
 ```
 
-GitHub Actions runs `go build`, `go test -race`, and `go vet` on every push/PR.
+GitHub Actions runs `go build`, `go test -race`, `go vet`, `staticcheck`
+(`make lint`, version pinned in the Makefile and `test.yml` together), and
+`govulncheck` on every push/PR.
 Integration (`make test-integration`) requires the `container` runtime and is
 macOS-only; it runs locally, not in CI. No real Anthropic or OpenAI spend.
 
@@ -94,9 +97,11 @@ locally instead. From a macOS 26 Apple-silicon machine with the runtime:
    signature, and SLSA provenance and publishes the GitHub release. (Run
    `make release-preflight` alone anytime to check release-readiness without
    tagging.)
-3. Bump the Homebrew formula by hand: the `bump-tap` job self-skips unless
-   `HOMEBREW_TAP_TOKEN` is set, so update `url`/`sha256`/`version` in
-   `sricola/homebrew-drydock` against the published tarball's `.sha256`.
+3. Confirm the Homebrew formula moved: the `bump-tap` job in `release.yml`
+   pushes the new `url`/`sha256`/`version` to `sricola/homebrew-drydock`
+   using the `HOMEBREW_TAP_TOKEN` secret (a fine-grained PAT scoped to that
+   one repo). Without the secret the job self-skips green with a notice, and
+   the formula is bumped by hand against the published tarball's `.sha256`.
 4. QA the installed artifact: `brew upgrade drydock`, then run the
    black-box release gate against the binaries operators actually get:
 
@@ -125,5 +130,6 @@ locally instead. From a macOS 26 Apple-silicon machine with the runtime:
   Slack/web approval adapters yet.
 - **Bitbucket** PR/MR opening falls back to push-only (no widely-adopted CLI to
   wrap). Contribution slot.
-- **Apple `container`** is v1.0; flag drift is the most likely breakage source.
+- **Apple `container`** moves fast (1.x, validated through 1.4.1 by the
+  release preflight); flag drift is the most likely breakage source.
   `DRYDOCK_STRICT_CONTAINER_VERSION=1` fails closed on drift.

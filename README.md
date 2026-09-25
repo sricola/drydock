@@ -19,7 +19,7 @@
 
 drydock runs **Claude Code**, **OpenAI Codex**, or **any OpenAI-compatible
 model** (Gemini, OpenRouter, local) full-throttle on your own repos, on your
-own Mac — no permission prompts, no babysitting. Each task runs sealed in a
+own Mac, with no permission prompts and no babysitting. Each task runs sealed in a
 throwaway VM. The only thing that ever comes back is a `git diff`, and nothing
 reaches your real code until you approve it.
 
@@ -34,8 +34,8 @@ reaches your real code until you approve it.
 
 Most agent tooling tries to keep the agent *well-behaved*: permission
 prompts, output filters, policy. drydock takes the opposite stance: **contain
-the blast radius**. A hostile agent — a poisoned repo, a malicious dependency,
-a prompt injection that turns a fetched URL into a shell command — can't reach
+the blast radius**. A hostile agent (a poisoned repo, a malicious dependency,
+a prompt injection that turns a fetched URL into a shell command) can't reach
 your key, your filesystem, your push credentials, or the open internet,
 regardless of what it tries.
 
@@ -61,10 +61,10 @@ regardless of what it tries.
 - **Still pre-1.0.** Only `main` is supported, behavior and config can change
   between minor versions, and it has not been hardened by wide real-world use.
 - **No third-party security audit yet.** The security model is written down in
-  detail in the [threat model](THREAT_MODEL.md) — read it and decide for
+  detail in the [threat model](THREAT_MODEL.md): read it and decide for
   yourself before trusting it.
 - **Hard requirement: macOS 26+ on Apple silicon.** drydock runs on Apple's
-  `container` runtime (1.x, validated through 1.1.0), which ships nowhere else.
+  `container` runtime (1.x, validated through 1.4.1), which ships nowhere else.
 
 ## Who it's for
 
@@ -120,7 +120,7 @@ nothing reaches your repo until you approve it. The full walkthrough is in the
 A few things you'll probably want next:
 
 - **Run it unattended** (start at login, restart on crash):
-  `drydock daemon install` — see
+  `drydock daemon install`, see
   [Run unattended](https://sricola.github.io/drydock/docs/daemon.html).
 - **Bound your spend:** set `aggregate_budget_usd` to cap cross-task spend
   (subscription mode is bounded by `task_max_requests` instead).
@@ -148,7 +148,7 @@ Full operator docs live at **[sricola.github.io/drydock/docs](https://sricola.gi
 
 ## Prove it yourself
 
-You don't have to trust the threat model — run the attacks. `drydock redteam`
+You don't have to trust the threat model: run the attacks. `drydock redteam`
 boots throwaway VMs and runs the real red-team cases behind the security
 claims (key isolation, deny-by-default egress, VM teardown) and prints a
 pass/fail table. **No API key, no spend, ~5 minutes.**
