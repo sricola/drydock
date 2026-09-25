@@ -5,6 +5,70 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.7.1 (2026-09-25)
+
+A maintenance release that brings the pinned sandbox inputs back to current
+after seven idle weeks, and moves the credential gateway off a deprecated
+proxy mode in a way that closes a small header leak. Nothing about the task
+lifecycle, configuration, or on-disk formats changes; the sandbox image is
+rebuilt by `drydock setup` as usual.
+
+### Security
+
+- **The credential gateway no longer forwards, or fabricates, `X-Forwarded-*`
+  headers to the vendor.** The proxy ran in `httputil.ReverseProxy`'s
+  deprecated `Director` mode, which appends the in-VM client's IP as
+  `X-Forwarded-For` and passes through any `Forwarded`/`X-Forwarded-*` header
+  the agent sets itself. It now runs in `Rewrite` mode, where the standard
+  library strips those inbound headers and synthesizes none: the vendor learns
+  nothing about the VM side of the gateway, and an agent cannot plant
+  forwarding headers in a request the broker vouches for. Pinned by
+  `TestGateway_NoForwardedHeadersReachUpstream` (fails under `Director`,
+  passes under `Rewrite`). Path remapping, credential injection, metering, and
+  the Codex/openai-compat routes are unchanged, as are their tests. Surfaced
+  by the `staticcheck` bump below.
+
+### Changed
+
+- **Sandbox image inputs re-pinned to current.** The daily `image-scan` CVE
+  gate had been red since 2026-08-08 (48 consecutive runs) on fixable High
+  findings in Debian packages (bind9, libssh2, pcre2, expat), the Go standard
+  library, and two npm transitives (`tar`, `ip-address`), all fixed past the
+  pinned cutoffs. `DEBIAN_SNAPSHOT` moves to `20260925T000000Z`, `NPM_BEFORE`
+  to `2026-09-25T12:22:40Z`, the in-image Go toolchain to `1.27.1` (checksums
+  re-pinned from go.dev), npm to `11.20.0`, and the agent CLIs to claude-code
+  `2.1.282`, codex `0.157.0`, opencode `1.18.32`, and gemini-cli `0.61.0`
+  (the weekly bump lane's proposal, refreshed). The full release preflight
+  (unit suite, host red-team A3–A6, VM red-team A1/A2/A7/A8/V1) is green
+  against the rebuilt image.
+- **Build toolchain: Go `1.27.1`, staticcheck `v0.8.1`.** `go.mod` moves from
+  `1.26.5` (two stdlib security releases behind) to `1.27.1`; the
+  reproducible-build instructions in SECURITY.md and the Makefile name the new
+  version, since the byte-for-byte claim only holds against the toolchain that
+  built the release. staticcheck `v0.7.0` cannot read Go 1.27 export data, so
+  `make lint` and CI pin `v0.8.1`.
+- **Apple `container` validated through 1.4.1.** The README said 1.1.0; the
+  preflight above ran on 1.4.1, the current upstream release, and the claim
+  now says so.
+- **The weekly `agent-cli-bump` lane can open its PR again.** Its 2026-09-21
+  run pushed the bump branch but could not create the PR because the
+  repository did not allow Actions to do so; the setting is now enabled.
+
+### Docs
+
+- **Roadmap refreshed.** A Phase 5 (unattended orchestration) section records
+  what v0.7.0 landed (increments A and B) and names Increment C
+  (rejection-loop detection, stale-base handling, `needs_input` plus
+  escalation, the queue prune sweep) as the top of the backlog, followed by
+  the credibility arc's external-scrutiny phase, now unblocked. A standing
+  note covers the two maintenance lanes and the rule that a red daily scan
+  blocks a release.
+- CONTRIBUTING pointed at a `design-archive` branch that does not exist (the
+  specs and plans are in-tree under `docs/superpowers/`) and called the
+  container runtime v1.0; both corrected, and the CI description now lists
+  staticcheck and govulncheck. The docs index said alpha where the README
+  says beta. Em dashes removed from the README.
+
 ## v0.7.0 (2026-08-07)
 
 A minor release built around the orchestration arc: a durable task queue,
