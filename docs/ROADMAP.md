@@ -8,9 +8,12 @@
 > (2) the build is verifiable, (3) outsiders are invited to break it. A
 > third-party audit is the capstone you *earn*, not the starting move.
 
-This document covers the first two phases. Later phases (external scrutiny /
-break-the-sandbox challenge, then a scoped third-party audit) are deferred
-until Phases 1–2 make drydock self-evidently testable and reproducible.
+Phases 1–2 are the credibility spine and are complete (notarization
+excepted). Phases 3–5 cover provider expansion, reliability, and unattended
+orchestration. The later credibility phases (external scrutiny / a
+break-the-sandbox challenge, then a scoped third-party audit) were deferred
+until Phases 1–2 made drydock self-evidently testable and reproducible; that
+condition now holds, and they sit in the backlog below.
 
 Honesty constraint (unchanged): no overclaiming. Credibility comes from
 *precise, checkable* claims plus loudly-stated limits: the `THREAT_MODEL.md`
@@ -98,7 +101,7 @@ packages; attach SPDX/CycloneDX to each GitHub release.
 
 ### 2.4 Reproducible builds: *landed*
 The release **binaries are byte-for-byte reproducible** (`-trimpath` + the
-`go 1.26.5` toolchain on darwin/arm64). Each release publishes a per-binary
+`go 1.27.1` toolchain on darwin/arm64). Each release publishes a per-binary
 `*-bin.sha256`, and `make verify-build SUMS=…` rebuilds and checks against it;
 see SECURITY.md "Verifying a release". The tarball itself is not byte-stable
 (tar/gzip metadata); making the archive deterministic is a possible follow-up,
@@ -119,7 +122,7 @@ but the binaries inside it (what actually runs) are verifiable.
   weekly bump lane (`cmd/cli-bump -before`) so a bump never leaves a
   freshly pinned package unresolvable against a stale cutoff; the Debian
   snapshot (`DEBIAN_SNAPSHOT`) is bumped by hand;
-- the Go toolchain is pinned to `go 1.26.5` in `go.mod`;
+- the Go toolchain is pinned to `go 1.27.1` in `go.mod`;
 - `go.sum` pins module checksums.
 
 Accepted residuals: a dated snapshot buys reproducibility, not provenance,
@@ -356,28 +359,92 @@ is either enforced or documented as a stated limit.
 
 ---
 
+## Phase 5: Unattended orchestration
+
+**Goal:** let drydock work through a queue of tasks unattended, observe its
+own results host-side, and bound every automatic follow-up, without granting
+any new trust to what the agent produces. Everything in this phase is opt-in
+and off by default; a stock install behaves exactly as it did before.
+
+**Status:** Increments A and B landed in v0.7.0 (2026-08-07), together with
+the safety work that makes unattended retry defensible: execution profiles
+(a host-configured setup phase that fails closed before spend), the
+`diff_policy` caps with a second-look acknowledgment, the independent verifier
+stage (THREAT_MODEL A9), GitHub issue ingestion behind a plan-mode scope gate,
+the content-addressed dependency cache (the one A7 carve-out), and the global,
+durable, fail-closed usage ceiling (N4). Increment C is the open item and the
+top of the backlog.
+
+The design rule carried through every increment: **agent-produced text never
+decides a state transition.** A diff, a CI log, a check name, or a PR comment
+may be forwarded to the next attempt only as capped, fenced, clearly labeled
+untrusted text; the broker's own observations (a check's conclusion bucket,
+a gate decision, a push result) are the only inputs to the state machine.
+
+### 5A Durable queue + core state machine: *landed (v0.7.0)*
+`drydock queue add|list|...`, a persisted forward-only per-task record, slot
+dispatch by the broker, and idempotent boot resume (re-dispatch only items
+that never started; dead-letter anything a crash interrupted; never boot a
+second VM for a task that may already have spent or pushed).
+
+### 5B CI feedback + bounded retry: *landed (v0.7.0)*
+Host-side observation of a pushed PR's checks (B1) and a bounded retry on an
+*observed* failure (B2). A retry is a new task from a fresh default-HEAD clone,
+so every gate shows the full cumulative diff and no agent-written tree crosses
+into a new VM; the attempt bound is anchored on a durable marker written
+before the enqueue, so a crash can end a chain short but never extend it.
+
+### 5C Refinements: *next*
+Deferred from A and B, in the order they should land:
+- **Rejection-loop detection.** A task whose diff has been denied at the gate
+  repeatedly must stop re-entering the queue and surface as such, rather than
+  spending another attempt on the same rejected change.
+- **Stale-base handling.** Detect when the default branch moved under a parked
+  or awaiting-review item, and decide once (re-run against the new base, or
+  fail closed) instead of pushing a diff computed against a base that no
+  longer exists.
+- **`needs_input` + escalation/notifications.** A terminal state for "a human
+  has to decide", and a notification path out of the daemon (this is also the
+  "no Slack/web approval adapter" gap in CONTRIBUTING). Notifications carry the
+  task id and outcome, never agent-produced text.
+- **Terminal queue-record prune sweep.** Deferred from A; pairs with the
+  brokerd-side audit-retention gap in CONTRIBUTING (`drydock prune` exists,
+  the daemon-side sweep does not).
+
+**Done when:** an unattended daemon fed a queue of issues cannot loop on a
+rejected change, cannot push against a vanished base, tells the operator when
+it needs them, and keeps its own on-disk records bounded, each property
+enforced by a test.
+
+---
+
 ## Backlog (ordered)
 
-Phases 1–2 are complete (2.2 excepted, below); 3A/3C landed, 3B parked. What
-remains is one ranked list, updated as items land. The interleave is
-deliberate: correctness and operator items alternate with credibility items;
-Phases 1–2 bought a lot of external credibility while the operator side got
-little, so the top of the list leans operator.
+Phases 1, 2 (2.2 excepted), and 4 are complete; 3A/3C landed and 3B is
+parked; 5A/5B landed. What remains is one ranked list, updated as items land.
 
-**v0.6.0 (2026-07-09) was a security-hardening release** from a full code +
-product review. It landed the capability clamp (4.12), a first step on the
-budget cap (4.3: a per-task request cap for uncapped lanes), IPv6 fail-close and
-a squid SSRF guard (4.10), plus 4.4 (`retry`), alongside audit durability, a
-loopback-only admin bind, and supply-chain nits. Since then: 4.14 (resume
-awaiting-approval across restart), the aggregate budget cap (4.3, now fully
-landed), 4.10 (plain-HTTP vs HTTPS-CONNECT edge documented in the egress doc),
-4.15 (precise gateway metering: per-request in-flight reservation), and the
-F-04 `/work` bound going from soft-polling-only to a hard `stage_quota_gb`
-APFS quota image on macOS (the polling guard remains as the early-cancel
-layer and the only bound on non-macOS builds) have all landed, most
-recently in v0.6.4 (2026-07-26); see the CHANGELOG for details.
+1. **5C orchestration refinements** (above). Operator-side; finishes the arc
+   v0.7.0 opened and retires two CONTRIBUTING known gaps on the way.
+2. **External scrutiny (credibility Phase 3).** Phases 1–2 were the stated
+   precondition and they hold: `drydock redteam` runs the attacks behind
+   every A-claim, the build is reproducible, releases carry SBOM, signature,
+   and provenance. The next credibility step is inviting outsiders to break
+   it: a scoped break-the-sandbox challenge around A1–A9, with the SECURITY.md
+   residuals and N1–N7 as explicit exclusions so the target is the claims
+   drydock actually makes. Design the scope before any bounty; the honesty
+   constraint at the top of this document applies to the invitation too.
+3. **Scoped third-party audit.** The capstone; earned after (2) has run for a
+   while, not before.
 
-(backlog empty; next items are event-driven or parked, below)
+**Maintenance lanes (standing, not backlog items).** Two automated lanes keep
+the pinned inputs current, and both need a human to merge: the daily
+`image-scan` CVE gate (grype + `cmd/cve-gate`; goes red on its own as Debian
+and Go publish fixes past the pinned snapshot) and the weekly
+`agent-cli-bump` PR. Between v0.7.0 and v0.7.1 (2026-08-08 to 2026-09-25) both
+sat unattended: the scan was red for 48 consecutive days and the bump lane
+could only push a branch because the repository did not allow Actions to open
+PRs. v0.7.1 re-pinned everything and re-enabled the PR path; the standing rule
+is that a red daily scan is a release blocker, not background noise.
 
 [#139]: https://github.com/sricola/drydock/issues/139
 
