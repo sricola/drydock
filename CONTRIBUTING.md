@@ -97,11 +97,13 @@ locally instead. From a macOS 26 Apple-silicon machine with the runtime:
    signature, and SLSA provenance and publishes the GitHub release. (Run
    `make release-preflight` alone anytime to check release-readiness without
    tagging.)
-3. Confirm the Homebrew formula moved: the `bump-tap` job in `release.yml`
-   pushes the new `url`/`sha256`/`version` to `sricola/homebrew-drydock`
-   using the `HOMEBREW_TAP_TOKEN` secret (a fine-grained PAT scoped to that
-   one repo). Without the secret the job self-skips green with a notice, and
-   the formula is bumped by hand against the published tarball's `.sha256`.
+3. Bump the Homebrew formula by hand: update `url`/`sha256`/`version` in
+   `sricola/homebrew-drydock` against the published tarball's `.sha256`
+   (commit message `drydock X.Y.Z`). The `bump-tap` job in `release.yml`
+   would do this automatically given a `HOMEBREW_TAP_TOKEN` secret (a
+   fine-grained PAT with Contents read/write on that one repo), but the
+   secret has never been set, so the job self-skips green with a notice on
+   every release; check its log rather than assuming the tap moved.
 4. QA the installed artifact: `brew upgrade drydock`, then run the
    black-box release gate against the binaries operators actually get:
 
