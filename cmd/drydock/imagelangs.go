@@ -19,7 +19,7 @@ func imageLanguages() []imageLang {
 	return []imageLang{
 		{Name: "node", Version: "22"},
 		{Name: "python", Version: "3.11"},
-		{Name: "go", Version: "1.26.5"},
+		{Name: "go", Version: "1.27.1"},
 	}
 }
 
@@ -67,7 +67,7 @@ func dockerfileLanguages(path string) (map[string]string, error) {
 }
 
 // leadingVersion returns the leading dotted-numeric run of s ("22" from
-// "22-bookworm-slim@sha256:...", "1.26.5" from "1.26.5").
+// "22-bookworm-slim@sha256:...", "1.27.1" from "1.27.1").
 func leadingVersion(s string) string {
 	end := 0
 	for end < len(s) && (s[end] == '.' || (s[end] >= '0' && s[end] <= '9')) {

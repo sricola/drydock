@@ -196,7 +196,7 @@ vet:
 # Deeper static analysis than `go vet` (unused code, simplifications, bug
 # patterns). Go-native via pinned `go run`, matching the SBOM tool pattern;
 # no global install needed. CI runs this on every PR.
-STATICCHECK_VERSION := v0.7.0
+STATICCHECK_VERSION := v0.8.1
 lint:
 	go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
 
@@ -249,7 +249,7 @@ dist: clean
 
 # verify-build rebuilds the release binaries with the exact release flags and
 # checks them against a published `*-bin.sha256` — proving they reproduce
-# byte-for-byte. Needs Go 1.26.5 on darwin/arm64 and a CLEAN checkout of the
+# byte-for-byte. Needs Go 1.27.1 on darwin/arm64 and a CLEAN checkout of the
 # tag (so `git describe` matches the released version). Usage:
 #   git checkout vX.Y.Z
 #   gh release download vX.Y.Z -R sricola/drydock -p '*-bin.sha256'

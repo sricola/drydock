@@ -78,7 +78,17 @@ func New(backends ...Backend) (*Gateway, error) {
 		}
 		g.vendors[b.Vendor.Name] = vendorRT{v: b.Vendor, cred: b.Cred, upstream: u}
 	}
-	g.proxy = &httputil.ReverseProxy{Director: g.director, ModifyResponse: g.meter}
+	// Rewrite, not the deprecated Director: in Rewrite mode ReverseProxy strips
+	// any Forwarded/X-Forwarded-* header the in-VM client sent and synthesizes
+	// none of its own (Director mode appended the client IP as X-Forwarded-For
+	// and passed the agent's copies through). The upstream vendor should learn
+	// nothing about the VM side of the gateway, and the agent should not be
+	// able to plant forwarding headers in a request the broker vouches for.
+	// Pinned by TestGateway_NoForwardedHeadersReachUpstream.
+	g.proxy = &httputil.ReverseProxy{
+		Rewrite:        func(pr *httputil.ProxyRequest) { g.director(pr.Out) },
+		ModifyResponse: g.meter,
+	}
 	return g, nil
 }
 
