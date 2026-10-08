@@ -130,6 +130,19 @@ ci:
   watch_timeout: 90m            # ABSOLUTE per-PR deadline anchored at push, so a restart can't extend it. 0 = built-in default (90m); must exceed the dispatch floor max(2 x poll_interval, 5m)
   max_attempts:  0              # bounded retry on an observed CI failure (increment B2). 0 = off. Worst-case spend for one chain is max_attempts × task_budget_usd; max 10. >0 requires a non-zero approval_timeout
 
+# --- Rejection-loop detection (queue path only; ON by default) ---
+# brokerd keeps a ledger of HUMAN diff-gate verdicts (audit_root/rejections/
+# ledger.jsonl: hashes, ids, and the issue URL only). A `drydock queue add`
+# whose repo + original instruction, or repo + issue URL, has been denied
+# max_denials times since its last human approval is refused (HTTP 409) before
+# any VM boots; a queued task whose diff is byte-identical to one already
+# denied for the repo is auto-denied before the gate. `drydock submit` never
+# consults it and is the override: change the instruction, or run it by hand.
+# Only `drydock deny` at the DIFF gate counts, and only `drydock approve` (not
+# --auto-approve) resets. Timeouts, kills, and egress-gate denials do not count.
+queue:
+  max_denials: 2                  # 0 = off (the ledger is still written); max 10
+
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)
 audit_root:    ~/.drydock/audit        # per-task <id>.jsonl + .diff

@@ -144,6 +144,27 @@ type CIConfig struct {
 	MaxAttempts int `yaml:"max_attempts"`
 }
 
+// QueueConfig is the `queue:` block: knobs that apply only to the durable
+// queue path (POST /queue, drydock queue add), never to a synchronous submit.
+type QueueConfig struct {
+	// MaxDenials is the rejection-loop bound: a queue add whose canonical
+	// repo + original instruction (or repo + issue URL) has been DENIED by a
+	// human at the diff gate this many times since its last human approval
+	// is refused (HTTP 409) before any VM boots, and a queued task whose diff
+	// is identical to one already denied for the repo is auto-denied before
+	// the gate. 0 turns both off, including the fail-closed refusal on an
+	// unreadable ledger; the ledger is still written. Max 10.
+	MaxDenials int `yaml:"max_denials"`
+}
+
+const (
+	// DefaultQueueMaxDenials deliberately ships ON (Phase 5's opt-in rule
+	// is broken here on purpose): it fires only after two human denials of
+	// the same work on the unattended path.
+	DefaultQueueMaxDenials = 2
+	MaxQueueMaxDenials     = 10
+)
+
 // Config is the operator surface. yaml tags match what's written to
 // ~/.drydock/config.yaml; the env-var names are documented in README.
 type Config struct {
@@ -308,6 +329,8 @@ type Config struct {
 	// default; see CIConfig.
 	CI CIConfig `yaml:"ci"`
 
+	Queue QueueConfig `yaml:"queue"`
+
 	// Where state lives
 	StageRoot   string `yaml:"stage_root"`
 	AuditRoot   string `yaml:"audit_root"`
@@ -401,6 +424,7 @@ func Defaults() *Config {
 			WatchTimeout: DefaultCIWatchTimeout,
 			MaxAttempts:  0, // explicit: bounded retry (B2) ships OFF
 		},
+		Queue: QueueConfig{MaxDenials: DefaultQueueMaxDenials},
 		Notifications:          true,
 		LogJSON:                false,
 		StrictContainerVersion: false,
@@ -639,6 +663,11 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("DRYDOCK_CI_MAX_ATTEMPTS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			c.CI.MaxAttempts = n
+		}
+	}
+	if v := os.Getenv("DRYDOCK_QUEUE_MAX_DENIALS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.Queue.MaxDenials = n
 		}
 	}
 	if v := os.Getenv("STAGE_ROOT"); v != "" {
@@ -905,6 +934,12 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: ci.max_attempts is %d, which requires a non-zero approval_timeout; a bounded CI retry is an UNATTENDED task that re-poses the human diff gate while holding one of your %d max_concurrent_tasks slots, so with approval_timeout: 0 (wait forever) an overnight retry parks at a gate nobody is at and starves every later task. Set approval_timeout (e.g. 2h), or set ci.max_attempts: 0 to disable retry",
 			c.CI.MaxAttempts, c.MaxConcurrent)
 	}
+	if c.Queue.MaxDenials < 0 {
+		return fmt.Errorf("config: queue.max_denials must be >= 0, got %d", c.Queue.MaxDenials)
+	}
+	if c.Queue.MaxDenials > MaxQueueMaxDenials {
+		return fmt.Errorf("config: queue.max_denials must be <= %d, got %d", MaxQueueMaxDenials, c.Queue.MaxDenials)
+	}
 	return nil
 }
 
@@ -1066,6 +1101,19 @@ ci:
   poll_interval: 60s            # watch tick; one gh API call per watched PR per tick. 0 = built-in default (60s); minimum 10s
   watch_timeout: 90m            # ABSOLUTE per-PR deadline anchored at push, so a restart can't extend it. 0 = built-in default (90m); must exceed the dispatch floor max(2 x poll_interval, 5m)
   max_attempts:  0              # bounded retry on an observed CI failure (increment B2). 0 = off. Worst-case spend for one chain is max_attempts × task_budget_usd; max 10. >0 requires a non-zero approval_timeout
+
+# --- Rejection-loop detection (queue path only; ON by default) ---
+# brokerd keeps a ledger of HUMAN diff-gate verdicts (audit_root/rejections/
+# ledger.jsonl: hashes, ids, and the issue URL only). A ` + "`" + `drydock queue add` + "`" + `
+# whose repo + original instruction, or repo + issue URL, has been denied
+# max_denials times since its last human approval is refused (HTTP 409) before
+# any VM boots; a queued task whose diff is byte-identical to one already
+# denied for the repo is auto-denied before the gate. ` + "`" + `drydock submit` + "`" + ` never
+# consults it and is the override: change the instruction, or run it by hand.
+# Only ` + "`" + `drydock deny` + "`" + ` at the DIFF gate counts, and only ` + "`" + `drydock approve` + "`" + ` (not
+# --auto-approve) resets. Timeouts, kills, and egress-gate denials do not count.
+queue:
+  max_denials: 2                  # 0 = off (the ledger is still written); max 10
 
 # --- Where state lives ---
 stage_root:    ~/.drydock/stage        # per-task work tree (wiped on completion)
