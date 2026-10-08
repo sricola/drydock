@@ -10,7 +10,7 @@
 <p align="center"><b>Let a coding agent run wild on your Mac, without trusting it.</b></p>
 
 <p align="center">
-  <img alt="status: beta" src="https://img.shields.io/badge/status-beta-yellow">
+  <img alt="status: stable" src="https://img.shields.io/badge/status-stable-brightgreen">
   <img alt="version" src="https://img.shields.io/github/v/tag/sricola/drydock?label=release&color=brightgreen">
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2026%2B%20·%20Apple%20silicon-black">
   <img alt="license" src="https://img.shields.io/badge/license-Apache_2.0-blue">
@@ -50,7 +50,7 @@ regardless of what it tries.
 [Website](https://sricola.github.io/drydock/) ·
 [Roadmap](docs/ROADMAP.md)
 
-## Status: beta (v0.7.1)
+## Status: stable (v0.7.1)
 
 - **Works end-to-end.** The full task lifecycle runs (submit → isolated VM →
   gated diff → push), and drydock ships through a Homebrew tap.
@@ -58,8 +58,9 @@ regardless of what it tries.
   [threat model](THREAT_MODEL.md) is a red-team test that runs the real attack
   and asserts it fails. Security-sensitive changes are developed exploit-first
   and adversarially reviewed.
-- **Still pre-1.0.** Only `main` is supported, behavior and config can change
-  between minor versions, and it has not been hardened by wide real-world use.
+- **Pre-1.0 compatibility.** Only `main` is supported, config and behavior
+  can still change between minor versions (each change is called out in the
+  changelog), and real-world mileage is still limited.
 - **No third-party security audit yet.** The security model is written down in
   detail in the [threat model](THREAT_MODEL.md): read it and decide for
   yourself before trusting it.
