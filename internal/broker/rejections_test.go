@@ -100,8 +100,41 @@ func TestRejectionLedger_IssueKeyCountsAcrossInstructions(t *testing.T) {
 	}
 	// An approval on the issue resets both keys.
 	_ = l.Record(rtEntry(RejectionKindApproved, rtID3, repo, i2, url, "bbb"))
-	if n, _ := l.Denials(repo, i1, issue); n != 0 {
-		t.Fatalf("approval did not reset the issue key: %d", n)
+	if n, _ := l.Denials(repo, i2, issue); n != 0 {
+		t.Fatalf("after approval of i2, Denials(repo, i2, issue)=%d, want 0", n)
+	}
+	if n, _ := l.Denials(repo, i1, issue); n != 1 {
+		t.Fatalf("after approval of i2, Denials(repo, i1, issue)=%d, want 1 (i1 never approved; max(1, 0) = 1)", n)
+	}
+}
+
+func TestRejectionLedger_DenialsReturnsMaxOfBothKeys(t *testing.T) {
+	l, _ := OpenRejectionLedger(t.TempDir())
+	const url = "https://github.com/o/r/issues/99"
+	repo, i1, issue := RejectionKeys("https://github.com/o/r.git", "", "instruction v1", url)
+	// Add denial to instruction key only.
+	_ = l.Record(rtEntry(RejectionKindDenied, rtID1, repo, i1, "", "d1"))
+	// Add denial to issue key only.
+	_ = l.Record(rtEntry(RejectionKindDenied, rtID2, repo, i1, url, "d2"))
+	// After two denials under same instruction but one with issue:
+	// i1 alone: 2 denials (both affect instruction key)
+	// i1+issue: max(2, 2) = 2
+	if n, _ := l.Denials(repo, i1, ""); n != 2 {
+		t.Fatalf("instruction key: %d denials, want 2", n)
+	}
+	if n, _ := l.Denials(repo, i1, issue); n != 2 {
+		t.Fatalf("max of i1 and issue: %d, want 2", n)
+	}
+	// Now approve the instruction key only.
+	_ = l.Record(rtEntry(RejectionKindApproved, rtID3, repo, i1, "", "d1"))
+	// i1 alone: 0 (approved)
+	// issue alone: 1 (second denial still pending)
+	// i1+issue: max(0, 1) = 1 (issue key takes higher value)
+	if n, _ := l.Denials(repo, i1, ""); n != 0 {
+		t.Fatalf("after approval of i1, instruction key=%d, want 0", n)
+	}
+	if n, _ := l.Denials(repo, i1, issue); n != 1 {
+		t.Fatalf("after approval of i1, max(0, 1)=%d, want 1", n)
 	}
 }
 
@@ -203,5 +236,46 @@ func TestRejectionLedger_InvisibleToAuditConsumers(t *testing.T) {
 	l2, err := OpenRejectionLedger(root)
 	if err != nil || l2.LoadError() != "" {
 		t.Fatalf("ledger degraded after the boot sweep: %v %q", err, l2.LoadError())
+	}
+}
+
+// TestRejectionLedger_TornFragmentFixedBeforeAppend verifies that when a
+// previous Record was torn (fragment on disk without trailing newline), the
+// next Record detects this and writes a separating newline before appending,
+// preventing fusion of the fragment and the new line into one unparseable line.
+func TestRejectionLedger_TornFragmentFixedBeforeAppend(t *testing.T) {
+	root := t.TempDir()
+	path := RejectionLedgerPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	good := `{"kind":"denied","at_ms":1,"task_id":"` + rtID1 + `","repo_key":"github.com/o/r","instruction_sha256":"` + strings.Repeat("a", 64) + `","issue_url":"","diff_sha256":"d1","path":"live"}` + "\n"
+	// Write good line plus a torn fragment (no trailing newline).
+	torn := `{"kind":"denied","at_ms":2,"task_id":"` + rtID2
+	if err := os.WriteFile(path, []byte(good+torn), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Open: torn line dropped.
+	l, err := OpenRejectionLedger(root)
+	if err != nil || l.LoadError() != "" {
+		t.Fatalf("torn tail must not degrade: err=%v load=%q", err, l.LoadError())
+	}
+	if n, _ := l.Denials("github.com/o/r", strings.Repeat("a", 64), ""); n != 1 {
+		t.Fatalf("denials=%d, want 1 from the intact line", n)
+	}
+	// Record a new entry. Record must detect the missing newline and fix it.
+	if err := l.Record(rtEntry(RejectionKindDenied, rtID3, "github.com/o/r", strings.Repeat("b", 64), "", "d2")); err != nil {
+		t.Fatal(err)
+	}
+	// Reopen: both entries indexed, no degradation.
+	l2, err := OpenRejectionLedger(root)
+	if err != nil || l2.LoadError() != "" {
+		t.Fatalf("ledger degraded after recovery: err=%v load=%q", err, l2.LoadError())
+	}
+	if n, _ := l2.Denials("github.com/o/r", strings.Repeat("a", 64), ""); n != 1 {
+		t.Fatalf("original entry lost: %d denials", n)
+	}
+	if n, _ := l2.Denials("github.com/o/r", strings.Repeat("b", 64), ""); n != 1 {
+		t.Fatalf("new entry lost: %d denials", n)
 	}
 }

@@ -221,6 +221,41 @@ func (l *RejectionLedger) Record(e RejectionEntry) error {
 	line = append(line, '\n')
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// Check if file ends with a newline. If a previous append was torn,
+	// the fragment may still be on disk without a trailing newline.
+	// We need to find and truncate to the last complete line before appending.
+	var needsRepair bool
+	var lastNewlinePos int64
+	if fi, err := os.Stat(l.path); err == nil && fi.Size() > 0 {
+		// Use a read-only handle to check and locate the last newline
+		rf, err := os.OpenFile(l.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		if err == nil {
+			defer rf.Close()
+			// Read last byte to check if file ends with newline
+			lastByte := make([]byte, 1)
+			if _, err := rf.ReadAt(lastByte, fi.Size()-1); err == nil && lastByte[0] != '\n' {
+				needsRepair = true
+				// Find the last newline by reading the file
+				data := make([]byte, fi.Size())
+				if _, err := rf.ReadAt(data, 0); err == nil {
+					// Find the last newline
+					for i := len(data) - 1; i >= 0; i-- {
+						if data[i] == '\n' {
+							lastNewlinePos = int64(i + 1)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	// If repair needed, truncate to last complete line before appending
+	if needsRepair {
+		if err := os.Truncate(l.path, lastNewlinePos); err != nil {
+			return err
+		}
+	}
+	// Now append the new entry
 	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
@@ -289,16 +324,6 @@ func (l *RejectionLedger) Denials(repoKey, instructionSHA, issueKey string) (int
 	n := 0
 	var ids []string
 	seen := map[string]bool{}
-
-	// Check if the issue key exists and has been approved (denials == 0).
-	// If so, the issue-level approval overrides all instruction-level denials.
-	if issueKey != "" {
-		if st := l.byKey[issueKey]; st != nil && st.denials == 0 {
-			// Issue has been approved; no active denials.
-			return 0, nil
-		}
-	}
-
 	for _, k := range []string{instructionKey(repoKey, instructionSHA), issueKey} {
 		if k == "" {
 			continue
