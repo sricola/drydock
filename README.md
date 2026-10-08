@@ -50,7 +50,7 @@ regardless of what it tries.
 [Website](https://sricola.github.io/drydock/) ·
 [Roadmap](docs/ROADMAP.md)
 
-## Status: stable (v0.7.1)
+## Status: stable (v0.8.0)
 
 - **Works end-to-end.** The full task lifecycle runs (submit → isolated VM →
   gated diff → push), and drydock ships through a Homebrew tap.
