@@ -64,7 +64,7 @@ regardless of what it tries.
   detail in the [threat model](THREAT_MODEL.md): read it and decide for
   yourself before trusting it.
 - **Hard requirement: macOS 26+ on Apple silicon.** drydock runs on Apple's
-  `container` runtime (1.x, validated through 1.4.1), which ships nowhere else.
+  `container` runtime (1.x, validated through 1.5.0), which ships nowhere else.
 
 ## Who it's for
 
