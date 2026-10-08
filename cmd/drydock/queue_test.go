@@ -422,3 +422,23 @@ func TestQueueAdd_RendersDegradedLedger503(t *testing.T) {
 		t.Fatalf("503 rendering: %v", err)
 	}
 }
+
+func TestQueueAdd_RefusalTextIsSanitized(t *testing.T) {
+	fakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"rejection_loop","repo":"github.com/o/r","issue_url":"https://x/\u001b[31missue","denied_task_ids":["aa\u0007a","bbb"],"hint":"change\u001b[31m the instruction"}`))
+	})
+	_, err := postQueueAdd(taskRequest{RepoRef: "https://github.com/o/r.git", Instruction: "x"})
+	if err == nil {
+		t.Fatal("409 did not surface as an error")
+	}
+	if strings.ContainsAny(err.Error(), "\x1b\x07") {
+		t.Errorf("error carries control bytes: %q", err)
+	}
+	for _, want := range []string{"change", "the instruction", "issue", "aa", "bbb"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks visible text %q", err, want)
+		}
+	}
+}

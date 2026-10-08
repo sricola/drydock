@@ -80,15 +80,14 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	b.pendingMu.Unlock()
 	writeJSON(w, map[string]any{
-		"ok":               true,
-		"pending":          pending, // legacy field; matches old shape
-		"awaiting_egress":  awaitingEgress,
-		"setting_up":       settingUp,
-		"running":          running,
-		"verifying":        verifying,
-		"pending_approval": pendingApproval,
-		"pushing":          pushing,
-
+		"ok":                     true,
+		"pending":                pending, // legacy field; matches old shape
+		"awaiting_egress":        awaitingEgress,
+		"setting_up":             settingUp,
+		"running":                running,
+		"verifying":              verifying,
+		"pending_approval":       pendingApproval,
+		"pushing":                pushing,
 		"rejection_ledger_error": b.rejectionLedgerError(),
 	})
 }

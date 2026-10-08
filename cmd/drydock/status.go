@@ -20,7 +20,7 @@ func runStatus() {
 			h.SettingUp, h.Running, h.Verifying, h.AwaitingEgress, h.PendingApproval, h.Pushing)
 		if h.RejectionLedgerError != "" {
 			fmt.Printf("WARNING     rejection ledger unreadable: %s. queue adds are refused and dispatch is parked; the file is %s\n",
-				h.RejectionLedgerError, filepath.Join(auditDir(), "rejections", "ledger.jsonl"))
+				safeCell(h.RejectionLedgerError), filepath.Join(auditDir(), "rejections", "ledger.jsonl"))
 		}
 	} else if brokerdDown(err) {
 		fmt.Printf("brokerd     down — start it with `drydock start`\n")
