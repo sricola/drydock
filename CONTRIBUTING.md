@@ -132,6 +132,6 @@ locally instead. From a macOS 26 Apple-silicon machine with the runtime:
   Slack/web approval adapters yet.
 - **Bitbucket** PR/MR opening falls back to push-only (no widely-adopted CLI to
   wrap). Contribution slot.
-- **Apple `container`** moves fast (1.x, validated through 1.4.1 by the
+- **Apple `container`** moves fast (1.x, validated through 1.5.0 by the
   release preflight); flag drift is the most likely breakage source.
   `DRYDOCK_STRICT_CONTAINER_VERSION=1` fails closed on drift.

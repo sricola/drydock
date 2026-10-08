@@ -14,7 +14,7 @@ FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0
 # shipped the minute the build ran. Snapshot Release files carry
 # expired Valid-Until stamps by design, hence Check-Valid-Until off; retries
 # because snapshot.debian.org rate-limits.
-ARG DEBIAN_SNAPSHOT=20260925T000000Z
+ARG DEBIAN_SNAPSHOT=20261008T000000Z
 RUN set -eu; \
     printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s/\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s/\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
         "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list.d/debian.sources; \
@@ -58,12 +58,12 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # check asserts the exact pinned version, not just a working binary: here the
 # version IS the security invariant, and a half-applied self-install that
 # leaves the old npm answering must fail the build, not the next daily scan.
-ARG NPM_VERSION=11.20.0
+ARG NPM_VERSION=11.21.0
 # F-09: --before restricts every npm resolution (including transitives) to
 # versions published before this UTC timestamp, the npm analogue of the Debian
 # snapshot above. An exact pin published after the cutoff fails the build
 # (fail closed), so the bump lane moves this timestamp whenever it bumps a pin.
-ARG NPM_BEFORE=2026-09-25T12:22:40Z
+ARG NPM_BEFORE=2026-10-08T11:09:12Z
 RUN npm install -g --ignore-scripts --no-audit --no-fund --before=${NPM_BEFORE} npm@${NPM_VERSION} \
  && [ "$(npm --version)" = "${NPM_VERSION}" ] \
  && rm -rf /root/.npm
@@ -79,25 +79,25 @@ RUN npm install -g --ignore-scripts --no-audit --no-fund --before=${NPM_BEFORE} 
 # claude-code (install.cjs) and opencode (postinstall.mjs) genuinely need theirs,
 # so they keep scripts and are pinned by exact version instead. Every install
 # ends with a `<cli> --version` smoke check so a broken install fails the build.
-ARG CLAUDE_CODE_VERSION=2.1.282
+ARG CLAUDE_CODE_VERSION=2.1.293
 RUN npm install -g --before=${NPM_BEFORE} @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && claude --version
 
 # Pin the Codex CLI alongside claude-code. Bump deliberately; every drydock
 # release anchors to a known codex version. Override with
 # --build-arg CODEX_VERSION=x.y.z. No own install script -> --ignore-scripts.
-ARG CODEX_VERSION=0.157.0
+ARG CODEX_VERSION=0.161.0
 RUN npm install -g --ignore-scripts --before=${NPM_BEFORE} @openai/codex@${CODEX_VERSION} && codex --version
 
 # Pin the opencode CLI for the OpenAI-compatible (bring-your-own-model) lane.
 # Bump deliberately. Override with --build-arg OPENCODE_VERSION=x.y.z. The
 # build-time `opencode --version` is a smoke check that the (script-running)
 # install produced a working binary.
-ARG OPENCODE_VERSION=1.18.32
+ARG OPENCODE_VERSION=1.18.35
 RUN npm install -g --foreground-scripts --before=${NPM_BEFORE} opencode-ai@${OPENCODE_VERSION} && opencode --version
 
 # Pin the Gemini CLI for the native google vendor. Bump deliberately; every
 # drydock release anchors to a known version (0.49.0 validated by the 3B spike).
-ARG GEMINI_CLI_VERSION=0.61.0
+ARG GEMINI_CLI_VERSION=0.63.0
 RUN npm install -g --ignore-scripts --before=${NPM_BEFORE} @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
 
 RUN useradd -m -u 10001 -s /bin/bash agent
