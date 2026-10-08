@@ -5,6 +5,108 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.8.0 (2026-10-08)
+
+A minor release in three parts: the first of the orchestration refinements
+(roadmap 5C), rejection-loop detection, so an unattended daemon cannot keep
+spending on a change a human has already rejected; the sandbox inputs
+re-pinned to current, which turns the daily CVE gate green again; and the
+status label moving from beta to stable while the project stays pre-1.0.
+One default changes behavior for a stock install: a queue add that has been
+denied twice at the diff gate is now refused (see `queue.max_denials` below).
+On-disk formats gain fields but lose none; the sandbox image is rebuilt by
+`drydock setup` as usual.
+
+### Added
+
+- **Rejection-loop detection (`queue.max_denials`, default `2`, on by
+  default).** brokerd keeps a durable, append-only ledger of **human**
+  diff-gate verdicts at `<audit_root>/rejections/ledger.jsonl` (its own
+  `0700` subdirectory, so the audit-root `*.jsonl` consumers and the boot
+  sweep never see it). Every entry is broker-authored: the gate cause, the
+  canonical repo key, a hash of the original instruction, the operator's
+  issue URL, the diff hash, a task id, and a broker timestamp; no instruction,
+  diff, agent, or CI text, ever. Two guards read it, both on the **queue path
+  only**:
+  - **The identity guard.** `drydock queue add` (`POST /queue`) is refused
+    with HTTP 409 before any VM boots when the work's repo plus original
+    instruction, or repo plus issue URL, has been denied `max_denials` times
+    since its last human approval. The dispatcher re-asks the guard before
+    the spend cap and the global-ceiling claim (an item queued before the
+    bound tripped is dead-lettered with the reason in `drydock queue list`),
+    and the bounded CI retry asks it before its enqueue-once mark. The issue
+    URL is keyed on precisely because an issue's title and body belong to its
+    author: editing the issue does not reset the count.
+  - **The same-diff backstop.** A queued task whose captured diff is
+    byte-identical to a diff already denied for that repository is
+    auto-denied before the gate (`outcome=denied`, `repeat_of=<earlier task>`
+    on the audit result and metrics rows, queue state `dead_letter`), even
+    with `--auto-approve`. The synchronous `drydock submit` path is never
+    auto-denied: it shows a `REPEAT` line in `drydock review` and
+    `drydock inspect` and a chip in the web UI brief, and it never consults
+    the identity guard either. It is the deliberate override.
+  - **Only human verdicts move the count.** `drydock deny` at the diff gate
+    increments; `drydock approve` resets and frees that diff's hash.
+    Auto-approve, timeouts, kills, shutdowns, egress-gate denials,
+    `policy_blocked`, and `verify_failed` write nothing.
+  - **Fail-closed on an unreadable ledger**, queue path only, and only while
+    `max_denials > 0`: `queue add` returns 503 naming the bad line, dispatch
+    parks every queued item, and `GET /healthz` (`rejection_ledger_error`,
+    `queue_max_denials`) and `drydock status` report it. `max_denials: 0`
+    turns both guards off, including that refusal; the ledger is still
+    written.
+  - Stated limits: the backstop hash is exact, so a one-byte change evades
+    it (the identity guard is the bound); same-key tasks already running
+    when a denial lands finish on their own gates, so the per-key bound is
+    `max_denials + max_concurrent_tasks` runs; there is no ledger compaction
+    yet (the queue prune-sweep item). Enforced by `TestRejectionLoop_*` and
+    `TestRejectionLedger_*`; design in
+    `docs/superpowers/specs/2026-10-08-rejection-loop-detection-design.md`.
+  - Additive on-disk and wire fields: `repeat_of` on broker result and
+    metrics rows, `repeat_of_denied` in the trust brief's diff facts,
+    `root_instruction` and `issue_url` on the gate marker (older markers
+    still resume), and the two `/healthz` fields above.
+
+### Changed
+
+- **Status: stable, still pre-1.0.** The README badge and heading, the
+  landing-page hero tag, and the docs index no longer say beta. What the
+  label carried is now stated in words: only `main` is supported, config and
+  behavior can still change between minor versions (called out here),
+  real-world mileage is still limited, and there is no third-party security
+  audit yet.
+- **Sandbox image inputs re-pinned to 2026-10-08.** The daily `image-scan`
+  gate had been red for twelve consecutive runs since 2026-09-26 on Debian
+  fixes published past the pinned snapshot (perl, openssl, expat, pcre2) and
+  two npm transitives. `DEBIAN_SNAPSHOT` moves to `20261008T000000Z`,
+  `NPM_BEFORE` to `2026-10-08T11:09:12Z`, npm to `11.21.0`, and the agent
+  CLIs to claude-code `2.1.293`, codex `0.161.0`, opencode `1.18.35`, and
+  gemini-cli `0.63.0`. Three allowlist entries that expired in August and
+  September and matched nothing since v0.7.1 are retired; three reasoned
+  entries expiring 2026-11-08 are added for undici (GHSA-rfgv-xxqx-mfg5) and
+  brace-expansion (GHSA-6j4f-fj2g-mc7p, GHSA-qhr7-859c-m2p7), which live in
+  npm's own vendored tree and which no published npm (11.21.0 or 12.2.0)
+  fixes yet; all three are process-crash denial of service confined to the
+  npm process inside the sandbox VM. The gate is green on the rebuilt image.
+- **Apple `container` validated through 1.5.0.** The release preflight (unit
+  suite, host red-team A3–A6, VM red-team A1/A2/A7/A8/V1) ran on 1.5.0, the
+  current upstream release, and the README, CONTRIBUTING, and brokerd now
+  say so.
+
+### Docs
+
+- **Rejection-loop detection documented** in Configuration (a new section
+  with the knob, what counts, how to proceed past a refusal, what it does
+  not bound, and the fail-closed repair steps), Submitting tasks (`repeat_of`
+  and the auto-deny), Run unattended (the new bound and its residual), and
+  Troubleshooting (the 409 and 503 from `queue add`). THREAT_MODEL N4 gains
+  the ledger's trust statement and the two stated limits; the roadmap marks
+  the first 5C refinement landed with stale-base handling, `needs_input`
+  plus notifications, and the prune sweep still open.
+- CONTRIBUTING now says the Homebrew tap bump is by hand: the `bump-tap`
+  release job self-skips green because `HOMEBREW_TAP_TOKEN` has never been
+  set.
+
 ## v0.7.1 (2026-09-25)
 
 A maintenance release that brings the pinned sandbox inputs back to current
