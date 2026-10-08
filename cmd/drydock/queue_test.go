@@ -393,3 +393,52 @@ func TestQueueList_ReasonCellIsSanitized(t *testing.T) {
 		t.Errorf("queueReasonCell leaked control bytes: %q", got)
 	}
 }
+
+func TestQueueAdd_RendersRejectionLoop409(t *testing.T) {
+	fakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"rejection_loop","repo":"github.com/o/r","issue_url":"","denials":2,"max_denials":2,"denied_task_ids":["aaa","bbb"],"hint":"change the instruction, or run it synchronously with drydock submit to override"}`))
+	})
+	_, err := postQueueAdd(taskRequest{RepoRef: "https://github.com/o/r.git", Instruction: "x"})
+	if err == nil {
+		t.Fatal("409 did not surface as an error")
+	}
+	for _, want := range []string{"refused", "drydock submit", "aaa", "bbb", "github.com/o/r"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
+func TestQueueAdd_RendersDegradedLedger503(t *testing.T) {
+	fakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"rejection_ledger_degraded","reason":"line 3 is not a ledger entry; fix or remove it and restart brokerd"}`))
+	})
+	_, err := postQueueAdd(taskRequest{RepoRef: "https://github.com/o/r.git", Instruction: "x"})
+	if err == nil || !strings.Contains(err.Error(), "rejection history") || !strings.Contains(err.Error(), "line 3") {
+		t.Fatalf("503 rendering: %v", err)
+	}
+}
+
+func TestQueueAdd_RefusalTextIsSanitized(t *testing.T) {
+	fakeBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"rejection_loop","repo":"github.com/o/r","issue_url":"https://x/\u001b[31missue","denied_task_ids":["aa\u0007a","bbb"],"hint":"change\u001b[31m the instruction"}`))
+	})
+	_, err := postQueueAdd(taskRequest{RepoRef: "https://github.com/o/r.git", Instruction: "x"})
+	if err == nil {
+		t.Fatal("409 did not surface as an error")
+	}
+	if strings.ContainsAny(err.Error(), "\x1b\x07") {
+		t.Errorf("error carries control bytes: %q", err)
+	}
+	for _, want := range []string{"change", "the instruction", "issue", "aa", "bbb"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks visible text %q", err, want)
+		}
+	}
+}

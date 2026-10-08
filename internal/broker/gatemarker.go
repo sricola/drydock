@@ -13,10 +13,16 @@ import (
 type gateMarker struct {
 	RepoRef     string `json:"repo_ref"`
 	Instruction string `json:"instruction"`
-	Platform    string `json:"platform"`
-	Agent       string `json:"agent"`
-	Draft       bool   `json:"draft"`
-	TaskStartMs int64  `json:"task_start_ms"`
+	// RootInstruction and IssueURL let a task resumed after a restart compute
+	// the same rejection keys the live path did. omitempty: markers from older
+	// builds lack them, and the resume path then keys on Instruction alone,
+	// which is right for every non-retry, non-issue task.
+	RootInstruction string `json:"root_instruction,omitempty"`
+	IssueURL        string `json:"issue_url,omitempty"`
+	Platform        string `json:"platform"`
+	Agent           string `json:"agent"`
+	Draft           bool   `json:"draft"`
+	TaskStartMs     int64  `json:"task_start_ms"`
 }
 
 func gateMarkerPath(auditRoot, id string) string {

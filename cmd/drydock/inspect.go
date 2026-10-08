@@ -101,6 +101,9 @@ func printBrief(b trustbrief.Brief) {
 	}
 	fmt.Printf("diff     sha %.12s · %d bytes · %d files (+%d -%d)%s\n",
 		b.Diff.SHA256, b.Diff.Bytes, len(b.Diff.Files)+b.Diff.FilesOmitted, adds, dels, trunc)
+	if b.Diff.RepeatOfDenied != "" {
+		fmt.Printf("REPEAT   identical to the diff denied in task %s\n", safeCell(b.Diff.RepeatOfDenied))
+	}
 	for _, fl := range b.Diff.Flags {
 		paths := make([]string, 0, len(fl.Paths))
 		for _, p := range fl.Paths {

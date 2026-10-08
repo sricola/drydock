@@ -170,6 +170,7 @@ func TestEnvOverrides_AllOperatorKnobs(t *testing.T) {
 		"DRYDOCK_NO_NOTIFY":                "1",
 		"DRYDOCK_LOG_JSON":                 "1",
 		"DRYDOCK_STRICT_CONTAINER_VERSION": "1",
+		"DRYDOCK_QUEUE_MAX_DENIALS":        "6",
 	}
 	for key, value := range values {
 		t.Setenv(key, value)
@@ -205,6 +206,9 @@ func TestEnvOverrides_AllOperatorKnobs(t *testing.T) {
 	}
 	if c.Notifications || !c.LogJSON || !c.StrictContainerVersion {
 		t.Errorf("boolean env overrides not applied: %+v", c)
+	}
+	if c.Queue.MaxDenials != 6 {
+		t.Errorf("queue env override not applied: %+v", c)
 	}
 }
 

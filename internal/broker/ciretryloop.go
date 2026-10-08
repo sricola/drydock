@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -37,6 +38,7 @@ import (
 //	   fail-closed (globalcap.go). It is the only gate here that bounds a
 //	   subscription lane, and the only one that refuses when it cannot measure.
 //	9. BuildRetryTask ACCEPTS. Every refusal it returns is a refusal.
+//	9a. THE REJECTION-LOOP IDENTITY GUARD (rejections.go), before the enqueue-once mark: tripped refuses, degraded parks.
 //
 // ---------------------------------------------------------------------------
 // CRASH WINDOWS (D6). The bound lives in the PERSISTED Task and its mirror on
@@ -271,6 +273,27 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (retryID,
 		return "", "no retry: " + safeStr(err.Error()), false
 	}
 
+	// Gate 9a. THE REJECTION-LOOP IDENTITY GUARD, asked BEFORE the
+	// enqueue-once mark so a refusal never consumes it. A tripped bound is a
+	// VERDICT (a human denied this work max_denials times): refuse terminally,
+	// with the reason on retry_detail. A degraded ledger is a FAULT, the same
+	// class gate 8 parks on: park, bounded by the same park bound, so a
+	// transient read failure does not end the chain.
+	if gerr := b.rejectionGuard(child); gerr != nil {
+		var degraded *RejectionLedgerDegradedError
+		if errors.As(gerr, &degraded) {
+			if expired, parked := b.ciRetryParkExpired(it); expired {
+				slog.Warn("ci retry: the rejection ledger has been unreadable past the park bound; refusing rather than parking forever",
+					"task_id", obs.TaskID, "parked_ms", parked)
+				return "", fmt.Sprintf("no retry: the rejection ledger was still unreadable after %s of deferral",
+					(time.Duration(b.ciRetryParkBoundMs()) * time.Millisecond).String()), false
+			}
+			return "", "retry deferred: the rejection ledger could not be read (" + safeStr(degraded.Reason) + "); nothing was enqueued, so the decision is re-asked next tick", true
+		}
+		slog.Info("ci retry: refusing a retry at the rejection-loop bound", "task_id", obs.TaskID, "err", safeErr(gerr))
+		return "", "no retry: " + safeStr(gerr.Error()), false
+	}
+
 	// From here the child is an ORDINARY QUEUED TASK (D1). Enqueue is the same
 	// entry point POST /queue uses: it validates, persists a fresh QueueItem in
 	// `queued`, and wakes the dispatcher. The child therefore gets its own slot,
@@ -322,6 +345,9 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (retryID,
 		}
 		return "", "retry deferred: the durable enqueue-once marker could not be written (a full or read-only disk); nothing was enqueued, so the decision is re-asked next tick", true
 	}
+	// The guard is re-asked inside Enqueue; a trip or degradation in the window
+	// between gate 9a and here ends the chain through the enqueue-failure
+	// refusal below, which is the safe direction.
 	childID, err := b.Enqueue(child)
 	if err != nil {
 		slog.Warn("ci retry: could not enqueue the retry task", "task_id", obs.TaskID, "err", safeErr(err))

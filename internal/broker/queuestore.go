@@ -70,11 +70,13 @@ func (s QueueState) Terminal() bool {
 // (B2, D1) is therefore a NEW item that starts at queued with its own id, not
 // a re-entry of this one.
 var validTransition = map[QueueState][]QueueState{
-	// queued -> dead_letter exists for ONE writer: the dispatcher dropping a
-	// broker-initiated CI retry whose vendor spend cap exhausted before it
-	// could dispatch (dropSpendCappedRetryLocked). A human-submitted item is
-	// never dead-lettered from queued — it parks, because a person is waiting
-	// for it.
+	// queued -> dead_letter has TWO writers, both pre-dispatch drops with the
+	// reason in last_error: the dispatcher dropping a broker-initiated CI
+	// retry whose vendor spend cap exhausted (dropSpendCappedRetryLocked),
+	// and the rejection-loop identity guard dropping an item whose work
+	// reached queue.max_denials while it waited (takeDispatchable). A
+	// human-submitted item is otherwise never dead-lettered from queued; it
+	// parks, because a person is waiting for it.
 	QueueQueued:         {QueuePreparing, QueueDeadLetter, QueueCancelled},
 	QueuePreparing:      {QueueRunning, QueueDeadLetter, QueueCancelled},
 	QueueRunning:        {QueueVerifying, QueueAwaitingReview, QueueCompleted, QueueDeadLetter, QueueCancelled},

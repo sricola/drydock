@@ -156,3 +156,14 @@ func TestAppJS_OKGlyphSetIsExactlyOkAndCompleted(t *testing.T) {
 		t.Error("app.js has no isOk classification line; the history glyph logic moved without this test moving with it")
 	}
 }
+
+// TestAppJS_RendersRepeatOfDeniedChip: the brief panel must surface the
+// broker-observed same-diff backstop fact.
+func TestAppJS_RendersRepeatOfDeniedChip(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{"repeat_of_denied", "REPEAT of denied"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q; the brief panel does not render the repeat-of-denied chip", want)
+		}
+	}
+}

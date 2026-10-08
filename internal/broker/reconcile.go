@@ -476,6 +476,7 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 	tr := &taskRun{
 		b: b, ctx: ctx, sw: newDiscardStream(), id: id,
 		repoRef: m.RepoRef, instruction: m.Instruction, platform: m.Platform,
+		rootInstruction: m.RootInstruction, issueURL: m.IssueURL,
 		draft: m.Draft, agentName: m.Agent, st: st, logf: logf,
 		auditPath: filepath.Join(b.AuditRoot, id+".jsonl"),
 		taskStart: time.UnixMilli(m.TaskStartMs),
@@ -540,6 +541,7 @@ func (b *Broker) resumePush(id string, m gateMarker, st taskStage, diff string, 
 		tr.keepStage = true
 		return // leave the marker; next boot resumes
 	}
+	b.recordGateVerdict(tr, cause, trustbrief.HashDiff(diff), "resume")
 	files, insertions, deletions := diffStat(diff)
 	tr.diffFiles = files
 	tr.diffBytes = int64(len(diff))

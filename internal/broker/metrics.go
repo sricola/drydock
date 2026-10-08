@@ -61,6 +61,7 @@ func (tr *taskRun) appendMetrics() {
 		CostUSD:            tr.meteredCostUSD(),
 		WidenRequested:     len(tr.egressExtra),
 		WidenOutcome:       tr.widenOutcome,
+		RepeatOf:           tr.repeatOf,
 	}
 	if tr.subscription {
 		m.Auth = "subscription"

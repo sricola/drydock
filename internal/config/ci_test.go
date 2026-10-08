@@ -242,6 +242,7 @@ func TestExplain_CIProvenance(t *testing.T) {
 	// One env var valid (wins), one env var INVALID (must fall through to yaml).
 	t.Setenv("DRYDOCK_CI_MAX_ATTEMPTS", "3")
 	t.Setenv("DRYDOCK_CI_POLL_INTERVAL", "nonsense")
+	t.Setenv("DRYDOCK_QUEUE_MAX_DENIALS", "3")
 
 	fields, _, err := Explain(p)
 	if err != nil {
@@ -258,6 +259,7 @@ func TestExplain_CIProvenance(t *testing.T) {
 		{"CI.PollInterval", "ci.poll_interval", "DRYDOCK_CI_POLL_INTERVAL", "45s", SourceYAML},
 		{"CI.WatchTimeout", "ci.watch_timeout", "DRYDOCK_CI_WATCH_TIMEOUT", "3h0m0s", SourceYAML},
 		{"CI.MaxAttempts", "ci.max_attempts", "DRYDOCK_CI_MAX_ATTEMPTS", "3", SourceEnv},
+		{"Queue.MaxDenials", "queue.max_denials", "DRYDOCK_QUEUE_MAX_DENIALS", "3", SourceEnv},
 	}
 	for _, w := range want {
 		f, ok := fieldByName(fields, w.name)

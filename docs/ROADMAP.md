@@ -372,8 +372,10 @@ the safety work that makes unattended retry defensible: execution profiles
 `diff_policy` caps with a second-look acknowledgment, the independent verifier
 stage (THREAT_MODEL A9), GitHub issue ingestion behind a plan-mode scope gate,
 the content-addressed dependency cache (the one A7 carve-out), and the global,
-durable, fail-closed usage ceiling (N4). Increment C is the open item and the
-top of the backlog.
+durable, fail-closed usage ceiling (N4). The first of Increment C's four refinements
+(rejection-loop detection) has landed; the remaining three (stale-base
+handling, `needs_input` plus notifications, the terminal queue-record prune
+sweep) stay open at the top of the backlog.
 
 The design rule carried through every increment: **agent-produced text never
 decides a state transition.** A diff, a CI log, a check name, or a PR comment
@@ -396,9 +398,13 @@ before the enqueue, so a crash can end a chain short but never extend it.
 
 ### 5C Refinements: *next*
 Deferred from A and B, in the order they should land:
-- **Rejection-loop detection.** A task whose diff has been denied at the gate
-  repeatedly must stop re-entering the queue and surface as such, rather than
-  spending another attempt on the same rejected change.
+- **Rejection-loop detection.** *Landed.* A queue add whose repo + original
+  instruction, or repo + issue URL, has been denied `queue.max_denials` times
+  (default 2) since its last human approval is refused before any spend, and
+  a queued task whose diff is identical to a denied one is auto-denied before
+  the gate. Human verdicts only, in a durable ledger under `audit_root`; the
+  synchronous path is the override. Spec:
+  `docs/superpowers/specs/2026-10-08-rejection-loop-detection-design.md`.
 - **Stale-base handling.** Detect when the default branch moved under a parked
   or awaiting-review item, and decide once (re-run against the new base, or
   fail closed) instead of pushing a diff computed against a base that no

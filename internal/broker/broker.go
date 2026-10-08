@@ -259,6 +259,16 @@ type Broker struct {
 	// The bound is enforced against the PERSISTED Task/marker (ciretryloop.go),
 	// never an in-memory counter, so a restart cannot launder it.
 	CIMaxAttempts int
+	// Rejections is the durable rejection ledger (rejections.go) every HUMAN
+	// diff-gate verdict is recorded to. nil disables recording and both
+	// guards (tests that build a Broker literal). MaxDenials is config
+	// queue.max_denials, the identity guard's bound; 0 = guards off, even
+	// with a degraded ledger.
+	Rejections *RejectionLedger
+	MaxDenials int
+	// rejectionParkLogged makes the degraded-ledger dispatch park log once
+	// per process rather than once per tick.
+	rejectionParkLogged atomic.Bool
 
 	// OnCIObserved, when set, receives every TERMINAL CI observation the
 	// watcher records, immediately before the marker is deleted. It is the
@@ -636,6 +646,23 @@ type taskRun struct {
 	model       string
 	planOnly    bool
 	issueURL    string
+	// rootInstruction is the chain's ORIGINAL instruction for a CI retry child
+	// (Task.RootInstruction, broker-owned); "" otherwise. The rejection keys
+	// are computed from it when set, so a chain's denials land on one key.
+	// Never populated from a synchronous POST /tasks body (HandleTask zeroes
+	// the field exactly as HandleQueueAdd does).
+	rootInstruction string
+	// fromQueue marks a run dispatched by runQueued. Only the queue path is
+	// subject to the rejection guards; a synchronous submit is the override.
+	// Deliberately a flag of its own rather than onAwaitingReview != nil.
+	fromQueue bool
+	// repeatOf is the task id whose DENIED diff this task's diff is
+	// byte-identical to ("" = no match, or a truncated capture that is never
+	// matched). Surfaced in the brief and the awaiting_approval event on
+	// every path; on the queue path with MaxDenials > 0 it also auto-denies
+	// (autoDenied), which lands the queue item in dead_letter.
+	repeatOf   string
+	autoDenied bool
 	// taskAgent is the agent as REQUESTED by the task ("" = use defaults);
 	// agentName below is what resolveAgent resolved it to. Both are kept
 	// because the audit's drydock_task invocation record must replay the
@@ -774,6 +801,12 @@ func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "repo_ref must be an https/git/ssh URL (no local paths)", http.StatusBadRequest)
 		return
 	}
+	// Broker-owned chain fields are zeroed here exactly as HandleQueueAdd
+	// does: a synchronous body must not choose the rejection key its verdict
+	// records under, nor render as a link in someone else's chain.
+	t.Attempt = 0
+	t.RetryOf = ""
+	t.RootInstruction = ""
 	if !b.acquireSlot() {
 		http.Error(w,
 			"too many concurrent tasks; raise DRYDOCK_MAX_CONCURRENT_TASKS or wait",
@@ -1191,7 +1224,7 @@ func (tr *taskRun) finishPlanned(diff string) {
 	// The brief is written BEFORE the terminal event (the hint below points at
 	// `drydock inspect`, which reads it), recording PlanOnly/IssueURL so the
 	// plan run's provenance survives next to the plan artifact.
-	b.writeBrief(tr, diff)
+	b.writeBrief(tr, diff, trustbrief.Analyze(diff))
 	// Synthetic audit result row mirrors runVerify's verify_failed pattern
 	// (last-wins over the agent's own success row, carrying metered cost).
 	cost := tr.meteredCostUSD()
@@ -1456,6 +1489,48 @@ func (tr *taskRun) runSandbox(args []string) error {
 	return nil
 }
 
+// recordGateVerdict appends a HUMAN diff-gate verdict to the rejection ledger:
+// gateDenied, or gateApproved from a real gate wait. Auto-approve, a timeout,
+// a kill, and a shutdown are not verdicts and write nothing. It is called
+// before the terminal result event is emitted, so a feeder reacting to the
+// stream cannot enqueue ahead of the count moving. A failed append is logged
+// and lost: a lost denial weakens the bound by one, a lost approval leaves a
+// count one too high, and the synchronous path remains the override for both.
+func (b *Broker) recordGateVerdict(tr *taskRun, cause gateCause, diffSHA, path string) {
+	if b.Rejections == nil {
+		return
+	}
+	var kind string
+	switch cause {
+	case gateDenied:
+		kind = RejectionKindDenied
+	case gateApproved:
+		if tr.autoApprove {
+			return // a flag, not a human
+		}
+		kind = RejectionKindApproved
+	default:
+		return
+	}
+	repoKey, instrSHA, _ := RejectionKeys(tr.repoRef, tr.rootInstruction, tr.instruction, tr.issueURL)
+	if err := b.Rejections.Record(RejectionEntry{
+		Kind: kind, AtMs: b.nowMs(), TaskID: tr.id, RepoKey: repoKey,
+		InstructionSHA256: instrSHA, IssueURL: strings.TrimSpace(tr.issueURL),
+		DiffSHA256: diffSHA, Path: path,
+	}); err != nil {
+		slog.Warn("rejection ledger: could not record a gate verdict; the rejection-loop bound is one verdict weaker",
+			"task_id", tr.id, "kind", kind, "err", err)
+	}
+}
+
+// gateVerdictPath labels which gate path wrote a ledger entry (display only).
+func (tr *taskRun) gateVerdictPath() string {
+	if tr.fromQueue {
+		return "queue"
+	}
+	return "live"
+}
+
 // writeBrief assembles and persists the broker-observed evidence report at
 // the diff-approval gate, for every task that produced a diff — including
 // auto-approved ones, where the Brief is the only pre-push record a human
@@ -1463,7 +1538,7 @@ func (tr *taskRun) runSandbox(args []string) error {
 // write failure warns and the gate proceeds rather than failing the task.
 // It returns the DiffFacts it computed so the diff-policy caps check (and
 // later consumers) reuse the one Analyze pass instead of re-parsing the diff.
-func (b *Broker) writeBrief(tr *taskRun, diff string) trustbrief.DiffFacts {
+func (b *Broker) writeBrief(tr *taskRun, diff string, diffFacts trustbrief.DiffFacts) trustbrief.DiffFacts {
 	policy := trustbrief.PolicyFacts{
 		BudgetUSD:      b.TaskBudget,
 		BudgetHard:     b.MaxRequestCostUSD > 0,
@@ -1514,6 +1589,7 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) trustbrief.DiffFacts {
 	}
 	missing = append(missing, "agent summary not captured (broker records no agent claims in v1)")
 
+	diffFacts.RepeatOfDenied = tr.repeatOf
 	brief := trustbrief.Brief{
 		SchemaVersion: 1,
 		TaskID:        tr.id,
@@ -1534,7 +1610,7 @@ func (b *Broker) writeBrief(tr *taskRun, diff string) trustbrief.DiffFacts {
 			USDBrokerMetered: tr.grant.Spent(),
 			DurationMs:       time.Since(tr.taskStart).Milliseconds(),
 		},
-		Diff:            trustbrief.Analyze(diff),
+		Diff:            diffFacts,
 		Verification:    verification,
 		Setup:           setupEv,
 		MissingEvidence: missing,
@@ -1582,7 +1658,23 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	files, insertions, deletions := diffStat(diff)
 	tr.diffFiles = files
 	tr.diffBytes = int64(len(diff))
-	facts := b.writeBrief(tr, diff)
+	facts := trustbrief.Analyze(diff)
+	// The same-diff backstop's LOOKUP happens before the brief is written, so
+	// the brief on disk at gate time records the match on every path. The
+	// hash is over the captured unified diff; a one-byte change evades it,
+	// which is why the identity guard (rejectionGuard), not this, is the
+	// bound. A truncated capture would never be looked up (two different
+	// changes with the same first N bytes hash equal). A degraded ledger looks up nothing: the
+	// human gate still stands.
+	// The capture fails closed (ErrDiffTooLarge) rather than truncating today,
+	// so the Truncated check is a defensive guard.
+	if b.Rejections != nil && b.Rejections.LoadError() == "" && !facts.Truncated {
+		repoKey, _, _ := RejectionKeys(tr.repoRef, tr.rootInstruction, tr.instruction, tr.issueURL)
+		if prior, hit := b.Rejections.DeniedDiff(repoKey, facts.SHA256); hit {
+			tr.repeatOf = prior
+		}
+	}
+	facts = b.writeBrief(tr, diff, facts)
 	// Diff-policy caps are ENFORCEMENT, applied before any gate — including
 	// the auto-approve branch below, which must never bypass them. A blocked
 	// task fails closed: nothing is pushed and it never registers as pending.
@@ -1600,6 +1692,24 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"task_id": tr.id, "reason": reason,
 			"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": cost,
 			"hint": "drydock inspect " + tr.id + " — a diff-policy cap blocked this task before review"})
+		return
+	}
+	// The same-diff backstop's ENFORCEMENT, queue path only, guard on: a
+	// human already rejected exactly this change, so it is not re-posed, and
+	// auto_approve does not get to push it either. Mirrors the policy_blocked
+	// row above. No ledger entry is written: the count is a count of human
+	// verdicts, and the earlier denial already holds the hash.
+	if tr.repeatOf != "" && tr.fromQueue && b.MaxDenials > 0 {
+		cost := tr.meteredCostUSD()
+		fmt.Fprintf(tr.logf,
+			`{"type":"result","subtype":"denied","repeat_of":%q,"is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+			tr.repeatOf, time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
+		tr.outcome = "denied"
+		tr.autoDenied = true
+		tr.sw.emit(map[string]any{"event": "result", "outcome": "denied",
+			"task_id": tr.id, "repeat_of": tr.repeatOf, "diff_bytes": len(diff),
+			"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": cost,
+			"hint": "drydock inspect " + tr.id + ": auto-denied, identical to the diff denied in task " + tr.repeatOf})
 		return
 	}
 	// Second-look acknowledgments (diff_policy.second_look_paths): computed
@@ -1637,6 +1747,9 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 		if len(tr.requiredAcks) > 0 {
 			gateEv["second_look"] = tr.requiredAcks
 		}
+		if tr.repeatOf != "" {
+			gateEv["repeat_of"] = tr.repeatOf
+		}
 		// Surface the verifier's broker-observed verdict to the reviewer at
 		// the gate (advisory verification's whole value lives here).
 		if tr.verify != nil && tr.verify.Status != trustbrief.VerificationNotConfigured {
@@ -1646,6 +1759,7 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	}
 	gateStart := time.Now()
 	approved, cause := b.gatePushMarked(tr.ctx, tr, diff)
+	b.recordGateVerdict(tr, cause, facts.SHA256, tr.gateVerdictPath())
 	if !tr.autoApprove {
 		tr.approvalGateWait = time.Since(gateStart)
 	}

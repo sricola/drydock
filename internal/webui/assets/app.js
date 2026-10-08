@@ -610,6 +610,8 @@ function renderBrief(box, b, ack = null){
     "sha " + safeCell(String(d.sha256 || "")).slice(0, 12) + " · " + Number(d.bytes || 0) + " bytes · " +
     (files.length + Number(d.files_omitted || 0)) + " files (+" + adds + " −" + dels + ")")];
   if (d.truncated) diffKids.push(el("span", { class: "brief-chip warn", text: "TRUNCATED" }));
+  if (d.repeat_of_denied) diffKids.push(el("span", { class: "brief-chip warn",
+    text: "REPEAT of denied " + safeCell(String(d.repeat_of_denied)).slice(0, 12) }));
   box.append(row("diff", "", ...diffKids));
 
   const ackRendered = new Set();
