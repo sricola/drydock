@@ -329,6 +329,8 @@ type Config struct {
 	// default; see CIConfig.
 	CI CIConfig `yaml:"ci"`
 
+	// Queue configures the rejection-loop detection knobs for the durable queue
+	// path only. Off (MaxDenials=0) by default in Phase 5; ships ON after.
 	Queue QueueConfig `yaml:"queue"`
 
 	// Where state lives
@@ -424,7 +426,7 @@ func Defaults() *Config {
 			WatchTimeout: DefaultCIWatchTimeout,
 			MaxAttempts:  0, // explicit: bounded retry (B2) ships OFF
 		},
-		Queue: QueueConfig{MaxDenials: DefaultQueueMaxDenials},
+		Queue:                  QueueConfig{MaxDenials: DefaultQueueMaxDenials},
 		Notifications:          true,
 		LogJSON:                false,
 		StrictContainerVersion: false,
