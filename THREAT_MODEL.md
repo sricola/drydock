@@ -800,6 +800,24 @@ be set for any `openai_compat` lane where streaming is expected;
 that holds for a lane configured with no `prices` (which meters at $0 by
 construction, so `global_budget_usd` can never trip on it).
 
+**Rejection-loop detection (`queue.max_denials`, default `2`).** The queue
+path refuses a task whose repo + original instruction, or repo + issue URL, a
+human has denied `max_denials` times at the diff gate since the last human
+approval, and auto-denies a queued diff identical to one already denied. The
+ledger it reads (`<audit_root>/rejections/ledger.jsonl`) holds gate causes,
+hashes, task ids, and the operator-supplied issue URL only: no agent, issue,
+or CI text can reach it, trip it, or clear it, because a denial is a human
+`deny`, a reset is a human `approve`, and an issue author editing the issue
+changes neither key. Stated limits: the diff hash is exact, so a one-byte
+change evades the backstop (the identity guard is the bound); same-key tasks
+already running when a denial lands finish on their own gates, so the per-key
+bound is `max_denials + max_concurrent_tasks` runs; the synchronous
+`drydock submit` path is the deliberate override and is never refused; and an
+unreadable ledger fails closed on the queue path only. Verified by
+`TestRejectionLoop_ThirdEnqueueRefusedBeforeSpend`,
+`TestRejectionLoop_IssueKeyTripsAcrossEditedInstruction`, and
+`TestRejectionLoop_RepeatDiffNeverReposesGate`.
+
 ### N5. Compromise of the host's git remote credentials
 
 `gh` on the host uses the operator's GitHub credentials to push and

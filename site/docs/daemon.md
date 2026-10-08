@@ -30,6 +30,14 @@ Size `max_concurrent_tasks` and `task_budget_usd` with a queue-drain worst case
 in mind: absent an aggregate cap, worst-case burn is
 `max_concurrent_tasks × task_budget_usd` per drain.
 
+- **An unattended daemon will not loop on a change you keep rejecting.** A
+  queue add for a repo + instruction (or repo + issue) you have denied
+  `queue.max_denials` times (default 2) is refused before any spend, and a
+  queued task that reproduces a diff you already denied is auto-denied before
+  the gate. Items already running when you deny are not touched, so the bound
+  per key is `max_denials` plus `max_concurrent_tasks` runs. See
+  [Rejection-loop detection](configuration.html#rejection-loop-detection-queue-path-only-on-by-default).
+
 ## Install
 
 ```bash

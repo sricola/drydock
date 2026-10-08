@@ -571,6 +571,34 @@ whether the running daemon agrees. An item already parked in `awaiting_ci`
 when the watch is switched off is terminated honestly at the next boot
 (`dead_letter`, "no CI conclusion was observed") rather than left hanging.
 
+## Rejection-loop detection (queue path only, on by default)
+
+brokerd keeps a ledger of human diff-gate verdicts at
+`<audit_root>/rejections/ledger.jsonl` (hashes, task ids, and the issue URL
+you passed; never instruction or diff text). Two guards read it, both on the
+**queue path only**:
+
+- **The identity guard.** A `drydock queue add` (or `POST /queue`) whose
+  canonical repository plus original instruction, or repository plus issue
+  URL, has been **denied** `max_denials` times at the diff gate since its last
+  human approval is refused with HTTP 409 before any VM boots. Nothing is
+  persisted, so a feeder script that re-adds the same issue every few minutes
+  cannot grow the audit dir. The issue-URL key is there because an issue's
+  title and body belong to its author: editing the issue does not reset the
+  count. An item that was already queued when its key reached the bound is
+  dead-lettered at dispatch, with the reason in `drydock queue list`'s REASON
+  column. A bounded CI retry child goes through the same check.
+- **The same-diff backstop.** A queued task whose captured diff is
+  byte-identical to a diff already denied for that repository is auto-denied
+  before the gate (`outcome=denied`, `repeat_of=<earlier task>`, queue state
+  `dead_letter`), even with `--auto-approve`. The hash is over the whole
+  captured diff, so a one-byte change evades it, and a truncated capture is
+  never matched; the identity guard is the bound, this is the backstop.
+
+```yaml
+queue:
+  max_denials: 2   # 0 = off (the ledger is still written); max 10
+
 ## Bring your own model
 
 `opencode` reaches any OpenAI-compatible endpoint via the `openai_compat` block

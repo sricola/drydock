@@ -635,6 +635,16 @@ blocked** — and likewise never reaches the gate. `drydock tasks`, `drydock
 stats`, and the web UI all show these outcomes distinctly from `pushed` and
 `push_failed`.
 
+On the queue path, a diff that is byte-identical to one you already denied
+for the same repository is **auto-denied** before the gate: `outcome=denied`
+with `repeat_of=<the earlier task>` on the audit row, queue state
+`dead_letter`, and `drydock queue list` says `auto-denied: identical to the
+diff denied in task <id>`. A synchronous `drydock submit` is never
+auto-denied; it shows a `REPEAT` line in the brief instead. And a
+`drydock queue add` for work you have denied repeatedly is refused up front;
+see
+[Rejection-loop detection](configuration.html#rejection-loop-detection-queue-path-only-on-by-default).
+
 ## Operator surface
 
 ```bash
