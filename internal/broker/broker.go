@@ -1658,7 +1658,22 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	files, insertions, deletions := diffStat(diff)
 	tr.diffFiles = files
 	tr.diffBytes = int64(len(diff))
-	facts := b.writeBrief(tr, diff, trustbrief.Analyze(diff))
+	facts := trustbrief.Analyze(diff)
+	// The same-diff backstop's LOOKUP happens before the brief is written, so
+	// the brief on disk at gate time records the match on every path. The
+	// hash is over the captured unified diff; a one-byte change evades it,
+	// which is why the identity guard (rejectionGuard), not this, is the
+	// bound. A TRUNCATED capture is never looked up: two different changes
+	// with the same first N bytes hash equal, and a false auto-deny would
+	// kill a legitimate queued task. A degraded ledger looks up nothing: the
+	// human gate still stands.
+	if b.Rejections != nil && b.Rejections.LoadError() == "" && !facts.Truncated {
+		repoKey, _, _ := RejectionKeys(tr.repoRef, tr.rootInstruction, tr.instruction, tr.issueURL)
+		if prior, hit := b.Rejections.DeniedDiff(repoKey, facts.SHA256); hit {
+			tr.repeatOf = prior
+		}
+	}
+	facts = b.writeBrief(tr, diff, facts)
 	// Diff-policy caps are ENFORCEMENT, applied before any gate — including
 	// the auto-approve branch below, which must never bypass them. A blocked
 	// task fails closed: nothing is pushed and it never registers as pending.
@@ -1676,6 +1691,24 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"task_id": tr.id, "reason": reason,
 			"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": cost,
 			"hint": "drydock inspect " + tr.id + " — a diff-policy cap blocked this task before review"})
+		return
+	}
+	// The same-diff backstop's ENFORCEMENT, queue path only, guard on: a
+	// human already rejected exactly this change, so it is not re-posed, and
+	// auto_approve does not get to push it either. Mirrors the policy_blocked
+	// row above. No ledger entry is written: the count is a count of human
+	// verdicts, and the earlier denial already holds the hash.
+	if tr.repeatOf != "" && tr.fromQueue && b.MaxDenials > 0 {
+		cost := tr.meteredCostUSD()
+		fmt.Fprintf(tr.logf,
+			`{"type":"result","subtype":"denied","repeat_of":%q,"is_error":false,"duration_ms":%d,%s,"num_turns":0,"src":"broker"}`+"\n",
+			tr.repeatOf, time.Since(tr.taskStart).Milliseconds(), tr.brokerResultSpendFields())
+		tr.outcome = "denied"
+		tr.autoDenied = true
+		tr.sw.emit(map[string]any{"event": "result", "outcome": "denied",
+			"task_id": tr.id, "repeat_of": tr.repeatOf, "diff_bytes": len(diff),
+			"duration_ms": time.Since(tr.taskStart).Milliseconds(), "cost_usd": cost,
+			"hint": "drydock inspect " + tr.id + ": auto-denied, identical to the diff denied in task " + tr.repeatOf})
 		return
 	}
 	// Second-look acknowledgments (diff_policy.second_look_paths): computed
@@ -1712,6 +1745,9 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 			"review":  "drydock review " + tr.id}
 		if len(tr.requiredAcks) > 0 {
 			gateEv["second_look"] = tr.requiredAcks
+		}
+		if tr.repeatOf != "" {
+			gateEv["repeat_of"] = tr.repeatOf
 		}
 		// Surface the verifier's broker-observed verdict to the reviewer at
 		// the gate (advisory verification's whole value lives here).

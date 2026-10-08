@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,6 +23,14 @@ func rejectionQueueBroker(t *testing.T, maxConcurrent int, runs *atomic.Int32) *
 		_, _ = io.WriteString(stdout, `{"type":"result","subtype":"success"}`+"\n")
 		return nil
 	})
+	// Each stage yields a distinct diff: these tests exercise the identity
+	// guard, and a repeated byte-identical diff would trip the same-diff
+	// backstop instead.
+	var stageN atomic.Int32
+	b.prepareStage = func(context.Context, string, string) (taskStage, error) {
+		return &fakeStage{workDir: t.TempDir(),
+			diff: "diff --git a/x b/x\n+y" + strconv.Itoa(int(stageN.Add(1))) + "\n"}, nil
+	}
 	b.Rejections = mustOpenRejections(t, b.AuditRoot)
 	b.MaxDenials = 2
 	return b

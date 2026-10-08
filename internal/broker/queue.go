@@ -569,6 +569,11 @@ func (b *Broker) runQueued(it QueueItem) {
 	}
 
 	to, lastErr := queueTerminal(tr.outcome, ctx.Err() != nil)
+	if tr.autoDenied {
+		// A broker decision nobody asked for is dead_letter with the reason
+		// (the repo's own rule, see dropQueuedLocked), not cancelled.
+		to, lastErr = QueueDeadLetter, "auto-denied: identical to the diff denied in task "+tr.repeatOf
+	}
 	if _, err := b.setQueueState(it.ID, to, func(q *QueueItem) {
 		q.LastError = lastErr
 	}); err != nil {
