@@ -18,6 +18,10 @@ func runStatus() {
 		fmt.Printf("brokerd     up\n")
 		fmt.Printf("in flight   %d setting up · %d running · %d verifying · %d awaiting egress · %d awaiting diff · %d pushing\n",
 			h.SettingUp, h.Running, h.Verifying, h.AwaitingEgress, h.PendingApproval, h.Pushing)
+		if h.RejectionLedgerError != "" {
+			fmt.Printf("WARNING     rejection ledger unreadable: %s. queue adds are refused and dispatch is parked; the file is %s\n",
+				h.RejectionLedgerError, filepath.Join(auditDir(), "rejections", "ledger.jsonl"))
+		}
 	} else if brokerdDown(err) {
 		fmt.Printf("brokerd     down — start it with `drydock start`\n")
 	} else {
@@ -52,6 +56,8 @@ type healthBody struct {
 	Verifying       int  `json:"verifying"`
 	PendingApproval int  `json:"pending_approval"`
 	Pushing         int  `json:"pushing"`
+
+	RejectionLedgerError string `json:"rejection_ledger_error"`
 }
 
 func health() (healthBody, error) {

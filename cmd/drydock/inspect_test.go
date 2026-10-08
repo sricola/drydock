@@ -511,3 +511,12 @@ func TestRunInspect_NonPlanBriefHasNoPlanLines(t *testing.T) {
 		t.Errorf("non-plan brief rendered issue/plan lines:\n%s", out)
 	}
 }
+
+func TestPrintBrief_RepeatOfDeniedLine(t *testing.T) {
+	b := trustbrief.Brief{TaskID: "0123456789abcdef0123456789abcdef"}
+	b.Diff.RepeatOfDenied = "fedcba9876543210fedcba9876543210"
+	out := captureStdout(t, func() { printBrief(b) })
+	if !strings.Contains(out, "REPEAT   identical to the diff denied in task fedcba9876543210fedcba9876543210") {
+		t.Fatalf("printBrief output lacks the REPEAT line:\n%s", out)
+	}
+}

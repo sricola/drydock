@@ -88,6 +88,8 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"verifying":        verifying,
 		"pending_approval": pendingApproval,
 		"pushing":          pushing,
+
+		"rejection_ledger_error": b.rejectionLedgerError(),
 	})
 }
 

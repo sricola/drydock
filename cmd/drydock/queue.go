@@ -124,6 +124,28 @@ func postQueueAdd(req taskRequest) (string, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		var refusal struct {
+			Error         string   `json:"error"`
+			Repo          string   `json:"repo"`
+			IssueURL      string   `json:"issue_url"`
+			Denials       int      `json:"denials"`
+			DeniedTaskIDs []string `json:"denied_task_ids"`
+			Hint          string   `json:"hint"`
+			Reason        string   `json:"reason"`
+		}
+		if json.Unmarshal(msg, &refusal) == nil {
+			switch refusal.Error {
+			case "rejection_loop":
+				where := refusal.Repo
+				if refusal.IssueURL != "" {
+					where += " (" + refusal.IssueURL + ")"
+				}
+				return "", fmt.Errorf("refused: %s\n  work: %s\n  denied tasks: %s",
+					refusal.Hint, where, strings.Join(refusal.DeniedTaskIDs, ", "))
+			case "rejection_ledger_degraded":
+				return "", fmt.Errorf("brokerd cannot evaluate the rejection history (%s); queue adds are refused until it is repaired (see `drydock status`)", refusal.Reason)
+			}
+		}
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 	var out struct {

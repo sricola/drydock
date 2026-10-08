@@ -405,3 +405,12 @@ func (b *Broker) rejectionGuard(t Task) error {
 	}
 	return nil
 }
+
+// rejectionLedgerError is "" when the ledger is healthy or absent, else the
+// path-free reason it is degraded (rendered on /healthz and by drydock status).
+func (b *Broker) rejectionLedgerError() string {
+	if b.Rejections == nil {
+		return ""
+	}
+	return b.Rejections.LoadError()
+}
