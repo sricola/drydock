@@ -30,7 +30,7 @@ func TestWriteBrief_BrokerObservedFields(t *testing.T) {
 		st:        &fakeStage{workDir: t.TempDir()},
 	}
 
-	b.writeBrief(tr, "diff --git a/x b/x\nnew file mode 100755\n+y\n")
+	b.writeBrief(tr, "diff --git a/x b/x\nnew file mode 100755\n+y\n", trustbrief.Analyze("diff --git a/x b/x\nnew file mode 100755\n+y\n"))
 
 	got, err := trustbrief.Read(auditRoot, tr.id)
 	if err != nil {
@@ -96,7 +96,7 @@ func TestWriteBrief_SoftBudgetReported(t *testing.T) {
 		repoRef: "https://github.com/o/r.git", agentName: "claude",
 		grant: &fakeGrant{}, taskStart: time.Now(), st: &fakeStage{workDir: t.TempDir()},
 	}
-	b.writeBrief(tr, "diff --git a/x b/x\n+y\n")
+	b.writeBrief(tr, "diff --git a/x b/x\n+y\n", trustbrief.Analyze("diff --git a/x b/x\n+y\n"))
 	got, err := trustbrief.Read(auditRoot, tr.id)
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestWriteBrief_UnmeteredLaneReportsUnbounded(t *testing.T) {
 		repoRef: "https://github.com/o/r.git", agentName: "claude", taskVendor: "anthropic",
 		grant: &fakeGrant{}, taskStart: time.Now(), st: &fakeStage{workDir: t.TempDir()},
 	}
-	b.writeBrief(tr, "diff --git a/x b/x\n+y\n")
+	b.writeBrief(tr, "diff --git a/x b/x\n+y\n", trustbrief.Analyze("diff --git a/x b/x\n+y\n"))
 	got, err := trustbrief.Read(auditRoot, tr.id)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestWriteBrief_MeteredLaneUnsetRequestCapReportsDefault(t *testing.T) {
 		repoRef: "https://github.com/o/r.git", agentName: "claude", taskVendor: "openai",
 		grant: &fakeGrant{}, taskStart: time.Now(), st: &fakeStage{workDir: t.TempDir()},
 	}
-	b.writeBrief(tr, "diff --git a/x b/x\n+y\n")
+	b.writeBrief(tr, "diff --git a/x b/x\n+y\n", trustbrief.Analyze("diff --git a/x b/x\n+y\n"))
 	got, err := trustbrief.Read(auditRoot, tr.id)
 	if err != nil {
 		t.Fatal(err)

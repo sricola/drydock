@@ -108,7 +108,7 @@ func (tr *taskRun) runVerify(diff string) bool {
 		// brief, so a verify_failed task must leave the same evidence (brief
 		// with the full Verification block; the .diff was already written at
 		// capture time) a gated task would.
-		b.writeBrief(tr, diff)
+		b.writeBrief(tr, diff, trustbrief.Analyze(diff))
 		// Synthetic audit result row mirrors finishPush's push_failed pattern
 		// (last-wins over the agent's own success row, carrying metered cost).
 		cost := tr.meteredCostUSD()

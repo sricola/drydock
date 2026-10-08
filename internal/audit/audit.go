@@ -115,6 +115,9 @@ type Metrics struct {
 	CostUSD            float64 `json:"cost_usd"`
 	WidenRequested     int     `json:"widen_requested"`
 	WidenOutcome       string  `json:"widen_outcome"`
+	// RepeatOf is the task id whose denied diff this task's diff matched
+	// (rejection-loop backstop); omitted when it matched nothing.
+	RepeatOf string `json:"repeat_of,omitempty"`
 }
 
 // readFirstMeta parses the first line of r as a {"type":"drydock_meta"} record.

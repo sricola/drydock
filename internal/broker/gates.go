@@ -178,6 +178,7 @@ func (b *Broker) gatePushMarked(ctx context.Context, tr *taskRun, diff string) (
 			diffPath := b.persistDiff(tr.id, diff)
 			if werr := writeGateMarker(b.AuditRoot, tr.id, gateMarker{
 				RepoRef: tr.repoRef, Instruction: tr.instruction, Platform: tr.platform,
+				RootInstruction: tr.rootInstruction, IssueURL: tr.issueURL,
 				Agent: tr.agentName, Draft: tr.draft,
 				TaskStartMs: tr.taskStart.UnixMilli(),
 			}); werr != nil {

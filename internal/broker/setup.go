@@ -116,7 +116,7 @@ func (tr *taskRun) runSetup() bool {
 		// registered at mint time. The trust brief is persisted BEFORE the
 		// terminal event (diff is empty — no agent ran, so there is none) so
 		// `drydock inspect` shows the full Setup evidence block.
-		b.writeBrief(tr, "")
+		b.writeBrief(tr, "", trustbrief.Analyze(""))
 		// Synthetic audit result row mirrors runVerify's verify_failed pattern
 		// (last-wins, src:"broker", carrying metered cost — zero here, since
 		// no bearer ever existed inside a VM).

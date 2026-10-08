@@ -598,6 +598,18 @@ func main() {
 	}
 	// Host-side CI observation (increment B). Off unless ci.watch is set.
 	applyCIConfig(b, cfg.CI)
+	// The rejection ledger (5C rejection-loop detection). Opened before
+	// ResumeAwaiting so a gate resumed after a restart records its verdict.
+	// A degraded ledger is logged here and surfaced on /healthz; with
+	// queue.max_denials > 0 the guards then fail closed (503 on POST /queue,
+	// dispatch parks) until the named line is repaired and brokerd restarts.
+	b.MaxDenials = cfg.Queue.MaxDenials
+	rejections, rerr := broker.OpenRejectionLedger(cfg.AuditRoot)
+	if rerr != nil {
+		slog.Warn("rejection ledger unreadable; queue adds are refused and dispatch parks until it is repaired",
+			"path", broker.RejectionLedgerPath(cfg.AuditRoot), "err", rerr)
+	}
+	b.Rejections = rejections
 	if squidCtl != nil {
 		b.Squid = squidCtl
 	}

@@ -98,7 +98,11 @@ type DiffFacts struct {
 	Truncated    bool         `json:"truncated"`
 	Files        []FileChange `json:"files"`
 	FilesOmitted int          `json:"files_omitted,omitempty"`
-	Flags        []Flag       `json:"flags"`
+	// RepeatOfDenied is the task id whose DENIED diff this diff is
+	// byte-identical to (broker-looked-up in the rejection ledger); omitted
+	// when there is no match or the capture was truncated.
+	RepeatOfDenied string `json:"repeat_of_denied,omitempty"`
+	Flags          []Flag `json:"flags"`
 }
 
 // Bounds. The diff body is attacker-controlled: a hostile task can emit any
