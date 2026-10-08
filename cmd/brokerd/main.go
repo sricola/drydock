@@ -606,7 +606,11 @@ func main() {
 	b.MaxDenials = cfg.Queue.MaxDenials
 	rejections, rerr := broker.OpenRejectionLedger(cfg.AuditRoot)
 	if rerr != nil {
-		slog.Warn("rejection ledger unreadable; queue adds are refused and dispatch parks until it is repaired",
+		effect := "queue adds are refused and dispatch parks until it is repaired"
+		if cfg.Queue.MaxDenials <= 0 {
+			effect = "queue.max_denials is 0, so nothing is refused; the ledger is still recorded"
+		}
+		slog.Warn("rejection ledger unreadable; "+effect,
 			"path", broker.RejectionLedgerPath(cfg.AuditRoot), "err", rerr)
 	}
 	b.Rejections = rejections

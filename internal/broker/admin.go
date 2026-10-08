@@ -89,6 +89,7 @@ func (b *Broker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"pending_approval":       pendingApproval,
 		"pushing":                pushing,
 		"rejection_ledger_error": b.rejectionLedgerError(),
+		"queue_max_denials":      b.MaxDenials,
 	})
 }
 

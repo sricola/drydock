@@ -9,10 +9,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 
+	"drydock/internal/remote"
 	"drydock/internal/repokey"
 	"drydock/internal/trustbrief"
 )
@@ -89,8 +91,8 @@ func (e RejectionEntry) validate() error {
 //   - instructionSHA: the hash of the ORIGINAL instruction, rootInstruction
 //     when set (a CI retry child; the broker is that field's only writer),
 //     else instruction.
-//   - issueKey: repoKey + "\n" + issueURL, or "" when there is no issue. The
-//     URL is the operator's --issue value; the issue AUTHOR cannot change it
+//   - issueKey: repoKey + "\n" + the canonical issue URL, or "" when there is
+//     no (parseable) issue. The URL is the operator's --issue value; the issue AUTHOR cannot change it
 //     by editing the issue, which is the whole point of the second key.
 func RejectionKeys(repoRef, rootInstruction, instruction, issueURL string) (repoKey, instructionSHA, issueKey string) {
 	root := rootInstruction
@@ -99,10 +101,20 @@ func RejectionKeys(repoRef, rootInstruction, instruction, issueURL string) (repo
 	}
 	repoKey = strings.ToLower(repokey.Normalize(repoRef))
 	instructionSHA = trustbrief.HashInstruction(root)
-	if u := strings.TrimSpace(issueURL); u != "" {
-		issueKey = repoKey + "\n" + u
+	return repoKey, instructionSHA, issueKeyFor(repoKey, issueURL)
+}
+
+// issueKeyFor canonicalizes the operator's issue URL through
+// remote.ParseIssueURL (scheme, host case, trailing slash, fragment and
+// owner/repo case all collapse) so spelling drift cannot reset a count, and
+// so a raw value can never collide with the instruction-key namespace. An
+// unparseable URL yields no issue key.
+func issueKeyFor(repoKey, issueURL string) string {
+	owner, repo, n, err := remote.ParseIssueURL(issueURL)
+	if err != nil {
+		return ""
 	}
-	return repoKey, instructionSHA, issueKey
+	return repoKey + "\n" + "github.com/" + strings.ToLower(owner) + "/" + strings.ToLower(repo) + "/issues/" + strconv.Itoa(n)
 }
 
 type rejectionKeyState struct {
@@ -183,7 +195,7 @@ func OpenRejectionLedger(auditRoot string) (*RejectionLedger, error) {
 		}
 		var e RejectionEntry
 		if err := json.Unmarshal(line, &e); err != nil {
-			if i == last {
+			if i == last && data[len(data)-1] != '\n' {
 				slog.Warn("rejection ledger: dropping a torn trailing line (crash mid-append)", "path", l.path)
 				continue
 			}
@@ -209,7 +221,9 @@ func (l *RejectionLedger) LoadError() string {
 
 // Record appends e (O_APPEND + fsync, 0600, O_NOFOLLOW) and updates the index
 // only once the line is durably on disk, so a failed append leaves memory and
-// disk agreeing that the verdict was lost.
+// disk agreeing that the verdict was lost. (A Sync or Close failure after a
+// successful Write can leave the line on disk but not in the index until the
+// next boot; that is an under-count until then, the accepted direction.)
 func (l *RejectionLedger) Record(e RejectionEntry) error {
 	if err := e.validate(); err != nil {
 		return fmt.Errorf("rejection ledger: %w", err)
@@ -221,40 +235,41 @@ func (l *RejectionLedger) Record(e RejectionEntry) error {
 	line = append(line, '\n')
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// Check if file ends with a newline. If a previous append was torn,
-	// the fragment may still be on disk without a trailing newline.
-	// We need to find and truncate to the last complete line before appending.
-	var needsRepair bool
-	var lastNewlinePos int64
+	// Torn-tail repair. A crash mid-append can leave a last line with no
+	// trailing newline. If that tail parses and validates it is a real verdict
+	// (the loader indexed it): keep it and write a separating newline first.
+	// Otherwise truncate to just after the last newline. Any read error
+	// returns without writing anything: a lost verdict only under-counts.
+	var prefix []byte
+	var truncateTo int64 = -1
 	if fi, err := os.Stat(l.path); err == nil && fi.Size() > 0 {
-		// Use a read-only handle to check and locate the last newline
 		rf, err := os.OpenFile(l.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-		if err == nil {
-			defer rf.Close()
-			// Read last byte to check if file ends with newline
-			lastByte := make([]byte, 1)
-			if _, err := rf.ReadAt(lastByte, fi.Size()-1); err == nil && lastByte[0] != '\n' {
-				needsRepair = true
-				// Find the last newline by reading the file
-				data := make([]byte, fi.Size())
-				if _, err := rf.ReadAt(data, 0); err == nil {
-					// Find the last newline
-					for i := len(data) - 1; i >= 0; i-- {
-						if data[i] == '\n' {
-							lastNewlinePos = int64(i + 1)
-							break
-						}
-					}
-				}
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(io.LimitReader(rf, rejectionLedgerMaxBytes+1))
+		rf.Close()
+		if err != nil {
+			return err
+		}
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			pos := bytes.LastIndexByte(data, '\n') + 1
+			var te RejectionEntry
+			if json.Unmarshal(bytes.TrimSpace(data[pos:]), &te) == nil && te.validate() == nil {
+				prefix = []byte{'\n'}
+			} else {
+				truncateTo = int64(pos)
 			}
 		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	// If repair needed, truncate to last complete line before appending
-	if needsRepair {
-		if err := os.Truncate(l.path, lastNewlinePos); err != nil {
+	if truncateTo >= 0 {
+		if err := os.Truncate(l.path, truncateTo); err != nil {
 			return err
 		}
 	}
+	line = append(prefix, line...)
 	// Now append the new entry
 	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
@@ -277,8 +292,8 @@ func (l *RejectionLedger) Record(e RejectionEntry) error {
 
 func (l *RejectionLedger) applyLocked(e RejectionEntry) {
 	keys := []string{instructionKey(e.RepoKey, e.InstructionSHA256)}
-	if u := strings.TrimSpace(e.IssueURL); u != "" {
-		keys = append(keys, e.RepoKey+"\n"+u)
+	if k := issueKeyFor(e.RepoKey, e.IssueURL); k != "" {
+		keys = append(keys, k)
 	}
 	for _, k := range keys {
 		st := l.byKey[k]

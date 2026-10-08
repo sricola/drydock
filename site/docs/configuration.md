@@ -592,8 +592,7 @@ you passed; never instruction or diff text). Two guards read it, both on the
   byte-identical to a diff already denied for that repository is auto-denied
   before the gate (`outcome=denied`, `repeat_of=<earlier task>`, queue state
   `dead_letter`), even with `--auto-approve`. The hash is over the whole
-  captured diff, so a one-byte change evades it, and a truncated capture is
-  never matched; the identity guard is the bound, this is the backstop.
+  captured diff, so a one-byte change evades it; the identity guard is the bound, this is the backstop.
 
 ```yaml
 queue:

@@ -345,6 +345,9 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (retryID,
 		}
 		return "", "retry deferred: the durable enqueue-once marker could not be written (a full or read-only disk); nothing was enqueued, so the decision is re-asked next tick", true
 	}
+	// The guard is re-asked inside Enqueue; a trip or degradation in the window
+	// between gate 9a and here ends the chain through the enqueue-failure
+	// refusal below, which is the safe direction.
 	childID, err := b.Enqueue(child)
 	if err != nil {
 		slog.Warn("ci retry: could not enqueue the retry task", "task_id", obs.TaskID, "err", safeErr(err))

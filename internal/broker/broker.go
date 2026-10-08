@@ -1663,10 +1663,11 @@ func (tr *taskRun) pushAndOpenPR(diff string) {
 	// the brief on disk at gate time records the match on every path. The
 	// hash is over the captured unified diff; a one-byte change evades it,
 	// which is why the identity guard (rejectionGuard), not this, is the
-	// bound. A TRUNCATED capture is never looked up: two different changes
-	// with the same first N bytes hash equal, and a false auto-deny would
-	// kill a legitimate queued task. A degraded ledger looks up nothing: the
+	// bound. A truncated capture would never be looked up (two different
+	// changes with the same first N bytes hash equal). A degraded ledger looks up nothing: the
 	// human gate still stands.
+	// The capture fails closed (ErrDiffTooLarge) rather than truncating today,
+	// so the Truncated check is a defensive guard.
 	if b.Rejections != nil && b.Rejections.LoadError() == "" && !facts.Truncated {
 		repoKey, _, _ := RejectionKeys(tr.repoRef, tr.rootInstruction, tr.instruction, tr.issueURL)
 		if prior, hit := b.Rejections.DeniedDiff(repoKey, facts.SHA256); hit {

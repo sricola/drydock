@@ -224,9 +224,7 @@ bounded by the same park bound), so a transient fault does not end a chain.
 In `pushAndOpenPR`, the broker computes the diff facts once, and if the diff
 is not truncated looks `facts.SHA256` up in the repository's `denied_diffs`
 **before** the brief is written, so the brief on disk at gate time carries
-the match. A truncated diff (the capture hit `MaxDiffBytes`) is never looked
-up: two different changes with the same first N bytes would hash equal, and
-a false auto-deny would kill a legitimate queued task.
+the match. The capture fails closed on an oversized diff rather than truncating, so a truncated diff cannot reach this point; the `Truncated` check stays as a defensive guard.
 
 **Queue path** (the run was dispatched by `runQueued`, marked by a
 `fromQueue` flag on the run; `onAwaitingReview` is not used as the

@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,7 +119,7 @@ func TestRejectionLedger_DenialsReturnsMaxOfBothKeys(t *testing.T) {
 	_ = l.Record(rtEntry(RejectionKindDenied, rtID2, repo, i1, url, "d2"))
 	// After two denials under same instruction but one with issue:
 	// i1 alone: 2 denials (both affect instruction key)
-	// i1+issue: max(2, 2) = 2
+	// i1+issue: max(2, 1) = 2
 	if n, _ := l.Denials(repo, i1, ""); n != 2 {
 		t.Fatalf("instruction key: %d denials, want 2", n)
 	}
@@ -240,9 +241,9 @@ func TestRejectionLedger_InvisibleToAuditConsumers(t *testing.T) {
 }
 
 // TestRejectionLedger_TornFragmentFixedBeforeAppend verifies that when a
-// previous Record was torn (fragment on disk without trailing newline), the
-// next Record detects this and writes a separating newline before appending,
-// preventing fusion of the fragment and the new line into one unparseable line.
+// previous Record was torn (an unparseable fragment on disk without trailing
+// newline), the next Record truncates the file back to the last complete line
+// before appending, so the fragment cannot fuse with the new line.
 func TestRejectionLedger_TornFragmentFixedBeforeAppend(t *testing.T) {
 	root := t.TempDir()
 	path := RejectionLedgerPath(root)
@@ -277,5 +278,122 @@ func TestRejectionLedger_TornFragmentFixedBeforeAppend(t *testing.T) {
 	}
 	if n, _ := l2.Denials("github.com/o/r", strings.Repeat("b", 64), ""); n != 1 {
 		t.Fatalf("new entry lost: %d denials", n)
+	}
+}
+
+func rtLine(t *testing.T, e RejectionEntry) string {
+	t.Helper()
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// A newline-less tail that parses and validates is a real verdict: Record
+// must keep it (write a separating newline) rather than truncate it.
+func TestRejectionLedger_ParseableNewlinelessTailSurvives(t *testing.T) {
+	root := t.TempDir()
+	path := RejectionLedgerPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	body := rtLine(t, rtEntry(RejectionKindDenied, rtID1, "github.com/o/r", a, "", "d1")) + "\n" +
+		rtLine(t, rtEntry(RejectionKindDenied, rtID2, "github.com/o/r", a, "", "d2")) // no newline
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := OpenRejectionLedger(root)
+	if err != nil || l.LoadError() != "" {
+		t.Fatalf("open: %v %q", err, l.LoadError())
+	}
+	if n, _ := l.Denials("github.com/o/r", a, ""); n != 2 {
+		t.Fatalf("denials=%d, want 2", n)
+	}
+	if err := l.Record(rtEntry(RejectionKindDenied, rtID3, "github.com/o/r", b, "", "d3")); err != nil {
+		t.Fatal(err)
+	}
+	l2, err := OpenRejectionLedger(root)
+	if err != nil || l2.LoadError() != "" {
+		t.Fatalf("reopen degraded: %v %q", err, l2.LoadError())
+	}
+	if n, _ := l2.Denials("github.com/o/r", a, ""); n != 2 {
+		t.Fatalf("after reopen a-denials=%d, want 2 (tail verdict lost)", n)
+	}
+	if n, _ := l2.Denials("github.com/o/r", b, ""); n != 1 {
+		t.Fatalf("after reopen b-denials=%d, want 1", n)
+	}
+}
+
+// A read error during the torn-tail repair must write nothing and must not
+// truncate the ledger.
+func TestRejectionLedger_RepairReadErrorWritesNothing(t *testing.T) {
+	root := t.TempDir()
+	l, _ := OpenRejectionLedger(root)
+	path := RejectionLedgerPath(root)
+	a := strings.Repeat("a", 64)
+	body := rtLine(t, rtEntry(RejectionKindDenied, rtID1, "github.com/o/r", a, "", "d1")) + "\n" + `{"kind":"den`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Skip("cannot chmod:", err)
+	}
+	defer os.Chmod(path, 0o600)
+	if f, err := os.Open(path); err == nil {
+		f.Close()
+		t.Skip("file still readable (running as root?)")
+	}
+	if err := l.Record(rtEntry(RejectionKindDenied, rtID2, "github.com/o/r", a, "", "d2")); err == nil {
+		t.Fatal("Record must return the read error")
+	}
+	os.Chmod(path, 0o600)
+	got, _ := os.ReadFile(path)
+	if string(got) != body {
+		t.Fatalf("ledger modified after a failed repair read: %q", got)
+	}
+	if n, _ := l.Denials("github.com/o/r", a, ""); n != 0 {
+		t.Fatalf("index counted a verdict that was not written: %d", n)
+	}
+}
+
+// A newline-terminated garbage last line is not a torn append: it degrades.
+func TestRejectionLedger_NewlineTerminatedGarbageTailDegrades(t *testing.T) {
+	root := t.TempDir()
+	path := RejectionLedgerPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	good := rtLine(t, rtEntry(RejectionKindDenied, rtID1, "github.com/o/r", strings.Repeat("a", 64), "", "d1"))
+	if err := os.WriteFile(path, []byte(good+"\nnot json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := OpenRejectionLedger(root)
+	if err == nil || !strings.Contains(l.LoadError(), "line 2") {
+		t.Fatalf("want degraded naming line 2, got err=%v load=%q", err, l.LoadError())
+	}
+}
+
+func TestRejectionKeys_IssueURLCanonicalized(t *testing.T) {
+	spell := []string{
+		"github.com/o/r/issues/42",
+		"https://github.com/O/R/issues/42/",
+		"https://github.com/o/r/issues/42#issuecomment-1",
+		"  https://www.github.com/o/R/issues/42  ",
+	}
+	_, _, want := RejectionKeys("https://github.com/o/r.git", "", "x", spell[0])
+	if want == "" {
+		t.Fatal("canonical spelling produced no issue key")
+	}
+	for _, s := range spell[1:] {
+		if _, _, k := RejectionKeys("https://github.com/o/r.git", "", "x", s); k != want {
+			t.Errorf("%q: key %q, want %q", s, k, want)
+		}
+	}
+	for _, bad := range []string{"#abc123", "https://gitlab.com/o/r/issues/1", "junk", ""} {
+		if _, _, k := RejectionKeys("https://github.com/o/r.git", "", "x", bad); k != "" {
+			t.Errorf("%q: issue key %q, want none", bad, k)
+		}
 	}
 }

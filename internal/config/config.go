@@ -330,7 +330,7 @@ type Config struct {
 	CI CIConfig `yaml:"ci"`
 
 	// Queue configures the rejection-loop detection knobs for the durable queue
-	// path only. Off (MaxDenials=0) by default in Phase 5; ships ON after.
+	// path only. Default 2 (on); 0 turns both guards off.
 	Queue QueueConfig `yaml:"queue"`
 
 	// Where state lives
