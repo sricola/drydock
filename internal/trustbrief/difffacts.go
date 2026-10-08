@@ -111,13 +111,20 @@ const (
 	maxHeaderLine   = 4096 // git header lines are short; longer prefixes are content
 )
 
+// HashDiff returns the hex SHA-256 of a unified diff: the exact value Analyze
+// records as DiffFacts.SHA256, for callers that need the hash without the
+// structural pass (the rejection ledger keys denied diffs on it).
+func HashDiff(diff string) string {
+	sum := sha256.Sum256([]byte(diff))
+	return hex.EncodeToString(sum[:])
+}
+
 // Analyze computes DiffFacts from a unified diff produced by the host-side
 // `git diff --cached` (stage.CaptureDiff). The diff FRAMING (headers, mode
 // lines) is trusted git output; the CONTENT lines are attacker data and are
 // only ever counted, never interpreted.
 func Analyze(diff string) DiffFacts {
-	sum := sha256.Sum256([]byte(diff))
-	facts := DiffFacts{SHA256: hex.EncodeToString(sum[:]), Bytes: len(diff), Files: []FileChange{}, Flags: []Flag{}}
+	facts := DiffFacts{SHA256: HashDiff(diff), Bytes: len(diff), Files: []FileChange{}, Flags: []Flag{}}
 
 	flagged := map[string][]string{} // kind -> capped example paths, deduped by linear scan
 	addFlag := func(kind, p string) {
