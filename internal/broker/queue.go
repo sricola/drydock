@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"drydock/internal/egress"
@@ -66,6 +67,12 @@ func (b *Broker) Enqueue(t Task) (string, error) {
 		if err := egress.ValidateDomains(t.EgressExtra); err != nil {
 			return "", fmt.Errorf("egress_extra invalid: %w", err)
 		}
+	}
+	// The identity guard (rejections.go). Refused before an id is minted, so
+	// nothing is persisted and a feeder retrying every few minutes cannot
+	// grow the audit dir.
+	if err := b.rejectionGuard(t); err != nil {
+		return "", err
 	}
 	id := newID()
 	now := b.nowMs()
@@ -222,6 +229,31 @@ func (b *Broker) takeDispatchable() (QueueItem, bool) {
 		if it.State != QueueQueued {
 			continue // defensive: the in-memory queue should only hold queued items
 		}
+		// The identity guard, re-asked at dispatch: an item enqueued before
+		// its key's last denial landed must not run on the strength of having
+		// beaten the bound to the queue, and ResumeQueue re-appends surviving
+		// items without Enqueue. Placed before the spend cap and the global
+		// claim so a refusal leaks nothing. A degraded ledger parks everything
+		// (a fault to wait out, like the ceiling's `unmeasured` branch) and
+		// logs once per process; a tripped bound drops the item with the
+		// reason in last_error.
+		if err := b.rejectionGuard(it.Task); err != nil {
+			var loop *RejectionLoopError
+			if errors.As(err, &loop) {
+				b.dropQueuedLocked(it,
+					fmt.Sprintf("dropped before dispatch: this work has been denied %d times at the diff gate since its last approval (queue.max_denials %d; denied tasks: %s)",
+						loop.Denials, loop.MaxDenials, strings.Join(loop.DeniedTaskIDs, ", ")),
+					"queue: dropped an item whose work reached the rejection-loop bound while it waited")
+				b.queue = append(b.queue[:i], b.queue[i+1:]...)
+				i--
+				continue
+			}
+			if b.rejectionParkLogged.CompareAndSwap(false, true) {
+				slog.Warn("queue: parking every queued item because the rejection ledger is unreadable; repair it and restart brokerd",
+					"reason", safeErr(err))
+			}
+			continue
+		}
 		if b.vendorExceeded(it.Task.Agent) {
 			if it.Task.RetryOf == "" {
 				continue // spend-parked: stays queued, next tick re-checks
@@ -343,15 +375,23 @@ const globalCeilingDropTail = " A broker-initiated ci retry is refused rather th
 // "did not reach a clean finish" terminal, it is visibly not a success in every
 // surface that renders an item, and last_error says exactly what happened.
 func (b *Broker) dropSpendCappedRetryLocked(it QueueItem, why string) {
+	b.dropQueuedLocked(it, why, "queue: dropped a spend-capped ci retry rather than parking it")
+}
+
+// dropQueuedLocked dead-letters a still-queued item with why in last_error.
+// dead_letter, not cancelled: nobody cancelled it; it is the queue's existing
+// "did not reach a clean finish" terminal and is visibly not a success. The
+// durable write can fail (a full or read-only disk), but the DECISION does
+// not depend on it: the next boot's ResumeQueue re-loads and re-drops.
+func (b *Broker) dropQueuedLocked(it QueueItem, why, logMsg string) {
 	if _, err := b.setQueueStateLocked(it.ID, QueueDeadLetter, func(q *QueueItem) {
 		q.LastError = why
 	}); err != nil {
-		slog.Warn("queue: could not persist the drop of a spend-capped ci retry; it will not dispatch in this process and the next boot re-drops it",
+		slog.Warn("queue: could not persist a pre-dispatch drop; it will not dispatch in this process and the next boot re-drops it",
 			"task_id", it.ID, "err", err)
 		return
 	}
-	slog.Info("queue: dropped a spend-capped ci retry rather than parking it",
-		"task_id", it.ID, "retry_of", it.Task.RetryOf, "attempt", it.Task.Attempt)
+	slog.Info(logMsg, "task_id", it.ID, "retry_of", it.Task.RetryOf, "attempt", it.Task.Attempt)
 }
 
 // vendorExceeded reports whether the aggregate spend cap is exhausted for the

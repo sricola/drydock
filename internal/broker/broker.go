@@ -266,6 +266,9 @@ type Broker struct {
 	// with a degraded ledger.
 	Rejections *RejectionLedger
 	MaxDenials int
+	// rejectionParkLogged makes the degraded-ledger dispatch park log once
+	// per process rather than once per tick.
+	rejectionParkLogged atomic.Bool
 
 	// OnCIObserved, when set, receives every TERMINAL CI observation the
 	// watcher records, immediately before the marker is deleted. It is the

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 
@@ -175,7 +177,25 @@ func (b *Broker) HandleQueueAdd(w http.ResponseWriter, r *http.Request) {
 	t.RootInstruction = ""
 	id, err := b.Enqueue(t)
 	if err != nil {
-		http.Error(w, safeErr(err), http.StatusBadRequest)
+		var loop *RejectionLoopError
+		var degraded *RejectionLedgerDegradedError
+		switch {
+		case errors.As(err, &loop):
+			slog.Warn("queue: refused an enqueue at the rejection-loop bound",
+				"repo", loop.RepoKey, "issue_url", loop.IssueURL, "denials", loop.Denials,
+				"max_denials", loop.MaxDenials, "denied_task_ids", loop.DeniedTaskIDs)
+			writeJSONStatus(w, http.StatusConflict, map[string]any{
+				"error": "rejection_loop", "repo": loop.RepoKey, "issue_url": loop.IssueURL,
+				"denials": loop.Denials, "max_denials": loop.MaxDenials,
+				"denied_task_ids": loop.DeniedTaskIDs, "hint": loop.Hint(),
+			})
+		case errors.As(err, &degraded):
+			writeJSONStatus(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "rejection_ledger_degraded", "reason": safeStr(degraded.Reason),
+			})
+		default:
+			http.Error(w, safeErr(err), http.StatusBadRequest)
+		}
 		return
 	}
 	writeJSON(w, map[string]any{"event": "queued", "task_id": id})
@@ -370,5 +390,13 @@ func (b *Broker) signal(w http.ResponseWriter, r *http.Request, ok bool) {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeJSONStatus is writeJSON with an explicit status code (the JSON 409/503
+// refusal bodies; http.Error would write text/plain).
+func writeJSONStatus(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }

@@ -355,3 +355,53 @@ func (l *RejectionLedger) DeniedDiff(repoKey, diffSHA string) (string, bool) {
 	id, ok := l.diffs[repoKey][diffSHA]
 	return id, ok
 }
+
+// RejectionLoopError is the identity guard's refusal: a key has reached
+// MaxDenials since its last human approval.
+type RejectionLoopError struct {
+	RepoKey       string
+	IssueURL      string
+	Denials       int
+	MaxDenials    int
+	DeniedTaskIDs []string
+}
+
+func (e *RejectionLoopError) Error() string {
+	return fmt.Sprintf("rejection loop: this work was denied %d time(s) at the diff gate for %s since its last approval (queue.max_denials %d); change the instruction, or run it synchronously with drydock submit to override",
+		e.Denials, e.RepoKey, e.MaxDenials)
+}
+
+// Hint is the operator-facing remedy rendered into the 409 body.
+func (e *RejectionLoopError) Hint() string {
+	return fmt.Sprintf("this work was denied %d times at the diff gate since its last approval; change the instruction, or run it synchronously with drydock submit to override", e.Denials)
+}
+
+// RejectionLedgerDegradedError is the fail-closed refusal: the ledger could
+// not be read, so the bound cannot be evaluated and nothing is admitted.
+type RejectionLedgerDegradedError struct{ Reason string }
+
+func (e *RejectionLedgerDegradedError) Error() string {
+	return "rejection ledger unreadable (" + e.Reason + "); queue adds are refused and dispatch is parked until it is repaired"
+}
+
+// rejectionGuard is the identity guard. nil = admit. Consulted by Enqueue
+// (POST /queue), by takeDispatchable (items that were queued before a denial
+// landed, and items ResumeQueue re-appended without Enqueue), and by
+// maybeEnqueueCIRetry (before the enqueue-once mark); never by the
+// synchronous POST /tasks path. Off (MaxDenials <= 0) is identity even when
+// the ledger is degraded.
+func (b *Broker) rejectionGuard(t Task) error {
+	if b.Rejections == nil || b.MaxDenials <= 0 {
+		return nil
+	}
+	if reason := b.Rejections.LoadError(); reason != "" {
+		return &RejectionLedgerDegradedError{Reason: reason}
+	}
+	repoKey, instrSHA, issueKey := RejectionKeys(t.RepoRef, t.RootInstruction, t.Instruction, t.IssueURL)
+	n, ids := b.Rejections.Denials(repoKey, instrSHA, issueKey)
+	if n >= b.MaxDenials {
+		return &RejectionLoopError{RepoKey: repoKey, IssueURL: strings.TrimSpace(t.IssueURL),
+			Denials: n, MaxDenials: b.MaxDenials, DeniedTaskIDs: ids}
+	}
+	return nil
+}
