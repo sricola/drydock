@@ -54,8 +54,9 @@ make test-integration   # boot brokerd as a subprocess; macOS only, needs the co
 ```
 
 GitHub Actions runs `go build`, `go test -race`, `go vet`, `staticcheck`
-(`make lint`, version pinned in the Makefile and `test.yml` together), and
-`govulncheck` on every push/PR.
+(`make lint`; the staticcheck and x/tools versions are pinned in the tool
+module `tools/staticcheck/go.mod`, which the Makefile and `test.yml` both
+build from), and `govulncheck` on every push/PR.
 Integration (`make test-integration`) requires the `container` runtime and is
 macOS-only; it runs locally, not in CI. No real Anthropic or OpenAI spend.
 
