@@ -5,6 +5,56 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## v0.8.1 (2026-10-09)
+
+A patch release one day after v0.8.0: the Go toolchain moves to 1.27.2 for
+ten standard-library security advisories, and the Claude subscription
+credential no longer dies about ninety minutes after `drydock auth claude`.
+Nothing about the task lifecycle, configuration, or on-disk formats changes;
+the sandbox image is rebuilt by `drydock setup` as usual.
+
+### Security
+
+- **Go 1.27.2.** govulncheck began failing every build on GO-2026-6603,
+  -6605, -6607 through -6613, and -6617 (crypto/tls, net/http,
+  net/http/internal/http2, mime/multipart), all found in 1.27.1 and fixed
+  in 1.27.2. `go.mod`, the in-image toolchain pin and its per-arch checksums
+  (re-pinned from go.dev), the CLI's image language table, and the
+  reproducible-build instructions in SECURITY.md and the Makefile all name
+  1.27.2, since the byte-for-byte claim only holds against the toolchain
+  that built the release. The rebuilt sandbox image passes the daily CVE gate.
+
+### Fixed
+
+- **The Claude subscription credential survives Claude Code's token
+  rotation.** `drydock auth claude` copies Claude Code's own OAuth grant from
+  the macOS Keychain, and OAuth refresh tokens are single-use: whichever
+  client refreshes first rotates the pair and invalidates the other's copy.
+  Claude Code refreshes whenever it is used, so brokerd's copy was dead by
+  its first expiry, about ninety minutes after import; the gateway then
+  answered every agent request `502 credential unavailable`, Claude Code
+  retried ten times and exited, and `drydock doctor` reported `oauth:
+  refresh failed: token endpoint returned 400`. brokerd now re-reads the
+  Keychain before any refresh of its own and adopts Claude Code's rotation
+  (refreshing with Claude Code's refresh token only if that copy is also
+  past the margin), persisting it to `~/.drydock/claude-oauth.json`; only an
+  identical grant falls through to the previous own-refresh and
+  disk-recovery paths. brokerd never writes to the Keychain, so if it does
+  refresh first (Claude Code idle with an expired token) Claude Code may ask
+  for `claude login` again; the authentication doc says so. `drydock doctor`
+  prints a `claude keychain` line showing whether the two copies agree. The
+  Keychain parser moved to `internal/claudekeychain`, shared by the CLI,
+  doctor, and the broker. Validated against a stored copy that had been
+  expired for ten hours.
+
+### Changed
+
+- **staticcheck builds from a pinned tool module.** Go 1.27.2 moved the
+  compiler's export-data format, and staticcheck v0.8.1 (and its main
+  branch) pins an x/tools that cannot decode it, so `make lint` and CI now
+  build the analyzer from `tools/staticcheck/go.mod` (staticcheck v0.8.1
+  with x/tools v0.51.0) and run the binary. Both pins live in that one file.
+
 ## v0.8.0 (2026-10-08)
 
 A minor release in three parts: the first of the orchestration refinements
