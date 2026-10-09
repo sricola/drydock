@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"drydock/internal/claudekeychain"
 	"drydock/internal/config"
 	"drydock/internal/defaults"
 	"drydock/internal/egress"
@@ -215,6 +216,13 @@ func runDoctor(args []string) {
 					failed = true
 				} else {
 					step(p.Agent+" subscription", true, "token valid")
+				}
+				// The Claude grant is shared with Claude Code, which rotates it.
+				// brokerd re-imports from the Keychain on expiry; show whether
+				// the two copies agree now so a divergence is visible before
+				// it costs a task. Informational: never fails doctor.
+				if p.Agent == "claude" {
+					step("claude keychain", true, keychainSyncState(config.Dir(), p))
 				}
 			}
 		} else {
@@ -455,4 +463,26 @@ func loopbackOnlyDNS(scutilOut string) bool {
 		}
 	}
 	return total > 0 && loop == total
+}
+
+// keychainSyncState compares the Claude grant brokerd holds on disk with the
+// one Claude Code holds in the Keychain. Both copies start identical at
+// `drydock auth claude`; Claude Code rotates its copy on every refresh, and
+// brokerd adopts that rotation from the Keychain when its own copy nears
+// expiry. The returned string is operator-facing and carries no token bytes.
+func keychainSyncState(cfgDir string, p provider.Provider) string {
+	file, ferr := p.LoadOAuthSnap(cfgDir)
+	kc, kerr := claudekeychain.Read()
+	switch {
+	case kerr != nil:
+		return "not readable (" + kerr.Error() + "); brokerd will refresh on its own"
+	case ferr != nil:
+		return "readable; no stored copy to compare (run drydock auth claude)"
+	case kc.Refresh == file.Refresh:
+		return "in sync with ~/.drydock (same grant)"
+	case kc.Expiry.After(file.Expiry):
+		return "rotated by Claude Code since the last import; brokerd adopts it on expiry"
+	default:
+		return "differs from ~/.drydock (stored copy is newer); brokerd keeps the stored copy"
+	}
 }

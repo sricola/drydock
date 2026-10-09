@@ -61,6 +61,23 @@ type OAuthCred struct {
 	snap    CredSnapshot
 	store   CredStore
 	refresh func(refreshToken string) (CredSnapshot, error)
+	// reimport, when set, re-reads the SHARED source this grant was copied
+	// from (the Claude Code Keychain) and is consulted BEFORE any refresh of
+	// our own. OAuth refresh tokens are single-use: whichever client refreshes
+	// first rotates the pair and invalidates the other's copy, and Claude Code
+	// refreshes whenever it is used, so a copy taken at `drydock auth claude`
+	// is dead within one access-token lifetime unless brokerd adopts Claude
+	// Code's rotation instead of racing it. ok=false means "nothing to adopt"
+	// and the credential falls through to its own refresh. nil = no shared
+	// source (tests, Codex).
+	reimport func() (CredSnapshot, bool)
+}
+
+// SetReimport installs the shared-source re-import hook (see the field).
+func (c *OAuthCred) SetReimport(fn func() (CredSnapshot, bool)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reimport = fn
 }
 
 // NewOAuthCred creates an OAuthCred with refreshAnthropic as the default refresh func.
@@ -78,6 +95,17 @@ func (c *OAuthCred) Current() (string, error) {
 	defer c.mu.Unlock()
 
 	if time.Until(c.snap.Expiry) <= oauthRefreshMargin {
+		// Shared source first. If the Keychain already holds a rotated grant
+		// (a different refresh token), adopting it is the only move that does
+		// not break one of the two clients: our own refresh token is dead if
+		// Claude Code rotated it, and refreshing with it would only earn a 400.
+		if adopted, ok := c.adoptFromSharedSource(); ok {
+			c.snap = adopted
+			if err := c.store.Save(c.snap); err != nil {
+				return "", fmt.Errorf("oauth: persist failed: %w", err)
+			}
+			return c.snap.Access, nil
+		}
 		newSnap, err := c.refresh(c.snap.Refresh)
 		if err != nil {
 			// Our in-memory refresh token may have been rotated out from under
@@ -102,6 +130,34 @@ func (c *OAuthCred) Current() (string, error) {
 	}
 
 	return c.snap.Access, nil
+}
+
+// adoptFromSharedSource consults the reimport hook. It adopts the shared grant
+// only when that grant carries a DIFFERENT refresh token than ours (someone
+// rotated it): still-valid, it is adopted as is; past the margin, it is
+// refreshed with ITS refresh token, the live one. An identical grant means
+// nobody rotated yet and we are first, so the caller proceeds with its own
+// refresh; a missing hook, a failed read, or an empty refresh token likewise
+// returns ok=false.
+func (c *OAuthCred) adoptFromSharedSource() (CredSnapshot, bool) {
+	if c.reimport == nil {
+		return CredSnapshot{}, false
+	}
+	shared, ok := c.reimport()
+	if !ok || shared.Refresh == "" || shared.Refresh == c.snap.Refresh {
+		return CredSnapshot{}, false
+	}
+	if time.Until(shared.Expiry) > oauthRefreshMargin {
+		return shared, true
+	}
+	fresh, err := c.refresh(shared.Refresh)
+	if err != nil {
+		return CredSnapshot{}, false
+	}
+	if fresh.Refresh == "" {
+		fresh.Refresh = shared.Refresh
+	}
+	return fresh, true
 }
 
 // recoverFromDisk handles a refresh failure caused by another process rotating

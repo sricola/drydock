@@ -68,6 +68,21 @@ export DRYDOCK_OPENAI_AUTH=subscription      # or set openai_auth: subscription 
 drydock start
 ```
 
+**The Claude credential is shared with Claude Code, and brokerd keeps it
+fresh by re-reading the Keychain.** `drydock auth claude` copies the grant
+`claude login` stored in the macOS Keychain; it does not create a second
+login. OAuth refresh tokens are single-use, so whichever client refreshes
+first rotates the pair and invalidates the other's copy, and Claude Code
+refreshes whenever it is used. When brokerd's copy nears expiry (about
+every ninety minutes) it therefore re-reads the Keychain first and adopts
+Claude Code's rotation, writing it to `~/.drydock/claude-oauth.json`; only
+if the Keychain holds the same grant does brokerd refresh on its own. Two
+consequences: the daemon runs unattended for as long as `claude login` is
+valid on the machine, and if brokerd does refresh first (Claude Code idle
+with an expired token), Claude Code may ask you to `claude login` again.
+`drydock doctor` prints a `claude keychain` line showing whether the two
+copies agree. brokerd never writes to the Keychain.
+
 <details>
 <summary><b>Important: subscription-mode limits and terms-of-service risk</b></summary>
 

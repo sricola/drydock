@@ -47,35 +47,6 @@ func TestAuthUsage_ExcludesOpencode(t *testing.T) {
 	}
 }
 
-func TestParseClaudeCreds(t *testing.T) {
-	raw := []byte(`{"claudeAiOauth":{"accessToken":"a1","refreshToken":"r1","expiresAt":1750000000000}}`)
-	snap, err := parseClaudeCreds(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snap.Access != "a1" || snap.Refresh != "r1" {
-		t.Fatalf("snap=%+v", snap)
-	}
-	// expiresAt 1750000000000 ms → time.UnixMilli(1750000000000)
-	want := time.UnixMilli(1750000000000)
-	if !snap.Expiry.Equal(want) {
-		t.Fatalf("snap.Expiry = %v, want %v", snap.Expiry, want)
-	}
-}
-
-func TestParseClaudeCreds_NotLoggedIn(t *testing.T) {
-	if _, err := parseClaudeCreds([]byte(`{}`)); err == nil {
-		t.Error("want error for empty creds")
-	}
-}
-
-func TestParseClaudeCreds_EmptyAccessToken(t *testing.T) {
-	raw := []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"r1","expiresAt":1750000000000}}`)
-	if _, err := parseClaudeCreds(raw); err == nil {
-		t.Error("want error for empty accessToken")
-	}
-}
-
 func makeJWTExp(exp int64) string {
 	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d,"chatgpt_account_id":"SHOULD_NOT_BE_LOGGED"}`, exp)))
 	return "h." + payload + ".s"
@@ -143,12 +114,6 @@ func TestJWTExpiry_PayloadNotJSON(t *testing.T) {
 func TestJWTExpiry_NoExpClaim(t *testing.T) {
 	if _, err := jwtExpiry(jwtWithPayload(`{"chatgpt_account_id":"x"}`)); err == nil {
 		t.Error("want error when the JWT carries no exp claim")
-	}
-}
-
-func TestParseClaudeCreds_MalformedJSON(t *testing.T) {
-	if _, err := parseClaudeCreds([]byte(`{not valid json`)); err == nil {
-		t.Error("want error for malformed keychain JSON")
 	}
 }
 

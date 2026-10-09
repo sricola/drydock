@@ -6,46 +6,15 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"drydock/internal/claudekeychain"
 	"drydock/internal/config"
 	"drydock/internal/gwcreds"
 	"drydock/internal/provider"
 )
-
-// keychainService is the service name Claude Code uses in the macOS Keychain.
-const keychainService = "Claude Code-credentials"
-
-// claudeKeychainBlob is the JSON shape stored by `claude login` in the macOS
-// Keychain. Only `claudeAiOauth` is relevant; other top-level keys are ignored.
-type claudeKeychainBlob struct {
-	ClaudeAiOauth struct {
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-		ExpiresAt    int64  `json:"expiresAt"` // Unix epoch in milliseconds
-	} `json:"claudeAiOauth"`
-}
-
-// parseClaudeCreds unmarshals the raw JSON blob from the macOS Keychain and
-// returns a gwcreds.CredSnapshot. Returns an error if the blob contains no
-// access token (i.e. the operator is not logged in).
-func parseClaudeCreds(raw []byte) (gwcreds.CredSnapshot, error) {
-	var blob claudeKeychainBlob
-	if err := json.Unmarshal(raw, &blob); err != nil {
-		return gwcreds.CredSnapshot{}, fmt.Errorf("auth: parse keychain blob: %w", err)
-	}
-	if blob.ClaudeAiOauth.AccessToken == "" {
-		return gwcreds.CredSnapshot{}, fmt.Errorf("auth: no Claude credentials found — run `claude login` first")
-	}
-	return gwcreds.CredSnapshot{
-		Access:  blob.ClaudeAiOauth.AccessToken,
-		Refresh: blob.ClaudeAiOauth.RefreshToken,
-		Expiry:  time.UnixMilli(blob.ClaudeAiOauth.ExpiresAt),
-	}, nil
-}
 
 // authAgents returns the names of agents whose provider has an OAuthBackend,
 // i.e. agents that `drydock auth` can actually bootstrap credentials for.
@@ -147,11 +116,7 @@ func printAgentValidity(p provider.Provider, snap gwcreds.CredSnapshot) {
 // Keychain into drydock's store. Returns an error (never exits) so callers —
 // the auth subcommand and the setup wizard — can react.
 func bootstrapClaudeCred(cfgDir string) error {
-	out, err := exec.Command("security", "find-generic-password", "-s", keychainService, "-w").Output()
-	if err != nil {
-		return fmt.Errorf("could not read Claude credentials from Keychain — run `claude login` first")
-	}
-	snap, err := parseClaudeCreds(out)
+	snap, err := claudekeychain.Read()
 	if err != nil {
 		return err
 	}
