@@ -31,9 +31,9 @@ RUN apt-get update && apt-get upgrade -y \
 # BEFORE extraction: a compromised go.dev/CDN or a corrupted transfer can no
 # longer substitute a malicious archive. Bump the sums with GO_VERSION, from
 # https://go.dev/dl/?mode=json.
-ARG GO_VERSION=1.27.1
-ARG GO_SHA256_amd64=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
-ARG GO_SHA256_arm64=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
+ARG GO_VERSION=1.27.2
+ARG GO_SHA256_amd64=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
+ARG GO_SHA256_arm64=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
 RUN ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
       amd64) GO_SHA256="$GO_SHA256_amd64" ;; \

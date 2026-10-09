@@ -101,7 +101,7 @@ packages; attach SPDX/CycloneDX to each GitHub release.
 
 ### 2.4 Reproducible builds: *landed*
 The release **binaries are byte-for-byte reproducible** (`-trimpath` + the
-`go 1.27.1` toolchain on darwin/arm64). Each release publishes a per-binary
+`go 1.27.2` toolchain on darwin/arm64). Each release publishes a per-binary
 `*-bin.sha256`, and `make verify-build SUMS=…` rebuilds and checks against it;
 see SECURITY.md "Verifying a release". The tarball itself is not byte-stable
 (tar/gzip metadata); making the archive deterministic is a possible follow-up,
@@ -122,7 +122,7 @@ but the binaries inside it (what actually runs) are verifiable.
   weekly bump lane (`cmd/cli-bump -before`) so a bump never leaves a
   freshly pinned package unresolvable against a stale cutoff; the Debian
   snapshot (`DEBIAN_SNAPSHOT`) is bumped by hand;
-- the Go toolchain is pinned to `go 1.27.1` in `go.mod`;
+- the Go toolchain is pinned to `go 1.27.2` in `go.mod`;
 - `go.sum` pins module checksums.
 
 Accepted residuals: a dated snapshot buys reproducibility, not provenance,
