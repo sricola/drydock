@@ -194,11 +194,14 @@ vet:
 	go vet ./...
 
 # Deeper static analysis than `go vet` (unused code, simplifications, bug
-# patterns). Go-native via pinned `go run`, matching the SBOM tool pattern;
-# no global install needed. CI runs this on every PR.
-STATICCHECK_VERSION := v0.8.1
+# patterns). Built from the pinned tool module tools/staticcheck (its go.mod
+# holds the staticcheck AND x/tools pins: Go 1.27.2 moved the export-data
+# format and staticcheck's own x/tools cannot read it), so no global install
+# and no `go run pkg@version` drift. CI runs the same two commands on every PR.
 lint:
-	go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
+	@mkdir -p $(BIN)
+	cd tools/staticcheck && go build -o ../../$(BIN)/staticcheck honnef.co/go/tools/cmd/staticcheck
+	$(BIN)/staticcheck ./...
 
 image: image-sandbox image-anchor
 
