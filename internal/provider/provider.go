@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"path/filepath"
 
+	"drydock/internal/claudekeychain"
 	"drydock/internal/gateway"
 	"drydock/internal/gwcreds"
 )
@@ -82,7 +83,12 @@ var Registry = []Provider{
 			if err != nil {
 				return gateway.Backend{}, err
 			}
-			return gateway.Backend{Vendor: gateway.AnthropicOAuthVendor(), Cred: gwcreds.NewOAuthCred(snap, store)}, nil
+			cred := gwcreds.NewOAuthCred(snap, store)
+			// The copied grant is Claude Code's own, and Claude Code keeps
+			// rotating it; re-read the Keychain before ever refreshing it
+			// ourselves (see claudekeychain and OAuthCred.SetReimport).
+			cred.SetReimport(claudekeychain.Snapshot)
+			return gateway.Backend{Vendor: gateway.AnthropicOAuthVendor(), Cred: cred}, nil
 		},
 		LoadOAuthSnap: func(cfgDir string) (gwcreds.CredSnapshot, error) {
 			return gwcreds.FileCredStore(filepath.Join(cfgDir, oauthFileClaud)).Load()
