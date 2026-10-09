@@ -19,7 +19,7 @@ func imageLanguages() []imageLang {
 	return []imageLang{
 		{Name: "node", Version: "22"},
 		{Name: "python", Version: "3.11"},
-		{Name: "go", Version: "1.27.1"},
+		{Name: "go", Version: "1.27.2"},
 	}
 }
 
