@@ -155,5 +155,5 @@ locally instead. From a macOS 26 Apple-silicon machine with the runtime:
   wrap). Contribution slot.
 - **Apple `container`** moves fast (1.x; brokerd checks the major version
   only, and each release is validated by hand against the current minor,
-  1.5.0 as of v0.8.1); flag drift is the most likely breakage source.
+  1.5.0 as of v0.8.2); flag drift is the most likely breakage source.
   `DRYDOCK_STRICT_CONTAINER_VERSION=1` fails closed on drift.
