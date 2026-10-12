@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"time"
 
 	"drydock/internal/brokerclient"
 	"drydock/internal/webui"
@@ -77,7 +78,11 @@ func runUI(args []string) {
 	if *open {
 		_ = exec.Command("open", url).Start() // macOS; best-effort
 	}
-	if err := http.Serve(ln, srv.Handler()); err != nil {
+	// ReadHeaderTimeout bounds a slow-loris client holding the loopback
+	// listener's connections open, matching brokerd's own server. No
+	// ReadTimeout/WriteTimeout: /api/submit legitimately waits on brokerd.
+	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	if err := hs.Serve(ln); err != nil {
 		die("ui server: %v", err)
 	}
 }

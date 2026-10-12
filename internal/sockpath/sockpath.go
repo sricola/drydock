@@ -7,6 +7,7 @@
 package sockpath
 
 import (
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -27,6 +28,34 @@ func Default() string {
 
 // EnsureParent makes the socket's parent directory at mode 0700. brokerd
 // calls this before listen(); the CLI doesn't need to.
+//
+// For drydock's OWN per-uid directory (the parent of Default()) it also
+// enforces what MkdirAll does not: an existing directory is tightened to
+// 0700 (MkdirAll leaves an existing mode alone), and a symlink in its place
+// is refused, since whoever planted it would otherwise choose where the
+// admin socket is created. An operator-chosen path (config `broker.socket`
+// / BROKER_SOCKET) may sit in a directory drydock does not own, such as
+// /tmp; its mode is the operator's business and is left alone.
 func EnsureParent(sock string) error {
-	return os.MkdirAll(filepath.Dir(sock), 0o700)
+	dir := filepath.Dir(sock)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if dir != filepath.Dir(Default()) {
+		return nil
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("sockpath: %s is a symlink; refusing to create the socket under it", dir)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("sockpath: %s is not a directory", dir)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		return os.Chmod(dir, 0o700)
+	}
+	return nil
 }

@@ -416,6 +416,11 @@ func (g *Gateway) director(req *http.Request) {
 		// optional /v1 prefix so either OPENAI_BASE_URL form maps correctly.
 		req.URL.Path = singleJoiningSlash(vt.v.BasePath, strings.TrimPrefix(req.URL.Path, "/v1"))
 	}
+	// ServeHTTP accepts the per-task token from X-Goog-Api-Key for every
+	// vendor (the Gemini CLI presents it there). Drop it here, before the
+	// vendor injector runs, so a task token never reaches a non-Google
+	// upstream; the Google injector re-sets the header with the real key.
+	req.Header.Del("X-Goog-Api-Key")
 	vt.v.Inject(req, rc.secret)
 }
 

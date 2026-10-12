@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,7 +83,12 @@ func LoadAPIKeys(path string) (map[string]string, error) {
 // WriteAPIKey upserts key=value in the store at path, preserving the other
 // recognized key. 0600, atomic temp+rename; the parent dir is created 0700.
 func WriteAPIKey(path, key, value string) error {
-	keys, _ := LoadAPIKeys(path)
+	keys, err := LoadAPIKeys(path)
+	if err != nil {
+		// A partial load means a rewrite would drop every key after the bad
+		// line. Refuse rather than silently lose a credential.
+		return fmt.Errorf("api-keys: cannot rewrite %s after a partial read (fix or remove the offending line by hand): %w", path, err)
+	}
 	keys[key] = value
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
