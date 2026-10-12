@@ -1,17 +1,10 @@
 package broker
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sort"
-	"strings"
-	"syscall"
 
-	"drydock/internal/atomicfile"
 	"drydock/internal/remote"
 )
 
@@ -132,112 +125,69 @@ type ciMarker struct {
 
 const ciSuffix = ".ci.json"
 
+var ciStore = markerStore[ciMarker]{suffix: ciSuffix, what: "cimarker"}
+
 // ciMarkerPath builds the marker path. Callers MUST have validated id against
-// queueIDRE first — every entry point below does, before any path is built.
+// queueIDRE first; every markerStore entry point does, before any path is built.
 func ciMarkerPath(auditRoot, id string) string {
 	return filepath.Join(auditRoot, id+ciSuffix)
 }
 
-// writeCIMarker durably persists m under auditRoot. Same idiom as
-// writeQueueItem: id validated before a path exists (traversal guard),
-// atomicfile.Write (temp + rename) so a crash mid-write can never leave a
-// truncated marker where a whole one is expected, and 0600 because the marker
-// carries the repo ref and PR URL.
+// writeCIMarker durably persists m under auditRoot (markerStore: id validated
+// before a path exists, atomic fsynced write, 0600 because the marker carries
+// the repo ref and PR URL).
 func writeCIMarker(auditRoot string, m ciMarker) error {
-	if !queueIDRE.MatchString(m.TaskID) {
-		return fmt.Errorf("cimarker: invalid task id %q", m.TaskID)
-	}
-	if err := os.MkdirAll(auditRoot, 0o700); err != nil {
-		return err
-	}
-	payload, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicfile.Write(ciMarkerPath(auditRoot, m.TaskID), payload, 0o600)
+	return ciStore.write(auditRoot, m.TaskID, m)
 }
 
-// readCIMarker loads one marker by id. The id shape is validated BEFORE the
-// path is built, and the open refuses symlinks (O_NOFOLLOW, parity with the
-// write side) so a planted <id>.ci.json -> elsewhere cannot feed the watcher
-// substituted PR coordinates — which would aim the host's gh credential at an
-// attacker-chosen repo.
+// readCIMarker loads one marker by id (markerStore: id validated, O_NOFOLLOW,
+// so a planted <id>.ci.json -> elsewhere cannot feed the watcher substituted
+// PR coordinates, which would aim the host's gh credential at an
+// attacker-chosen repo).
 func readCIMarker(auditRoot, id string) (ciMarker, error) {
-	var m ciMarker
-	if !queueIDRE.MatchString(id) {
-		return m, fmt.Errorf("cimarker: invalid task id %q", id)
-	}
-	f, err := os.OpenFile(ciMarkerPath(auditRoot, id), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return m, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return m, err
-	}
-	err = json.Unmarshal(data, &m)
-	return m, err
+	return ciStore.read(auditRoot, id)
 }
 
-// removeCIMarker deletes the marker (and any stray .tmp a crashed atomic write
-// left behind). Idempotent: a missing file is success, so a remove raced
+// removeCIMarker deletes the marker and any stray temp a crashed atomic write
+// left behind. Idempotent: a missing file is success, so a remove raced
 // against a restart's boot scan cannot fail the caller.
 func removeCIMarker(auditRoot, id string) error {
-	if !queueIDRE.MatchString(id) {
-		return fmt.Errorf("cimarker: invalid task id %q", id)
-	}
-	path := ciMarkerPath(auditRoot, id)
-	if err := atomicfile.RemoveStaleTemps(path); err != nil {
-		return err
-	}
-	err := os.Remove(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
+	return ciStore.remove(auditRoot, id)
 }
 
 // listCIMarkers is the boot scan: every parseable *.ci.json in auditRoot,
 // oldest-first by CreatedAtMs. A garbage, unreadable, or symlinked marker is
-// skipped with a warning rather than failing the scan — one corrupt marker must
-// not strand every other pending watch. A missing audit dir is not an error.
+// skipped with a warning rather than failing the scan (one corrupt marker must
+// not strand every other pending watch); a missing audit dir is not an error.
 //
 // Unexported, like listQueueItems: it returns the unexported ciMarker, so an
 // exported form would be unusable from outside the package anyway.
 func listCIMarkers(auditRoot string) ([]ciMarker, error) {
-	entries, err := os.ReadDir(auditRoot)
+	byID, err := ciStore.list(auditRoot)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	var out []ciMarker
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ciSuffix) {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ciSuffix)
-		m, err := readCIMarker(auditRoot, id)
-		if err != nil {
-			slog.Warn("cimarker: skipping unreadable ci marker", "file", e.Name(), "err", err)
-			continue
-		}
+	out := make([]ciMarker, 0, len(byID))
+	for id, m := range byID {
 		// The body must name the file it was found in. Every consumer keys off
-		// m.TaskID — concludeCIWatch removes the marker by removeCIMarker(
-		// m.TaskID) — so a marker whose body names a DIFFERENT id would delete
+		// m.TaskID (concludeCIWatch removes the marker by removeCIMarker(
+		// m.TaskID)), so a marker whose body names a DIFFERENT id would delete
 		// some other task's path, leak the file it was actually read from
 		// (which is then re-concluded on every subsequent pass), and attribute
 		// its observation to an unrelated task. The file name is the identity;
 		// the body has to agree with it.
 		if m.TaskID != id {
 			slog.Warn("cimarker: skipping ci marker whose body names a different task id",
-				"file", e.Name(), "body_task_id", m.TaskID)
+				"file", id+ciSuffix, "body_task_id", m.TaskID)
 			continue
 		}
 		out = append(out, m)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAtMs < out[j].CreatedAtMs })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAtMs != out[j].CreatedAtMs {
+			return out[i].CreatedAtMs < out[j].CreatedAtMs
+		}
+		return out[i].TaskID < out[j].TaskID
+	})
 	return out, nil
 }

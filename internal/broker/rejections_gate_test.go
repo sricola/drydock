@@ -58,7 +58,7 @@ func TestRejectionLoop_OnlyHumanDiffDenialsCount(t *testing.T) {
 	// Non-human causes record nothing.
 	tr := &taskRun{b: b, id: "0123456789abcdef0123456789abcdef", repoRef: rtRepo, instruction: "do x"}
 	for _, c := range []gateCause{gateTimeout, gateKilled, gateShutdown} {
-		b.recordGateVerdict(tr, c, "zzz", "live")
+		b.recordGateVerdict(tr, c, "zzz", liveID)
 	}
 	if n, _ := b.Rejections.Denials(repo, instr, ""); n != 1 {
 		t.Fatalf("a non-human cause changed the count: %d", n)

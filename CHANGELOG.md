@@ -76,6 +76,15 @@ features, no configuration changes, no on-disk format changes.
 
 ### Changed
 
+- **One marker store.** The queue item, CI watch, and gate marker files
+  (`<id>.queue.json`, `<id>.ci.json`, `<id>.gate.json`) are read and written
+  by a single generic store in `internal/broker/markerstore.go`: id
+  validated before any path is built, atomic fsynced `0600` write,
+  `O_NOFOLLOW` read, idempotent remove that sweeps stale temps, and a boot
+  listing that names every file it skips. The three stores used to carry
+  their own copies with slightly different hardening. No on-disk change; a
+  gate marker whose file name is not a task id (32 hex characters) is now
+  skipped with a warning instead of resumed.
 - CI additionally vets the `integration`, `squidlive` and `squide2e` build
   tags (so tag-gated test files cannot silently stop compiling) and checks
   `gofmt`.

@@ -1,18 +1,9 @@
 package broker
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"log/slog"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strings"
-	"syscall"
-
-	"drydock/internal/atomicfile"
 )
 
 // QueueState is the lifecycle state of a queued orchestration item. States
@@ -220,98 +211,50 @@ var queueIDRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 const queueSuffix = ".queue.json"
 
+var queueStore = markerStore[QueueItem]{suffix: queueSuffix, what: "queuestore"}
+
 func queueMarkerPath(auditRoot, id string) string {
 	return filepath.Join(auditRoot, id+queueSuffix)
 }
 
-// writeQueueItem durably persists it under auditRoot. Timestamps are the
-// caller's problem (the broker passes its clock) — nothing here calls
+// writeQueueItem durably persists it under auditRoot (markerStore: id
+// validated before a path exists, atomic fsynced write, 0600). Timestamps are
+// the caller's problem (the broker passes its clock); nothing here calls
 // time.Now, so tests are deterministic.
-//
-// atomicfile.Write (temp + rename) is the crash-atomicity guarantee: a crash
-// mid-write can never leave a truncated item where a whole one is expected.
-// Belt-and-suspenders would add an fsync of auditRoot itself so the rename
-// survives a power loss in the same instant, but the rename's
-// atomicity is the primary guarantee and matches the rest of the audit dir.
 func writeQueueItem(auditRoot string, it QueueItem) error {
-	if !queueIDRE.MatchString(it.ID) {
-		return fmt.Errorf("queuestore: invalid queue item id %q", it.ID)
-	}
-	if err := os.MkdirAll(auditRoot, 0o700); err != nil {
-		return err
-	}
-	payload, err := json.MarshalIndent(it, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicfile.Write(queueMarkerPath(auditRoot, it.ID), payload, 0o600)
+	return queueStore.write(auditRoot, it.ID, it)
 }
 
-// readQueueItem loads one item by id. The id shape is validated BEFORE the
-// path is built (traversal guard), and the open refuses symlinks (O_NOFOLLOW,
-// parity with the write side) so a planted <id>.queue.json -> elsewhere can't
-// feed the queue substituted bytes.
+// readQueueItem loads one item by id (markerStore: id validated, O_NOFOLLOW).
 func readQueueItem(auditRoot, id string) (QueueItem, error) {
-	var it QueueItem
-	if !queueIDRE.MatchString(id) {
-		return it, fmt.Errorf("queuestore: invalid queue item id %q", id)
-	}
-	f, err := os.OpenFile(queueMarkerPath(auditRoot, id), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return it, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return it, err
-	}
-	err = json.Unmarshal(data, &it)
-	return it, err
+	return queueStore.read(auditRoot, id)
 }
 
-// removeQueueItem deletes the item's marker (and any stray temp a crashed
-// atomic write left behind). Idempotent: a missing file is success, so a
+// removeQueueItem deletes the item's marker and any stray temp a crashed
+// atomic write left behind. Idempotent: a missing file is success, so a
 // remove raced against a restart's boot-scan cleanup can't fail the caller.
 func removeQueueItem(auditRoot, id string) error {
-	if !queueIDRE.MatchString(id) {
-		return fmt.Errorf("queuestore: invalid queue item id %q", id)
-	}
-	path := queueMarkerPath(auditRoot, id)
-	if err := atomicfile.RemoveStaleTemps(path); err != nil {
-		return err
-	}
-	err := os.Remove(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
+	return queueStore.remove(auditRoot, id)
 }
 
 // listQueueItems scans auditRoot for *.queue.json and returns the parseable
 // items sorted by EnqueuedAtMs (FIFO). A garbage, unreadable, or symlinked
-// file is skipped with a warning rather than failing the whole boot scan —
+// file is skipped with a warning rather than failing the whole boot scan:
 // one corrupted item must not strand every other queued task.
 func listQueueItems(auditRoot string) ([]QueueItem, error) {
-	entries, err := os.ReadDir(auditRoot)
+	byID, err := queueStore.list(auditRoot)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	var out []QueueItem
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), queueSuffix) {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), queueSuffix)
-		it, err := readQueueItem(auditRoot, id)
-		if err != nil {
-			slog.Warn("queuestore: skipping unreadable queue item", "file", e.Name(), "err", err)
-			continue
-		}
+	out := make([]QueueItem, 0, len(byID))
+	for _, it := range byID {
 		out = append(out, it)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].EnqueuedAtMs < out[j].EnqueuedAtMs })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].EnqueuedAtMs != out[j].EnqueuedAtMs {
+			return out[i].EnqueuedAtMs < out[j].EnqueuedAtMs
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }

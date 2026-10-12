@@ -19,13 +19,13 @@ import (
 func TestWaitQueueDrain_CoversResumedGate(t *testing.T) {
 	dir := t.TempDir()
 	stageRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stageRoot, "live", "work"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(stageRoot, liveID, "work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(dir, "live.diff"), []byte("diff"), 0o600)
-	writeGateMarker(dir, "live", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+	os.WriteFile(filepath.Join(dir, liveID+".diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, liveID, gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
 
-	fs := &fakeStage{workDir: filepath.Join(stageRoot, "live", "work")}
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, liveID, "work")}
 	b := &Broker{AuditRoot: dir,
 		reopenStage: func(root string) (taskStage, error) { return fs, nil },
 		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
@@ -35,7 +35,7 @@ func TestWaitQueueDrain_CoversResumedGate(t *testing.T) {
 	if !waitFor(5*time.Second, func() bool {
 		b.pendingMu.Lock()
 		defer b.pendingMu.Unlock()
-		return b.pending["live"] != nil
+		return b.pending[liveID] != nil
 	}) {
 		t.Fatal("resumed task never reached the gate")
 	}
