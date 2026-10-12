@@ -138,9 +138,12 @@ locally instead. From a macOS 26 Apple-silicon machine with the runtime:
 ## Known gaps
 
 - **Pricing** (`internal/gateway/pricing.go`) covers Anthropic 4.x families
-  (Opus, Sonnet, Haiku) and OpenAI GPT-5/o4 families, each with a high-end
-  default fallback; the budget gate is a safety cap, not a billing source of
-  truth. Bump when either vendor publishes new rates.
+  (Opus, Sonnet, Haiku; prompt-cache writes at 1.25x and reads at 0.1x the
+  input rate) and OpenAI GPT-5/o4 families, each with a high-end default
+  fallback; the budget gate is a safety cap, not a billing source of truth.
+  Bump when either vendor publishes new rates. A stream the agent aborts
+  before its final usage event is metered from what arrived (output tokens
+  may be under-counted; logged at debug).
 - **Audit retention**: `~/.drydock/audit/` has no automatic retention. Run
   `drydock prune --older-than DUR [--keep-last N]` (dry-run unless `--yes`);
   brokerd-side auto-retention isn't wired up yet.

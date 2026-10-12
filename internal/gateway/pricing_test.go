@@ -7,7 +7,7 @@ import (
 
 func TestCost_KnownModel(t *testing.T) {
 	prices := map[string]Price{"claude-x": {InputPer1M: 3, OutputPer1M: 15}}
-	got := cost(prices, "claude-x", 1_000_000, 2_000_000)
+	got := cost(prices, "claude-x", Usage{Input: 1_000_000, Output: 2_000_000})
 	want := 3.0 + 30.0
 	if math.Abs(got-want) > 1e-9 {
 		t.Errorf("cost = %v, want %v", got, want)
@@ -16,7 +16,7 @@ func TestCost_KnownModel(t *testing.T) {
 
 func TestCost_FallsBackToDefault(t *testing.T) {
 	prices := map[string]Price{"default": {InputPer1M: 10, OutputPer1M: 10}}
-	got := cost(prices, "unknown-model", 500_000, 0)
+	got := cost(prices, "unknown-model", Usage{Input: 500_000, Output: 0})
 	if math.Abs(got-5.0) > 1e-9 {
 		t.Errorf("cost = %v, want 5.0", got)
 	}
@@ -31,11 +31,11 @@ func TestGooglePrices_MetersKnownAndDefault(t *testing.T) {
 		t.Fatal("missing default fallback")
 	}
 	// 1M in + 1M out on Pro = 1.25 + 10 = 11.25
-	if got := cost(p, "gemini-2.5-pro", 1_000_000, 1_000_000); got != 11.25 {
+	if got := cost(p, "gemini-2.5-pro", Usage{Input: 1_000_000, Output: 1_000_000}); got != 11.25 {
 		t.Errorf("pro cost = %v, want 11.25", got)
 	}
 	// Unknown model falls back to default (Pro high end), not $0.
-	if got := cost(p, "gemini-9-ultra", 1_000_000, 0); got != 1.25 {
+	if got := cost(p, "gemini-9-ultra", Usage{Input: 1_000_000, Output: 0}); got != 1.25 {
 		t.Errorf("unknown-model input cost = %v, want 1.25 (default)", got)
 	}
 	// Every known model's family must have a listed key, and the default must be

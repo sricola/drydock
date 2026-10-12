@@ -1,9 +1,20 @@
 package gateway
 
-// Price is the USD cost per 1M tokens.
+// Price is the USD cost per 1M tokens. CacheWritePer1M and CacheReadPer1M
+// price the prompt-cache tokens a vendor reports separately from input
+// (Usage.CacheWrite / CacheRead); zero means "no separate rate", and cost then
+// charges those tokens at the input rate rather than at nothing.
 type Price struct {
-	InputPer1M  float64
-	OutputPer1M float64
+	InputPer1M      float64
+	OutputPer1M     float64
+	CacheWritePer1M float64
+	CacheReadPer1M  float64
+}
+
+// anthropic builds an Anthropic price: cache writes bill at 1.25x and cache
+// reads at 0.1x the input rate across the 4.x families.
+func anthropic(in, out float64) Price {
+	return Price{InputPer1M: in, OutputPer1M: out, CacheWritePer1M: in * 1.25, CacheReadPer1M: in * 0.10}
 }
 
 // AnthropicPrices seeds the per-task budget gate. Keys match the model string
@@ -19,18 +30,18 @@ type Price struct {
 func AnthropicPrices() map[string]Price {
 	return map[string]Price{
 		// Opus family — frontier tier.
-		"claude-opus-4-5": {InputPer1M: 15, OutputPer1M: 75},
-		"claude-opus-4-6": {InputPer1M: 15, OutputPer1M: 75},
-		"claude-opus-4-7": {InputPer1M: 15, OutputPer1M: 75},
-		"claude-opus-4-8": {InputPer1M: 15, OutputPer1M: 75},
+		"claude-opus-4-5": anthropic(15, 75),
+		"claude-opus-4-6": anthropic(15, 75),
+		"claude-opus-4-7": anthropic(15, 75),
+		"claude-opus-4-8": anthropic(15, 75),
 		// Sonnet family — balanced tier.
-		"claude-sonnet-4-5": {InputPer1M: 3, OutputPer1M: 15},
-		"claude-sonnet-4-6": {InputPer1M: 3, OutputPer1M: 15},
+		"claude-sonnet-4-5": anthropic(3, 15),
+		"claude-sonnet-4-6": anthropic(3, 15),
 		// Haiku family — speed tier.
-		"claude-haiku-4-5": {InputPer1M: 1, OutputPer1M: 5},
+		"claude-haiku-4-5": anthropic(1, 5),
 		// Fallback — conservatively keyed to Opus pricing so unknown models
 		// can't overrun budgets while the table catches up.
-		"default": {InputPer1M: 15, OutputPer1M: 75},
+		"default": anthropic(15, 75),
 	}
 }
 
@@ -44,7 +55,7 @@ func OpenAIPrices() map[string]Price {
 		"gpt-5-codex": {InputPer1M: 1.25, OutputPer1M: 10},
 		"gpt-5-mini":  {InputPer1M: 0.25, OutputPer1M: 2},
 		"o4-mini":     {InputPer1M: 1.1, OutputPer1M: 4.4},
-		"default":     {InputPer1M: 1.25, OutputPer1M: 10},
+		"default":     anthropic(1.25, 10),
 	}
 }
 
@@ -58,14 +69,25 @@ func GooglePrices() map[string]Price {
 		"gemini-2.5-pro":        {InputPer1M: 1.25, OutputPer1M: 10},
 		"gemini-2.5-flash":      {InputPer1M: 0.30, OutputPer1M: 2.50},
 		"gemini-2.5-flash-lite": {InputPer1M: 0.10, OutputPer1M: 0.40},
-		"default":               {InputPer1M: 1.25, OutputPer1M: 10},
+		"default":               anthropic(1.25, 10),
 	}
 }
 
-func cost(prices map[string]Price, model string, in, out int) float64 {
+// cost prices one response. A cache token is never free: a table without a
+// cache rate (operator-supplied openai_compat prices) charges it at the input
+// rate, the conservative direction for a safety cap.
+func cost(prices map[string]Price, model string, u Usage) float64 {
 	p, ok := prices[model]
 	if !ok {
 		p = prices["default"]
 	}
-	return float64(in)/1e6*p.InputPer1M + float64(out)/1e6*p.OutputPer1M
+	cw, cr := p.CacheWritePer1M, p.CacheReadPer1M
+	if cw == 0 {
+		cw = p.InputPer1M
+	}
+	if cr == 0 {
+		cr = p.InputPer1M
+	}
+	return float64(u.Input)/1e6*p.InputPer1M + float64(u.Output)/1e6*p.OutputPer1M +
+		float64(u.CacheWrite)/1e6*cw + float64(u.CacheRead)/1e6*cr
 }

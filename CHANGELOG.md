@@ -12,6 +12,18 @@ features, no configuration changes, no on-disk format changes.
 
 ### Fixed
 
+- **The budget gate meters prompt-cache tokens.** Anthropic reports
+  `cache_creation_input_tokens` and `cache_read_input_tokens` separately from
+  `input_tokens`, and the gateway priced only the latter, so every cached turn
+  (most of a coding agent's turns) was under-metered against
+  `task_budget_usd`, `aggregate_budget_usd`, and `global_budget_usd`. Cache
+  writes now bill at 1.25x and cache reads at 0.1x the model's input rate; a
+  price table with no cache rate (operator `openai_compat.prices`) charges
+  cache tokens at the input rate rather than at nothing. A successful
+  response whose usage cannot be parsed is logged as a warning instead of
+  silently metering $0, and a stream the agent aborts before its final usage
+  event is noted at debug level. OpenAI and Gemini fold cached tokens into
+  their input counts, so they were already metered conservatively.
 - **A non-rotating OAuth grant recovered from disk kept the dead refresh
   token.** When another process had rotated the shared credential file and the
   re-refresh with the on-disk token came back without a `refresh_token`,
