@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -449,10 +450,20 @@ func (g *Gateway) meter(resp *http.Response) error {
 		return nil
 	}
 	ct := resp.Header.Get("Content-Type")
-	resp.Body = &usageReader{rc: resp.Body, onDone: func(body []byte) {
+	status := resp.StatusCode
+	resp.Body = &usageReader{rc: resp.Body, onDone: func(body []byte, complete bool) {
 		delta := 0.0
-		if model, in, out, ok := vt.v.ParseUsage(body, ct); ok {
-			delta = cost(vt.v.Prices, model, in, out)
+		if u, ok := vt.v.ParseUsage(body, ct); ok {
+			delta = cost(vt.v.Prices, u.Model, u)
+		} else if status < 400 {
+			// A successful response the parser could not read meters $0, which
+			// is the one direction a safety cap must never be silent about.
+			slog.Warn("gateway: response carried no parseable usage; metered $0",
+				"vendor", rc.lease.Vendor, "status", status, "content_type", ct, "usage_bytes", len(body))
+		}
+		if !complete {
+			slog.Debug("gateway: stream closed before its final usage event; output tokens may be under-metered",
+				"vendor", rc.lease.Vendor, "metered_usd", delta)
 		}
 		// Commit only the actual metered spend. The reservation is released by
 		// ServeHTTP's deferred release, which runs on every exit path, so an
@@ -488,8 +499,9 @@ type usageReader struct {
 	rc     io.ReadCloser
 	line   bytes.Buffer // current incomplete line
 	kept   bytes.Buffer // only the usage-bearing lines, preserved verbatim
-	onDone func([]byte)
+	onDone func(body []byte, complete bool)
 	done   bool
+	eof    bool // the upstream body was read to EOF (vs closed early by the client)
 }
 
 func (u *usageReader) Read(p []byte) (int, error) {
@@ -498,6 +510,7 @@ func (u *usageReader) Read(p []byte) (int, error) {
 		u.consume(p[:n])
 	}
 	if err == io.EOF {
+		u.eof = true
 		u.finish()
 	}
 	return n, err
@@ -550,5 +563,5 @@ func (u *usageReader) finish() {
 	}
 	u.done = true
 	u.flushLine() // a non-streaming body has no trailing newline — flush it
-	u.onDone(u.kept.Bytes())
+	u.onDone(u.kept.Bytes(), u.eof)
 }

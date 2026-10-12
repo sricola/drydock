@@ -35,7 +35,7 @@ func TestUsageReader_BoundsKept(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		many.WriteString(`{"usage":1}` + "\n")
 	}
-	u := &usageReader{rc: io.NopCloser(bytes.NewReader(many.Bytes())), onDone: func([]byte) {}}
+	u := &usageReader{rc: io.NopCloser(bytes.NewReader(many.Bytes())), onDone: func([]byte, bool) {}}
 	if _, err := io.ReadAll(u); err != nil {
 		t.Fatal(err)
 	}

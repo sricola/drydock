@@ -20,7 +20,7 @@ type Vendor struct {
 	Name       string
 	BaseURL    string
 	Inject     func(r *http.Request, realKey string)
-	ParseUsage func(body []byte, contentType string) (model string, in, out int, ok bool)
+	ParseUsage func(body []byte, contentType string) (Usage, bool)
 	Prices     map[string]Price
 	// StripFields are top-level JSON request fields the gateway removes before
 	// forwarding. The OAuth/subscription endpoint strict-validates the request

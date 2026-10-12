@@ -36,7 +36,8 @@ func TestParseOpenAIUsage_MissingOrNull(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, in, out, ok := parseOpenAIUsage([]byte(c.body), "application/json")
+			u, ok := parseOpenAIUsage([]byte(c.body), "application/json")
+			in, out := u.Input, u.Output
 			if ok != c.wantOK {
 				t.Errorf("ok = %v, want %v", ok, c.wantOK)
 			}
@@ -49,7 +50,8 @@ func TestParseOpenAIUsage_MissingOrNull(t *testing.T) {
 
 func TestParseUsage_JSON(t *testing.T) {
 	body := []byte(`{"model":"claude-x","usage":{"input_tokens":12,"output_tokens":34}}`)
-	model, in, out, ok := parseAnthropicUsage(body, "application/json")
+	u, ok := parseAnthropicUsage(body, "application/json")
+	model, in, out := u.Model, u.Input, u.Output
 	if !ok || model != "claude-x" || in != 12 || out != 34 {
 		t.Fatalf("got (%q,%d,%d,%v)", model, in, out, ok)
 	}
@@ -61,7 +63,8 @@ func TestParseUsage_SSE(t *testing.T) {
 			`data: {"type":"message_start","message":{"model":"claude-x","usage":{"input_tokens":10,"output_tokens":1}}}` + "\n\n" +
 			"event: message_delta\n" +
 			`data: {"type":"message_delta","usage":{"output_tokens":42}}` + "\n\n")
-	model, in, out, ok := parseAnthropicUsage(body, "text/event-stream; charset=utf-8")
+	u, ok := parseAnthropicUsage(body, "text/event-stream; charset=utf-8")
+	model, in, out := u.Model, u.Input, u.Output
 	if !ok || model != "claude-x" || in != 10 || out != 42 {
 		t.Fatalf("got (%q,%d,%d,%v)", model, in, out, ok)
 	}
@@ -71,7 +74,8 @@ func TestParseGoogleUsage_NonStreaming(t *testing.T) {
 	body := []byte(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],
 		"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":40,"thoughtsTokenCount":10,"totalTokenCount":150},
 		"modelVersion":"gemini-2.5-pro"}`)
-	model, in, out, ok := parseGoogleUsage(body, "application/json")
+	u, ok := parseGoogleUsage(body, "application/json")
+	model, in, out := u.Model, u.Input, u.Output
 	if !ok || model != "gemini-2.5-pro" || in != 100 || out != 50 { // 40 + 10 thoughts
 		t.Fatalf("got model=%q in=%d out=%d ok=%v; want gemini-2.5-pro/100/50/true", model, in, out, ok)
 	}
@@ -80,14 +84,15 @@ func TestParseGoogleUsage_NonStreaming(t *testing.T) {
 func TestParseGoogleUsage_SSEKeepsLast(t *testing.T) {
 	body := []byte("data: {\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":10},\"modelVersion\":\"gemini-2.5-flash\"}\n\n" +
 		"data: {\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":42},\"modelVersion\":\"gemini-2.5-flash\"}\n\n")
-	model, in, out, ok := parseGoogleUsage(body, "text/event-stream")
+	u, ok := parseGoogleUsage(body, "text/event-stream")
+	model, in, out := u.Model, u.Input, u.Output
 	if !ok || model != "gemini-2.5-flash" || in != 100 || out != 42 {
 		t.Fatalf("got model=%q in=%d out=%d ok=%v; want gemini-2.5-flash/100/42/true (last wins)", model, in, out, ok)
 	}
 }
 
 func TestParseGoogleUsage_NoUsage(t *testing.T) {
-	if _, _, _, ok := parseGoogleUsage([]byte(`{"candidates":[]}`), "application/json"); ok {
+	if _, ok := parseGoogleUsage([]byte(`{"candidates":[]}`), "application/json"); ok {
 		t.Error("a body with no usageMetadata must return ok=false")
 	}
 }
