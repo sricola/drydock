@@ -58,6 +58,17 @@ func enqueueAndDeny(t *testing.T, b *Broker, task Task) string {
 	waitPending(t, b, id)
 	deny(t, b, id)
 	waitForQueueState(t, b, id, QueueCancelled)
+	// The terminal queue write lands a few milliseconds BEFORE runQueued's
+	// deferred releaseSlot; a caller that submits the next task on the strength
+	// of the file alone can still be refused 503 (slot full). Wait for the
+	// lifecycle itself to return. This waits for EVERY dispatched lifecycle,
+	// not just this one, so callers must not have another live task in flight
+	// (none of the current callers do).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !b.WaitQueueDrain(ctx) {
+		t.Fatalf("denied task %s never released its slot", id)
+	}
 	return id
 }
 

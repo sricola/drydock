@@ -86,6 +86,9 @@ func (tr *taskRun) runVerify(diff string) bool {
 		return true
 	}
 	b.setStage(tr.id, StageVerifying)
+	if tr.onVerifying != nil {
+		tr.onVerifying()
+	}
 	tr.sw.emit(map[string]any{"event": "stage", "stage": "verifying",
 		"task_id": tr.id, "commands": len(cfg.Commands)})
 	start := time.Now()

@@ -142,7 +142,15 @@ func (b *Broker) ResumeAwaiting(stageRoot string) {
 			continue
 		}
 		slog.Info("resuming awaiting-approval task", "task_id", id)
-		go b.resumePush(id, m, st, diff, logf)
+		// Counted in the same drain as dispatched queue items: this goroutine
+		// is neither an HTTP handler nor a queue dispatch, so without it
+		// shutdown (srv.Shutdown + WaitQueueDrain) could exit the process
+		// while a cancelled resume is still writing its terminal result.
+		b.queueRunning.Add(1)
+		go func() {
+			defer b.queueRunning.Done()
+			b.resumePush(id, m, st, diff, logf)
+		}()
 	}
 }
 
