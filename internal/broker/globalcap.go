@@ -160,21 +160,14 @@ func (b *Broker) globalCeilingOn() bool {
 	return b.GlobalBudgetUSD > 0 || b.GlobalMaxTasks > 0
 }
 
-// globalCeilingExceeded is the CHECK without the claim: does a task start
-// authored right now pass the ceiling?
+// globalCeilingExceededDetail is the CHECK without the claim: does a task start
+// authored right now pass the ceiling? It is what the CI-retry gate asks,
+// because enqueuing is not starting: the child becomes an ordinary queued
+// item and the dispatcher re-asks (and does claim) when it actually
+// dispatches. Admission points that are about to START a task must use
+// admitGlobalStart instead, or two of them can pass the same limb.
 //
-// It is what the CI-retry gate asks, because enqueuing is not starting — the
-// child becomes an ordinary queued item and the dispatcher re-asks (and does
-// claim) when it actually dispatches. Admission points that are about to START
-// a task must use admitGlobalStart instead, or two of them can pass the same
-// limb.
-func (b *Broker) globalCeilingExceeded(agent string) (blocked bool, reason string) {
-	blocked, reason, _ = b.globalCeilingExceededDetail(agent)
-	return blocked, reason
-}
-
-// globalCeilingExceededDetail is globalCeilingExceeded plus WHY, reduced to the
-// one distinction a caller can act on: did the ceiling measure this start and
+// The WHY is reduced to the one distinction a caller can act on: did the ceiling measure this start and
 // find it over a limb (`unmeasured` false), or could it not measure at all
 // (`unmeasured` true)?
 //
@@ -195,7 +188,7 @@ func (b *Broker) globalCeilingExceededDetail(agent string) (blocked bool, reason
 }
 
 // admitGlobalStart is CHECK-AND-CLAIM under one lock: it answers the same
-// question globalCeilingExceeded does and, when it admits, records taskID as an
+// question globalCeilingExceededDetail does and, when it admits, records taskID as an
 // in-flight start so a concurrent admission counts it.
 //
 // The caller MUST pair an admitted call with releaseGlobalStart(taskID) on
@@ -246,15 +239,6 @@ func (b *Broker) releaseGlobalStart(taskID string) {
 	b.capMu.Lock()
 	delete(b.capInFlight, taskID)
 	b.capMu.Unlock()
-}
-
-// inFlightStarts is how many admitted-but-unreleased starts this process holds.
-// Diagnostics and tests; Task 4's headroom surface will want it too, since a
-// number an operator reads should include the starts that have not settled.
-func (b *Broker) inFlightStarts() int {
-	b.capMu.Lock()
-	defer b.capMu.Unlock()
-	return len(b.capInFlight)
 }
 
 // globalCeilingExceededLocked is the whole decision. Caller holds capMu.

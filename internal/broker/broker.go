@@ -309,8 +309,8 @@ type Broker struct {
 	// lanes where USD is meaningless. BOTH DEFAULT TO 0 = OFF, and with both
 	// off the ceiling is inert: nothing is locked, no agent is resolved and the
 	// ledger is never read, so a stock install behaves exactly as it did
-	// before. Config (`global_budget_usd` / `global_max_tasks`) lands in Task 4;
-	// until then brokerd leaves them zero, as it did with CIWatch before B1.
+	// before. brokerd sets both from config (`global_budget_usd` /
+	// `global_max_tasks`) in applyGlobalCeiling, once, at boot.
 	GlobalBudgetUSD float64
 	GlobalMaxTasks  int
 
@@ -675,6 +675,10 @@ type taskRun struct {
 	// queue state (running -> awaiting_review); nil on the synchronous
 	// HandleTask path and on resume, where there is no queue item.
 	onAwaitingReview func()
+	// onVerifying is the same bridge for the verifier stage (running ->
+	// verifying), so `drydock queue list` shows a queued task in the
+	// verifier as such. nil on the synchronous path and on resume.
+	onVerifying func()
 
 	// Filled in as HandleTask advances through the lifecycle.
 	proxyAuth  string      // "<user>:<secret>@" widening userinfo (empty if none)

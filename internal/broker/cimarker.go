@@ -188,7 +188,7 @@ func removeCIMarker(auditRoot, id string) error {
 		return fmt.Errorf("cimarker: invalid task id %q", id)
 	}
 	path := ciMarkerPath(auditRoot, id)
-	if err := os.Remove(path + ".tmp"); err != nil && !os.IsNotExist(err) {
+	if err := atomicfile.RemoveStaleTemps(path); err != nil {
 		return err
 	}
 	err := os.Remove(path)

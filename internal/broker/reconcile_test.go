@@ -402,6 +402,21 @@ func TestResumeAwaiting_CountsAsPendingApprovalNotRunning(t *testing.T) {
 	if body.Running != 0 || body.PendingApproval != 1 {
 		t.Errorf("breakdown = %+v, want running=0 pending_approval=1", body)
 	}
+
+	// Resolve the gate so the resume goroutine and its deferred cleanup exit
+	// before TempDir is removed, instead of racing its teardown.
+	b.pendingMu.Lock()
+	ch := b.pending["live2"]
+	b.pendingMu.Unlock()
+	if ch != nil {
+		ch <- gateReply{ok: true}
+	}
+	waitFor(2*time.Second, func() bool {
+		b.pendingMu.Lock()
+		_, still := b.tasks["live2"]
+		b.pendingMu.Unlock()
+		return !still
+	})
 }
 
 // TestResumePush_RegisteredStageNeverObservedRunning is change 4's regression

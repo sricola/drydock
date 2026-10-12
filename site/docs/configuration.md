@@ -691,6 +691,7 @@ with `--model gemini-2.5-flash`.
 | `sandbox_image` | `SANDBOX_IMAGE` | `drydock-sandbox:latest` | Per-task agent VM image |
 | `anchor_image` | `DRYDOCK_ANCHOR_IMAGE` | `drydock-anchor:latest` | Minimal image holding the vmnet gateway IP |
 | `stage_root` / `audit_root` / `squid_run_dir` | `STAGE_ROOT` / `AUDIT_ROOT` / `SQUID_RUN_DIR` | `~/.drydock/{stage,audit,squid}` | Per-task scratch (audit dir `0700`; log + diff `0600`) |
+| `stage_quota_gb` | `DRYDOCK_STAGE_QUOTA_GB` | `8` | Hard per-task disk bound (GiB): `/work` lives in an APFS sparse image this big, so a flood ends in ENOSPC inside the VM (A8). `0` = plain host dir with the polling guard only |
 | `cache_root` | `DRYDOCK_CACHE_ROOT` | `~/.drydock/cache` | Persistent per-repo dependency caches for profiles with `cache: true` |
 | `cache_quota_gb` | `DRYDOCK_CACHE_QUOTA_GB` | `20` | Total disk bound (GiB) for the dependency cache; LRU-evicted; `0` disables caching entirely |
 | `broker.socket` | `BROKER_SOCKET` | `$TMPDIR/drydock-$UID/drydock.sock` | Unix socket (parent dir `0700`, socket `0600`) |

@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"drydock/internal/atomicfile"
 )
 
 // This file is the DURABLE GLOBAL LEDGER: the crash-safe, rolling-window record
@@ -38,13 +40,14 @@ import (
 // BACKWARDS, never mint one. See "THE WRITE CLOCK" below for why a store whose
 // writes delete things cannot take a caller's wall clock on trust.
 //
-// It diverges from the idiom in ONE place, deliberately: whole-file writes go
-// through writeLedgerFileDurable rather than internal/atomicfile, because
-// atomicfile fsyncs neither the temp file nor the directory and so does not
-// actually provide the "whole old file or whole new one" guarantee that
-// rewriteLocked's crash-safety argument rests on. For a credential file that
-// costs a re-mint; here it would be a silent total under-count of a safety
-// ceiling. See writeLedgerFileDurable.
+// Whole-file writes go through internal/atomicfile, which fsyncs the temp
+// file before the rename, so the new file's DATA is on disk before it can be
+// named: the "whole old file or whole new one" guarantee rewriteLocked's
+// crash-safety argument rests on holds for the contents. The directory fsync
+// that would make the rename itself survive a power loss is best effort (some
+// filesystems refuse it), so the one residual is "whole OLD file" after a
+// crash in that instant, which over-counts rather than loses anything. Its
+// temp open is O_EXCL|O_NOFOLLOW, like every other open in this file.
 //
 // ---------------------------------------------------------------------------
 // STORAGE LAYOUT, and why it is ONE append-only file rather than one file per
@@ -744,10 +747,10 @@ func OpenGlobalLedgerWithClock(auditRoot string, window time.Duration, nowMs int
 			slog.Warn("globalledger: could not tighten the ledger directory to 0700", "path", dir, "err", err)
 		}
 	}
-	// Sweep the stray ".tmp" a crashed rewrite leaves, exactly as removeQueueItem
+	// Sweep the stray temp a crashed rewrite leaves, exactly as removeQueueItem
 	// does. Idempotent; a missing file is success.
-	if err := os.Remove(l.path + ".tmp"); err != nil && !os.IsNotExist(err) {
-		slog.Warn("globalledger: could not remove a stale temp file", "path", l.path+".tmp", "err", err)
+	if err := atomicfile.RemoveStaleTemps(l.path); err != nil {
+		slog.Warn("globalledger: could not remove a stale temp file", "path", l.path, "err", err)
 	}
 
 	// The lock is held for the whole load. Nothing else can reach this handle
@@ -1354,9 +1357,9 @@ func (l *GlobalLedger) Degrade(reason string) {
 	}
 }
 
-// Compact prunes and rewrites the durable file now. Callers do not need it —
-// Record compacts on an amortized schedule and OpenGlobalLedger compacts at
-// boot — but boot reconciliation and tests want it explicit.
+// Compact prunes and rewrites the durable file now. Production callers do not
+// need it (Record compacts on an amortized schedule and OpenGlobalLedger
+// compacts at boot); tests use it to force a fold at a known point.
 func (l *GlobalLedger) Compact(nowMs int64) error {
 	if l == nil {
 		return errors.New("globalledger: nil ledger")
@@ -1738,7 +1741,7 @@ func (l *GlobalLedger) compactLocked(nowMs int64, force bool) error {
 }
 
 // rewriteLocked prunes/folds the in-memory entries and writes the whole file
-// durably (writeLedgerFileDurable: temp + fsync + rename + directory fsync).
+// durably (atomicfile.Write: temp + fsync + rename + directory fsync).
 //
 // Crash safety: the rename is atomic, so a crash mid-compaction leaves either
 // the WHOLE old file — which still holds every entry the new one would have
@@ -1797,7 +1800,7 @@ func (l *GlobalLedger) rewriteLocked(nowMs int64) error {
 			}
 		}
 	}
-	if err := writeLedgerFileDurable(l.path, buf.Bytes(), 0o600); err != nil {
+	if err := atomicfile.Write(l.path, buf.Bytes(), 0o600); err != nil {
 		return err
 	}
 	l.entries = kept
@@ -1827,68 +1830,6 @@ func (l *GlobalLedger) rewriteLocked(nowMs int64) error {
 	// constant and the file stays bounded by survivors+slack.
 	if cap := len(kept) + globalLedgerMaxCompactSlack; l.compactAt > cap {
 		l.compactAt = cap
-	}
-	return nil
-}
-
-// writeLedgerFileDurable is the ledger's whole-file write: temp + fsync +
-// rename + directory fsync.
-//
-// It deliberately does NOT use internal/atomicfile, which this file used
-// before. atomicfile does os.WriteFile followed by os.Rename with no fsync of
-// either the temp file or the directory, so the guarantee rewriteLocked
-// documents — a crash leaves the whole old file or the whole new one — is not
-// actually provided: a power loss can land the rename while the new file's data
-// is still in page cache, and the ledger comes back EMPTY or short. For a
-// credential file (atomicfile's other callers) that costs a re-mint; for a
-// safety ledger it is a total under-count of the ceiling, which is the one
-// direction G2/G3 forbid. atomicfile's other callers are left exactly as they
-// are; this is a local divergence, paid for by one fsync on a path that runs on
-// an amortized schedule rather than per append.
-//
-// The temp open also carries O_EXCL and O_NOFOLLOW, matching every other open in
-// this file: a pre-planted "ledger.jsonl.tmp" symlink must not be followed and
-// must not be written through.
-func writeLedgerFileDurable(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	// A stale temp from a crashed rewrite is swept at open, but a rewrite that
-	// failed after creating it within THIS process would otherwise wedge every
-	// later one on O_EXCL.
-	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, perm)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	// The fsync that makes the rename mean something.
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	// And the directory fsync that makes the RENAME durable. Best effort: the
-	// rename has already happened and the data is already on disk, so failing
-	// here would report a write that in fact succeeded. Some filesystems refuse
-	// a directory fsync outright.
-	if d, err := os.Open(filepath.Dir(path)); err == nil {
-		if err := d.Sync(); err != nil {
-			slog.Debug("globalledger: could not fsync the ledger directory", "path", filepath.Dir(path), "err", err)
-		}
-		d.Close()
 	}
 	return nil
 }

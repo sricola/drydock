@@ -10,23 +10,37 @@ security model is in [`THREAT_MODEL.md`](THREAT_MODEL.md) and
 ## Layout
 
 ```
-cmd/brokerd/      # broker daemon
-cmd/drydock/      # operator CLI (setup|init|start|daemon|submit|status|tasks|stats|logs|retry|review|inspect|kill|prune|pending|approve|deny|doctor|redteam|auth|ui|version)
+cmd/brokerd/      # broker daemon (boot wiring, squid auth helper, global-ceiling config)
+cmd/drydock/      # operator CLI (setup|init|start|daemon|submit|plan|queue|status|tasks|stats|logs|retry|review|inspect|kill|prune|pending|approve|deny|doctor|redteam|auth|ui|policy|version)
 cmd/docs-build/   # Go-native markdown -> HTML renderer for the docs site (make docs)
+cmd/cve-gate/     # grype report -> pass/fail against image/cve-allowlist.yaml (image-scan.yml)
+cmd/cli-bump/     # weekly agent-CLI version bump PR (agent-cli-bump.yml)
+cmd/redteam-report/ # go test -json -> per-claim GREEN/RED table (make redteam-report)
 internal/
-  broker/         # /tasks + admin handlers, approval + egress gates, concurrency, cancellation
-  creds/          # Grant/Provider interfaces
+  broker/         # task lifecycle: /tasks + /queue + admin handlers, gates, queue, CI watch/retry, ledgers
+  gateway/        # credential gateway (mint/serve/meter/revoke), route allowlist, pricing
+  gwcreds/        # OAuth credential stores (Claude, Codex) + refresh
+  claudekeychain/ # reads Claude Code's macOS Keychain grant
+  config/         # config.yaml + env overrides, policy explain, api-keys.env
   egress/         # YAML loader + allowlist compilation + host/port validation
-  gateway/        # credential gateway (mint/serve/account/revoke), constant-time token check
-  netfw/          # squid conf + per-task proxy-auth allowlist compiler
-  remote/         # PR/MR adapters: github (gh), gitlab (glab), gitea (tea), push-only
-  runner/         # `container run` argv builder
-  sockpath/       # shared per-uid socket path discovery for brokerd + CLI
-  stage/          # work tree, host-side commit + push, curated adapter env
-image/            # drydock-sandbox (hosts claude-code + codex): Dockerfile + entrypoint.sh + init-firewall.sh
+  netfw/          # squid conf + per-task proxy-auth widening controller
+  stage/          # work tree, host-side commit + push, curated adapter env, disk quota
+  remote/         # PR/MR adapters: github (gh), gitlab (glab), gitea (tea), push-only; issue ingestion
+  runner/         # `container run` argv builder, container-system bring-up
+  audit/          # audit-trail readers (outcome, cost, metrics rows)
+  trustbrief/     # diff facts, risk flags, the trust brief
+  stats/          # drydock stats aggregation
+  depcache/       # content-addressed dependency cache
+  webui/          # loopback web UI (embedded SPA + /api)
+  brokerclient/   # HTTP client over the unix socket / TCP broker address
+  creds/ provider/ defaults/ repokey/ globmatch/ sharedir/ sockpath/ atomicfile/  # small shared leaves
+image/            # drydock-sandbox (claude-code, codex, gemini, opencode): Dockerfile + entrypoint.sh + init-firewall.sh
 image/anchor/     # drydock-anchor: FROM scratch + static Go sleep binary
 tests/integration # //go:build integration: boots brokerd against the real container CLI
+tests/imagescripts # host-side tests of the image shell scripts (run in CI)
+tests/release/qa.sh # black-box QA of the installed release (make release-qa)
 site/             # landing page + docs (site/docs/*.md, rendered by make docs)
+docs/             # ROADMAP, engineering-hygiene-sprint, audits/, superpowers/ (design history)
 ```
 
 The design specs and implementation plans behind each feature live in
@@ -53,10 +67,12 @@ make image-anchor       # minimal anchor image (FROM scratch + static binary)
 make test-integration   # boot brokerd as a subprocess; macOS only, needs the container runtime
 ```
 
-GitHub Actions runs `go build`, `go test -race`, `go vet`, `staticcheck`
-(`make lint`; the staticcheck and x/tools versions are pinned in the tool
-module `tools/staticcheck/go.mod`, which the Makefile and `test.yml` both
-build from), and `govulncheck` on every push/PR.
+GitHub Actions runs `go build`, `go test -race`, `go vet` (also against the
+`integration`, `squidlive` and `squide2e` build tags, so tag-gated test files
+cannot silently stop compiling), `gofmt -l`, `staticcheck` (`make lint`; the
+staticcheck and x/tools versions are pinned in the tool module
+`tools/staticcheck/go.mod`, which the Makefile and `test.yml` both build
+from), and `govulncheck` on every pull request and on every push to `main`.
 Integration (`make test-integration`) requires the `container` runtime and is
 macOS-only; it runs locally, not in CI. No real Anthropic or OpenAI spend.
 
@@ -91,8 +107,9 @@ locally instead. From a macOS 26 Apple-silicon machine with the runtime:
    make tag-release VERSION=vX.Y.Z
    ```
 
-   `tag-release` runs `release-preflight` first, rebuild the images, then the
-   unit suite, the host red-team (A3–A6), and the VM-backed red-team (A1/A2/A7),
+   `tag-release` runs `release-preflight` first: rebuild the images, then the
+   unit suite, the host red-team (A3–A6), and the VM-backed red-team
+   (A1/A2/A7/A8 and V1, the verifier-VM claim THREAT_MODEL.md calls A9),
    and only creates and pushes the tag if all pass. Pushing the tag triggers
    `release.yml`, which builds the signed darwin-arm64 tarball, SBOM, cosign
    signature, and SLSA provenance and publishes the GitHub release. (Run
@@ -129,10 +146,11 @@ locally instead. From a macOS 26 Apple-silicon machine with the runtime:
   brokerd-side auto-retention isn't wired up yet.
 - **Concurrency**: up to `DRYDOCK_MAX_CONCURRENT_TASKS` tasks in flight per
   brokerd (default 2); raise on bigger hardware.
-- **Approval adapters**: only the local CLI + macOS notifications; no
-  Slack/web approval adapters yet.
+- **Approval adapters**: the local CLI, the loopback web UI, and macOS
+  notifications; no Slack or other remote approval adapters yet.
 - **Bitbucket** PR/MR opening falls back to push-only (no widely-adopted CLI to
   wrap). Contribution slot.
-- **Apple `container`** moves fast (1.x, validated through 1.5.0 by the
-  release preflight); flag drift is the most likely breakage source.
+- **Apple `container`** moves fast (1.x; brokerd checks the major version
+  only, and each release is validated by hand against the current minor,
+  1.5.0 as of v0.8.1); flag drift is the most likely breakage source.
   `DRYDOCK_STRICT_CONTAINER_VERSION=1` fails closed on drift.

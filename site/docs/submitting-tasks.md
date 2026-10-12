@@ -99,7 +99,7 @@ spend-ceiling bullet below.
   gate (unless `--auto-approve`), diff policy. Nothing is weaker because it
   was queued.
 - **Shared concurrency cap.** Queued and synchronous tasks draw from the one
-  `max_concurrent` pool; the dispatcher never over-commits it.
+  `max_concurrent_tasks` pool; the dispatcher never over-commits it.
 - **Spend-ceiling parking, with one exception.** When a vendor's aggregate
   spend cap is exhausted, that vendor's **human-submitted** items stay
   `queued` — parked, not failed, and a park never counts as an attempt. They

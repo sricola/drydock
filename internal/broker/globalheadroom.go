@@ -1,7 +1,5 @@
 package broker
 
-import "time"
-
 // HEADROOM: the global usage ceiling's read-only operator surface (plan G6).
 //
 // The plan states the problem plainly: before this file there was no endpoint,
@@ -160,10 +158,4 @@ func (b *Broker) GlobalCeilingStatus() GlobalCeilingStatus {
 	blocked, reason, _ := b.globalCeilingExceededLocked(b.DefaultAgent, "")
 	s.Blocked, s.Reason = blocked, reason
 	return s
-}
-
-// GlobalWindowDuration renders WindowMs as a Duration for callers that want to
-// format it themselves. 0 stays 0 (total mode).
-func (s GlobalCeilingStatus) GlobalWindowDuration() time.Duration {
-	return time.Duration(s.WindowMs) * time.Millisecond
 }

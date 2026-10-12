@@ -269,7 +269,7 @@ func readQueueItem(auditRoot, id string) (QueueItem, error) {
 	return it, err
 }
 
-// removeQueueItem deletes the item's marker (and any stray .tmp a crashed
+// removeQueueItem deletes the item's marker (and any stray temp a crashed
 // atomic write left behind). Idempotent: a missing file is success, so a
 // remove raced against a restart's boot-scan cleanup can't fail the caller.
 func removeQueueItem(auditRoot, id string) error {
@@ -277,7 +277,7 @@ func removeQueueItem(auditRoot, id string) error {
 		return fmt.Errorf("queuestore: invalid queue item id %q", id)
 	}
 	path := queueMarkerPath(auditRoot, id)
-	if err := os.Remove(path + ".tmp"); err != nil && !os.IsNotExist(err) {
+	if err := atomicfile.RemoveStaleTemps(path); err != nil {
 		return err
 	}
 	err := os.Remove(path)

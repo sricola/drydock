@@ -140,19 +140,15 @@ func (s *Store) Dir(key string) (string, error) {
 	return dir, nil
 }
 
-// Evict removes least-recently-accessed entries (by the Dir-stamped entry-dir
-// mtime) until total cache bytes are within QuotaBytes AND host free space at
-// Root is at least minFreeBytes (a floor <= 0 disables the free-space check).
-// Only direct children whose names match keyPattern are considered or
+// EvictExcluding removes least-recently-accessed entries (by the Dir-stamped
+// entry-dir mtime) until total cache bytes are within QuotaBytes AND host free
+// space at Root is at least minFreeBytes (a floor <= 0 disables the free-space
+// check). Only direct children whose names match keyPattern are considered or
 // removed. Returns the content bytes freed.
-func (s *Store) Evict(minFreeBytes int64) (freed int64, err error) {
-	return s.EvictExcluding(minFreeBytes, nil)
-}
-
-// EvictExcluding is Evict with a protected set: entry-dir paths in protected
-// (as returned by Dir — the broker passes its in-use refcounted dirs) are
-// NEVER removed, whatever their LRU position; the sweep skips them and moves
-// to the next candidate. Their bytes still count toward the quota total, so
+//
+// Entry-dir paths in protected (as returned by Dir; the broker passes its
+// in-use refcounted dirs) are NEVER removed, whatever their LRU position; the
+// sweep skips them and moves to the next candidate. Their bytes still count toward the quota total, so
 // a sweep may end still-over-quota when the excess is all in-use — correct:
 // those entries are being read by live VMs and must not vanish under them.
 // Callers are responsible for serializing this against Dir (the broker holds

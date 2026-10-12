@@ -535,6 +535,12 @@ func (b *Broker) runQueued(it QueueItem) {
 			slog.Warn("queue: could not persist awaiting_review state", "task_id", it.ID, "err", err)
 		}
 	}
+	// Same bridge for the verifier stage (running -> verifying).
+	tr.onVerifying = func() {
+		if _, err := b.setQueueState(it.ID, QueueVerifying, nil); err != nil {
+			slog.Warn("queue: could not persist verifying state", "task_id", it.ID, "err", err)
+		}
+	}
 	tr.runLifecycle()
 
 	// Shutdown at the diff-approval gate is a pause, not a terminal:
@@ -583,10 +589,11 @@ func (b *Broker) runQueued(it QueueItem) {
 }
 
 // queueTerminal maps a lifecycle outcome (taskRun.outcome) to the item's
-// terminal queue state and LastError. Increment A has no retry: every
-// failure outcome dead-letters immediately (Increment B turns retryable
-// ones into re-queues). cancelled covers the pre-outcome aborts too when
-// the task context was cancelled (kill/shutdown before a terminal emit).
+// terminal queue state and LastError. Every failure outcome dead-letters
+// immediately; a bounded CI retry (ciretry.go) is a NEW queue item linked by
+// retry_of, never a re-queue of this one. cancelled covers the pre-outcome
+// aborts too when the task context was cancelled (kill/shutdown before a
+// terminal emit).
 //
 // `pushed -> completed` stays exactly as written, and is deliberately NOT
 // conditioned on the CI watch: the diversion to awaiting_ci is made by the

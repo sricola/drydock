@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -412,13 +413,18 @@ func main() {
 		}(squidCtl)
 	}
 
-	// Stop squid and remove the anchor. Used both on signal and on a fatal
-	// boot error.
+	// Stop squid and remove the anchor. Used on signal, on a fatal boot error,
+	// and from the gateway goroutine's fatal path; the Once makes a second
+	// caller (a gateway Serve error landing during the SIGTERM drain) a no-op
+	// rather than a concurrent double Stop.
+	var cleanupOnce sync.Once
 	cleanup := func() {
-		if serr := squid.Stop(); serr != nil {
-			slog.Warn("squid stop failed; port 3128 may still be held", "err", serr)
-		}
-		_, _ = runCmd("container", "rm", "-f", "drydock-anchor")
+		cleanupOnce.Do(func() {
+			if serr := squid.Stop(); serr != nil {
+				slog.Warn("squid stop failed; port 3128 may still be held", "err", serr)
+			}
+			_, _ = runCmd("container", "rm", "-f", "drydock-anchor")
+		})
 	}
 
 	// Assigned once the broker + HTTP server exist; the signal handler reads
@@ -487,9 +493,17 @@ func main() {
 			"max_attempts", cfg.CI.MaxAttempts, "task_budget_usd", cfg.TaskBudgetUSD)
 	}
 	go func() {
-		l := listenWhenReady(gwAddr)
+		// Both failure exits run cleanup first: squid and the anchor are
+		// already up by now, and fatal alone would orphan them until the
+		// next boot's stale-pid/anchor sweep.
+		l, lerr := listenWhenReady(gwAddr)
+		if lerr != nil {
+			cleanup()
+			fatal("gateway addr never became bindable", "addr", gwAddr, "err", lerr)
+		}
 		slog.Info("gateway listening", "addr", gwAddr)
 		if serr := hardenedServer(gw).Serve(l); serr != nil {
+			cleanup()
 			fatal("gateway serve failed", "err", serr)
 		}
 	}()
@@ -776,7 +790,7 @@ func main() {
 		// same deadline, so the process cannot exit while a cancelled queued
 		// task is still force-deleting its VM or cleaning its stage.
 		if !brk.WaitQueueDrain(ctx) {
-			slog.Warn("shutdown: dispatched queue tasks did not finish tearing down within the deadline; a VM or stage may be left for the next boot to reap")
+			slog.Warn("shutdown: dispatched queue tasks or resumed gates did not finish tearing down within the deadline; a VM or stage may be left for the next boot to reap")
 		}
 		c()
 		close(shutdownDone)
@@ -785,6 +799,7 @@ func main() {
 	// Blocks until the signal handler calls srv.Shutdown (clean) or the
 	// listener errors.
 	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
+		cleanup()
 		fatal("serve failed", "err", err)
 	}
 	// Serve returns ErrServerClosed the instant Shutdown closes the listener —
@@ -919,7 +934,7 @@ func listen(cfg *config.Config, gwAddr, proxyAddr string) (net.Listener, string)
 		sock = sockpath.Default()
 	}
 	if err := sockpath.EnsureParent(sock); err != nil {
-		fatal("mkdir socket parent failed", "sock", sock, "err", err)
+		fatal("socket parent directory unusable", "sock", sock, "err", err)
 	}
 	_ = os.Remove(sock) // stale socket from a previous crash
 
@@ -977,7 +992,7 @@ func checkContainerVersion(strict bool) {
 			fatal("strict mode: container CLI version not supported",
 				"version", containerVer, "tested", supportedContainerMajor+".x")
 		}
-		slog.Warn("container CLI version not in tested range — re-run README smoke test",
+		slog.Warn("container CLI version not in tested range; run `drydock doctor` and `make redteam-vm` before trusting it",
 			"version", containerVer, "tested", supportedContainerMajor+".x")
 		return
 	}
@@ -1076,6 +1091,19 @@ func pruneOrphanTasks(stageRoot, auditRoot string) {
 	// stage and never reopens one (D4), and a B2 retry re-clones from scratch
 	// (D2). There is nothing about its stage worth keeping alive, so reaping it
 	// is correct — the watch resumes from the durable <id>.ci.json marker alone.
+	// Temp files a crashed atomic write left behind (<name>.<pid>.tmp, or the
+	// fixed <name>.tmp an older build used). Nothing else is writing the audit
+	// dir at boot (the single-instance lock), so every one of these is dead.
+	// Swept BEFORE the resumes below so no reconcile write can trip over one.
+	if stale, _ := filepath.Glob(filepath.Join(auditRoot, "*.tmp")); len(stale) > 0 {
+		removed := 0
+		for _, p := range stale {
+			if err := os.Remove(p); err == nil {
+				removed++
+			}
+		}
+		slog.Info("orphan prune: removed stale temp files", "count", removed)
+	}
 	keep := map[string]bool{}
 	for id := range broker.ListGateMarkers(auditRoot) {
 		keep[id] = true
@@ -1174,13 +1202,14 @@ func startAnchor(network, image string) {
 
 // listenWhenReady retries binding addr until the vmnet gateway interface comes
 // up (the anchor brings it up asynchronously).
-func listenWhenReady(addr string) net.Listener {
+func listenWhenReady(addr string) (net.Listener, error) {
+	var err error
 	for i := 0; i < 60; i++ {
-		if l, err := net.Listen("tcp", addr); err == nil {
-			return l
+		var l net.Listener
+		if l, err = net.Listen("tcp", addr); err == nil {
+			return l, nil
 		}
 		time.Sleep(time.Second)
 	}
-	fatal("gateway addr never became bindable", "addr", addr)
-	return nil
+	return nil, err
 }

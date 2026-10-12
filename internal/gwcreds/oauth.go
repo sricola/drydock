@@ -179,6 +179,12 @@ func (c *OAuthCred) recoverFromDisk() (CredSnapshot, bool) {
 	if err != nil {
 		return CredSnapshot{}, false
 	}
+	// A grant that does not rotate keeps the token that just worked: the
+	// disk's, never the caller's in-memory one, which this very path has
+	// established is dead. (adoptFromSharedSource does the same.)
+	if fresh.Refresh == "" {
+		fresh.Refresh = disk.Refresh
+	}
 	return fresh, true
 }
 

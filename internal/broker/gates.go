@@ -10,8 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 
+	"drydock/internal/atomicfile"
 	"drydock/internal/egress"
 )
 
@@ -125,37 +125,26 @@ func (b *Broker) awaitGate(ctx context.Context, taskID, timeoutMsg, cancelMsg st
 // gatePushMarked's onReady (harmless rewrite of the same bytes; the resume
 // path reads the file this leaves behind).
 func (b *Broker) persistDiff(id, diff string) string {
-	path := filepath.Join(b.AuditRoot, id+".diff")
-	f, err := os.OpenFile(path,
-		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		slog.Warn("could not persist diff for review", "task_id", id, "err", err)
-		return path
-	}
-	defer f.Close()
-	if _, err := f.WriteString(diff); err != nil {
-		slog.Warn("could not persist diff for review", "task_id", id, "err", err)
-	}
-	return path
+	return b.persistArtifact(id, ".diff", "diff", diff)
 }
 
 // persistPlan writes a plan-mode run's captured plan to
-// <AuditRoot>/<id>.plan.md with the same defenses as every other audit
-// artifact (0600, O_NOFOLLOW — a planted symlink fails instead of redirecting
-// the write). Best effort, matching persistDiff: the plan is advisory
-// evidence, so a failure warns rather than failing the task. Returns the
-// path for logging.
+// <AuditRoot>/<id>.plan.md with the same defenses and the same best-effort
+// contract as persistDiff: the plan is advisory evidence, so a failure warns
+// rather than failing the task.
 func (b *Broker) persistPlan(id, plan string) string {
-	path := filepath.Join(b.AuditRoot, id+".plan.md")
-	f, err := os.OpenFile(path,
-		os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		slog.Warn("could not persist plan for review", "task_id", id, "err", err)
-		return path
-	}
-	defer f.Close()
-	if _, err := f.WriteString(plan); err != nil {
-		slog.Warn("could not persist plan for review", "task_id", id, "err", err)
+	return b.persistArtifact(id, ".plan.md", "plan", plan)
+}
+
+// persistArtifact is the shared write behind persistDiff and persistPlan:
+// atomic (temp + fsync + rename, via atomicfile) and symlink-refusing, so a
+// crash mid-write can never leave a truncated <id>.diff for ResumeAwaiting to
+// re-pose the gate from, and a planted symlink fails instead of redirecting
+// the write. Returns the path for logging.
+func (b *Broker) persistArtifact(id, suffix, what, content string) string {
+	path := filepath.Join(b.AuditRoot, id+suffix)
+	if err := atomicfile.Write(path, []byte(content), 0o600); err != nil {
+		slog.Warn("could not persist "+what+" for review", "task_id", id, "err", err)
 	}
 	return path
 }

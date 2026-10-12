@@ -34,6 +34,26 @@ func (freshMintProvider) Mint(float64) (creds.Grant, error) { return &fakeGrant{
 func queueBroker(t *testing.T, maxConcurrent int,
 	run func(context.Context, []string, io.Writer, io.Writer) error) *Broker {
 	t.Helper()
+	b := newQueueBroker(t, maxConcurrent, run)
+	// A test that ends while a dispatched lifecycle is still unwinding (parked
+	// at a gate, or writing its marker and diff just after the state the test
+	// waited for) races TempDir's RemoveAll. Drain like brokerd's shutdown
+	// does: latch the queue, cancel every task, wait for the lifecycles.
+	t.Cleanup(func() {
+		b.BeginQueueDrain()
+		b.CancelAll()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if !b.WaitQueueDrain(ctx) {
+			t.Errorf("queueBroker cleanup: dispatched lifecycles did not finish within 5s")
+		}
+	})
+	return b
+}
+
+func newQueueBroker(t *testing.T, maxConcurrent int,
+	run func(context.Context, []string, io.Writer, io.Writer) error) *Broker {
+	t.Helper()
 	return &Broker{
 		Cfg:           egress.Config{},
 		Providers:     map[string]creds.Provider{"anthropic": freshMintProvider{}},
