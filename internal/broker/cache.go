@@ -40,15 +40,9 @@ func (b *Broker) cacheStoreLocked() *depcache.Store {
 	return b.cacheStore
 }
 
-// cacheAcquire/cacheRelease maintain the in-use refcount for one entry dir.
-func (b *Broker) cacheAcquire(dir string) {
-	b.cacheMu.Lock()
-	defer b.cacheMu.Unlock()
-	b.cacheAcquireLocked(dir)
-}
-
-// cacheAcquireLocked is cacheAcquire for callers already holding b.cacheMu
-// (resolveCache increments inside its own critical section).
+// cacheAcquireLocked/cacheRelease maintain the in-use refcount for one entry
+// dir. The acquire side has no unlocked form: resolveCache increments inside
+// its own b.cacheMu critical section.
 func (b *Broker) cacheAcquireLocked(dir string) {
 	if b.cacheInUse == nil {
 		b.cacheInUse = make(map[string]int)

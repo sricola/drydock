@@ -5,6 +5,76 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+An engineering hygiene pass (`docs/engineering-hygiene-sprint.md`): no new
+features, no configuration changes, no on-disk format changes.
+
+### Fixed
+
+- **A non-rotating OAuth grant recovered from disk kept the dead refresh
+  token.** When another process had rotated the shared credential file and the
+  re-refresh with the on-disk token came back without a `refresh_token`,
+  `gwcreds` persisted the in-memory token the endpoint had just rejected, so
+  every later refresh failed until restart. It now keeps the on-disk token
+  that worked.
+- **A queued task in the verifier now shows `verifying`.** The durable queue
+  state table and the docs always listed `queued → preparing → running →
+  verifying → awaiting_review`, but nothing wrote `verifying`; `drydock queue
+  list` showed such a task as `running` until it reached the gate.
+- **Shutdown waits for gates resumed after a restart.** A task re-posed at
+  the diff gate by boot reconciliation ran outside both the HTTP drain and the
+  queue drain, so a SIGTERM could exit brokerd while that task was still
+  writing its terminal result. It is now counted in the same drain as
+  dispatched queue items.
+- **brokerd tears squid and the anchor down on a listen or serve failure**
+  after squid has started, instead of leaving them for the next boot's
+  stale-pid sweep; the teardown runs at most once even if a serve failure
+  lands during a SIGTERM drain.
+- **`drydock auth` refuses to rewrite `api-keys.env` after a partial read**
+  (a line longer than the scanner limit) rather than silently dropping the
+  keys after it.
+
+### Security
+
+- **Atomic file writes are durable, symlink-safe, and per process.**
+  `internal/atomicfile` (OAuth and API-key files, queue and CI markers) now
+  stages through `<file>.<pid>.tmp` opened `O_EXCL|O_NOFOLLOW`, fsyncs it
+  before the rename, and never follows or renames a symlink planted at the
+  temp path. Two processes writing the same credential file (brokerd and
+  `drydock auth`) can no longer rename each other's half-written temp into
+  place, and a temp left by a crashed brokerd never blocks the restarted one;
+  brokerd also sweeps stale temps in the audit dir at boot. The global-usage
+  ledger's private copy of this logic is gone; the gate marker, the persisted
+  review diff and plan, and squid's per-task token file now use the same
+  write (the token file was rewritten in place, which the auth helper could
+  read truncated). Each write costs one `F_FULLFSYNC` (about 8 to 16 ms on
+  an M-series Mac), a few dozen per task.
+- **Gate markers are read `O_NOFOLLOW`**, matching the queue and CI marker
+  stores, and a marker that cannot be read at boot is logged rather than
+  silently skipped.
+- **The per-task gateway token presented in `X-Goog-Api-Key`** (the Gemini
+  CLI's header) is stripped before a request reaches any non-Google
+  upstream.
+- **drydock's own per-uid socket directory (`$TMPDIR/drydock-<uid>`) is
+  tightened to `0700` if it already exists wider, and refused if it is a
+  symlink.** An operator-chosen `broker.socket` path is left alone.
+- **`drydock ui` sets a read-header timeout** on its loopback listener,
+  matching brokerd.
+
+### Changed
+
+- CI additionally vets the `integration`, `squidlive` and `squide2e` build
+  tags (so tag-gated test files cannot silently stop compiling) and checks
+  `gofmt`.
+- CONTRIBUTING's layout and CI sections, the configuration reference
+  (`stage_quota_gb`), and several stale comments were brought back in line
+  with the code. `docs/superpowers/README.md` says what the design history
+  is and is not.
+- The unit suite runs in about half the wall-clock time: the global ledger
+  fold tests seed their 2,600-entry ledgers through `RecordBatch` instead of
+  2,600 individually fsynced records.
+
 ## v0.8.1 (2026-10-09)
 
 A patch release one day after v0.8.0: the Go toolchain moves to 1.27.2 for

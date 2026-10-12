@@ -988,8 +988,15 @@ func mustRecordDirect(t *testing.T, path string, e GlobalEntry) {
 func glFoldedLedger(t *testing.T, root string, n int, usd float64) *GlobalLedger {
 	t.Helper()
 	l := mustOpenGL(t, root, 0, capNow)
+	// One batch, one fsync: n individual Records each fsync, which made every
+	// test built on this helper take 15-20s for no extra assurance (the fold
+	// under test happens in Compact below either way).
+	es := make([]GlobalEntry, 0, n)
 	for i := 0; i < n; i++ {
-		mustRecord(t, l, capNow, glEntry(glTaskID(i), capNow-int64(i), usd))
+		es = append(es, glEntry(glTaskID(i), capNow-int64(i), usd))
+	}
+	if got, err := l.RecordBatch(capNow, es); err != nil || got != n {
+		t.Fatalf("RecordBatch = %d, %v; want %d, nil", got, err, n)
 	}
 	if err := l.Compact(capNow); err != nil {
 		t.Fatalf("Compact: %v", err)

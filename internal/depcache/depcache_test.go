@@ -197,7 +197,7 @@ func TestStore_EvictLRU(t *testing.T) {
 		}
 	}
 
-	freed, err := s.Evict(0)
+	freed, err := s.EvictExcluding(0, nil)
 	if err != nil {
 		t.Fatalf("Evict: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestStore_EvictLRU(t *testing.T) {
 	}
 
 	// Under quota and no free-floor pressure: nothing further evicted.
-	freed, err = s.Evict(0)
+	freed, err = s.EvictExcluding(0, nil)
 	if err != nil {
 		t.Fatalf("second Evict: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestStore_EvictLRU(t *testing.T) {
 	// Root-shape guard: unsafe roots refuse to RemoveAll anything.
 	for _, badRoot := range []string{"", "/", "relative/root"} {
 		bs := &Store{Root: badRoot, QuotaBytes: 1}
-		if _, err := bs.Evict(0); err == nil {
+		if _, err := bs.EvictExcluding(0, nil); err == nil {
 			t.Errorf("Evict with unsafe root %q: want error, got nil", badRoot)
 		}
 	}

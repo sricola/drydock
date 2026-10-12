@@ -631,7 +631,7 @@ func capBytesAtRune(s string, limit int) (string, bool) {
 	return s[:cut], true
 }
 
-// sanitizeUntrustedText is the STRONGER sanitizer, applied to multi-line
+// sanitizeUntrustedTextLimit is the STRONGER sanitizer, applied to multi-line
 // untrusted text (the prior attempt's diff).
 //
 // It strips what internal/remote's sanitize strips — C0 controls, DEL, C1
@@ -666,14 +666,7 @@ func capBytesAtRune(s string, limit int) (string, bool) {
 // section already buys them: the agent's attention, reviewed at the human diff
 // gate (D3, THREAT_MODEL N2). Combining marks in particular MUST survive: they
 // are ordinary content in most of the world's scripts.
-func sanitizeUntrustedText(s string) string {
-	// The output can never be longer than the input, so this limit is never
-	// reached and the behavior is the plain unbounded sanitize.
-	return sanitizeUntrustedTextLimit(s, len(s))
-}
-
-// sanitizeUntrustedTextLimit is sanitizeUntrustedText stopped as soon as it has
-// produced STRICTLY MORE than limit bytes.
+// It stops as soon as it has produced STRICTLY MORE than limit bytes.
 //
 // One byte past, not exactly at: the caller caps the result at the same limit
 // and reports a truncation only when the cap actually cut something, so a
@@ -706,7 +699,7 @@ func sanitizeUntrustedTextLimit(s string, limit int) string {
 	return b.String()
 }
 
-// sanitizeUntrustedLine is the single-line form: sanitizeUntrustedText's rules
+// sanitizeUntrustedLine is the single-line form: sanitizeUntrustedTextLimit's rules
 // plus '\n'/'\t' stripping and a rune cap with an explicit ellipsis, i.e.
 // exactly internal/remote's sanitize. Used for check names, conclusions, and
 // the prior PR URL — values that must occupy one line of the prompt.

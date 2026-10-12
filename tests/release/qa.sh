@@ -44,9 +44,10 @@ fi
 
 export DRYDOCK_NO_NOTIFY=1
 PASS=0; FAIL=0; WARN=0
-QA_TMP="$(mktemp -d /tmp/drydock-release-qa.XXXXXX)"
+QA_TMP="$(mktemp -d "${TMPDIR:-/tmp}/drydock-release-qa.XXXXXX")"
 BROKER_PID=""
 UI_PID=""
+SUBMIT_PIDS=""   # background `drydock submit` clients; reaped by cleanup
 
 ok()   { PASS=$((PASS+1)); printf '  ok   %-40s %s\n' "$1" "${2:-}"; }
 fail() { FAIL=$((FAIL+1)); printf '  FAIL %-40s %s\n' "$1" "${2:-}"; }
@@ -67,6 +68,9 @@ wait_until() {
 }
 
 cleanup() {
+  # Background submit clients outlive a phase that never saw their id (or an
+  # aborted run); left alone they keep streaming after the script exits.
+  for p in $SUBMIT_PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
   if [ -n "$UI_PID" ]; then kill "$UI_PID" 2>/dev/null; wait "$UI_PID" 2>/dev/null; fi
   if [ -n "$BROKER_PID" ]; then
     # SIGTERM is the tested path: brokerd must reap squid on the way out.
@@ -187,6 +191,7 @@ else
     # until the gate hint, far too late to catch the running stage; the
     # accepted event carries the full task_id within a couple of seconds.
     drydock submit --json --repo "$LIVE_REPO" --platform none "$@" >"$log" 2>&1 &
+    SUBMIT_PIDS="$SUBMIT_PIDS $!"
     local deadline=$((SECONDS+60))
     # NOTE: must test with grep -q first; `grep | head && ...` is a trap
     # (head exits 0 on empty input, so the && fires with no match).
@@ -208,7 +213,7 @@ else
   if [ -n "$ID" ] && wait_until 600 gate_open "$ID"; then
     ok "task reaches diff gate" "$ID"
     drydock inspect "$ID" >/dev/null 2>&1 && ok "inspect renders trust brief" || fail "inspect renders trust brief"
-    drydock approve "$ID" >/dev/null 2>&1 || fail "approve accepted"
+    drydock approve "$ID" >/dev/null 2>&1 && ok "approve accepted" || fail "approve accepted"
     # ground truth is the remote itself, not the client's log format
     if wait_until 120 sh -c "git ls-remote '$LIVE_REPO' 'refs/heads/agent/$ID' | grep -q ."; then
       ok "approved diff pushed to remote" "agent/$ID"
@@ -243,11 +248,11 @@ else
   # Fast tasks can reach the gate before the kill lands; either way the
   # task must end as cancelled. Judge by the task's own result event, not
   # a global counter (other resumed/parallel tasks would poison that).
-  if [ -n "$ID" ] && wait_until 300 sh -c "grep -q '\"stage\":\"running\"' $QA_TMP/t3.log"; then
+  if [ -n "$ID" ] && wait_until 300 sh -c "grep -q '\"stage\":\"running\"' '$QA_TMP/t3.log'"; then
     drydock kill "$ID" >/dev/null 2>&1
-    wait_until 60 sh -c "grep -q '\"outcome\":\"cancelled\"' $QA_TMP/t3.log" \
+    wait_until 60 sh -c "grep -q '\"outcome\":\"cancelled\"' '$QA_TMP/t3.log'" \
       && ok "kill cancels the task" "$ID" || fail "kill cancels the task" "$(tail -2 "$QA_TMP/t3.log")"
-    wait_until 60 sh -c "[ ! -e $HOME/.drydock/stage/$ID ] && ! ls $HOME/.drydock/squid/task-acls/ | grep -q $ID" \
+    wait_until 60 sh -c "[ ! -e '$HOME/.drydock/stage/$ID' ] && ! ls '$HOME/.drydock/squid/task-acls/' | grep -q '$ID'" \
       && ok "stage + squid ACL cleaned" || fail "stage + squid ACL cleaned"
   else
     fail "kill-path task starts running" "$(tail -3 "$QA_TMP/t3.log")"

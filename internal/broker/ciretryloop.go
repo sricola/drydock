@@ -217,8 +217,8 @@ func (b *Broker) maybeEnqueueCIRetry(obs CIObservation, qs QueueState) (retryID,
 	// permanently over something that usually clears before the next tick.
 	// Parking sets QueueItem.CIRetryDeferred, which makes the replay guard fall
 	// through so the next tick re-asks; RetryTaskID still guarantees at most one
-	// child. The detail variant is used because the bare globalCeilingExceeded
-	// DISCARDS the very bit this distinction rests on.
+	// child. The detail variant is what this gate needs: the `unmeasured` bit
+	// is the very distinction this park rests on.
 	//
 	// AND THE PARK IS BOUNDED. A fault that never clears — a ledger file that
 	// stays unreadable, a store that is never opened — would otherwise park this
