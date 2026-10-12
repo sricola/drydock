@@ -551,7 +551,7 @@ func TestResumeQueue_AwaitingCIWithWatchDisabled(t *testing.T) {
 	if !strings.Contains(got.LastError, "disabled") {
 		t.Errorf("last_error = %q, want it to name the disabled watch", got.LastError)
 	}
-	if !markerGone(t, b, it.ID) {
+	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, it.ID) }) {
 		t.Error("the orphaned ci marker was left behind; nothing else would ever remove it")
 	}
 }
@@ -790,7 +790,7 @@ func TestQueue_EnterpriseHostRefCompletesUnwatched(t *testing.T) {
 	if final.CIState != "" {
 		t.Errorf("ci_state = %q, want empty — no watch was ever armed", final.CIState)
 	}
-	if !markerGone(t, b, id) {
+	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, id) }) {
 		t.Error("a ci marker was written for an unwatchable ref")
 	}
 	// And no gh call was ever made on its behalf. Driven synchronously rather
@@ -847,7 +847,7 @@ func TestResumeQueue_ReclaimsOrphanMarkerWithNoQueueItem(t *testing.T) {
 	if err := b.ResumeQueue(b.StageRoot); err != nil {
 		t.Fatalf("ResumeQueue: %v", err)
 	}
-	if !markerGone(t, b, orphan.TaskID) {
+	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, orphan.TaskID) }) {
 		t.Fatal("an orphan marker for a synchronous task survived the boot sweep; it can never be removed by anything else")
 	}
 }
@@ -1069,7 +1069,7 @@ func TestCancelAwaitingCI_IsTheOnlyWayOut(t *testing.T) {
 	}
 	// The watch is cancelled with it: its marker — the watch's entire state —
 	// is gone, so no further gh call is ever spent on this PR.
-	if !markerGone(t, b, it.ID) {
+	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, it.ID) }) {
 		t.Error("the ci marker survived the cancel; the watch would keep polling a cancelled item")
 	}
 }
@@ -1158,7 +1158,7 @@ func TestConcludeCIWatch_KeepsTheMarkerWhenTheQueueWriteFails(t *testing.T) {
 	if got := queueItemState(t, b, it.ID); got.State != QueueCIFailed {
 		t.Fatalf("state after the disk recovered = %q, want ci_failed", got.State)
 	}
-	if !markerGone(t, b, m.TaskID) {
+	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, m.TaskID) }) {
 		t.Error("the marker survived a successful terminal write")
 	}
 }
@@ -1179,7 +1179,7 @@ func TestConcludeCIWatch_RemovesTheMarkerWhenTheTransitionIsRefused(t *testing.T
 	}
 
 	b.ciWatchPass(map[string]int{})
-	if !markerGone(t, b, m.TaskID) {
+	if !waitFor(5*time.Second, func() bool { return markerGone(t, b, m.TaskID) }) {
 		t.Fatal("a marker whose item is terminal was kept; the watch would poll it until its deadline")
 	}
 	if got := queueItemState(t, b, it.ID); got.State != QueueCancelled {

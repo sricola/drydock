@@ -175,21 +175,21 @@ func TestAppendLine_RefusesSymlink(t *testing.T) {
 func TestResumeAwaiting_StageGone_WritesInterrupted(t *testing.T) {
 	dir := t.TempDir()
 	// A task that finished the agent (ok) then hit the gate, whose stage did NOT survive.
-	auditFile := filepath.Join(dir, "gone.jsonl")
+	auditFile := filepath.Join(dir, goneID+".jsonl")
 	os.WriteFile(auditFile, []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1}`+"\n"), 0o600)
 	// A diff IS present: this test must reach the stage-reopen (which fails),
 	// not short-circuit at the diff fail-safe that now runs first.
-	os.WriteFile(filepath.Join(dir, "gone.diff"), []byte("diff"), 0o600)
-	writeGateMarker(dir, "gone", gateMarker{RepoRef: "r", Agent: "claude"})
+	os.WriteFile(filepath.Join(dir, goneID+".diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, goneID, gateMarker{RepoRef: "r", Agent: "claude"})
 
 	b := &Broker{AuditRoot: dir}
-	b.ResumeAwaiting(t.TempDir()) // stageRoot has no "gone" dir
+	b.ResumeAwaiting(t.TempDir()) // stageRoot has no goneID dir
 
 	data, _ := os.ReadFile(auditFile)
 	if !strings.Contains(string(data), `"subtype":"interrupted"`) {
 		t.Errorf("stage-gone task should get an interrupted line, got:\n%s", data)
 	}
-	if _, err := os.Stat(gateMarkerPath(dir, "gone")); !os.IsNotExist(err) {
+	if _, err := os.Stat(gateMarkerPath(dir, goneID)); !os.IsNotExist(err) {
 		t.Error("marker should be removed after the interrupted fallback")
 	}
 }
@@ -204,15 +204,15 @@ func TestResumeAwaiting_StageGone_WritesInterrupted(t *testing.T) {
 func TestResumeAwaiting_MissingDiff_FailsSafe(t *testing.T) {
 	dir := t.TempDir()
 	stageRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stageRoot, "nodiff", "work"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(stageRoot, nodiffID, "work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	auditFile := filepath.Join(dir, "nodiff.jsonl")
+	auditFile := filepath.Join(dir, nodiffID+".jsonl")
 	os.WriteFile(auditFile, []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1}`+"\n"), 0o600)
 	// Deliberately NO nodiff.diff on disk, though the stage itself survived.
-	writeGateMarker(dir, "nodiff", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+	writeGateMarker(dir, nodiffID, gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
 
-	fs := &fakeStage{workDir: filepath.Join(stageRoot, "nodiff", "work")}
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, nodiffID, "work")}
 	b := &Broker{AuditRoot: dir,
 		reopenStage: func(root string) (taskStage, error) { return fs, nil },
 		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
@@ -224,15 +224,15 @@ func TestResumeAwaiting_MissingDiff_FailsSafe(t *testing.T) {
 	if !strings.Contains(string(data), `"subtype":"interrupted"`) {
 		t.Errorf("missing-diff task should get an interrupted line, got:\n%s", data)
 	}
-	if _, err := os.Stat(gateMarkerPath(dir, "nodiff")); !os.IsNotExist(err) {
+	if _, err := os.Stat(gateMarkerPath(dir, nodiffID)); !os.IsNotExist(err) {
 		t.Error("marker should be removed after the missing-diff fallback")
 	}
 	// Grace period: if a resume goroutine had (wrongly) been spawned, it would
 	// register the task as pending within this window.
 	time.Sleep(50 * time.Millisecond)
 	b.pendingMu.Lock()
-	_, pending := b.pending["nodiff"]
-	_, registered := b.tasks["nodiff"]
+	_, pending := b.pending[nodiffID]
+	_, registered := b.tasks[nodiffID]
 	b.pendingMu.Unlock()
 	if pending || registered {
 		t.Errorf("missing-diff task must not be resumed as approvable (pending=%v registered=%v)", pending, registered)
@@ -266,15 +266,15 @@ func TestReadDiffNoFollow_RefusesSymlink(t *testing.T) {
 func TestResumeAwaiting_RecomputesRequiredAcks(t *testing.T) {
 	dir := t.TempDir()
 	stageRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stageRoot, "ackid", "work"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(stageRoot, ackidID, "work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The persisted diff touches a CI workflow (flag kind "ci-workflow"), and
 	// the policy second-looks workflow paths: the resumed gate must require it.
-	os.WriteFile(filepath.Join(dir, "ackid.diff"), []byte(workflowDiff), 0o600)
-	writeGateMarker(dir, "ackid", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+	os.WriteFile(filepath.Join(dir, ackidID+".diff"), []byte(workflowDiff), 0o600)
+	writeGateMarker(dir, ackidID, gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
 
-	fs := &fakeStage{workDir: filepath.Join(stageRoot, "ackid", "work")}
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, ackidID, "work")}
 	b := &Broker{AuditRoot: dir,
 		DiffPolicy:  config.DiffPolicy{SecondLookPaths: []string{".github/workflows/**"}},
 		reopenStage: func(root string) (taskStage, error) { return fs, nil },
@@ -283,7 +283,7 @@ func TestResumeAwaiting_RecomputesRequiredAcks(t *testing.T) {
 
 	if !waitFor(2*time.Second, func() bool {
 		b.pendingMu.Lock()
-		_, ok := b.pending["ackid"]
+		_, ok := b.pending[ackidID]
 		b.pendingMu.Unlock()
 		return ok
 	}) {
@@ -292,8 +292,8 @@ func TestResumeAwaiting_RecomputesRequiredAcks(t *testing.T) {
 	// awaitGate registers b.requiredAcks atomically with b.pending, so once the
 	// task is pending the requirement (if any) is already in place.
 	b.pendingMu.Lock()
-	acks := append([]string(nil), b.requiredAcks["ackid"]...)
-	ch := b.pending["ackid"]
+	acks := append([]string(nil), b.requiredAcks[ackidID]...)
+	ch := b.pending[ackidID]
 	b.pendingMu.Unlock()
 	if len(acks) != 1 || acks[0] != "ci-workflow" {
 		t.Errorf("requiredAcks after resume = %v, want [ci-workflow] (restart must not drop the second-look requirement)", acks)
@@ -306,7 +306,7 @@ func TestResumeAwaiting_RecomputesRequiredAcks(t *testing.T) {
 	}
 	waitFor(2*time.Second, func() bool {
 		b.pendingMu.Lock()
-		_, still := b.tasks["ackid"]
+		_, still := b.tasks[ackidID]
 		b.pendingMu.Unlock()
 		return !still
 	})
@@ -315,14 +315,14 @@ func TestResumeAwaiting_RecomputesRequiredAcks(t *testing.T) {
 func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
 	dir := t.TempDir()
 	stageRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stageRoot, "live", "work"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(stageRoot, liveID, "work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	os.MkdirAll(filepath.Join(stageRoot, "live", "git"), 0o700)
-	os.WriteFile(filepath.Join(dir, "live.diff"), []byte("diff"), 0o600)
-	writeGateMarker(dir, "live", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+	os.MkdirAll(filepath.Join(stageRoot, liveID, "git"), 0o700)
+	os.WriteFile(filepath.Join(dir, liveID+".diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, liveID, gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
 
-	fs := &fakeStage{workDir: filepath.Join(stageRoot, "live", "work")}
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, liveID, "work")}
 	b := &Broker{AuditRoot: dir,
 		reopenStage: func(root string) (taskStage, error) { return fs, nil }, // test seam
 		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
@@ -332,7 +332,7 @@ func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		b.pendingMu.Lock()
-		ch := b.pending["live"]
+		ch := b.pending[liveID]
 		b.pendingMu.Unlock()
 		if ch != nil {
 			ch <- gateReply{ok: true}
@@ -348,12 +348,12 @@ func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
 		t.Error("approve after resume should have pushed the surviving branch")
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "live.jsonl"))
+	data, err := os.ReadFile(filepath.Join(dir, liveID+".jsonl"))
 	if err != nil {
 		t.Fatalf("read audit: %v", err)
 	}
 	m := lastMetricsLine(t, string(data))
-	if m["task_id"] != "live" {
+	if m["task_id"] != liveID {
 		t.Errorf("metrics row task_id=%v, want live", m["task_id"])
 	}
 }
@@ -367,14 +367,14 @@ func TestResumeAwaiting_StageSurvives_ApprovePushes(t *testing.T) {
 func TestResumeAwaiting_CountsAsPendingApprovalNotRunning(t *testing.T) {
 	dir := t.TempDir()
 	stageRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stageRoot, "live2", "work"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(stageRoot, live2ID, "work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	os.MkdirAll(filepath.Join(stageRoot, "live2", "git"), 0o700)
-	os.WriteFile(filepath.Join(dir, "live2.diff"), []byte("diff"), 0o600)
-	writeGateMarker(dir, "live2", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+	os.MkdirAll(filepath.Join(stageRoot, live2ID, "git"), 0o700)
+	os.WriteFile(filepath.Join(dir, live2ID+".diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, live2ID, gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
 
-	fs := &fakeStage{workDir: filepath.Join(stageRoot, "live2", "work")}
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, live2ID, "work")}
 	b := &Broker{AuditRoot: dir,
 		reopenStage: func(root string) (taskStage, error) { return fs, nil },
 		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
@@ -382,7 +382,7 @@ func TestResumeAwaiting_CountsAsPendingApprovalNotRunning(t *testing.T) {
 
 	if !waitFor(2*time.Second, func() bool {
 		b.pendingMu.Lock()
-		_, ok := b.pending["live2"]
+		_, ok := b.pending[live2ID]
 		b.pendingMu.Unlock()
 		return ok
 	}) {
@@ -406,14 +406,14 @@ func TestResumeAwaiting_CountsAsPendingApprovalNotRunning(t *testing.T) {
 	// Resolve the gate so the resume goroutine and its deferred cleanup exit
 	// before TempDir is removed, instead of racing its teardown.
 	b.pendingMu.Lock()
-	ch := b.pending["live2"]
+	ch := b.pending[live2ID]
 	b.pendingMu.Unlock()
 	if ch != nil {
 		ch <- gateReply{ok: true}
 	}
 	waitFor(2*time.Second, func() bool {
 		b.pendingMu.Lock()
-		_, still := b.tasks["live2"]
+		_, still := b.tasks[live2ID]
 		b.pendingMu.Unlock()
 		return !still
 	})
@@ -431,13 +431,13 @@ func TestResumeAwaiting_CountsAsPendingApprovalNotRunning(t *testing.T) {
 func TestResumePush_RegisteredStageNeverObservedRunning(t *testing.T) {
 	dir := t.TempDir()
 	stageRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stageRoot, "rpid", "work"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(stageRoot, rpidID, "work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(dir, "rpid.diff"), []byte("diff"), 0o600)
-	writeGateMarker(dir, "rpid", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+	os.WriteFile(filepath.Join(dir, rpidID+".diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, rpidID, gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
 
-	fs := &fakeStage{workDir: filepath.Join(stageRoot, "rpid", "work")}
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, rpidID, "work")}
 	b := &Broker{AuditRoot: dir,
 		reopenStage: func(root string) (taskStage, error) { return fs, nil },
 		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
@@ -448,7 +448,7 @@ func TestResumePush_RegisteredStageNeverObservedRunning(t *testing.T) {
 	seen := false
 	for time.Now().Before(deadline) {
 		b.pendingMu.Lock()
-		ts, ok := b.tasks["rpid"]
+		ts, ok := b.tasks[rpidID]
 		var stage TaskStage
 		if ok {
 			stage = ts.Stage
@@ -470,14 +470,14 @@ func TestResumePush_RegisteredStageNeverObservedRunning(t *testing.T) {
 	// Let the gate resolve so the goroutine and its deferred cleanup exit
 	// promptly instead of leaking past the test.
 	b.pendingMu.Lock()
-	ch := b.pending["rpid"]
+	ch := b.pending[rpidID]
 	b.pendingMu.Unlock()
 	if ch != nil {
 		ch <- gateReply{ok: true}
 	}
 	waitFor(2*time.Second, func() bool {
 		b.pendingMu.Lock()
-		_, still := b.tasks["rpid"]
+		_, still := b.tasks[rpidID]
 		b.pendingMu.Unlock()
 		return !still
 	})
@@ -497,13 +497,13 @@ func TestResumePush_RegisteredStageNeverObservedRunning(t *testing.T) {
 func TestResumePush_KilledClassifiesAsCancelled(t *testing.T) {
 	dir := t.TempDir()
 	stageRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stageRoot, "killid", "work"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(stageRoot, killidID, "work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(dir, "killid.diff"), []byte("diff"), 0o600)
-	writeGateMarker(dir, "killid", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+	os.WriteFile(filepath.Join(dir, killidID+".diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, killidID, gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
 
-	fs := &fakeStage{workDir: filepath.Join(stageRoot, "killid", "work")}
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, killidID, "work")}
 	b := &Broker{AuditRoot: dir,
 		reopenStage: func(root string) (taskStage, error) { return fs, nil },
 		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
@@ -511,7 +511,7 @@ func TestResumePush_KilledClassifiesAsCancelled(t *testing.T) {
 	b.ResumeAwaiting(stageRoot)
 	if !waitFor(2*time.Second, func() bool {
 		b.pendingMu.Lock()
-		_, ok := b.pending["killid"]
+		_, ok := b.pending[killidID]
 		b.pendingMu.Unlock()
 		return ok
 	}) {
@@ -519,7 +519,7 @@ func TestResumePush_KilledClassifiesAsCancelled(t *testing.T) {
 	}
 
 	killReq := httptest.NewRequest("POST", "/admin/kill/killid", nil)
-	killReq.SetPathValue("id", "killid")
+	killReq.SetPathValue("id", killidID)
 	killRec := httptest.NewRecorder()
 	b.HandleKill(killRec, killReq)
 	if killRec.Code != http.StatusNoContent {
@@ -528,14 +528,14 @@ func TestResumePush_KilledClassifiesAsCancelled(t *testing.T) {
 
 	if !waitFor(2*time.Second, func() bool {
 		b.pendingMu.Lock()
-		_, still := b.tasks["killid"]
+		_, still := b.tasks[killidID]
 		b.pendingMu.Unlock()
 		return !still
 	}) {
 		t.Fatal("resumed task never unregistered after kill")
 	}
 
-	f, err := audit.OpenRead(filepath.Join(dir, "killid.jsonl"))
+	f, err := audit.OpenRead(filepath.Join(dir, killidID+".jsonl"))
 	if err != nil {
 		t.Fatalf("open audit: %v", err)
 	}
@@ -558,13 +558,13 @@ func TestResumePush_KilledClassifiesAsCancelled(t *testing.T) {
 func TestResumePush_ShutdownKeepsStage(t *testing.T) {
 	dir := t.TempDir()
 	stageRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stageRoot, "shutid", "work"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(stageRoot, shutidID, "work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(dir, "shutid.diff"), []byte("diff"), 0o600)
-	writeGateMarker(dir, "shutid", gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
+	os.WriteFile(filepath.Join(dir, shutidID+".diff"), []byte("diff"), 0o600)
+	writeGateMarker(dir, shutidID, gateMarker{RepoRef: "https://github.com/o/r", Agent: "claude", Platform: "github"})
 
-	fs := &fakeStage{workDir: filepath.Join(stageRoot, "shutid", "work")}
+	fs := &fakeStage{workDir: filepath.Join(stageRoot, shutidID, "work")}
 	b := &Broker{AuditRoot: dir,
 		reopenStage: func(root string) (taskStage, error) { return fs, nil },
 		newAdapter:  func(string, string) remote.Adapter { return &fakeAdapter{name: "github"} }}
@@ -576,7 +576,7 @@ func TestResumePush_ShutdownKeepsStage(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		b.pendingMu.Lock()
-		_, ok := b.pending["shutid"]
+		_, ok := b.pending[shutidID]
 		b.pendingMu.Unlock()
 		if ok {
 			break
@@ -590,7 +590,7 @@ func TestResumePush_ShutdownKeepsStage(t *testing.T) {
 	// Wait for the resume goroutine to finish.
 	for i := 0; i < 200; i++ {
 		b.pendingMu.Lock()
-		_, still := b.pending["shutid"]
+		_, still := b.pending[shutidID]
 		b.pendingMu.Unlock()
 		if !still {
 			break
@@ -604,7 +604,7 @@ func TestResumePush_ShutdownKeepsStage(t *testing.T) {
 		t.Error("shutdown must NOT clean the stage: it must survive for the next boot to resume")
 	}
 	// The gate marker must still be present (left for next boot).
-	if _, err := os.Stat(gateMarkerPath(dir, "shutid")); err != nil {
+	if _, err := os.Stat(gateMarkerPath(dir, shutidID)); err != nil {
 		t.Errorf("gate marker must survive shutdown, got err: %v", err)
 	}
 }

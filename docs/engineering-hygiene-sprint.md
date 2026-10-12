@@ -369,12 +369,11 @@ state, per-task VMs, a credential gateway) is right for the product and the
 invariants are written down next to the code. The highest-leverage structural
 work, in order:
 
-1. **One marker store.** `queuestore.go`, `cimarker.go`, and `gatemarker.go`
-   are three copies of read/write/list/remove over `<id><suffix>.json` with
-   slightly different hardening (this sprint brought the third up to the
-   first two). A single generic store (id validation, atomic write,
-   `O_NOFOLLOW` read, warn-and-skip listing) would make the next marker type
-   correct by construction. Small, mechanical, well tested.
+1. **One marker store.** Done in the follow-up PR after this sprint:
+   `internal/broker/markerstore.go` is the single generic store (id
+   validation, atomic write, `O_NOFOLLOW` read, warn-and-skip listing) behind
+   `queuestore.go`, `cimarker.go`, and `gatemarker.go`, with its own contract
+   tests; the three files keep only their ordering and body checks.
 2. **Split `cmd/brokerd/main.go: main` (530 lines)** into boot phases that
    match its own comments: squid, gateway and providers, broker wiring,
    reconcile and resume, listeners, shutdown. The ordering is load-bearing

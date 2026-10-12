@@ -17,20 +17,20 @@ func TestGateMarker_WriteReplacesPlantedSymlinkInsteadOfWritingThroughIt(t *test
 	if err := os.WriteFile(elsewhere, []byte(`{"repo_ref":"untouched"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(elsewhere, gateMarkerPath(dir, "abc")); err != nil {
+	if err := os.Symlink(elsewhere, gateMarkerPath(dir, abcID)); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if err := writeGateMarker(dir, "abc", gateMarker{RepoRef: "r"}); err != nil {
+	if err := writeGateMarker(dir, abcID, gateMarker{RepoRef: "r"}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(elsewhere)
 	if string(got) != `{"repo_ref":"untouched"}` {
 		t.Errorf("the symlink target was written through: %s", got)
 	}
-	if fi, err := os.Lstat(gateMarkerPath(dir, "abc")); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+	if fi, err := os.Lstat(gateMarkerPath(dir, abcID)); err != nil || fi.Mode()&os.ModeSymlink != 0 {
 		t.Errorf("marker must be a regular file after the write, got %v (%v)", fi, err)
 	}
-	if m, err := readGateMarker(dir, "abc"); err != nil || m.RepoRef != "r" {
+	if m, err := readGateMarker(dir, abcID); err != nil || m.RepoRef != "r" {
 		t.Errorf("readGateMarker = %+v, %v; want repo_ref r", m, err)
 	}
 }
@@ -41,10 +41,10 @@ func TestGateMarker_ReadRefusesSymlink(t *testing.T) {
 	if err := os.WriteFile(real, []byte(`{"repo_ref":"evil"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(real, gateMarkerPath(dir, "lnk")); err != nil {
+	if err := os.Symlink(real, gateMarkerPath(dir, lnkID)); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, err := readGateMarker(dir, "lnk"); err == nil {
+	if _, err := readGateMarker(dir, lnkID); err == nil {
 		t.Error("readGateMarker followed a symlinked marker; want an error")
 	}
 	if all := ListGateMarkers(dir); len(all) != 0 {

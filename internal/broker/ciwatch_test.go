@@ -134,6 +134,9 @@ func stopWatch(t *testing.T, b *Broker) {
 	}
 }
 
+// markerGone reports whether the marker file is gone. concludeCIWatch fires
+// OnCIObserved BEFORE it removes the marker, so a test that has just seen an
+// observation must poll this (waitFor), not assert it once.
 func markerGone(t *testing.T, b *Broker, id string) bool {
 	t.Helper()
 	_, err := readCIMarker(b.AuditRoot, id)
@@ -1010,7 +1013,7 @@ func TestCIWatch_MultipleMarkersEachConcluded(t *testing.T) {
 		t.Fatalf("per-marker states = %v", byID)
 	}
 	for _, m := range []ciMarker{bad, one, two} {
-		if !markerGone(t, b, m.TaskID) {
+		if !waitFor(5*time.Second, func() bool { return markerGone(t, b, m.TaskID) }) {
 			t.Errorf("marker %s survived", m.TaskID)
 		}
 	}

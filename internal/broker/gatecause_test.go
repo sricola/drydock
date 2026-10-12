@@ -45,7 +45,7 @@ func TestAwaitGate_ApproveDeny(t *testing.T) {
 func TestGatePush_MarkerLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	b := &Broker{AuditRoot: dir}
-	tr := &taskRun{b: b, id: "gp1", repoRef: "https://github.com/o/r",
+	tr := &taskRun{b: b, id: gp1ID, repoRef: "https://github.com/o/r",
 		instruction: "x", platform: "github", agentName: "claude"}
 
 	// Approve path: wait for the marker (written inside onReady, after channel
@@ -54,13 +54,13 @@ func TestGatePush_MarkerLifecycle(t *testing.T) {
 	go func() {
 		for {
 			b.pendingMu.Lock()
-			ch := b.pending["gp1"]
+			ch := b.pending[gp1ID]
 			b.pendingMu.Unlock()
 			if ch != nil {
 				// onReady runs after channel registration; poll until the marker
 				// appears to avoid a race between registration and the write.
 				if !waitFor(500*time.Millisecond, func() bool {
-					_, err := os.Stat(gateMarkerPath(dir, "gp1"))
+					_, err := os.Stat(gateMarkerPath(dir, gp1ID))
 					return err == nil
 				}) {
 					t.Errorf("marker should exist while awaiting gate")
@@ -74,7 +74,7 @@ func TestGatePush_MarkerLifecycle(t *testing.T) {
 	if !ok {
 		t.Fatal("expected approval")
 	}
-	if _, err := os.Stat(gateMarkerPath(dir, "gp1")); !os.IsNotExist(err) {
+	if _, err := os.Stat(gateMarkerPath(dir, gp1ID)); !os.IsNotExist(err) {
 		t.Error("marker should be removed after approval")
 	}
 }
@@ -116,14 +116,14 @@ func TestGateOutcome_Matrix(t *testing.T) {
 func TestGatePush_ShutdownLeavesMarker(t *testing.T) {
 	dir := t.TempDir()
 	b := &Broker{AuditRoot: dir}
-	tr := &taskRun{b: b, id: "gp2", repoRef: "r", instruction: "x", platform: "github", agentName: "claude"}
+	tr := &taskRun{b: b, id: gp2ID, repoRef: "r", instruction: "x", platform: "github", agentName: "claude"}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(errShutdown)
 	ok, cause := b.gatePushMarked(ctx, tr, "diff")
 	if ok || cause != gateShutdown {
 		t.Fatalf("ok=%v cause=%v, want false/gateShutdown", ok, cause)
 	}
-	if _, err := os.Stat(gateMarkerPath(dir, "gp2")); err != nil {
+	if _, err := os.Stat(gateMarkerPath(dir, gp2ID)); err != nil {
 		t.Error("marker must be LEFT on shutdown for boot resume")
 	}
 }

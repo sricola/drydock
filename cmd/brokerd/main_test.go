@@ -463,13 +463,15 @@ func TestPruneOrphanTasks_ReapsTaskAndVerifyContainers(t *testing.T) {
 	}
 }
 
+var gatedID = strings.Repeat("c", 32) // a real task-id shape; gate markers with any other name are ignored
+
 func TestPruneOrphanTasks_KeepsGatedStages(t *testing.T) {
 	stageRoot := t.TempDir()
 	auditRoot := t.TempDir()
-	os.MkdirAll(filepath.Join(stageRoot, "gated"), 0o700)
+	os.MkdirAll(filepath.Join(stageRoot, gatedID), 0o700)
 	os.MkdirAll(filepath.Join(stageRoot, "orphan"), 0o700)
-	// A live gate marker for "gated".
-	os.WriteFile(filepath.Join(auditRoot, "gated.gate.json"), []byte(`{"repo_ref":"r"}`), 0o600)
+	// A live gate marker for gatedID.
+	os.WriteFile(filepath.Join(auditRoot, gatedID+".gate.json"), []byte(`{"repo_ref":"r"}`), 0o600)
 
 	// Stub runCmd so the container ls call doesn't fail on CI.
 	orig := runCmd
@@ -483,7 +485,7 @@ func TestPruneOrphanTasks_KeepsGatedStages(t *testing.T) {
 
 	pruneOrphanTasks(stageRoot, auditRoot)
 
-	if _, err := os.Stat(filepath.Join(stageRoot, "gated")); err != nil {
+	if _, err := os.Stat(filepath.Join(stageRoot, gatedID)); err != nil {
 		t.Error("gated stage (with a live marker) must survive the reap")
 	}
 	if _, err := os.Stat(filepath.Join(stageRoot, "orphan")); !os.IsNotExist(err) {
