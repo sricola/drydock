@@ -5,10 +5,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.8.2 (2026-10-12)
 
-An engineering hygiene pass (`docs/engineering-hygiene-sprint.md`): no new
-features, no configuration changes, no on-disk format changes.
+A patch release from an engineering hygiene pass
+(`docs/engineering-hygiene-sprint.md`) and its two follow-ups: no new
+features, no configuration changes, no on-disk format changes. Two fixes
+matter to a running install: the Claude subscription credential no longer
+wedges on a dead refresh token after another process rotated it, and the
+budget gate now meters prompt-cache tokens, so `task_budget_usd` and the
+aggregate and global ceilings bite where they previously under-counted.
+Durable markers and credential files are written atomically and durably by
+one shared implementation, and brokerd's shutdown drains gates it resumed
+after a restart. The sandbox image is unchanged.
 
 ### Fixed
 
