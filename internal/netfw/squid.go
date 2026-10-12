@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"drydock/internal/atomicfile"
 )
 
 // CompileSquidConf renders a squid.conf that binds bindAddr and enforces the
@@ -65,7 +67,11 @@ func ResetTaskState(runDir string) error {
 	if err := os.RemoveAll(aclDir); err != nil {
 		return err
 	}
-	if err := os.Remove(filepath.Join(runDir, "task-tokens")); err != nil && !os.IsNotExist(err) {
+	tokens := filepath.Join(runDir, "task-tokens")
+	if err := os.Remove(tokens); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := atomicfile.RemoveStaleTemps(tokens); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(aclDir, 0o755); err != nil {

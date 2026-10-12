@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"drydock/internal/atomicfile"
 	"drydock/internal/creds"
 	"drydock/internal/egress"
 	"drydock/internal/remote"
@@ -1241,7 +1242,7 @@ func TestCIRetry_ATransientMarkWriteFailureDoesNotDestroyTheChain(t *testing.T) 
 	// <path>.tmp, so a directory on that name fails the create and the rename
 	// never happens — reads keep working throughout.
 	b.GlobalLedger = capLedgerAt(t, b.AuditRoot, time.Hour, 0, 0, b.nowMs())
-	qtmp := filepath.Join(b.AuditRoot, parentID+".queue.json.tmp")
+	qtmp := atomicfile.TempPath(queueMarkerPath(b.AuditRoot, parentID))
 	if err := os.Mkdir(qtmp, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1301,7 +1302,7 @@ func TestCIRetry_AParkWhoseOwnFlagCouldNotBePersistedIsStillReAsked(t *testing.T
 	}
 	// ...and only THEN does the disk go away, so the park's own flag cannot be
 	// written. A directory on the atomic-write temp path is a full/read-only disk.
-	qtmp := filepath.Join(b.AuditRoot, parentID+".queue.json.tmp")
+	qtmp := atomicfile.TempPath(queueMarkerPath(b.AuditRoot, parentID))
 	if err := os.Mkdir(qtmp, 0o700); err != nil {
 		t.Fatal(err)
 	}

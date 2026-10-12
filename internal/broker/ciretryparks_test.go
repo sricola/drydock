@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"drydock/internal/atomicfile"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,7 +76,7 @@ func parkShadowOnly(t *testing.T, b *Broker, parentID string) {
 		t.Fatalf("setup: terminal transition: %v", err)
 	}
 	// A directory on the atomic-write temp path is a full or read-only disk.
-	qtmp := filepath.Join(b.AuditRoot, parentID+".queue.json.tmp")
+	qtmp := atomicfile.TempPath(queueMarkerPath(b.AuditRoot, parentID))
 	if err := os.Mkdir(qtmp, 0o700); err != nil {
 		t.Fatal(err)
 	}

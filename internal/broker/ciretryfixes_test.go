@@ -8,12 +8,12 @@ import (
 	"math"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"drydock/internal/atomicfile"
 	"drydock/internal/creds"
 	"drydock/internal/remote"
 )
@@ -97,14 +97,15 @@ func failingSummary() remote.CheckSummary {
 // blockQueueWrite makes writeQueueItem(id) fail RETRYABLY and deterministically
 // — no chmod, no root-dependent behavior, no injected seam.
 //
-// atomicfile.Write writes "<path>.tmp" and renames it, so a DIRECTORY sitting at
-// that exact path makes os.WriteFile return EISDIR every time. The <id>.ci.json
-// write is unaffected (different path), which is precisely the on-disk state the
-// bug needs: a marker carrying a terminal state whose queue terminal never
-// landed. Returns the unblock func.
+// atomicfile.Write stages through atomicfile.TempPath(path) and renames it,
+// and it refuses to remove a DIRECTORY sitting at that exact name (it only
+// clears a stale temp file or symlink), so the write fails every time. The <id>.ci.json write is
+// unaffected (different path), which is precisely the on-disk state the bug
+// needs: a marker carrying a terminal state whose queue terminal never landed.
+// Returns the unblock func.
 func blockQueueWrite(t *testing.T, b *Broker, id string) func() {
 	t.Helper()
-	blocker := filepath.Join(b.AuditRoot, id+queueSuffix+".tmp")
+	blocker := atomicfile.TempPath(queueMarkerPath(b.AuditRoot, id))
 	if err := os.Mkdir(blocker, 0o700); err != nil {
 		t.Fatalf("blockQueueWrite: %v", err)
 	}

@@ -2,9 +2,14 @@ package broker
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	"drydock/internal/atomicfile"
 )
 
 // gateMarker records a task blocked at the push-approval gate so a brokerd
@@ -29,6 +34,10 @@ func gateMarkerPath(auditRoot, id string) string {
 	return filepath.Join(auditRoot, id+".gate.json")
 }
 
+// writeGateMarker persists the marker atomically (temp + fsync + rename), the
+// same guarantee the queue and CI marker stores give: a crash mid-write must
+// never leave a torn marker, because a marker that fails to parse at the next
+// boot means the task is not resumed and its stage is reaped.
 func writeGateMarker(auditRoot, id string, m gateMarker) error {
 	if err := os.MkdirAll(auditRoot, 0o700); err != nil {
 		return err
@@ -37,12 +46,20 @@ func writeGateMarker(auditRoot, id string, m gateMarker) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(gateMarkerPath(auditRoot, id), payload, 0o600)
+	return atomicfile.Write(gateMarkerPath(auditRoot, id), payload, 0o600)
 }
 
+// readGateMarker refuses a symlinked marker (O_NOFOLLOW), matching every other
+// read in the audit dir, so a planted <id>.gate.json -> elsewhere cannot feed
+// the resumed gate a substituted repo or instruction.
 func readGateMarker(auditRoot, id string) (gateMarker, error) {
 	var m gateMarker
-	data, err := os.ReadFile(gateMarkerPath(auditRoot, id))
+	f, err := os.OpenFile(gateMarkerPath(auditRoot, id), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return m, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return m, err
 	}
@@ -59,7 +76,9 @@ func removeGateMarker(auditRoot, id string) error {
 }
 
 // ListGateMarkers returns every task id with a live gate marker in auditRoot.
-// Unreadable or malformed markers are skipped (logged by the caller if needed).
+// An unreadable or malformed marker is skipped with a warning: the task it
+// named will not be resumed, and that should be visible in the boot log
+// rather than silent.
 func ListGateMarkers(auditRoot string) map[string]gateMarker {
 	out := map[string]gateMarker{}
 	entries, err := os.ReadDir(auditRoot)
@@ -72,9 +91,12 @@ func ListGateMarkers(auditRoot string) map[string]gateMarker {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), suffix)
-		if m, err := readGateMarker(auditRoot, id); err == nil {
-			out[id] = m
+		m, err := readGateMarker(auditRoot, id)
+		if err != nil {
+			slog.Warn("resume: skipping unreadable gate marker; its task will not be resumed", "file", e.Name(), "err", err)
+			continue
 		}
+		out[id] = m
 	}
 	return out
 }

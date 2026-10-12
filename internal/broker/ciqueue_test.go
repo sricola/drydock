@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"drydock/internal/atomicfile"
 	"drydock/internal/audit"
 	"drydock/internal/remote"
 )
@@ -1128,7 +1129,7 @@ func TestConcludeCIWatch_KeepsTheMarkerWhenTheQueueWriteFails(t *testing.T) {
 	// shape a full or read-only disk has: atomicfile.Write stages through
 	// <path>.tmp, so a directory sitting on that name fails the create and the
 	// rename never happens.
-	qtmp := filepath.Join(b.AuditRoot, it.ID+".queue.json.tmp")
+	qtmp := atomicfile.TempPath(queueMarkerPath(b.AuditRoot, it.ID))
 	if err := os.Mkdir(qtmp, 0o700); err != nil {
 		t.Fatal(err)
 	}

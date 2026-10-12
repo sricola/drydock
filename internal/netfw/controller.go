@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"drydock/internal/atomicfile"
 	"drydock/internal/egress"
 )
 
@@ -134,9 +135,12 @@ func (c *SquidController) tokenLinesWithout(user string) []string {
 	return out
 }
 
+// upsertToken and removeToken rewrite the token file atomically: the squid
+// auth helper re-reads it on every proxy request, so an in-place rewrite
+// could be observed truncated and reject a legitimate widened request.
 func (c *SquidController) upsertToken(user, secret string) error {
 	out := append(c.tokenLinesWithout(user), user+" "+secret)
-	return os.WriteFile(c.tokenPath(), []byte(strings.Join(out, "\n")+"\n"), 0o600)
+	return atomicfile.Write(c.tokenPath(), []byte(strings.Join(out, "\n")+"\n"), 0o600)
 }
 
 func (c *SquidController) removeToken(user string) error {
@@ -145,7 +149,7 @@ func (c *SquidController) removeToken(user string) error {
 	if len(out) > 0 {
 		body = strings.Join(out, "\n") + "\n"
 	}
-	return os.WriteFile(c.tokenPath(), []byte(body), 0o600)
+	return atomicfile.Write(c.tokenPath(), []byte(body), 0o600)
 }
 
 func (c *SquidController) readTokenLines() []string {
