@@ -61,7 +61,7 @@ Out of scope (don't report; documented in `THREAT_MODEL.md`):
 - Prompt injection in staged repo files influencing the agent for that
   task; the diff gate is the backstop.
 
-See `THREAT_MODEL.md` for the precise threat model (A1–A8 defended,
+See `THREAT_MODEL.md` for the precise threat model (A1–A9 defended,
 N1–N7 not).
 
 ## Supported versions

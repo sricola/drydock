@@ -81,18 +81,23 @@ Each item moves through a broker-enforced state machine:
 
 ```
 queued → preparing → running → verifying → awaiting_review → completed
-   │                                                │      ↘ dead_letter
-   ↓                                                ↓
-dead_letter                                   awaiting_ci → completed
-(spend-capped                                             ↘ ci_failed
- CI retry only)                                           ↘ dead_letter
-        (cancelled is reachable from every non-terminal state)
+   │                    │          │               │      ↘ dead_letter
+   ↓                    ↓          ↓               ↓
+dead_letter          completed  dead_letter   awaiting_ci → completed
+(see below)        (no diff, or                           ↘ ci_failed
+                    a plan-only run)                      ↘ dead_letter
+        (cancelled is reachable from every non-terminal state;
+         preparing, running and verifying can also dead-letter on failure)
 ```
 
-The `queued → dead_letter` edge has exactly one writer: the dispatcher dropping
-a **broker-initiated CI retry** whose vendor spend cap exhausted before it could
-dispatch. A human-submitted item never takes it — it parks instead. See the
-spend-ceiling bullet below.
+The `queued → dead_letter` edge has exactly two writers, both pre-dispatch
+drops with the reason in `last_error`: the dispatcher dropping a
+**broker-initiated CI retry** whose vendor spend cap exhausted before it could
+dispatch, and the rejection-loop guard dropping an item whose work reached
+`queue.max_denials` while it waited (see
+[Rejection-loop detection](configuration.html#rejection-loop-detection)). A
+human-submitted item under the spend cap never takes it: it parks instead. See
+the spend-ceiling bullet below.
 
 - **Same lifecycle, same gates.** A dispatched item runs the exact code path
   a synchronous submit runs — setup profiles, verification, the diff-approval
@@ -108,8 +113,9 @@ spend-ceiling bullet below.
   `last_error` and in the `REASON` column of `drydock queue list`: nobody is
   waiting for it, and an unattended retry that sits queued for a rolling
   window and then dispatches hours later would land on a base that has moved
-  on, at a diff gate nobody is at. This is the only `queued → dead_letter`
-  edge in the machine above.
+  on, at a diff gate nobody is at. This is one of the two `queued →
+  dead_letter` edges in the machine above; the other is the rejection-loop
+  drop.
 - **Survives restarts.** Queue items are atomically-written files in the
   audit dir. At boot, brokerd re-dispatches anything still `queued`, resumes
   items parked at the approval gate, and **never re-runs** an item that was
@@ -631,9 +637,10 @@ agent ever runs (no diff exists — nothing ran to produce one); a task whose
 **required** verification does not pass reports `outcome=verify_failed` and
 never reaches the approval gate; a diff that violates `diff_policy` (caps or
 `blocked_paths`) reports `outcome=policy_blocked` — shown as **policy
-blocked** — and likewise never reaches the gate. `drydock tasks`, `drydock
-stats`, and the web UI all show these outcomes distinctly from `pushed` and
-`push_failed`.
+blocked**, and likewise never reaches the gate; a `--plan` run reports
+`outcome=planned`. `drydock tasks` and `drydock stats` show every outcome
+distinctly; the web UI's history list names them too, while its "Just
+finished" rail folds them into three glyphs (see [Web UI](web-ui.html)).
 
 On the queue path, a diff that is byte-identical to one you already denied
 for the same repository is **auto-denied** before the gate: `outcome=denied`
@@ -711,7 +718,7 @@ ran those stages, so a synchronous submit's row has no `queued` at all — and
 `.pushing`; the stages partition the task's wall-clock, so `preparing` ends
 where `setup` begins), egress/approval gate waits, the
 admitted request count, spend, the terminal `outcome` (`pushed`, `denied`,
-`cancelled`, `push_failed`, `setup_failed`, `verify_failed`, `policy_blocked`, `error`, or `no_diff`), and the
+`cancelled`, `push_failed`, `setup_failed`, `verify_failed`, `policy_blocked`, `error`, `no_diff`, or `planned`), and the
 egress-widen outcome; if brokerd ever
 appends more than one (e.g. after a resumed task), the last such row wins,
 so readers should take the last `metrics` line, not the first.

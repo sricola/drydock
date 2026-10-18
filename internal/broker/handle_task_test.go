@@ -129,6 +129,10 @@ func testBroker(t *testing.T, vendor string, st taskStage, grant *fakeGrant,
 		newAdapter: func(repoRef, platform string) remote.Adapter {
 			return &fakeAdapter{name: remote.AdapterFor(repoRef, platform).Name()}
 		},
+		// Keep failure-path teardown hermetic: never shell out to the real
+		// `container` CLI from a unit test (the TestMain PATH shim fails the
+		// package if anything does).
+		deleteContainer: func(string) error { return nil },
 	}
 }
 

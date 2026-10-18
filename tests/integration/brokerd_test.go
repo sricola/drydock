@@ -52,12 +52,20 @@ func TestMain(m *testing.M) {
 }
 
 // cleanupOrphans removes any leftover drydock-anchor container and kills
-// any orphan squid that's still binding the vmnet gateway port. Tests
-// otherwise stall in waitBindable because squid persists past brokerd's
-// signal cleanup when brokerd is killed non-gracefully.
+// any orphan squid that a PREVIOUS TEST RUN left binding the vmnet gateway
+// port. Tests otherwise stall in waitBindable because squid persists past
+// brokerd's signal cleanup when brokerd is killed non-gracefully.
+//
+// The pkill pattern is pinned to the squid.conf path under this harness's
+// own run dirs (startBrokerd puts SQUID_RUN_DIR under /tmp/drydk-*). A bare
+// "squid -N -f" would also kill the operator's live brokerd-managed squid,
+// whose conf lives under ~/.drydock/squid, and an operator who runs the
+// integration suite on their workstation must not lose their daemon's
+// proxy to it. If a live daemon holds the port, the test fails in
+// waitBindable with the brokerd log, which is the honest outcome.
 func cleanupOrphans() {
 	_ = exec.Command("container", "rm", "-f", "drydock-anchor").Run()
-	_ = exec.Command("pkill", "-f", "squid -N -f").Run()
+	_ = exec.Command("pkill", "-f", "squid -N -f /tmp/drydk-").Run()
 	time.Sleep(500 * time.Millisecond)
 }
 

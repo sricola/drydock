@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"testing"
 
 	"drydock/internal/config"
@@ -36,12 +35,12 @@ func TestAgentCredentialAvailable(t *testing.T) {
 			if c.anthropicKey != "" {
 				t.Setenv("ANTHROPIC_API_KEY", c.anthropicKey)
 			} else {
-				os.Unsetenv("ANTHROPIC_API_KEY")
+				unsetenv(t, "ANTHROPIC_API_KEY")
 			}
 			if c.openaiKey != "" {
 				t.Setenv("OPENAI_API_KEY", c.openaiKey)
 			} else {
-				os.Unsetenv("OPENAI_API_KEY")
+				unsetenv(t, "OPENAI_API_KEY")
 			}
 			cfg := makeTestCfg(c.anthropicAuth, c.openaiAuth)
 			if got := agentCredentialAvailable(cfg); got != c.want {
@@ -55,8 +54,8 @@ func TestAgentCredentialAvailable(t *testing.T) {
 func TestAgentCredentialAvailable_OpenAICompat(t *testing.T) {
 	// Only openai_compat configured (BaseURL set + api key env var present)
 	// should be sufficient for agentCredentialAvailable to return true.
-	os.Unsetenv("ANTHROPIC_API_KEY")
-	os.Unsetenv("OPENAI_API_KEY")
+	unsetenv(t, "ANTHROPIC_API_KEY")
+	unsetenv(t, "OPENAI_API_KEY")
 	t.Setenv("MY_COMPAT_KEY", "sk-compat")
 
 	cfg := config.Defaults()
@@ -71,9 +70,9 @@ func TestAgentCredentialAvailable_OpenAICompat(t *testing.T) {
 
 func TestAgentCredentialAvailable_OpenAICompatNoKey(t *testing.T) {
 	// openai_compat BaseURL set but api key env var absent → false (no standard creds either).
-	os.Unsetenv("ANTHROPIC_API_KEY")
-	os.Unsetenv("OPENAI_API_KEY")
-	os.Unsetenv("MY_COMPAT_KEY")
+	unsetenv(t, "ANTHROPIC_API_KEY")
+	unsetenv(t, "OPENAI_API_KEY")
+	unsetenv(t, "MY_COMPAT_KEY")
 
 	cfg := config.Defaults()
 	cfg.OpenAICompat.BaseURL = "https://openrouter.ai"
@@ -99,12 +98,12 @@ func TestAgentCredentialAvailable_Codex(t *testing.T) {
 		if c.aKey != "" {
 			t.Setenv("ANTHROPIC_API_KEY", c.aKey)
 		} else {
-			os.Unsetenv("ANTHROPIC_API_KEY")
+			unsetenv(t, "ANTHROPIC_API_KEY")
 		}
 		if c.oKey != "" {
 			t.Setenv("OPENAI_API_KEY", c.oKey)
 		} else {
-			os.Unsetenv("OPENAI_API_KEY")
+			unsetenv(t, "OPENAI_API_KEY")
 		}
 		cfg := makeTestCfg(c.anthropicAuth, c.openaiAuth)
 		if got := agentCredentialAvailable(cfg); got != c.want {

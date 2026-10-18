@@ -77,7 +77,16 @@ func Prepare(ctx context.Context, root, repoRef string) (*Stage, error) {
 	if err := os.Rename(clone, workDir); err != nil {
 		return nil, fmt.Errorf("move work tree: %w", err)
 	}
-	return &Stage{Root: root, WorkDir: workDir, gitDir: gitDir, ctx: ctx}, nil
+	st := &Stage{Root: root, WorkDir: workDir, gitDir: gitDir, ctx: ctx}
+	// Pin the content-altering attributes off for every host-side git
+	// operation on this stage (add, diff, archive), not just the export: a
+	// clean filter or text conversion at add time would make the pushed blob
+	// differ from the bytes the agent wrote, and a filter driver is a host
+	// command run on agent-chosen input.
+	if err := st.neutralizeExportAttributes(); err != nil {
+		return nil, err
+	}
+	return st, nil
 }
 
 // git runs a host-side git command bound to the separated git dir and work tree,
@@ -222,7 +231,11 @@ func (s *Stage) gitDiffCapped(max int64) (string, error) {
 		"--work-tree="+s.WorkDir,
 		"-c", "core.hooksPath=/dev/null",
 		"-c", "core.fsmonitor=false",
-		"diff", "--cached",
+		// The reviewed diff must be the staged bytes: an in-tree `diff=<driver>`
+		// attribute would otherwise select an operator textconv or external
+		// diff from ~/.gitconfig, rewriting what the approver reads and running
+		// a host tool on agent input.
+		"diff", "--cached", "--no-ext-diff", "--no-textconv",
 	)
 	cmd.Dir = s.WorkDir
 	cmd.Env = gitHardenedEnv(os.Environ())
@@ -346,6 +359,16 @@ func (s *Stage) ExportStaged(dst string) (string, error) {
 		return "", err
 	}
 
+	// `git archive` honours the archived tree's OWN .gitattributes: an
+	// export-ignore line hides a file from the export while the file is still
+	// pushed, and export-subst rewrites one, in both cases with StagedTreeHash
+	// unchanged. The verifier would then test a different tree from the one
+	// that ships. $GIT_DIR/info/attributes outranks every in-tree
+	// .gitattributes (macros included) and the git dir is host-only, so pin
+	// both attributes off there before archiving.
+	if err := s.neutralizeExportAttributes(); err != nil {
+		return "", err
+	}
 	ctx := s.execCtx()
 	arch := exec.CommandContext(ctx, "git",
 		"--git-dir="+s.gitDir, "archive", "--format=tar", tree)
@@ -393,7 +416,93 @@ func (s *Stage) ExportStaged(dst string) (string, error) {
 	if untarErr != nil {
 		return "", fmt.Errorf("stage: untar export: %w\n%s", untarErr, untarStderr.String())
 	}
+	// Belt and braces: every blob and symlink the staged tree lists must now
+	// exist under dst. This catches any future way an export could come up
+	// short (a new attribute, a tar quirk) and fails closed instead of handing
+	// the verifier a partial tree. Gitlinks (submodule entries) are skipped:
+	// git archive writes them as empty directories and they carry no content.
+	if err := s.verifyExportComplete(tree, clean); err != nil {
+		return "", err
+	}
 	return tree, nil
+}
+
+// neutralizeExportAttributes writes the host-only override that disables, for
+// every path, each attribute that could make git read, write or export bytes
+// other than the blob itself: export-ignore and export-subst (archive
+// contents), text/eol (CRLF conversion), ident ($Id$ expansion), filter (a
+// clean/smudge driver from the operator's gitconfig, git-lfs included) and
+// working-tree-encoding (re-encoding). $GIT_DIR/info/attributes outranks every
+// in-tree .gitattributes, macros included, and the git dir is host-only.
+// Written at Prepare and again before each export (idempotent).
+func (s *Stage) neutralizeExportAttributes() error {
+	info := filepath.Join(s.gitDir, "info")
+	if err := os.MkdirAll(info, 0o700); err != nil {
+		return fmt.Errorf("stage: prepare attribute override: %w", err)
+	}
+	// working-tree-encoding is unset with "!" (an explicit false is an
+	// invalid encoding name and makes git die).
+	const override = "# written by drydock: the verifier must see exactly the staged tree\n" +
+		"* -export-ignore -export-subst -text -ident -filter !working-tree-encoding\n"
+	if err := os.WriteFile(filepath.Join(info, "attributes"), []byte(override), 0o600); err != nil {
+		return fmt.Errorf("stage: write attribute override: %w", err)
+	}
+	return nil
+}
+
+// verifyExportComplete asserts that every non-gitlink entry of tree exists
+// under dst (Lstat: a staged symlink is exported as a symlink, so its target
+// need not resolve) and that dst holds exactly that many files and symlinks.
+// The count matters on a case-insensitive volume (APFS, the default for both
+// $TMPDIR and the quota image): Case.go and case.go both Lstat fine while the
+// export can only hold one of them.
+func (s *Stage) verifyExportComplete(tree, dst string) error {
+	out, err := s.git("ls-tree", "-r", "-z", tree)
+	if err != nil {
+		return fmt.Errorf("stage: list staged tree: %w", err)
+	}
+	missing, listed := 0, 0
+	first := ""
+	for _, ent := range strings.Split(out, "\x00") {
+		if ent == "" {
+			continue
+		}
+		// "<mode> <type> <hash>\t<path>"
+		meta, path, ok := strings.Cut(ent, "\t")
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(meta, "160000 ") {
+			continue // gitlink: no content to export
+		}
+		listed++
+		if _, err := os.Lstat(filepath.Join(dst, filepath.FromSlash(path))); err != nil {
+			missing++
+			if first == "" {
+				first = path
+			}
+		}
+	}
+	if missing > 0 {
+		return fmt.Errorf("stage: export is incomplete: %d staged path(s) missing from the verifier copy (first: %q); refusing to verify a tree that differs from the one that would be pushed", missing, first)
+	}
+	exported := 0
+	err = filepath.WalkDir(dst, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			exported++
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("stage: walk export: %w", err)
+	}
+	if exported != listed {
+		return fmt.Errorf("stage: export has %d entries but the staged tree lists %d; refusing to verify a tree that differs from the one that would be pushed (case-folding or name collisions in the export)", exported, listed)
+	}
+	return nil
 }
 
 // exportDst cleans dst and asserts it falls under the stage root, applying

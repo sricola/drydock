@@ -203,8 +203,11 @@ usage the broker cannot parse joins it. It under-counts when:
   boot when it sees that configuration;
 - the route is **batch-style** and usage is not in the proxied response at all.
   For the built-in vendors this is closed rather than open: the gateway's route
-  allowlist deliberately omits `/v1/messages/batches` (F-03) and answers it
-  `403`, so it is never proxied. The gap is on **`openai_compat`** lanes, whose
+  allowlist deliberately omits `/v1/messages/batches` (F-03) and the Gemini
+  batch actions (`:batchGenerateContent` and friends; only `:generateContent`,
+  `:streamGenerateContent`, `:countTokens` and `:embedContent` are forwarded)
+  and answers them `403`, so they are never proxied. The gap is on
+  **`openai_compat`** lanes, whose
   route allowlist is unrestricted — a batch-style route there is proxied and
   meters nothing;
 - an `openai_compat` lane is configured with **no `prices`**, so it meters at
@@ -695,7 +698,7 @@ with `--model gemini-2.5-flash`.
 | `cache_root` | `DRYDOCK_CACHE_ROOT` | `~/.drydock/cache` | Persistent per-repo dependency caches for profiles with `cache: true` |
 | `cache_quota_gb` | `DRYDOCK_CACHE_QUOTA_GB` | `20` | Total disk bound (GiB) for the dependency cache; LRU-evicted; `0` disables caching entirely |
 | `broker.socket` | `BROKER_SOCKET` | `$TMPDIR/drydock-$UID/drydock.sock` | Unix socket (parent dir `0700`, socket `0600`) |
-| `broker.addr` | `BROKER_ADDR` | *(empty)* | `host:port` to expose over TCP (**no auth**; see [SECURITY.md § TCP exposure](https://github.com/sricola/drydock/blob/main/SECURITY.md#tcp-exposure-brokeraddr--broker_addr)) |
+| `broker.addr` | `BROKER_ADDR` | *(empty)* | `host:port` to serve over TCP instead of the socket. **Loopback only**: brokerd refuses to start on a non-loopback address, and in TCP mode it rejects requests whose `Host`/`Origin` is not loopback (DNS rebinding). No auth beyond that; see [SECURITY.md § TCP exposure](https://github.com/sricola/drydock/blob/main/SECURITY.md#tcp-exposure-brokeraddr--broker_addr) |
 | `log_json` | `DRYDOCK_LOG_JSON=1` | `false` | Force JSON logs even on a TTY |
 | `strict_container_version` | `DRYDOCK_STRICT_CONTAINER_VERSION=1` | `false` | Fail closed when `container`'s major drifts from the tested range |
 | n/a | `EGRESS_CONFIG` | `~/.drydock/egress.yaml` | Path override for the egress YAML |

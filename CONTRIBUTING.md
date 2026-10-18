@@ -40,7 +40,7 @@ tests/integration # //go:build integration: boots brokerd against the real conta
 tests/imagescripts # host-side tests of the image shell scripts (run in CI)
 tests/release/qa.sh # black-box QA of the installed release (make release-qa)
 site/             # landing page + docs (site/docs/*.md, rendered by make docs)
-docs/             # ROADMAP, engineering-hygiene-sprint, audits/, superpowers/ (design history)
+docs/             # ROADMAP, engineering-hygiene-sprint, qa-validation-sprint, audits/, superpowers/ (design history)
 ```
 
 The design specs and implementation plans behind each feature live in
@@ -67,12 +67,18 @@ make image-anchor       # minimal anchor image (FROM scratch + static binary)
 make test-integration   # boot brokerd as a subprocess; macOS only, needs the container runtime
 ```
 
-GitHub Actions runs `go build`, `go test -race`, `go vet` (also against the
-`integration`, `squidlive` and `squide2e` build tags, so tag-gated test files
-cannot silently stop compiling), `gofmt -l`, `staticcheck` (`make lint`; the
-staticcheck and x/tools versions are pinned in the tool module
-`tools/staticcheck/go.mod`, which the Makefile and `test.yml` both build
-from), and `govulncheck` on every pull request and on every push to `main`.
+GitHub Actions runs `go build`, `go test -race` with a coverage profile, `go
+vet` (also against the `integration`, `squidlive` and `squide2e` build tags,
+so tag-gated test files cannot silently stop compiling), `gofmt -l`,
+`staticcheck` (`make lint`; the staticcheck and x/tools versions are pinned in
+the tool module `tools/staticcheck/go.mod`, which the Makefile and `test.yml`
+both build from), and `govulncheck` on every pull request and on every push
+to `main`. Coverage is gated on a total floor by `tools/covercheck` (set well
+under the current figure, so it catches a package's tests silently stopping,
+not ordinary movement). The same unit suite also runs on an Apple-silicon
+macOS runner on every PR, so the darwin-only tests (APFS stage quota, launchd
+rendering, the per-uid socket dir) are exercised in CI, and a nightly job
+runs it shuffled and repeated to surface order dependence and flakes.
 Integration (`make test-integration`) requires the `container` runtime and is
 macOS-only; it runs locally, not in CI. No real Anthropic or OpenAI spend.
 

@@ -64,7 +64,7 @@ func runUI(args []string) {
 		BrokerDial: func() (net.Conn, error) { return net.Dial("unix", brokerclient.ResolveSocketPath()) },
 	}
 
-	addr := fmt.Sprintf("127.0.0.1:%d", *port)
+	addr := uiAddr(*port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		die("cannot bind %s: %v (is another `drydock ui` running, or the port taken?)", addr, err)
@@ -81,8 +81,18 @@ func runUI(args []string) {
 	// ReadHeaderTimeout bounds a slow-loris client holding the loopback
 	// listener's connections open, matching brokerd's own server. No
 	// ReadTimeout/WriteTimeout: /api/submit legitimately waits on brokerd.
-	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	hs := newUIServer(srv.Handler())
 	if err := hs.Serve(ln); err != nil {
 		die("ui server: %v", err)
 	}
+}
+
+// uiAddr is the loopback-only bind address: the UI is never exposed beyond
+// this machine (web-ui.md), whatever port is chosen.
+func uiAddr(port int) string { return fmt.Sprintf("127.0.0.1:%d", port) }
+
+// newUIServer wraps the handler with the header timeout that bounds a
+// slow-loris client; no body timeouts, since /api/submit legitimately waits.
+func newUIServer(h http.Handler) *http.Server {
+	return &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
 }

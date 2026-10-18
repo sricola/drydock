@@ -14,8 +14,11 @@ import (
 	"sort"
 )
 
-// claimRe extracts the Adigits claim code from a test name.
-var claimRe = regexp.MustCompile(`A[0-9]+`)
+// claimRe extracts the claim code (A<digits>, or V<digits> for the verifier-VM
+// claims) from a red-team test name. Anchored on the Redteam_ prefix so an
+// unrelated name such as TestIPV4Parse or TestSHA1Sum is not grouped under
+// V4 or A1.
+var claimRe = regexp.MustCompile(`Redteam_((?:A|V)[0-9]+)_`)
 
 // testEvent is the subset of a go test -json event that we care about.
 type testEvent struct {
@@ -80,8 +83,8 @@ func summarize(r io.Reader) (report, bool) {
 // claimKey returns the Adigits claim code extracted from testName, or the
 // full test name when no claim code is found.
 func claimKey(testName string) string {
-	if m := claimRe.FindString(testName); m != "" {
-		return m
+	if m := claimRe.FindStringSubmatch(testName); m != nil {
+		return m[1]
 	}
 	return testName
 }

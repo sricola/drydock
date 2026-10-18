@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly: the same suite shuffled and repeated, to surface order
+  # dependence and flakes that a single ordered run hides.
+  schedule:
+    - cron: '23 6 * * *'
 
 # Least-privilege GITHUB_TOKEN: every job here only checks out the repo and
 # runs tests/linters, so read-only contents is all they need. (Closes CodeQL
@@ -21,7 +25,15 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go build ./...
-      - run: go test -race -count=1 ./...
+      - run: go test -race -count=1 -timeout 15m -covermode=atomic -coverprofile=coverage.out ./...
+      # Coverage is reported per package and gated on a total floor well under
+      # the current figure (77% at the v0.8.2 QA baseline), so it catches a
+      # large regression (a package's tests silently stop running) without
+      # blocking unrelated work on small movements.
+      - name: coverage report and floor
+        run: |
+          go tool cover -func=coverage.out | tail -1
+          go run ./tools/covercheck -profile coverage.out -min 70
       - run: go vet ./...
       # The tag-gated suites (VM integration, squid e2e) cannot RUN here, but
       # they can still COMPILE here; without this a refactor could break them
@@ -40,6 +52,38 @@ jobs:
       # Fail CI on a known vulnerability in a dependency (supply-chain guard).
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.4.0 ./...
+
+  # drydock ships for macOS only, yet the suite above runs on Linux. This job
+  # runs the same unit suite on Apple silicon macOS so the darwin-tagged tests
+  # (APFS stage quota via hdiutil, launchd rendering, sockpath under $TMPDIR)
+  # and every GOOS=darwin build path are exercised on every PR. Public repos
+  # get macOS runners at no cost; the job takes a few minutes.
+  go-test-macos:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go test -race -count=1 -timeout 20m ./...
+
+  # Nightly only: shuffled, repeated run of the unit suite. A test that
+  # depends on another test's leftovers, or on wall-clock luck, fails here
+  # before it fails a release.
+  go-test-nightly-shuffle:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race -count=2 -shuffle=on -timeout 40m ./...
 
   # Real egress-enforcement coverage: boot an actual squid against the shipped
   # CompileSquidConf + SquidController widening, and assert the allowlist is

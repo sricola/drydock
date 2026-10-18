@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -29,7 +31,43 @@ func TestMain(m *testing.M) {
 	// TMPDIR would otherwise refuse every one with "host low on disk". The
 	// preflight test overrides this explicitly to exercise the reject.
 	minFreeStageBytes = 0
-	os.Exit(m.Run())
+	// Unit tests must never reach the real Apple `container` CLI: on a
+	// developer Mac that talks to the live runtime (and before the fixtures
+	// stubbed deleteContainer, eleven tests did exactly that). Shadow the
+	// binary with a shim that records the call and fails, and fail the whole
+	// package if anything invoked it.
+	shimLog, cleanup, err := installContainerShim()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "broker tests: cannot install container shim:", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	if calls, _ := os.ReadFile(shimLog); len(calls) > 0 {
+		fmt.Fprintf(os.Stderr, "broker tests: a unit test invoked the real `container` CLI (stub Broker.deleteContainer / runner seams):\n%s", calls)
+		if code == 0 {
+			code = 1
+		}
+	}
+	cleanup()
+	os.Exit(code)
+}
+
+// installContainerShim prepends a directory holding a fake `container` to PATH.
+// The fake appends its argv to the returned log path and exits 1, so a test
+// that reaches it both fails loudly and leaves evidence for TestMain.
+func installContainerShim() (logPath string, cleanup func(), err error) {
+	dir, err := os.MkdirTemp("", "drydock-container-shim-")
+	if err != nil {
+		return "", nil, err
+	}
+	logPath = filepath.Join(dir, "calls.log")
+	script := "#!/bin/sh\necho \"container $*\" >> '" + logPath + "'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "container"), []byte(script), 0o755); err != nil {
+		os.RemoveAll(dir)
+		return "", nil, err
+	}
+	os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath, func() { os.RemoveAll(dir) }, nil
 }
 
 func TestGitURLRef(t *testing.T) {
@@ -228,19 +266,49 @@ func TestAcquireSlot_RespectsMaxConcurrent(t *testing.T) {
 }
 
 func TestAcquireSlot_RaceClean(t *testing.T) {
-	// Race detector should not flag concurrent acquires.
-	b := &Broker{MaxConcurrent: 3}
+	// Concurrent acquires must never let more than MaxConcurrent holders
+	// coexist, and every successful acquire must be matched by a release so
+	// the pool ends full again. The race detector covers the memory model;
+	// these two invariants cover the semantics.
+	const cap = 3
+	b := &Broker{MaxConcurrent: cap}
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	var holders, peak, acquired int64
+	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if b.acquireSlot() {
-				b.releaseSlot()
+			if !b.acquireSlot() {
+				return
 			}
+			atomic.AddInt64(&acquired, 1)
+			n := atomic.AddInt64(&holders, 1)
+			for {
+				p := atomic.LoadInt64(&peak)
+				if n <= p || atomic.CompareAndSwapInt64(&peak, p, n) {
+					break
+				}
+			}
+			atomic.AddInt64(&holders, -1)
+			b.releaseSlot()
 		}()
 	}
 	wg.Wait()
+	if p := atomic.LoadInt64(&peak); p > cap {
+		t.Fatalf("peak concurrent holders = %d, want <= %d", p, cap)
+	}
+	if atomic.LoadInt64(&acquired) == 0 {
+		t.Fatal("no goroutine acquired a slot; the test exercised nothing")
+	}
+	// Every slot released: the pool must admit exactly cap more holders.
+	for i := 0; i < cap; i++ {
+		if !b.acquireSlot() {
+			t.Fatalf("acquire %d after full release failed; a slot leaked", i+1)
+		}
+	}
+	if b.acquireSlot() {
+		t.Fatal("acquire beyond cap succeeded after refill")
+	}
 }
 
 func TestHandleTask_503WhenSaturated(t *testing.T) {

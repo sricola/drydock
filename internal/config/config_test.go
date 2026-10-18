@@ -404,8 +404,9 @@ func TestConfig_OpenAIAuthDefaultsToApiKey(t *testing.T) {
 
 func TestConfig_OpenAIAuthRejectsGarbage(t *testing.T) {
 	t.Setenv("DRYDOCK_OPENAI_AUTH", "bogus")
-	if _, err := Load("/nonexistent.yaml"); err == nil {
-		t.Error("want validate error for openai_auth=bogus")
+	_, err := Load("/nonexistent.yaml")
+	if err == nil || !strings.Contains(err.Error(), "openai_auth") || !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("want a validate error naming openai_auth and the bad value, got %v", err)
 	}
 }
 

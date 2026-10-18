@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -131,12 +132,12 @@ func AdapterFor(repoRef, platform string) Adapter {
 		// Unknown explicit platform: be loud, fall through to autodetect.
 		fmt.Fprintf(stderr, "remote: unknown platform %q; falling back to autodetect\n", platform)
 	}
-	switch {
-	case strings.Contains(repoRef, "github.com"):
+	switch repoHost(repoRef) {
+	case "github.com":
 		return GitHubAdapter{}
-	case strings.Contains(repoRef, "gitlab.com"):
+	case "gitlab.com":
 		return GitLabAdapter{}
-	case strings.Contains(repoRef, "gitea.com"), strings.Contains(repoRef, "codeberg.org"):
+	case "gitea.com", "codeberg.org":
 		return GiteaAdapter{}
 	default:
 		// Self-hosted git, no PR/MR vendor — push happens, nothing else.
@@ -233,4 +234,42 @@ var runCLIOutputIn = func(workDir string, env []string, limit int, name string, 
 		return out.buf, out.over, fmt.Errorf("%s: %w\n%s", name, err, safeCLIError(string(errOut.buf)))
 	}
 	return out.buf, out.over, nil
+}
+
+// repoHost returns the lower-cased host of a repository reference in any of
+// the shapes drydock accepts (https://, ssh://, scp-like user@host:path), with
+// any userinfo and port removed. Autodetect keys on this host alone, never on a
+// substring of the whole reference, so neither a path component nor a
+// look-alike domain (github.com.evil.example) can select a vendor CLI. An
+// unparseable reference yields "" and falls to push-only.
+func repoHost(repoRef string) string {
+	ref := strings.TrimSpace(repoRef)
+	if ref == "" {
+		return ""
+	}
+	if strings.Contains(ref, "://") {
+		u, err := url.Parse(ref)
+		if err != nil {
+			return ""
+		}
+		return canonicalHost(u.Hostname())
+	}
+	// scp-like: [user@]host:path. The first ":" ends the host; a "/" before
+	// it means this is a path, not a host.
+	hostPart, _, ok := strings.Cut(ref, ":")
+	if !ok || strings.Contains(hostPart, "/") {
+		return ""
+	}
+	if at := strings.LastIndex(hostPart, "@"); at >= 0 {
+		hostPart = hostPart[at+1:]
+	}
+	return canonicalHost(hostPart)
+}
+
+// canonicalHost lower-cases a host, drops a trailing dot (an FQDN spelling the
+// URL grammar accepts) and a leading "www." (the previous substring match
+// treated www.github.com as github.com; keep that).
+func canonicalHost(h string) string {
+	h = strings.TrimSuffix(strings.ToLower(h), ".")
+	return strings.TrimPrefix(h, "www.")
 }

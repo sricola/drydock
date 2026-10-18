@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	"drydock/internal/config"
+	"drydock/internal/strictjson"
 )
 
 // HandleApprove signals the pending task's channel with approval, after
@@ -155,8 +156,8 @@ func (b *Broker) HandleKill(w http.ResponseWriter, r *http.Request) {
 func (b *Broker) HandleQueueAdd(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxTaskBodyBytes)
 	var t Task
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := strictjson.Decode(r.Body, &t); err != nil {
+		http.Error(w, "bad request: body must be a single JSON object", http.StatusBadRequest)
 		return
 	}
 	// The bounded-retry chain fields are BROKER-OWNED. Nothing on the HTTP

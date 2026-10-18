@@ -136,7 +136,7 @@ func (b *Broker) ResumeAwaiting(stageRoot string) {
 			_ = removeGateMarker(b.AuditRoot, id)
 			continue
 		}
-		logf, err := os.OpenFile(auditPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		logf, err := os.OpenFile(auditPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
 		if err != nil {
 			slog.Warn("resume: cannot open audit for append", "task_id", id, "err", err)
 			continue
