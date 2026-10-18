@@ -5,6 +5,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
+## Unreleased
+
+### Security
+
+- **Sandbox Debian snapshot re-pinned to 2026-10-19.** The daily
+  `image-scan` gate went red on 2026-10-17 on CVE-2026-32316 (High) in `jq`
+  and `libjq1`, fixed in `1.6-2.1+deb12u3` on `debian-security` from
+  2026-10-16. `DEBIAN_SNAPSHOT` moves to `20261019T000000Z`; the npm and
+  agent CLI pins are unchanged.
+
 ## v0.8.2 (2026-10-12)
 
 A patch release from an engineering hygiene pass
