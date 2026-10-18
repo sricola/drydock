@@ -14,7 +14,7 @@ FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0
 # shipped the minute the build ran. Snapshot Release files carry
 # expired Valid-Until stamps by design, hence Check-Valid-Until off; retries
 # because snapshot.debian.org rate-limits.
-ARG DEBIAN_SNAPSHOT=20261008T000000Z
+ARG DEBIAN_SNAPSHOT=20261019T000000Z
 RUN set -eu; \
     printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s/\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s/\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
         "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list.d/debian.sources; \
