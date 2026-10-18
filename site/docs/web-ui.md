@@ -32,11 +32,14 @@ the fragment and sends it as a bearer token on every API call.
   recent repos are remembered.
 - **History**: past runs from the audit dir: outcome, cost, and duration, each
   with its diff and logs. Outcome is `ok (N turns)` for a pushed or no-diff
-  run, or a distinct `denied`/`cancelled`/`push failed`/`error` line
-  otherwise, see [Push outcomes](submitting-tasks.html#push-outcomes). The
-  board's "Just finished" rail marks the same split with an icon: ✓ for
-  pushed/ok/no-diff, ✕ for error/push failed, and a neutral `∅` for
-  denied/cancelled (neither succeeded nor failed: the task just didn't run).
+  run, or a distinct `denied`/`cancelled`/`push failed`/`setup failed`/
+  `verify failed`/`policy blocked`/`planned`/`error` line otherwise, see
+  [Push outcomes](submitting-tasks.html#push-outcomes). The board's "Just
+  finished" rail folds these into three glyphs: ✓ for pushed/ok/no-diff, ✕
+  for error/push failed/dead-letter, and a neutral `∅` for everything that
+  stopped before a push (denied, cancelled, setup failed, verify failed,
+  policy blocked, planned, interrupted). Open the history entry for the
+  exact outcome.
 
 ### Where the cost figures come from
 

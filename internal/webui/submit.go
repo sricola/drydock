@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+
+	"drydock/internal/strictjson"
 	"io"
 	"net/http"
 )
@@ -20,10 +22,18 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Refuse auto_approve: the entire point of the UI is a human at the gate.
+	// The probe must read the body the way brokerd will: exactly one JSON
+	// object, nothing after it. A whole-body Unmarshal that merely failed on
+	// trailing bytes would skip the probe while brokerd's decoder still
+	// accepted the object in front of them, auto_approve included.
 	var probe struct {
 		AutoApprove bool `json:"auto_approve"`
 	}
-	if json.Unmarshal(body, &probe) == nil && probe.AutoApprove {
+	if err := strictjson.Decode(bytes.NewReader(body), &probe); err != nil {
+		http.Error(w, "bad request: body must be a single JSON object", http.StatusBadRequest)
+		return
+	}
+	if probe.AutoApprove {
 		http.Error(w, "auto_approve is not allowed from the web UI; approve at the gate", http.StatusBadRequest)
 		return
 	}

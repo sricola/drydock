@@ -245,10 +245,13 @@ func (b *Broker) gateEgressWiden(ctx context.Context, taskID string, extras []eg
 		func() {
 			// Persist the request next to the audit so reviewers have a stable
 			// artifact (the in-flight TaskState would disappear on a brokerd crash).
+			// Atomic and symlink-safe like every other audit artifact: a link
+			// planted at this name must not redirect the write (atomicfile
+			// stages through a private temp and renames over the name).
 			widenPath := filepath.Join(b.AuditRoot, taskID+".widen.json")
 			if err := os.MkdirAll(b.AuditRoot, 0o700); err == nil {
 				if payload, jerr := json.MarshalIndent(extras, "", "  "); jerr == nil {
-					if werr := os.WriteFile(widenPath, payload, 0o600); werr != nil {
+					if werr := atomicfile.Write(widenPath, payload, 0o600); werr != nil {
 						slog.Warn("could not persist egress-widen request", "task_id", taskID, "err", werr)
 					}
 				}

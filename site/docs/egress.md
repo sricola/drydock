@@ -103,6 +103,7 @@ added a `:80` entry, HTTP traffic never flows.
   egress path that bypasses the gateway (`:8088`) and squid (`:3128`). This
   edge describes what squid itself permits, not a bypass.
 - The SSRF guard (`http_access deny to_local`) blocks private, loopback,
+  "this host" (`0.0.0.0/8`, which reaches host loopback on macOS and Linux),
   link-local, cloud-metadata (`169.254.169.254`), and CGNAT destinations for
   both CONNECT and plain-HTTP requests, before the allowlist is consulted.
 

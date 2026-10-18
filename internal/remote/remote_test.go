@@ -221,3 +221,25 @@ func TestAdapterFor_UnknownPlatformWarnsToSink(t *testing.T) {
 		t.Errorf("expected unknown-platform warning in injected sink; got: %q", buf.String())
 	}
 }
+
+// Autodetect keys on the repository HOST, as documented ("hostname
+// autodetect"), never on a substring anywhere in the URL: a path or a
+// look-alike domain must not select a vendor CLI.
+func TestAdapterFor_AutodetectUsesTheHostOnly(t *testing.T) {
+	cases := []struct{ repoRef, want string }{
+		{"https://evil.example/github.com/o/r", "push-only"},
+		{"https://github.com.evil.example/o/r", "push-only"},
+		{"git@evil.example:github.com/o/r.git", "push-only"},
+		{"https://GitHub.com/o/r", "github"},
+		{"ssh://git@github.com:22/o/r", "github"},
+		{"https://user:pw@gitlab.com/g/p", "gitlab"},
+		{"ssh://git@codeberg.org/o/r.git", "gitea"},
+		{"https://www.github.com/o/r", "github"},
+		{"https://github.com./o/r", "github"},
+	}
+	for _, c := range cases {
+		if got := AdapterFor(c.repoRef, "").Name(); got != c.want {
+			t.Errorf("AdapterFor(%q) = %q, want %q", c.repoRef, got, c.want)
+		}
+	}
+}

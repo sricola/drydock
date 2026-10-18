@@ -38,9 +38,19 @@ func TestCompileSquidConf_AuthAndInclude(t *testing.T) {
 	if !strings.Contains(conf, "http_access deny to_local") {
 		t.Errorf("conf missing SSRF guard (http_access deny to_local)\n---\n%s", conf)
 	}
-	for _, cidr := range []string{"127.0.0.0/8", "169.254.0.0/16", "10.0.0.0/8", "192.168.0.0/16"} {
-		if !strings.Contains(conf, cidr) {
-			t.Errorf("SSRF guard missing range %s", cidr)
+	// Compare the ACL's fields, not substrings: "10.0.0.0/8" contains
+	// "0.0.0.0/8", so a Contains check cannot tell the two apart.
+	aclFields := map[string]bool{}
+	for _, ln := range strings.Split(conf, "\n") {
+		if strings.HasPrefix(ln, "acl to_local dst ") {
+			for _, f := range strings.Fields(strings.TrimPrefix(ln, "acl to_local dst ")) {
+				aclFields[f] = true
+			}
+		}
+	}
+	for _, cidr := range []string{"127.0.0.0/8", "169.254.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "0.0.0.0/8", "::1", "fc00::/7", "fe80::/10"} {
+		if !aclFields[cidr] {
+			t.Errorf("to_local ACL is missing %s (fields: %v)", cidr, aclFields)
 		}
 	}
 	if strings.Index(conf, "http_access deny to_local") > strings.Index(conf, "include /run/squid-default-acl.conf") {

@@ -30,6 +30,7 @@ import (
 	"drydock/internal/remote"
 	"drydock/internal/runner"
 	"drydock/internal/stage"
+	"drydock/internal/strictjson"
 	"drydock/internal/trustbrief"
 )
 
@@ -797,8 +798,8 @@ var errTaskTerminated = errors.New("task terminated; terminal event already emit
 func (b *Broker) HandleTask(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxTaskBodyBytes)
 	var t Task
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := strictjson.Decode(r.Body, &t); err != nil {
+		http.Error(w, "bad request: body must be a single JSON object", http.StatusBadRequest)
 		return
 	}
 	if !gitURLRef.MatchString(t.RepoRef) {
