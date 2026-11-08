@@ -5,11 +5,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.8.4 (2026-11-08)
 
-Findings of the testing and specification-conformance initiative
-(`docs/qa-validation-sprint.md`). No new features, no configuration
-changes, no on-disk format changes.
+A security patch release from the testing and specification-conformance
+initiative (`docs/qa-validation-sprint.md`). No new features, no
+configuration changes, no on-disk format changes, and the sandbox image is
+unchanged from v0.8.3. The fixes that matter most to a running install: a
+repository's own `.gitattributes` can no longer make the verifier VM, the
+diff you approve and the pushed commit see different bytes (or hide a file
+or its content from either), and the web UI's `auto_approve` refusal can no
+longer be bypassed with trailing bytes. In a git-lfs repository the agent
+now works on pointer files.
 
 ### Security
 
