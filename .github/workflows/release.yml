@@ -23,9 +23,11 @@ permissions:
 
 jobs:
   release:
-    # Apple silicon runner — drydock ships a darwin-arm64 binary built against
+    # Apple silicon runner: drydock ships a darwin-arm64 binary built against
     # Apple's `container` runtime; cross-building elsewhere is not supported.
-    runs-on: macos-14
+    # macos-14 is no longer offered (on 2026-11-08 the v0.8.3 job was cancelled
+    # with "configuration 'macos-14-arm64-us-default' is not supported").
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
