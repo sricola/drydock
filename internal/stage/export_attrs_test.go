@@ -3,6 +3,7 @@ package stage
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -198,6 +199,32 @@ func TestCaptureDiff_IgnoresTextconvAndExternalDiff(t *testing.T) {
 	}
 }
 
+// An in-tree `-diff` (or the `binary` macro, which implies it) makes git print
+// "Binary files ... differ" for a text file, so the approver would see no code
+// at all. The override restores git's own text/binary detection; a genuinely
+// binary blob still diffs as binary.
+func TestCaptureDiff_IgnoresInTreeBinaryMarking(t *testing.T) {
+	for _, attrs := range []string{"*.go -diff\n", "*.go binary\n"} {
+		st, err := Prepare(context.Background(), t.TempDir(), newLocalSourceRepo(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(st.WorkDir, "evil.go"), []byte("package evil // rm -rf /\n"), 0o644)
+		os.WriteFile(filepath.Join(st.WorkDir, "blob.bin"), []byte("\x00\x01\x02"), 0o644)
+		os.WriteFile(filepath.Join(st.WorkDir, ".gitattributes"), []byte(attrs), 0o644)
+		diff, err := st.CaptureDiff()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(diff, "rm -rf /") {
+			t.Errorf("%q: reviewed diff hides a text file as binary:\n%s", attrs, diff)
+		}
+		if !strings.Contains(diff, "Binary files /dev/null and b/blob.bin differ") {
+			t.Errorf("%q: a real binary blob should still diff as binary:\n%s", attrs, diff)
+		}
+	}
+}
+
 // A verifier copy with the right names but the wrong NUMBER of entries (what a
 // case-insensitive volume produces for Case.go + case.go) must be refused.
 func TestVerifyExportComplete_RefusesAnEntryCountMismatch(t *testing.T) {
@@ -215,5 +242,73 @@ func TestVerifyExportComplete_RefusesAnEntryCountMismatch(t *testing.T) {
 	os.WriteFile(filepath.Join(dst, "extra.go"), []byte("x"), 0o644)
 	if err := st.verifyExportComplete(tree, dst); err == nil || !strings.Contains(err.Error(), "entries") {
 		t.Fatalf("entry-count mismatch not refused: %v", err)
+	}
+}
+
+// The work tree must start as the exact blobs: the override has to exist
+// before checkout. Otherwise an in-tree eol=crlf hands the agent CRLF files
+// (each one it touches then re-adds as a whole-file CRLF diff) and a filter
+// driver from the operator's gitconfig (git-lfs, say) smudges on the host.
+func TestPrepare_ChecksOutExactBlobs(t *testing.T) {
+	gcfg := filepath.Join(t.TempDir(), "gitconfig")
+	marker := filepath.Join(t.TempDir(), "SMUDGED")
+	if err := os.WriteFile(gcfg, []byte("[filter \"op\"]\n\tsmudge = \"sh -c 'touch "+marker+"; cat'\"\n\tclean = cat\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"}, {"config", "user.email", "t@t"}, {"config", "user.name", "t"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", src}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	os.WriteFile(filepath.Join(src, "a.txt"), []byte("one\ntwo\n"), 0o644)
+	os.WriteFile(filepath.Join(src, "b.dat"), []byte("payload\n"), 0o644)
+	if out, err := exec.Command("git", "-C", src, "add", ".").CombinedOutput(); err != nil {
+		t.Fatalf("add: %v\n%s", err, out)
+	}
+	// Attributes land in the commit, after the blobs were stored as LF.
+	os.WriteFile(filepath.Join(src, ".gitattributes"), []byte("*.txt text eol=crlf\n*.dat filter=op\n"), 0o644)
+	for _, args := range [][]string{{"add", ".gitattributes"}, {"commit", "-q", "-m", "base"}} {
+		if out, err := exec.Command("git", append([]string{"-C", src}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gcfg)
+	st, err := Prepare(context.Background(), t.TempDir(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(st.WorkDir, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "one\ntwo\n" {
+		t.Errorf("work tree a.txt = %q, want the LF blob", got)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("an in-tree filter= ran the operator's smudge driver on the host at Prepare")
+	}
+	// Rewriting a file with its own content must not produce a diff.
+	os.WriteFile(filepath.Join(st.WorkDir, "a.txt"), got, 0o644)
+	diff, err := st.CaptureDiff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(diff) != "" {
+		t.Errorf("untouched content shows a diff:\n%s", diff)
+	}
+}
+
+// A brand-new remote with no commits has no HEAD to check out; Prepare must
+// still succeed, as the plain clone it replaced did.
+func TestPrepare_EmptyRepository(t *testing.T) {
+	src := t.TempDir()
+	if out, err := exec.Command("git", "-C", src, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	if _, err := Prepare(context.Background(), t.TempDir(), src); err != nil {
+		t.Fatalf("Prepare on an empty repository: %v", err)
 	}
 }

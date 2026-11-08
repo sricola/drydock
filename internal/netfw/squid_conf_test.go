@@ -48,7 +48,7 @@ func TestCompileSquidConf_AuthAndInclude(t *testing.T) {
 			}
 		}
 	}
-	for _, cidr := range []string{"127.0.0.0/8", "169.254.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "0.0.0.0/8", "::1", "fc00::/7", "fe80::/10"} {
+	for _, cidr := range []string{"127.0.0.0/8", "169.254.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "0.0.0.0/8", "::/128", "::1", "fc00::/7", "fe80::/10"} {
 		if !aclFields[cidr] {
 			t.Errorf("to_local ACL is missing %s (fields: %v)", cidr, aclFields)
 		}

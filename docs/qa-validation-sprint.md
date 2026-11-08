@@ -459,6 +459,19 @@ fails when its fix is reverted. Findings and resolution:
 | Info | Fix 2 probed with BOM, NUL, NBSP, key-case and unicode-escape variants, duplicate keys, 64 KiB truncation: UI and brokerd now agree on every body because they run the same function on the same bytes. Fix 3 probed with `%3A`, `//`, `;`, `..`, `/v1/`, uppercase and the control-plane routes; the generated squid conf passes `squid -k parse` on Squid 7.7; fix 5 is TOCTOU-safe; fix 6 held across 25 reference shapes. | No change. |
 | Info | `-race -count=3 -shuffle=on` on broker and `-count=2` on the other changed packages: clean. | No change. |
 
+A second, read-only review ran on 2026-11-08 after the branch was rebased
+onto v0.8.3 (the code, not the first review's conclusions, as its brief).
+Each finding was reproduced before it was fixed.
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| HIGH | The override did not touch `diff`: an in-tree `*.go -diff` (or `binary`) made `git diff --cached` print "Binary files ... differ", so the approver saw no code for a text file. Reproduced. | `!diff` added to the override (unspecified, so git's own sniffing decides; the suggested `* diff` would force real binaries to text). `TestCaptureDiff_IgnoresInTreeBinaryMarking` fails without it. |
+| MEDIUM | The override was written after the clone's checkout, so an in-tree `eol=crlf` handed the agent CRLF files and `filter=` ran the operator's smudge driver on the host at clone; under the override each touched file then re-added as the converted bytes. | Clone with `--no-checkout`, write the override, then check out. `TestPrepare_ChecksOutExactBlobs` fails without it. That change broke cloning an empty remote (unborn `HEAD`), caught by the new `TestPrepare_EmptyRepository` and guarded. |
+| LOW | `Reopen` did not write the override, so a stage prepared by an older build ran diff and add without it after a resume. | `Reopen` writes it. |
+| LOW | The squid deny list had `0.0.0.0/8` but not the IPv6 unspecified address `::/128`. | Added, with the field-compare test. `::ffff:0:0/96` deliberately not added: squid holds IPv4 addresses as v4-mapped internally, so that ACL risks matching every IPv4 destination. |
+| LOW | The directory-route `:` rule applies to every vendor, so OpenAI `GET /v1/models/ft:...` is refused. | Accepted (fail-closed on a metered gateway; no pinned CLI retrieves fine-tuned models) and stated in the CHANGELOG. |
+| Info | strictjson, the Gemini action allowlist, `AdapterFor` host matching and the widen marker were judged sound. | No change. |
+
 ## 10. Final validation
 
 Run on the finished tree (after the review fixes), on this Mac (Apple

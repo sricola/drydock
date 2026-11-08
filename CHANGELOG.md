@@ -20,13 +20,20 @@ changes, no on-disk format changes.
   push-time tree hash still matched; a `filter=` line also ran the operator's
   smudge/clean driver (git-lfs, for one) on the host against agent-chosen
   input. The host-only git dir now pins all of these attributes off from the
-  moment the stage is prepared (so `git add` is covered too), and the export
-  is checked against the staged tree for missing paths and for entry-count
-  drift (case-folding on APFS) before verification runs.
+  moment the stage is prepared, before the work tree is checked out, so the
+  agent starts from the exact blobs and `git add` stores exactly what it
+  wrote (no CRLF smudge, no host-side filter run at clone; in a git-lfs repo
+  the agent sees pointer files). A stage resumed after a restart gets the
+  same override. The export is checked against the staged tree for missing
+  paths and for entry-count drift (case-folding on APFS) before verification
+  runs.
 - The reviewed diff is the staged bytes: `git diff` now runs with
   `--no-ext-diff --no-textconv`, so an in-tree `diff=<driver>` attribute can
   no longer select an operator textconv from `~/.gitconfig` that rewrites
-  what the approver reads (and runs a host tool on agent input).
+  what the approver reads (and runs a host tool on agent input), and an
+  in-tree `-diff` or `binary` can no longer make a text file show as
+  "Binary files differ" (git's own detection decides; real binaries still
+  diff as binary).
 - The web UI's `auto_approve` refusal could be skipped with trailing bytes
   after the JSON object (the UI's whole-body probe failed to parse while
   brokerd's streaming decoder accepted the object in front). The UI and both
@@ -36,9 +43,12 @@ changes, no on-disk format changes.
   (`:generateContent`, `:streamGenerateContent`, `:countTokens`,
   `:embedContent`); the batch job actions are answered `403` locally, like
   Anthropic's `/v1/messages/batches` (F-03), and a directory route never
-  implies an action, so a `GET …/model:action` is refused as well.
-- The squid SSRF guard also denies `0.0.0.0/8`, which reaches host loopback
-  services on macOS and Linux.
+  implies an action, so a `GET …/model:action` is refused as well. This
+  applies to every vendor: a `:` under a directory route such as
+  `/v1/models/` is refused, which only affects retrieving an OpenAI
+  fine-tuned model by its `ft:` id (no pinned CLI does).
+- The squid SSRF guard also denies `0.0.0.0/8` and its IPv6 counterpart
+  `::/128`, which reach host loopback services on macOS and Linux.
 - `<id>.widen.json` is written atomically and no longer follows a planted
   symlink; a resumed approval gate opens `<id>.jsonl` with `O_NOFOLLOW`.
 

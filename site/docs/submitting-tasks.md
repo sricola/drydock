@@ -460,6 +460,15 @@ drydock approve <id>       # … or: drydock deny <id>
 `drydock review` is the fast path; `approve` / `deny` are the explicit controls.
 A denied task keeps its diff in the audit dir but never pushes.
 
+The diff you review, the tree the verifier checks and the commit that is
+pushed are the same bytes. The repository's own `.gitattributes` cannot change
+them: drydock overrides every content-altering attribute (`export-ignore`,
+`export-subst`, `text`/`eol`, `ident`, `filter`, `working-tree-encoding`,
+`diff`) in the host-only git dir, and builds the diff without textconv or
+external diff drivers. Because of this, the agent works on the stored blobs: in
+a git-lfs repository it sees pointer files rather than the large objects, and
+an `eol=crlf` file is LF in the sandbox.
+
 ### Diff policy: caps and second-look acknowledgments
 
 The optional `diff_policy` block in `config.yaml` (see

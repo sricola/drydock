@@ -66,7 +66,13 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 // ctx cancels the clone (a hung remote must not block the task).
 func Prepare(ctx context.Context, root, repoRef string) (*Stage, error) {
 	clone := filepath.Join(root, "clone")
-	if _, err := runGit(ctx, "", "clone", "--depth", "1", repoRef, clone); err != nil {
+	// --no-checkout: the work tree is populated below, only after the
+	// attribute override exists, so the agent starts from the exact blobs
+	// (no CRLF smudge, no filter driver such as git-lfs run on the host).
+	// Checking out first and overriding after would make every file the agent
+	// touches re-add as the converted bytes: a whole-file CRLF diff, or a
+	// smudged LFS object pushed in place of its pointer.
+	if _, err := runGit(ctx, "", "clone", "--no-checkout", "--depth", "1", repoRef, clone); err != nil {
 		return nil, err
 	}
 	workDir := filepath.Join(root, "work")
@@ -85,6 +91,12 @@ func Prepare(ctx context.Context, root, repoRef string) (*Stage, error) {
 	// command run on agent-chosen input.
 	if err := st.neutralizeExportAttributes(); err != nil {
 		return nil, err
+	}
+	// An empty remote has an unborn HEAD and nothing to check out.
+	if _, err := st.git("rev-parse", "-q", "--verify", "HEAD^{commit}"); err == nil {
+		if _, err := st.git("reset", "-q", "--hard", "HEAD"); err != nil {
+			return nil, fmt.Errorf("stage: check out work tree: %w", err)
+		}
 	}
 	return st, nil
 }
@@ -432,7 +444,10 @@ func (s *Stage) ExportStaged(dst string) (string, error) {
 // other than the blob itself: export-ignore and export-subst (archive
 // contents), text/eol (CRLF conversion), ident ($Id$ expansion), filter (a
 // clean/smudge driver from the operator's gitconfig, git-lfs included) and
-// working-tree-encoding (re-encoding). $GIT_DIR/info/attributes outranks every
+// working-tree-encoding (re-encoding); and diff, reset to unspecified so an
+// in-tree `-diff` or `binary` cannot make a text file show to the approver as
+// "Binary files differ" (git's own content sniffing still decides, so a real
+// binary stays binary). $GIT_DIR/info/attributes outranks every
 // in-tree .gitattributes, macros included, and the git dir is host-only.
 // Written at Prepare and again before each export (idempotent).
 func (s *Stage) neutralizeExportAttributes() error {
@@ -441,9 +456,10 @@ func (s *Stage) neutralizeExportAttributes() error {
 		return fmt.Errorf("stage: prepare attribute override: %w", err)
 	}
 	// working-tree-encoding is unset with "!" (an explicit false is an
-	// invalid encoding name and makes git die).
+	// invalid encoding name and makes git die); diff likewise, since "-diff"
+	// is exactly the binary marking being undone.
 	const override = "# written by drydock: the verifier must see exactly the staged tree\n" +
-		"* -export-ignore -export-subst -text -ident -filter !working-tree-encoding\n"
+		"* -export-ignore -export-subst -text -ident -filter !working-tree-encoding !diff\n"
 	if err := os.WriteFile(filepath.Join(info, "attributes"), []byte(override), 0o600); err != nil {
 		return fmt.Errorf("stage: write attribute override: %w", err)
 	}
@@ -748,7 +764,13 @@ func Reopen(root string) (*Stage, error) {
 			return nil, fmt.Errorf("stage: cannot reopen %q: missing %q", root, d)
 		}
 	}
-	return &Stage{Root: root, WorkDir: workDir, gitDir: gitDir}, nil
+	st := &Stage{Root: root, WorkDir: workDir, gitDir: gitDir}
+	// A stage prepared by an older build has no override; diff and add must
+	// not run without it after a resume.
+	if err := st.neutralizeExportAttributes(); err != nil {
+		return nil, err
+	}
+	return st, nil
 }
 
 // ReapOrphans removes every child directory under root. Used at brokerd boot to
