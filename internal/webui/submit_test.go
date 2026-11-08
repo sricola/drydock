@@ -64,3 +64,30 @@ func TestSubmitSurfacesPreAcceptError(t *testing.T) {
 		t.Fatalf("error body not surfaced: %q", rec.Body.String())
 	}
 }
+
+// A body that is a JSON object followed by trailing bytes is not "not JSON":
+// brokerd's streaming decoder reads the first value and ignores the rest, so
+// the auto_approve probe must never be skipped just because the whole body
+// failed to parse. The UI must refuse anything that is not exactly one JSON
+// object before it forwards a byte.
+func TestSubmit_TrailingBytes(t *testing.T) {
+	for _, body := range []string{
+		`{"repo_ref":"https://x.test/r.git","instruction":"y","auto_approve":true} x`,
+		`{"repo_ref":"https://x.test/r.git","instruction":"y","auto_approve":true}{}`,
+		`{"repo_ref":"https://x.test/r.git","instruction":"y","auto_approve":true}` + "\n" + `[1]`,
+		// No auto_approve at all: the trailing bytes alone must be refused,
+		// otherwise this test would pass on the auto_approve refusal alone.
+		`{"repo_ref":"https://x.test/r.git","instruction":"y"} x`,
+	} {
+		s := &Server{Token: "secret", BrokerDial: fakeBroker(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Errorf("brokerd must not be called for body %q", body)
+		}))}
+		rec := postSubmit(t, s, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %q: submit = %d, want 400", body, rec.Code)
+		}
+		if !strings.Contains(body, "auto_approve") && !strings.Contains(rec.Body.String(), "single JSON object") {
+			t.Errorf("body %q: error %q should say the body must be a single JSON object", body, rec.Body.String())
+		}
+	}
+}

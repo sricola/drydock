@@ -47,7 +47,7 @@ Check it's up:
 ```bash
 drydock status
 # brokerd     up
-# in flight   0 running · 0 awaiting egress · 0 awaiting diff · 0 pushing
+# in flight   0 setting up · 0 running · 0 verifying · 0 awaiting egress · 0 awaiting diff · 0 pushing
 ```
 
 ## 4. Submit a task
@@ -64,20 +64,24 @@ drydock submit \
 The submit shell streams progress, then pauses at the approval gate:
 
 ```
-task ab12cd34 accepted
+task ab12cd34… accepted
   preparing · cloning repo
   running · claude working
   ⏸ awaiting approval · 1.2 KB diff (4 files)
-     approve: drydock approve ab12cd34     review: drydock review ab12cd34
-✓ pushed agent/ab12cd34 (github) · 4 files +120/-8 · 2m18s · $0.11
+     approve: drydock approve ab12cd34ef56ab12cd34ef56ab12cd34ef56     review: drydock review ab12cd34ef56ab12cd34ef56ab12cd34ef56
+✓ pushed agent/ab12cd34ef56ab12cd34ef56ab12cd34ef56 (github) · 4 files +120/-8 · 2m18s · $0.11
 ```
+
+Task ids are 32 hex characters. The progress lines abbreviate them, but the
+approve/review hints (and `drydock pending`) print the full id, which is what
+every command takes: there is no prefix matching.
 
 ## 5. Review and approve
 
 ```bash
-drydock review ab12cd34    # opens the diff in $PAGER, then prompts y/N
+drydock review <id>    # opens the diff in $PAGER, then prompts y/N
 # … or step by step:
-drydock approve ab12cd34   # or: drydock deny ab12cd34
+drydock approve <id>   # or: drydock deny <id>
 ```
 
 Nothing reaches your real repo until you approve. That's the whole loop.

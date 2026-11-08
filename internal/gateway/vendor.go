@@ -12,6 +12,12 @@ import (
 type Route struct {
 	Method string
 	Prefix string
+	// Actions, when set, turns Prefix into a Google-style
+	// `{Prefix}{model}:{action}` matcher: the model must be exactly one path
+	// segment and the action must be listed. It exists because a directory
+	// prefix alone would also admit `:batchGenerateContent`, an asynchronous
+	// batch job whose spend the response meter never observes (F-03).
+	Actions []string
 }
 
 // Vendor describes one upstream API: where it lives, how to authenticate to it
@@ -49,7 +55,36 @@ func (v Vendor) routeAllowed(method, path string) bool {
 		return true
 	}
 	for _, rt := range v.AllowedRoutes {
-		if (rt.Method == "" || rt.Method == method) && routeMatch(path, rt.Prefix) {
+		if rt.Method != "" && rt.Method != method {
+			continue
+		}
+		if len(rt.Actions) > 0 {
+			if actionRouteMatch(path, rt.Prefix, rt.Actions) {
+				return true
+			}
+			continue
+		}
+		if routeMatch(path, rt.Prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// actionRouteMatch matches `{prefix}{model}:{action}` where model is one
+// non-empty path segment and action is one of actions. Nothing may follow the
+// action.
+func actionRouteMatch(path, prefix string, actions []string) bool {
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	rest := path[len(prefix):]
+	model, action, ok := strings.Cut(rest, ":")
+	if !ok || model == "" || strings.Contains(model, "/") || strings.Contains(action, "/") {
+		return false
+	}
+	for _, a := range actions {
+		if action == a {
 			return true
 		}
 	}
@@ -65,7 +100,11 @@ func (v Vendor) routeAllowed(method, path string) bool {
 // actually needs are allowlisted explicitly.
 func routeMatch(path, prefix string) bool {
 	if strings.HasSuffix(prefix, "/") {
-		return strings.HasPrefix(path, prefix)
+		// A directory prefix covers retrieve-style sub-paths only. A ":" in
+		// the remainder is a Google-style action (…/model:batchGenerateContent)
+		// and is never implied by a directory route; actions are allowlisted
+		// explicitly through Route.Actions.
+		return strings.HasPrefix(path, prefix) && !strings.Contains(path[len(prefix):], ":")
 	}
 	return path == prefix
 }
@@ -103,10 +142,10 @@ func AnthropicVendor() Vendor {
 		// /v1/messages/count_tokens, and may list or retrieve models.
 		// /v1/messages/batches is deliberately NOT here (F-03).
 		AllowedRoutes: []Route{
-			{"POST", "/v1/messages"},
-			{"POST", "/v1/messages/count_tokens"},
-			{"GET", "/v1/models"},
-			{"GET", "/v1/models/"},
+			{Method: "POST", Prefix: "/v1/messages"},
+			{Method: "POST", Prefix: "/v1/messages/count_tokens"},
+			{Method: "GET", Prefix: "/v1/models"},
+			{Method: "GET", Prefix: "/v1/models/"},
 		},
 	}
 }
@@ -147,10 +186,10 @@ func OpenAIVendor() Vendor {
 		// Codex/Chat clients post to /v1/responses or /v1/chat/completions and
 		// may list /v1/models. File/upload/fine-tuning/etc. are not forwarded.
 		AllowedRoutes: []Route{
-			{"POST", "/v1/chat/completions"},
-			{"POST", "/v1/responses"},
-			{"GET", "/v1/models"},
-			{"GET", "/v1/models/"},
+			{Method: "POST", Prefix: "/v1/chat/completions"},
+			{Method: "POST", Prefix: "/v1/responses"},
+			{Method: "GET", Prefix: "/v1/models"},
+			{Method: "GET", Prefix: "/v1/models/"},
 		},
 	}
 }
@@ -174,12 +213,15 @@ func GoogleVendor() Vendor {
 		ParseUsage: parseGoogleUsage,
 		Prices:     GooglePrices(),
 		// The Gemini CLI posts to /v1beta/models/{model}:generateContent (and
-		// :streamGenerateContent), and may list or retrieve models.
+		// :streamGenerateContent, :countTokens, :embedContent), and may list or
+		// retrieve models. The POST actions are explicit so the batch job
+		// routes (:batchGenerateContent and friends) are refused locally.
 		AllowedRoutes: []Route{
-			{"POST", "/v1beta/models/"},
-			{"GET", "/v1beta/models"},
-			{"GET", "/v1beta/models/"},
-			{"GET", "/v1/models"},
+			{Method: "POST", Prefix: "/v1beta/models/", Actions: []string{
+				"generateContent", "streamGenerateContent", "countTokens", "embedContent"}},
+			{Method: "GET", Prefix: "/v1beta/models"},
+			{Method: "GET", Prefix: "/v1beta/models/"},
+			{Method: "GET", Prefix: "/v1/models"},
 		},
 	}
 }
@@ -232,6 +274,6 @@ func OpenAIOAuthVendor(accountID string) Vendor {
 	// The VM's Codex posts to {gateway}/responses (the director joins BasePath
 	// onto it). Scope to that inbound path; the inherited OpenAI routes do not
 	// cover bare /responses.
-	v.AllowedRoutes = []Route{{"POST", "/responses"}, {"POST", "/v1/responses"}}
+	v.AllowedRoutes = []Route{{Method: "POST", Prefix: "/responses"}, {Method: "POST", Prefix: "/v1/responses"}}
 	return v
 }
