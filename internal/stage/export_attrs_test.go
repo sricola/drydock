@@ -92,6 +92,12 @@ func TestVerifyExportComplete_RefusesAMissingPath(t *testing.T) {
 // directory on the operator's machine cannot execute during the broker's own
 // commit.
 func TestHostCommit_IgnoresHookInHostGitDir(t *testing.T) {
+	// A clone does not inherit the source repo's user.* config, and CI
+	// runners have no global identity.
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
 	src := newLocalSourceRepo(t)
 	st, err := Prepare(context.Background(), t.TempDir(), src)
 	if err != nil {
