@@ -5,7 +5,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/spec/v2.0.0.html). Each
 entry below corresponds to a Git tag of the same name.
 
-## Unreleased
+## v0.8.3 (2026-11-08)
+
+A security patch release: the sandbox image is rebuilt on current pins so
+it clears the daily CVE gate again. No new features, no configuration
+changes, no on-disk format changes. `drydock init` keeps an existing
+`drydock-sandbox:latest`, so the new pins only reach you after a rebuild:
+run `container image delete drydock-sandbox:latest`, then `drydock init`.
 
 ### Security
 
