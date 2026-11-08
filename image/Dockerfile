@@ -1,7 +1,7 @@
 # Pinned by digest for a reproducible base. Bump deliberately: re-pull
 # node:22-bookworm-slim, read its digest (`container image inspect`), and update
 # here. See docs/ROADMAP.md (Phase 2.5) for the dependency-pinning policy.
-FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
+FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
 # Base toolchain + Python 3.11 (Debian default). Python lives next to Node so
 # the egress allowlist's pypi.org slot has a runtime to land on.
 # Privilege drop uses setpriv (util-linux, already in the base) — not gosu — so
@@ -14,7 +14,7 @@ FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0
 # shipped the minute the build ran. Snapshot Release files carry
 # expired Valid-Until stamps by design, hence Check-Valid-Until off; retries
 # because snapshot.debian.org rate-limits.
-ARG DEBIAN_SNAPSHOT=20261019T000000Z
+ARG DEBIAN_SNAPSHOT=20261107T000000Z
 RUN set -eu; \
     printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s/\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s/\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
         "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list.d/debian.sources; \
@@ -31,9 +31,9 @@ RUN apt-get update && apt-get upgrade -y \
 # BEFORE extraction: a compromised go.dev/CDN or a corrupted transfer can no
 # longer substitute a malicious archive. Bump the sums with GO_VERSION, from
 # https://go.dev/dl/?mode=json.
-ARG GO_VERSION=1.27.2
-ARG GO_SHA256_amd64=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
-ARG GO_SHA256_arm64=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
+ARG GO_VERSION=1.27.3
+ARG GO_SHA256_amd64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+ARG GO_SHA256_arm64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
 RUN ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
       amd64) GO_SHA256="$GO_SHA256_amd64" ;; \
@@ -58,12 +58,12 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # check asserts the exact pinned version, not just a working binary: here the
 # version IS the security invariant, and a half-applied self-install that
 # leaves the old npm answering must fail the build, not the next daily scan.
-ARG NPM_VERSION=11.21.0
+ARG NPM_VERSION=11.21.2
 # F-09: --before restricts every npm resolution (including transitives) to
 # versions published before this UTC timestamp, the npm analogue of the Debian
 # snapshot above. An exact pin published after the cutoff fails the build
 # (fail closed), so the bump lane moves this timestamp whenever it bumps a pin.
-ARG NPM_BEFORE=2026-10-08T11:09:12Z
+ARG NPM_BEFORE=2026-11-07T00:00:00Z
 RUN npm install -g --ignore-scripts --no-audit --no-fund --before=${NPM_BEFORE} npm@${NPM_VERSION} \
  && [ "$(npm --version)" = "${NPM_VERSION}" ] \
  && rm -rf /root/.npm
@@ -79,25 +79,25 @@ RUN npm install -g --ignore-scripts --no-audit --no-fund --before=${NPM_BEFORE} 
 # claude-code (install.cjs) and opencode (postinstall.mjs) genuinely need theirs,
 # so they keep scripts and are pinned by exact version instead. Every install
 # ends with a `<cli> --version` smoke check so a broken install fails the build.
-ARG CLAUDE_CODE_VERSION=2.1.293
+ARG CLAUDE_CODE_VERSION=2.1.319
 RUN npm install -g --before=${NPM_BEFORE} @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && claude --version
 
 # Pin the Codex CLI alongside claude-code. Bump deliberately; every drydock
 # release anchors to a known codex version. Override with
 # --build-arg CODEX_VERSION=x.y.z. No own install script -> --ignore-scripts.
-ARG CODEX_VERSION=0.161.0
+ARG CODEX_VERSION=0.167.0
 RUN npm install -g --ignore-scripts --before=${NPM_BEFORE} @openai/codex@${CODEX_VERSION} && codex --version
 
 # Pin the opencode CLI for the OpenAI-compatible (bring-your-own-model) lane.
 # Bump deliberately. Override with --build-arg OPENCODE_VERSION=x.y.z. The
 # build-time `opencode --version` is a smoke check that the (script-running)
 # install produced a working binary.
-ARG OPENCODE_VERSION=1.18.35
+ARG OPENCODE_VERSION=1.19.5
 RUN npm install -g --foreground-scripts --before=${NPM_BEFORE} opencode-ai@${OPENCODE_VERSION} && opencode --version
 
 # Pin the Gemini CLI for the native google vendor. Bump deliberately; every
 # drydock release anchors to a known version (0.49.0 validated by the 3B spike).
-ARG GEMINI_CLI_VERSION=0.63.0
+ARG GEMINI_CLI_VERSION=0.67.0
 RUN npm install -g --ignore-scripts --before=${NPM_BEFORE} @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
 
 RUN useradd -m -u 10001 -s /bin/bash agent

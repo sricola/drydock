@@ -9,6 +9,19 @@ entry below corresponds to a Git tag of the same name.
 
 ### Security
 
+- **Sandbox image re-pinned for 2026-11-08.** The daily `image-scan` gate
+  had been red since 2026-10-23 on 35 fixable High/Critical findings:
+  Debian fixes past the pinned snapshot (bind9, openssl, brotli, expat,
+  apt, cyrus-sasl2), node 22.23.2 in the digest-pinned base, and undici
+  GHSA-xjj6-f33q-929c in npm's vendored tree. `DEBIAN_SNAPSHOT` moves to
+  `20261107T000000Z`, the `node:22-bookworm-slim` base to its node 22.23.4
+  digest, npm to 11.21.2 (`NPM_BEFORE` 2026-11-07), Go to 1.27.3 (image and
+  host toolchain), and the agent CLIs to claude-code 2.1.319, codex
+  0.167.0, opencode 1.19.5, gemini-cli 0.67.0 (supersedes the bump lane's
+  #238). npm 11.21.2 vendors undici 6.29.1 and brace-expansion 5.0.12, so
+  the three allowlist entries expiring today are retired, not re-dated; the
+  allowlist is empty again. Validated on Apple `container` 1.7.1 (unit,
+  host red-team and VM red-team all green), now the stated runtime.
 - **Sandbox Debian snapshot re-pinned to 2026-10-19.** The daily
   `image-scan` gate went red on 2026-10-17 on CVE-2026-32316 (High) in `jq`
   and `libjq1`, fixed in `1.6-2.1+deb12u3` on `debian-security` from
