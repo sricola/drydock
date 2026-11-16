@@ -63,7 +63,7 @@ ARG NPM_VERSION=11.21.2
 # versions published before this UTC timestamp, the npm analogue of the Debian
 # snapshot above. An exact pin published after the cutoff fails the build
 # (fail closed), so the bump lane moves this timestamp whenever it bumps a pin.
-ARG NPM_BEFORE=2026-11-07T00:00:00Z
+ARG NPM_BEFORE=2026-11-16T15:30:35Z
 RUN npm install -g --ignore-scripts --no-audit --no-fund --before=${NPM_BEFORE} npm@${NPM_VERSION} \
  && [ "$(npm --version)" = "${NPM_VERSION}" ] \
  && rm -rf /root/.npm
@@ -79,13 +79,13 @@ RUN npm install -g --ignore-scripts --no-audit --no-fund --before=${NPM_BEFORE} 
 # claude-code (install.cjs) and opencode (postinstall.mjs) genuinely need theirs,
 # so they keep scripts and are pinned by exact version instead. Every install
 # ends with a `<cli> --version` smoke check so a broken install fails the build.
-ARG CLAUDE_CODE_VERSION=2.1.319
+ARG CLAUDE_CODE_VERSION=2.1.325
 RUN npm install -g --before=${NPM_BEFORE} @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && claude --version
 
 # Pin the Codex CLI alongside claude-code. Bump deliberately; every drydock
 # release anchors to a known codex version. Override with
 # --build-arg CODEX_VERSION=x.y.z. No own install script -> --ignore-scripts.
-ARG CODEX_VERSION=0.167.0
+ARG CODEX_VERSION=0.169.0
 RUN npm install -g --ignore-scripts --before=${NPM_BEFORE} @openai/codex@${CODEX_VERSION} && codex --version
 
 # Pin the opencode CLI for the OpenAI-compatible (bring-your-own-model) lane.
@@ -97,7 +97,7 @@ RUN npm install -g --foreground-scripts --before=${NPM_BEFORE} opencode-ai@${OPE
 
 # Pin the Gemini CLI for the native google vendor. Bump deliberately; every
 # drydock release anchors to a known version (0.49.0 validated by the 3B spike).
-ARG GEMINI_CLI_VERSION=0.67.0
+ARG GEMINI_CLI_VERSION=0.68.0
 RUN npm install -g --ignore-scripts --before=${NPM_BEFORE} @google/gemini-cli@${GEMINI_CLI_VERSION} && gemini --version
 
 RUN useradd -m -u 10001 -s /bin/bash agent
